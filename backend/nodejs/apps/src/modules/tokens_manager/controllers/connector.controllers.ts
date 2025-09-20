@@ -267,8 +267,8 @@ export const updateConnectorConfig =
   ): Promise<void> => {
     try {
       const { connectorName } = req.params;
-      const { auth, sync, filters } = req.body;
-      const config = { auth, sync, filters };
+      const { auth, sync, filters,baseUrl } = req.body;
+      const config = { auth, sync, filters, base_url: baseUrl};
       if (!connectorName) {
         throw new BadRequestError('Connector name is required');
       }
@@ -384,14 +384,19 @@ export const getOAuthAuthorizationUrl =
   ): Promise<void> => {
     try {
       const { connectorName } = req.params;
+      const { baseUrl } = req.query;
       if (!connectorName) {
         throw new BadRequestError('Connector name is required');
       }
+      const queryParams = new URLSearchParams();
+      if (baseUrl) queryParams.set('base_url', String(baseUrl));
+      const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/authorize?${queryParams.toString()}`;
+
       logger.info(`Getting OAuth authorization url for ${connectorName}`);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/authorize`,
+        authorizationUrl,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
       
       handleConnectorResponse(
@@ -509,6 +514,7 @@ export const handleOAuthCallback =
   ): Promise<void> => {
     try {
       const { connectorName } = req.params;
+      const { baseUrl } = req.query;
       const {code, state, error} = req.query;
       if (!connectorName) {
         throw new BadRequestError('Connector name is required');
@@ -522,6 +528,7 @@ export const handleOAuthCallback =
       if (code) queryParams.set('code', String(code));
       if (state) queryParams.set('state', String(state));
       if (error) queryParams.set('error', String(error));
+      if (baseUrl) queryParams.set('base_url', String(baseUrl));
       const callBackUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/callback?${queryParams.toString()}`;
 
       // Call Python backend to handle OAuth callback

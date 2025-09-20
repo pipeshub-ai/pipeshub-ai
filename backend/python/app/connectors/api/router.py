@@ -419,7 +419,7 @@ async def download_file(
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
             if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
                 # Use service account credentials
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector)
             else:
                 # Individual account - use stored OAuth credentials
                 creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector=connector)
@@ -448,7 +448,7 @@ async def download_file(
                     logger.info("🚀 Processing Google Slides")
                     google_slides_parser = await get_google_slides_parser(request)
                     await google_slides_parser.connect_service(
-                        user_email, org_id, user_id
+                        user_email, org_id, user_id, app_name=connector.lower()
                     )
                     result = await google_slides_parser.process_presentation(file_id)
 
@@ -462,7 +462,7 @@ async def download_file(
                     logger.info("🚀 Processing Google Docs")
                     google_docs_parser = await get_google_docs_parser(request)
                     await google_docs_parser.connect_service(
-                        user_email, org_id, user_id
+                        user_email, org_id, user_id, app_name=connector.lower()
                     )
                     content = await google_docs_parser.parse_doc_content(file_id)
                     all_content, headers, footers = (
@@ -484,7 +484,7 @@ async def download_file(
                     logger.info("🚀 Processing Google Sheets")
                     google_sheets_parser = await get_google_sheets_parser(request)
                     await google_sheets_parser.connect_service(
-                        user_email, org_id, user_id
+                        user_email, org_id, user_id, app_name=connector.lower()
                     )
                     llm, _ = await get_llm(config_service)
                     # List and process spreadsheets
@@ -857,7 +857,7 @@ async def stream_record(
 
             if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
                 # Use service account credentials
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container,connector)
             else:
                 # Individual account - use stored OAuth credentials
                 creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector)
@@ -1629,7 +1629,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
 
-async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container) -> google.oauth2.credentials.Credentials:
+async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get service account credentials"""
     try:
         service_creds_lock = container.service_creds_lock()
@@ -1656,7 +1656,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
 
             # Create new credentials
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-            credentials_json = await google_token_handler.get_enterprise_token(org_id)
+            credentials_json = await google_token_handler.get_enterprise_token(org_id,app_name=connector)
             credentials = service_account.Credentials.from_service_account_info(
                 credentials_json, scopes=SCOPES
             )
@@ -1711,7 +1711,7 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
 
             # Create new credentials
-            SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+            SCOPES = await google_token_handler.get_account_scopes(app_name=connector)
             # Refresh token
             await google_token_handler.refresh_token(org_id, user_id,app_name=connector)
             creds_data = await google_token_handler.get_individual_token(org_id, user_id,app_name=connector)
@@ -1722,12 +1722,46 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
                     detail="Invalid credentials. Access token not found",
                 )
 
+            # Validate that all required fields are present
+            access_token = creds_data.get(CredentialKeys.ACCESS_TOKEN.value)
+            refresh_token = creds_data.get(CredentialKeys.REFRESH_TOKEN.value)
+            client_id = creds_data.get(CredentialKeys.CLIENT_ID.value)
+            client_secret = creds_data.get(CredentialKeys.CLIENT_SECRET.value)
+            
+            if not access_token:
+                logger.error("Missing access_token in credentials")
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNAUTHORIZED.value,
+                    detail="Invalid credentials. Access token not found",
+                )
+            
+            if not refresh_token:
+                logger.error("Missing refresh_token in credentials")
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNAUTHORIZED.value,
+                    detail="Invalid credentials. Refresh token not found",
+                )
+            
+            if not client_id:
+                logger.error("Missing client_id in credentials")
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNAUTHORIZED.value,
+                    detail="Invalid credentials. Client ID not found",
+                )
+            
+            if not client_secret:
+                logger.error("Missing client_secret in credentials")
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNAUTHORIZED.value,
+                    detail="Invalid credentials. Client secret not found",
+                )
+
             new_creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
-                refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
+                token=access_token,
+                refresh_token=refresh_token,
                 token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get(CredentialKeys.CLIENT_ID.value),
-                client_secret=creds_data.get(CredentialKeys.CLIENT_SECRET.value),
+                client_id=client_id,
+                client_secret=client_secret,
                 scopes=SCOPES,
             )
 
@@ -2199,6 +2233,7 @@ async def get_connector_schema(
 async def get_oauth_authorization_url(
     app_name: str,
     request: Request,
+    base_url: Optional[str] = Query(None),
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict[str, Any]:
     """
@@ -2254,6 +2289,10 @@ async def get_oauth_authorization_url(
             OAuthConfig,
             OAuthProvider,
         )
+        if base_url and len(base_url) > 0:
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+        else:
+            redirect_uri = f"http://localhost:3001/{redirect_uri}"
 
         oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],
@@ -2324,6 +2363,7 @@ async def handle_oauth_callback(
     code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
+    base_url: Optional[str] = Query(None),
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict[str, Any]:
     """GET callback handler for OAuth redirects.
@@ -2334,11 +2374,8 @@ async def handle_oauth_callback(
     config_service = container.config_service()
 
     try:
-        # Get connector name for redirect
+
         connector_name = app_name
-        endpoints_key = '/services/endpoints'
-        endpoint_config = await config_service.get_config(endpoints_key)
-        frontend_url = endpoint_config.get("frontend").get("publicEndpoint",'http://localhost:3001')
 
         async def _get_settings_base_path() -> str:
             """Decide frontend settings base path by org account type.
@@ -2363,12 +2400,12 @@ async def handle_oauth_callback(
         # Check for OAuth errors
         if error:
             logger.error(f"OAuth error for {app_name}: {error}")
-            return {"success": False, "error": error, "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error={error}"}
+            return {"success": False, "error": error, "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error={error}"}
 
 
         if not code or not state:
             logger.error(f"Missing OAuth parameters for {app_name}")
-            return {"success": False, "error": "missing_parameters", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=missing_parameters"}
+            return {"success": False, "error": "missing_parameters", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=missing_parameters"}
 
         # Process OAuth callback directly here
         logger.info(f"Processing OAuth callback for {app_name}")
@@ -2377,7 +2414,7 @@ async def handle_oauth_callback(
         connector_config = await arango_service.get_app_by_name(app_name)
         if not connector_config:
             logger.error(f"Connector {app_name} not found")
-            return {"success": False, "error": "connector_not_found", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=connector_not_found"}
+            return {"success": False, "error": "connector_not_found", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=connector_not_found"}
 
         # Get OAuth configuration
         filtered_app_name = _sanitize_app_name(app_name)
@@ -2386,7 +2423,7 @@ async def handle_oauth_callback(
 
         if not config or not config.get('auth'):
             logger.error(f"OAuth configuration not found for {app_name}")
-            return {"success": False, "error": "config_not_found", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=config_not_found"}
+            return {"success": False, "error": "config_not_found", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=config_not_found"}
 
         auth_config = config['auth']
 
@@ -2398,16 +2435,20 @@ async def handle_oauth_callback(
         scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
-            return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
+            return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
 
         if not authorize_url or not token_url:
-            return {"success": False, "error": "oauth_urls_not_configured", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=oauth_urls_not_configured"}
+            return {"success": False, "error": "oauth_urls_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=oauth_urls_not_configured"}
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
             OAuthConfig,
             OAuthProvider,
         )
+        if base_url and len(base_url) > 0:
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+        else:
+            redirect_uri = f"http://localhost:3001/{redirect_uri}"
 
         oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],
@@ -2434,7 +2475,7 @@ async def handle_oauth_callback(
         # Validate token before storing
         if not token or not token.access_token:
             logger.error(f"Invalid token received for {app_name}")
-            return {"success": False, "error": "invalid_token", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=invalid_token"}
+            return {"success": False, "error": "invalid_token", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=invalid_token"}
 
         logger.info(f"OAuth tokens stored successfully for {app_name}")
 
@@ -2461,7 +2502,7 @@ async def handle_oauth_callback(
             logger.warning(f"Could not schedule token refresh for {app_name}: {sched_err}")
 
         # Return redirect URL for frontend to follow
-        redirect_url = f"{frontend_url}{settings_base_path}/{app_name}"
+        redirect_url = f"{base_url}{settings_base_path}/{app_name}"
         logger.info(f"OAuth successful, redirecting to: {redirect_url}")
         logger.info("app name: " + app_name)
         logger.info("connector name: " + connector_name)
@@ -2470,17 +2511,18 @@ async def handle_oauth_callback(
 
     except Exception as e:
         logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
-        endpoints_key = '/services/endpoints'
-        endpoint_config = await config_service.get_config(endpoints_key)
-        frontend_url = endpoint_config.get("frontend").get("publickEndpoint",'http://localhost:3001')
         connector_name = app_name
+        if base_url and len(base_url) > 0:
+            base_url = f"{base_url.rstrip('/')}/"
+        else:
+            base_url = f"http://localhost:3001/"
         try:
             orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
             account_type = str((orgs[0] or {}).get("accountType", "")).lower() if isinstance(orgs, list) and orgs else ""
             settings_base_path = "/account/company-settings/settings/connector" if account_type in ["business", "organization", "enterprise"] else "/account/individual/settings/connector"
         except Exception:
             settings_base_path = "/account/individual/settings/connector"
-        error_url = f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=server_error"
+        error_url = f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=server_error"
 
         return {"success": False, "error": "server_error", "redirect_url": error_url}
 
@@ -2890,6 +2932,8 @@ async def update_connector_config(
     connector_registry = request.app.state.connector_registry
     try:
         body_dict: Dict[str, Any] = await request.json()
+        logger.info(f"Body dict: {body_dict}")
+        base_url = body_dict.get('base_url', '')
     except Exception as e:
         logger.error(f"Failed to parse request body for {app_name}: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
@@ -2919,8 +2963,6 @@ async def update_connector_config(
         merged_config["credentials"] = None
         merged_config["oauth"] = None
 
-        await config_service.set_config(config_key, merged_config)
-        logger.info(f"Config stored in etcd for {app_name}")
 
         # Create app in database if it doesn't exist (only when configuring)
         try:
@@ -2928,10 +2970,24 @@ async def update_connector_config(
             logger.info(f"App created in database for {app_name} (if not already exists)")
         except Exception as e:
             logger.warning(f"App may already exist in database for {app_name}: {e}")
+        
+        app_doc = await connector_registry.get_connector_by_name(app_name)
+        connector_config = app_doc.get('config', {})
+        
+        redirect_uri = connector_config.get('auth', {}).get('redirectUri', '')
+        if base_url and len(base_url) > 0:
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+        else:
+            redirect_uri = f"http://localhost:3001/{redirect_uri}"
+        
+        merged_config["auth"]["redirectUri"] = redirect_uri
 
+        await config_service.set_config(config_key, merged_config)
+        logger.info(f"Config stored in etcd for {app_name}")
+                
         updates = {
             "isConfigured": True,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
         await connector_registry.update_connector(app_name, updates)
         logger.info(f"Connector updated in database for {app_name}")

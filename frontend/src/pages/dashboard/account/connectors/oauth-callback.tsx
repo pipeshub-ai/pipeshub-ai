@@ -51,37 +51,45 @@ export default function ConnectorOAuthCallback() {
 
         setMessage('Processing OAuth authentication...');
 
-            // Call Node.js backend to handle OAuth callback
-            const response = await axios.get(`${CONFIG.backendUrl}/api/v1/connectors/${connectorName}/oauth/callback?code=${code}&state=${state}&error=${oauthError}`);
+        // Call Node.js backend to handle OAuth callback
+        const response = await axios.get(
+          `${CONFIG.backendUrl}/api/v1/connectors/${connectorName}/oauth/callback?code=${code}&state=${state}&error=${oauthError}`,
+          {
+            params: {
+              baseUrl: window.location.origin,
+            },
+          }
+        );
 
-            // Prefer JSON redirectUrl for client-side navigation (prevents CORS on redirects)
-            if (response?.data?.redirectUrl) {
-              const redirectUrl: string = response.data.redirectUrl;
-              setStatus('success');
-              setMessage('OAuth authentication successful! Redirecting...');
-              setTimeout(() => {
-                window.location.href = redirectUrl;
-              }, 500);
-              return;
-            }
+        // Prefer JSON redirectUrl for client-side navigation (prevents CORS on redirects)
+        if (response?.data?.redirectUrl) {
+          const redirectUrl: string = response.data.redirectUrl;
+          setStatus('success');
+          setMessage('OAuth authentication successful! Redirecting...');
+          setTimeout(() => {
+            window.location.href = redirectUrl;
+          }, 500);
+          return;
+        }
 
-            // If not a JSON redirect, handle as normal response
-            const responseData = response.data || {};
-        
+        // If not a JSON redirect, handle as normal response
+        const responseData = response.data || {};
+
         // Success - redirect to connector settings page
         setStatus('success');
         setMessage('OAuth authentication successful! Redirecting to connector page...');
 
         // Determine redirect path based on account type
         const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
-        const basePath = isBusiness ? '/account/company-settings/settings/connector' : '/account/individual/settings/connector';
+        const basePath = isBusiness
+          ? '/account/company-settings/settings/connector'
+          : '/account/individual/settings/connector';
         const redirectPath = `${basePath}/${connectorName}`;
 
         // Redirect after a short delay
         setTimeout(() => {
           navigate(redirectPath, { replace: true });
         }, 2000);
-
       } catch (err) {
         setStatus('error');
         setError(err instanceof Error ? err.message : 'OAuth authentication failed');
@@ -95,7 +103,9 @@ export default function ConnectorOAuthCallback() {
   const handleRetry = () => {
     // Redirect back to connector settings
     const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
-    const basePath = isBusiness ? '/account/company-settings/settings/connector' : '/account/individual/settings/connector';
+    const basePath = isBusiness
+      ? '/account/company-settings/settings/connector'
+      : '/account/individual/settings/connector';
     if (connectorName) {
       navigate(`${basePath}/${connectorName}`, { replace: true });
     } else {
@@ -106,7 +116,9 @@ export default function ConnectorOAuthCallback() {
   const handleGoToConnector = () => {
     if (connectorName) {
       const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
-      const basePath = isBusiness ? '/account/company-settings/settings/connector' : '/account/individual/settings/connector';
+      const basePath = isBusiness
+        ? '/account/company-settings/settings/connector'
+        : '/account/individual/settings/connector';
       navigate(`${basePath}/${connectorName}`, { replace: true });
     }
   };
@@ -158,11 +170,7 @@ export default function ConnectorOAuthCallback() {
               {message}
             </Typography>
             {connectorName && (
-              <Button
-                variant="contained"
-                onClick={handleGoToConnector}
-                sx={{ mt: 2 }}
-              >
+              <Button variant="contained" onClick={handleGoToConnector} sx={{ mt: 2 }}>
                 Go to {connectorName} Settings
               </Button>
             )}

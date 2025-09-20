@@ -18,13 +18,16 @@ from app.connectors.core.registry.connector_builder import (
             "Google Drive API Setup",
             "https://developers.google.com/workspace/guides/auth-overview"
         ))
-        .with_redirect_uri("http://localhost:3001/connectors/oauth/callback/Drive", True)
+        .with_redirect_uri("connectors/oauth/callback/Drive", True)
         .with_oauth_urls(
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
             ["https://www.googleapis.com/auth/drive.readonly",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
-            "https://www.googleapis.com/auth/drive.metadata"
+            "https://www.googleapis.com/auth/drive.metadata",
+            "https://www.googleapis.com/auth/documents.readonly",
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/presentations.readonly",
             ]
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
@@ -215,12 +218,15 @@ class GoogleDriveConnector:
             "Gmail API Setup",
             "https://developers.google.com/workspace/guides/auth-overview"
         ))
-        .with_redirect_uri("http://localhost:3001/connectors/oauth/callback/Gmail", True)
+        .with_redirect_uri("connectors/oauth/callback/Gmail", True)
         .with_oauth_urls(
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
             [
-                'https://www.googleapis.com/auth/gmail.readonly'
+                'https://www.googleapis.com/auth/gmail.readonly',
+                "https://www.googleapis.com/auth/documents.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/presentations.readonly",
             ]
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))

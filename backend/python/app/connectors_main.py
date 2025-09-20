@@ -86,7 +86,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             org_id = org["_key"]
             accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
             enabled_apps = await arango_service.get_org_apps(org_id)
-            app_names = [app["name"] for app in enabled_apps]
+            app_names = [app["name"].replace(" ", "").lower() for app in enabled_apps]
             logger.info(f"App names: {app_names}")
             # Ensure the method is called on the correct object
             if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:

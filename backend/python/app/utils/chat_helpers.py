@@ -191,8 +191,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         flattened_results.append(table_result)
 
 
-
-
     for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
         for index in adjacent_chunks_list:
             chunk_id = f"{virtual_record_id}-{index}"

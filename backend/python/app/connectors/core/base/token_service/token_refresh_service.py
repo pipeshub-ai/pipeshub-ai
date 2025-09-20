@@ -92,7 +92,7 @@ class TokenRefreshService:
             oauth_config = OAuthConfig(
                 client_id=auth_config['clientId'],
                 client_secret=auth_config['clientSecret'],
-                redirect_uri=connector_auth_config.get('redirectUri', ''),
+                redirect_uri=auth_config.get('redirectUri', connector_auth_config.get('redirectUri', '')),
                 authorize_url=connector_auth_config.get('authorizeUrl', ''),
                 token_url=connector_auth_config.get('tokenUrl', ''),
                 scope=' '.join(connector_auth_config.get('scopes', [])) if connector_auth_config.get('scopes') else ''

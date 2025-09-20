@@ -67,12 +67,33 @@ export const updateConnectorConfigSchema = z.object({
     auth:z.any(),
     sync:z.any(),
     filters:z.any(),
+    baseUrl:z.string(),
   }),
   params: z.object({
     connectorName: z.string(),
   }),
 });
 
+export const getOAuthAuthorizationUrlSchema = z.object({
+  params: z.object({
+    connectorName: z.string(),
+  }),
+  query: z.object({
+    baseUrl:z.string(),
+  }),
+});
+
+export const handleOAuthCallbackSchema = z.object({
+  params: z.object({
+    connectorName: z.string(),
+  }),
+  query: z.object({
+    baseUrl:z.string(),
+    code: z.string(),
+    state: z.string(),
+    error: z.string(),
+  }),
+});
 
 export function createConnectorRouter(container: Container) {
   const router = Router();
@@ -143,6 +164,7 @@ export function createConnectorRouter(container: Container) {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     userAdminCheck,
+    ValidationMiddleware.validate(getOAuthAuthorizationUrlSchema),
     getOAuthAuthorizationUrl(config)
   );
 
@@ -151,6 +173,7 @@ export function createConnectorRouter(container: Container) {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     userAdminCheck,
+    ValidationMiddleware.validate(handleOAuthCallbackSchema),
     handleOAuthCallback(config)
   );
 

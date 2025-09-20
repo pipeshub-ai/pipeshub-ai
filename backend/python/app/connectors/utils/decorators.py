@@ -20,7 +20,15 @@ def token_refresh(func: Callable) -> Callable:
             if has_is_delegated:
                 is_delegated_true = self.is_delegated
                 if not is_delegated_true:
-                    await self._check_and_refresh_token()
+                    # Check if the method signature requires app_name parameter
+                    import inspect
+                    sig = inspect.signature(self._check_and_refresh_token)
+                    if 'app_name' in sig.parameters:
+                        # Try to get app_name from kwargs or use default
+                        app_name = kwargs.get('app_name', 'drive')
+                        await self._check_and_refresh_token(app_name)
+                    else:
+                        await self._check_and_refresh_token()
             return await func(self, *args, **kwargs)
         except Exception as e:
             raise GoogleAuthError(

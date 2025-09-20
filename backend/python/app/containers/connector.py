@@ -60,7 +60,9 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.modules.parsers.google_files.parser_user_service import ParserUserService
 from app.utils.logger import create_logger
-
+from app.connectors.sources.google.common.scopes import (
+    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
+)
 
 async def initialize_individual_google_account_services_fn(org_id, container, app_names: list[str]) -> None:
     """Initialize services for an individual account type."""
@@ -610,7 +612,7 @@ async def cache_google_workspace_service_credentials(org_id, arango_service, log
                         continue
 
                     # Fetch and cache credentials
-                    SCOPES = await google_token_handler.get_account_scopes(app_name=app_name)
+                    SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
                     credentials_json = await google_token_handler.get_enterprise_token(org_id,app_name=app_name)
                     credentials = service_account.Credentials.from_service_account_info(
                         credentials_json, scopes=SCOPES

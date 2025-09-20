@@ -66,6 +66,8 @@ class GoogleTokenHandler:
         try:
             config = await self._get_connector_config(app_key)
             creds = (config or {}).get("credentials") or {}
+            creds['clientId'] = (config.get("auth", {}).get("clientId"))
+            creds['clientSecret'] = (config.get("auth", {}).get("clientSecret"))
             if creds and creds.get(CredentialKeys.ACCESS_TOKEN.value):
                 return creds
         except Exception as e:
@@ -91,6 +93,8 @@ class GoogleTokenHandler:
                 raise Exception(f"Connector config missing for {app_name}")
 
             credentials = (config or {}).get("credentials") or {}
+            credentials['clientId'] = (config.get("auth", {}).get("clientId"))
+            credentials['clientSecret'] = (config.get("auth", {}).get("clientSecret"))
             refresh_token = credentials.get("refresh_token")
             if not refresh_token:
                 # Nothing to refresh; rely on existing access token
@@ -110,7 +114,7 @@ class GoogleTokenHandler:
             oauth_config = OAuthConfig(
                 client_id=auth_cfg.get("clientId"),
                 client_secret=auth_cfg.get("clientSecret"),
-                redirect_uri=connector_auth.get("redirectUri", ""),
+                redirect_uri=auth_cfg.get("redirectUri", connector_auth.get("redirectUri", "")),
                 authorize_url=connector_auth.get("authorizeUrl", ""),
                 token_url=connector_auth.get("tokenUrl", ""),
                 scope=' '.join(connector_auth.get("scopes", [])) if connector_auth.get("scopes") else ''
