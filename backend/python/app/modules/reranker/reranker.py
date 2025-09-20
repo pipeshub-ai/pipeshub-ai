@@ -51,11 +51,10 @@ class RerankerService:
         for doc in documents:
             content = doc.get("content", "")
             if content:
-                if doc.get("block_type") == GroupType.TABLE.value:
-                    content = doc.get("content")[0]
-                    doc_query_pairs.append((query, content))
-                elif doc.get("block_type") != BlockType.IMAGE.value:
-                    content = doc.get("content", "")
+                block_type = doc.get("block_type")
+                if block_type == GroupType.TABLE.value:
+                    doc_query_pairs.append((query, content[0]))
+                elif block_type != BlockType.IMAGE.value:
                     doc_query_pairs.append((query, content))
 
         # If no valid document-query pairs, return documents as-is
@@ -69,9 +68,7 @@ class RerankerService:
         # Get relevance scores
         try:
             scores = self.model.predict(doc_query_pairs)
-        except Exception as e:
-            # Log the error and return documents as-is with default scores
-            print(f"Error in reranker prediction: {e}")
+        except Exception:
             for doc in documents:
                 doc["reranker_score"] = 0.0
                 doc["final_score"] = doc.get("score", 0.0)
