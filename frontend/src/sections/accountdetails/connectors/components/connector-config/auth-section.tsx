@@ -71,7 +71,6 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   const theme = useTheme();
 
   if (!connectorConfig) return null;
-
   const { auth } = connectorConfig.config;
   const { documentationLinks } = connectorConfig.config;
   // Simplified helper function for business OAuth support
@@ -204,7 +203,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                     cursor: 'text',
                   }}
                 >
-                  {window.location.origin + '/' + auth.redirectUri}
+                  {`${window.location.origin}/${auth.redirectUri}`}
                 </Typography>
               </Box>
             </Box>

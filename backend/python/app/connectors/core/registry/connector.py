@@ -28,6 +28,8 @@ from app.connectors.core.registry.connector_builder import (
             "https://www.googleapis.com/auth/documents.readonly",
             "https://www.googleapis.com/auth/spreadsheets.readonly",
             "https://www.googleapis.com/auth/presentations.readonly",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive",
             ]
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
