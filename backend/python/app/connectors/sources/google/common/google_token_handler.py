@@ -74,8 +74,6 @@ class GoogleTokenHandler:
                 merged['clientId'] = auth_cfg.get("clientId")
                 merged['clientSecret'] = auth_cfg.get("clientSecret")
                 return merged
-            if creds and creds.get(CredentialKeys.ACCESS_TOKEN.value):
-                return creds
         except Exception as e:
             self.logger.error(f"❌ Failed to get individual token for {app_name}: {str(e)}")
             raise

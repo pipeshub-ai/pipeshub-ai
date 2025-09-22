@@ -1654,7 +1654,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
             user_id = None
             user_info = await self.arango_service.get_users(org_id, active=True)
-            if user_info and len(user_info) > 0 and user_info[0].get("userId"):
+            if user_info and user_info[0].get("userId"):
                 user_id = user_info[0]["userId"]
             else:
                 # Fallback: fetch individual user directly from Drive API to get a valid user_id

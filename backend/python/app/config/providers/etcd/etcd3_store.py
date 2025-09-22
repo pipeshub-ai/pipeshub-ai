@@ -107,7 +107,6 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return True
             elif existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
-                logger.debug("   - Current value: %s", existing_value[0])
                 success = await asyncio.to_thread(
                     lambda: client.put(key, value_str.encode())
                 )

@@ -2010,7 +2010,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             self.logger.info("🚀 Connecting to individual user services")
             user_id = None
             user_info = await self.arango_service.get_users(org_id, active=True)
-            if user_info and len(user_info) > 0 and user_info[0].get("userId"):
+            if user_info and user_info[0].get("userId"):
                 # Use existing active user
                 user_id = user_info[0]["userId"]
             else:
