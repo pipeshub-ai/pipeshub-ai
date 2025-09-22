@@ -66,7 +66,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
     """
-    
+
     # Extract all citation numbers from the answer text
     citation_pattern = r'\[R(\d+)-(\d+)\]'
     matches = re.findall(citation_pattern, answer_text)

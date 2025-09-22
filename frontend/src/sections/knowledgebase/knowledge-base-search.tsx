@@ -512,8 +512,6 @@ export default function KnowledgeBaseSearch() {
             setIsTextFile(true);
             break;
           case 'md':
-            setIsMarkdown(true);
-            break;
           case 'mdx':
             setIsMarkdown(true);
             break;

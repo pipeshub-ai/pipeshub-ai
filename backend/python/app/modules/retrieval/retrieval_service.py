@@ -30,6 +30,7 @@ from app.utils.aimodels import (
     get_generator_model,
 )
 
+
 class RetrievalService:
     def __init__(
         self,
@@ -121,16 +122,17 @@ class RetrievalService:
                     dense_embeddings = None
                     if ai_models["embedding"]:
                         self.logger.info("No default embedding model found, using first available provider")
-                        for config in ai_models["embedding"]:
-                            if config.get("isDefault", False):
-                                dense_embeddings = get_embedding_model(config["provider"], config)
-                                self.logger.info(f"Embedding provider: {config['provider']}")
-                                break
-                        if not dense_embeddings:
-                            for config in ai_models["embedding"]:
-                                dense_embeddings = get_embedding_model(config["provider"], config)
-                                self.logger.info(f"Embedding provider: {config['provider']}")
-                                break
+                        configs = ai_models["embedding"]
+                        # Try to find the default config
+                        selected_config = next((c for c in configs if c.get("isDefault", False)), None)
+                        # If no default, take the first one
+                        if not selected_config and configs:
+                            selected_config = configs[0]
+
+                        if selected_config:
+                            dense_embeddings = get_embedding_model(selected_config["provider"], selected_config)
+                            self.logger.info(f"Embedding provider: {selected_config['provider']}")
+
 
             except Exception as e:
                 self.logger.error(f"Error creating embedding model: {str(e)}")
@@ -332,7 +334,7 @@ class RetrievalService:
                     # FIX: Add null check for r before accessing r["_key"]
                     record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
                     if record:
-                        
+
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)

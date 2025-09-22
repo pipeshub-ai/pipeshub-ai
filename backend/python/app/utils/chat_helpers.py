@@ -608,6 +608,6 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
         "type": "text",
         "text": f"</record>\n</context>\n\n{qna_prompt_instructions_2}"
     })
-    
-    logger.info(f"content: {content}")
+
+    logger.debug(f"content: {content}")
     return content

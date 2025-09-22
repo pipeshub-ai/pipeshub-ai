@@ -184,7 +184,7 @@ class MimeTypes(Enum):
     PLAIN_TEXT = "text/plain"
     MARKDOWN = "text/markdown"
     MDX = "text/mdx"
-    
+
 
 
 
