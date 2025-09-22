@@ -67,7 +67,7 @@ class OneDriveCredentials:
             "Azure AD App Registration Setup",
             "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
         ))
-        .with_redirect_uri("http://localhost:3001/connectors/oauth/callback/OneDrive", False)
+        .with_redirect_uri("connectors/oauth/callback/OneDrive", False)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",

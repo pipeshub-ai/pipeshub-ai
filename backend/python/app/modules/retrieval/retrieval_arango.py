@@ -194,20 +194,58 @@ class ArangoService:
                 )
                 """
 
+            # Build anyoneRecords (always, for app-based selection)
             query += """
             LET anyoneRecords = (
                 FOR records IN @@anyone
-                FILTER records.organization == @orgId
-                FOR record IN @@records
-                FILTER record != null
-                    AND record._key == records.file_key
-                RETURN record
-            )
-
-            LET allAccessibleRecords = UNIQUE(
-                UNION(directAndGroupRecords, kbRecords, anyoneRecords)
+                    FILTER records.organization == @orgId
+                    FOR record IN @@records
+                        FILTER record != null AND record._key == records.file_key
+                        RETURN record
             )
             """
+
+            # Build base accessible from direct/group/org plus anyone and kb (union of paths)
+            query += """
+            LET baseAccessible = UNIQUE(UNION(directAndGroupRecords, kbRecords, anyoneRecords))
+            """
+
+            # Apps filtering when provided (works over baseAccessible)
+            if filters and filters.get("apps"):
+                query += """
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER LENGTH(
+                            FOR app IN @apps
+                                FILTER LOWER(record.connectorName) == app
+                                LIMIT 1
+                                RETURN 1
+                        ) > 0
+                        RETURN DISTINCT record
+                )
+                """
+            else:
+                query += """
+                LET appFilteredRecords = []
+                """
+
+            # Final accessible set logic (KB and Apps are OR-ed when both are present)
+            if kb_ids and (filters and filters.get("apps")):
+                query += """
+                LET allAccessibleRecords = UNIQUE(UNION(kbRecords, appFilteredRecords))
+                """
+            elif kb_ids:
+                query += """
+                LET allAccessibleRecords = UNIQUE(kbRecords)
+                """
+            elif filters and filters.get("apps"):
+                query += """
+                LET allAccessibleRecords = UNIQUE(appFilteredRecords)
+                """
+            else:
+                query += """
+                LET allAccessibleRecords = baseAccessible
+                """
 
             # Add filter conditions if provided
             filter_conditions = []

@@ -110,7 +110,7 @@ class SiteMetadata:
             "SharePoint Online API Setup",
             "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
         ))
-        .with_redirect_uri("http://localhost:3001/connectors/oauth/callback/SharePoint Online", False)
+        .with_redirect_uri("connectors/oauth/callback/SharePoint Online", False)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",
