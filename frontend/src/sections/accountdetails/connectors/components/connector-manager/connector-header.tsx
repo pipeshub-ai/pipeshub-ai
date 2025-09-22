@@ -13,6 +13,7 @@ import {
 import { Iconify } from 'src/components/iconify';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import arrowBackIcon from '@iconify-icons/mdi/arrow-left';
+import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector } from '../../types/types';
 
 interface ConnectorHeaderProps {
@@ -28,8 +29,14 @@ const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
 }) => {
   const theme = useTheme();
   const navigate = useNavigate();
-
+  const { isBusiness } = useAccountType();
   const isActive = connector.isActive || false;
+  const handleBack = () => {
+    const basePath = isBusiness
+      ? '/account/company-settings/settings/connector'
+      : '/account/individual/settings/connector';
+    navigate(basePath);
+  };
 
   return (
     <Box
@@ -42,7 +49,7 @@ const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
       <Stack spacing={2}>
         <Stack direction="row" alignItems="center" spacing={1.5}>
           <IconButton
-            onClick={() => navigate('/account/company-settings/settings/connector')}
+            onClick={handleBack}
             sx={{
               color: theme.palette.text.secondary,
               '&:hover': {
