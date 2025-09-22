@@ -78,8 +78,17 @@ class DomainExtractor:
     )
 
     async def _call_llm(self, messages) -> dict | None:
-        """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)
+        """Wrapper for LLM calls with retry logic and timeout"""
+        import asyncio
+        try:
+            # Add a 300 second (5 minute) timeout to prevent indefinite hanging
+            return await asyncio.wait_for(
+                self.llm.ainvoke(messages),
+                timeout=300.0
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("❌ LLM call timed out after 300 seconds")
+            raise
 
     async def find_similar_topics(self, new_topic: str) -> str:
         """
@@ -168,7 +177,12 @@ class DomainExtractor:
         Includes reflection logic to attempt recovery from parsing failures.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, _ = await get_llm(self.config_service)
+        try:
+            self.llm, _ = await get_llm(self.config_service)
+            self.logger.info("✅ LLM initialized successfully")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize LLM: {str(e)}")
+            raise
 
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
@@ -194,7 +208,9 @@ class DomainExtractor:
 
             messages = [HumanMessage(content=formatted_prompt)]
             # Use retry wrapper for LLM call
+            self.logger.info("🚀 Making LLM call for domain metadata extraction")
             response = await self._call_llm(messages)
+            self.logger.info("✅ LLM call completed successfully")
             # Remove any thinking tags if present
             if '</think>' in response.content:
                 response.content = response.content.split('</think>')[-1]
@@ -245,7 +261,9 @@ class DomainExtractor:
                     ]
 
                     # Use retry wrapper for reflection LLM call
+                    self.logger.info("🔄 Making reflection LLM call to fix validation issues")
                     reflection_response = await self._call_llm(reflection_messages)
+                    self.logger.info("✅ Reflection LLM call completed successfully")
                     if '</think>' in reflection_response.content:
                         reflection_response.content = reflection_response.content.split('</think>')[-1]
                     reflection_text = reflection_response.content.strip()

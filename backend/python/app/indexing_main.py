@@ -1,4 +1,6 @@
 import asyncio
+import signal
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -14,6 +16,14 @@ from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+def handle_sigterm(signum, frame) -> None:
+    print(f"Received signal {signum}, {frame} shutting down gracefully")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigterm)
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
