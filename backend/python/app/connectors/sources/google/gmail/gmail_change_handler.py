@@ -133,6 +133,7 @@ class GmailChangeHandler:
                         "isLatestVersion": True,
                         "isDirty": False,
                         "reason": None,
+                        "mimeType": "text/html",
                     }
 
                     # Convert record to dictionary if it's a Record object
@@ -235,6 +236,7 @@ class GmailChangeHandler:
                                     "isDirty": False,
                                     "reason": None,
                                     "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                                    "mimeType": attachment.get("mimeType"),
                                 }
                                 is_of_type_record = {
                                     "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
@@ -564,6 +566,7 @@ class GmailChangeHandler:
                                     "eventType": EventTypes.DELETE_RECORD.value,
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
                                     "origin": OriginTypes.CONNECTOR.value,
+                                    "mimeType": attachment.get("mimeType"),
                                 }
                                 await self.arango_service.kafka_service.send_event_to_kafka(
                                     attachment_event

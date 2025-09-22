@@ -617,6 +617,7 @@ class DriveChangeHandler:
                 "isDirty": False,
                 "reason": None,
                 "webUrl": updated_file.get("webViewLink", None),
+                "mimeType": updated_file.get("mimeType", None),
             }
             is_of_type_record = {
                 "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
