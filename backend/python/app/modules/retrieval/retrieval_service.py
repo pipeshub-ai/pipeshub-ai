@@ -424,13 +424,13 @@ class RetrievalService:
 
         except ValueError as e:
             # Provide specific, user-friendly errors for known cases
-            error_text = str(e)
-            if "Vector DB is empty or collection not found" in error_text:
+            # Avoid string matching: detect our dedicated error by class name
+            if e.__class__.__name__ == "VectorDBEmptyError":
                 return self._create_empty_response(
                     "Vector database is not ready. Please index content and try again.",
                     Status.VECTOR_DB_EMPTY,
                 )
-            return self._create_empty_response(f"Bad request: {error_text}", Status.ERROR)
+            return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
             import traceback
             tb_str = traceback.format_exc()
@@ -467,7 +467,11 @@ class RetrievalService:
             )
             self.logger.info(f"Collection info: {collection_info}")
             if not collection_info or collection_info.points_count == 0: # type: ignore
-                raise ValueError("Vector DB is empty or collection not found")
+                # Define a scoped custom error for clarity; safe to identify by class upstream
+                class VectorDBEmptyError(ValueError):
+                    pass
+
+                raise VectorDBEmptyError("Vector DB is empty or collection not found")
 
             # Get cached embedding model
             dense_embeddings = await self.get_embedding_model_instance()
