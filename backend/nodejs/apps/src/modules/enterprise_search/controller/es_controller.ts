@@ -137,23 +137,12 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
     try {
       return await aiServiceCommand.executeStream();
     } catch (error: any) {
-      if (error?.response) {
-        const mapped = handleBackendError(error, operation);
-        logger.error('AI service stream start failed', {
-          ...logContext,
-          status: error.response?.status,
-          data: error.response?.data,
-        });
-        throw mapped;
-      }
-      if (error?.cause && error.cause.code === 'ECONNREFUSED') {
-        throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-      }
-      logger.error('AI service stream start failed (unknown error)', {
+      const mappedError = handleBackendError(error, operation);
+      logger.error('AI service stream start failed', {
         ...logContext,
         message: error?.message,
       });
-      throw new InternalServerError(`Failed to start ${operation}`, error);
+      throw mappedError;
     }
   };
 
@@ -3007,11 +2996,11 @@ export const search =
         throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
       }
       
-      if(aiResponse.data && aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Search');
-      }
       if (!aiResponse || !aiResponse.data) {
         throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError({ response: { status: aiResponse.statusCode, data: aiResponse.data } }, 'Search');
       }
       
 
@@ -3724,9 +3713,9 @@ export const listAgentTemplates =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      // if (aiResponse && aiResponse.statusCode !== 200) {
-      //   throw handleBackendError(aiResponse.data, 'List Agent Templates');
-      // }
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        throw handleBackendError({ response: { status: aiResponse.statusCode, data: aiResponse.data } }, 'List Agent Templates');
+      }
       const agentTemplates = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agentTemplates);
     } catch (error: any) {
