@@ -29,9 +29,10 @@ const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
 }) => {
   const theme = useTheme();
   const navigate = useNavigate();
-  const { isBusiness } = useAccountType();
+  const { isBusiness, loading: accountTypeLoading } = useAccountType();
   const isActive = connector.isActive || false;
   const handleBack = () => {
+    if (accountTypeLoading) return; // Avoid navigation until account type is known
     const basePath = isBusiness
       ? '/account/company-settings/settings/connector'
       : '/account/individual/settings/connector';
@@ -50,6 +51,7 @@ const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
         <Stack direction="row" alignItems="center" spacing={1.5}>
           <IconButton
             onClick={handleBack}
+            disabled={accountTypeLoading}
             sx={{
               color: theme.palette.text.secondary,
               '&:hover': {
