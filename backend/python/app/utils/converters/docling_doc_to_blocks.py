@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import List, Union
+from typing import List, Tuple, Union
 
 from docling.datamodel.document import DoclingDocument
 from jinja2 import Template
@@ -230,12 +230,12 @@ class DoclingDocToBlocksConverter():
             for child in children:
                 await _process_item(child, doc, level + 1)
 
-        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup:
+        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
             table_data = item.get("data", {})
             cell_data = table_data.get("table_cells", [])
             if len(cell_data) == 0:
                 self.logger.error(f"❌ No table cells found in the table data: {table_data}")
-                return
+                return None
             response = await self.get_table_summary_n_headers(table_markdown)
             table_summary = response.summary
             column_headers = response.headers
@@ -381,7 +381,7 @@ class DoclingDocToBlocksConverter():
 
     async def get_rows_text(
         self, table_data: dict, table_summary: str, column_headers: list[str]
-    ) -> (List[str],List[List[dict]]):
+    ) -> Tuple[List[str], List[List[dict]]]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         table = table_data.get("grid")
         if table:

@@ -594,7 +594,7 @@ class Processor:
             self.logger.debug("📄 Processing PDF binary content")
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
-            block_containers = await processor.load_document(recordName, pdf_binary)
+            block_containers = await processor.load_document(record_name, pdf_binary)
             if block_containers is False:
                 return False
             record = await self.arango_service.get_document(
