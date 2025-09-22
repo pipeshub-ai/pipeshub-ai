@@ -1652,10 +1652,19 @@ class DriveSyncIndividualService(BaseDriveSyncService):
         try:
             self.logger.info("🚀 Connecting to individual user services")
 
+            user_id = None
             user_info = await self.arango_service.get_users(org_id, active=True)
-            if user_info:
-                # Add sync state to user info
+            if user_info and len(user_info) > 0 and user_info[0].get("userId"):
                 user_id = user_info[0]["userId"]
+            else:
+                # Fallback: fetch individual user directly from Drive API to get a valid user_id
+                self.logger.warning("⚠️ No active users found in DB; fetching individual user from Drive API")
+                fetched_users = await self.drive_user_service.list_individual_user(org_id)
+                if fetched_users and len(fetched_users) > 0 and fetched_users[0].get("userId"):
+                    user_id = fetched_users[0]["userId"]
+                else:
+                    self.logger.error("❌ Unable to determine user_id for individual Drive connection")
+                    return False
 
             # Connect to Google Drive
             if not await self.drive_user_service.connect_individual_user(

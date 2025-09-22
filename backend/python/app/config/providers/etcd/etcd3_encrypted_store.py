@@ -163,8 +163,6 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
                     if stored_value != value:
                         self.logger.warning("⚠️ Verification failed for key: %s", key)
-                        self.logger.warning("  Expected: %s", value)
-                        self.logger.warning("  Got: %s", stored_value)
                         return False
 
                 return True
