@@ -40,13 +40,14 @@ from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.models.entities import (
     FileRecord,
     Record,
+    RecordGroup,
     RecordGroupType,
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
 
-from app.models.entities import User, AppUser
+from app.models.entities import User, AppUser, AppUserGroup
 from app.sources.external.dropbox.pretty_print import to_pretty_json
 from aiolimiter import AsyncLimiter
 
@@ -165,7 +166,7 @@ class DropboxConnector(BaseConnector):
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
         credentials_config = await self.config_service.get_config(
-            f"/services/connectors/dropbox/config/{self.data_entities_processor.org_id}"
+            f"/services/connectors/dropbox/config/{self.data_entities_processor.org_id}" 
         )
         if not credentials_config or not credentials_config.get("accessToken"):
             self.logger.error("Dropbox access token not found in configuration.")
@@ -204,7 +205,9 @@ class DropboxConnector(BaseConnector):
         return old_set == new_set
 
     async def _process_dropbox_entry(
-        self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata], user_id: str, user_email: str
+        self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
+         user_id: str, user_email: str,
+          record_group_id: str
     ) -> Optional[RecordUpdate]:
         """
         Process a single Dropbox entry and detect changes.
@@ -216,6 +219,7 @@ class DropboxConnector(BaseConnector):
             # 1. Handle Deleted Items (Deletion from db not implemented yet)
             if isinstance(entry, DeletedMetadata):
                 pass
+                # return None
                 # self.logger.info(f"Item at path '{entry.path_lower}' has been deleted.")
                 
                 
@@ -278,35 +282,51 @@ class DropboxConnector(BaseConnector):
                 # Use current time for folders as a fallback.
                 timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             
-
+            # 5. Get signed URL for files
             signed_url = None
             if is_file:
                 temp_link_result = await self.data_source.files_get_temporary_link(
                     entry.path_lower,
-                    team_member_id=user_id
+                    team_member_id=user_id,
+                    team_folder_id=record_group_id
                 )
                 if temp_link_result.success:
                     signed_url = temp_link_result.data.link
             
+            # 6. Get parent record ID
+            parent_path = None
+            parent_external_record_id = None
+            if entry.path_display != '/':
+                parent_path = get_parent_path_from_path(entry.path_lower)
+                print("!!!!!!!!!!!! got parent path !!!!!!!!!!!!!!: ", parent_path)
+            parent_metadata = None
+            if parent_path:
+                parent_metadata = await self.data_source.files_get_metadata(
+                    parent_path,
+                    team_member_id=user_id,
+                    team_folder_id=record_group_id,
+                )
+                if parent_metadata.success:
+                    parent_external_record_id = parent_metadata.data.id
+
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=entry.name,
                 record_type=record_type,
                 record_group_type=RecordGroupType.DRIVE.value,
-                external_record_group_id=user_id,
+                external_record_group_id=record_group_id, # Use the passed-in folder_id or user_id
                 external_record_id=entry.id,
                 external_revision_id=entry.rev if is_file else None,
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
-                # Use the safely acquired timestamp
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
                 source_created_at=timestamp_ms,
                 source_updated_at=timestamp_ms,
                 weburl=f"https://www.dropbox.com/home{entry.path_display}",
                 signed_url=signed_url,
-                parent_external_record_id=None,
+                parent_external_record_id=parent_external_record_id,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
                 extension=get_file_extension(entry.name) if is_file else None,
@@ -348,7 +368,7 @@ class DropboxConnector(BaseConnector):
             return None
 
     async def _process_dropbox_items_generator(
-        self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str
+        self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Dropbox entries and yield records with their permissions.
@@ -356,7 +376,7 @@ class DropboxConnector(BaseConnector):
         """
         for entry in entries:
             try:
-                record_update = await self._process_dropbox_entry(entry, user_id, user_email)
+                record_update = await self._process_dropbox_entry(entry, user_id, user_email, record_group_id)
                 if record_update:
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
@@ -556,129 +576,250 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing users in batches: {e}")
             raise
+    
+    async def sync_record_groups(self):
+        team_folders = await self.data_source.team_team_folder_list()
+        record_groups = []
 
+        dropbox_to_permission_type = {
+            'owner': PermissionType.OWNER,
+            'editor': PermissionType.WRITE,
+            'viewer': PermissionType.READ,
+        }
+
+        for folder in team_folders.data.team_folders:
+            team_folder_members = await self.data_source.sharing_list_folder_members(
+                shared_folder_id=folder.team_folder_id,
+                team_member_id="dbmid:AABsmEXHCICJNHgxi1y-pXtGoK4uNnxEhlU",
+                as_admin=True
+            )
+
+            if folder.status._tag != "active":
+                continue
+                
+            record_group = RecordGroup(
+                name=folder.name,
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=folder.team_folder_id,
+                description="Team Folder",
+                connector_name=Connectors.DROPBOX,
+                group_type=RecordGroupType.DRIVE,
+            )
+
+            # --- Create permissions list from folder members ---
+            permissions_list = []
+            if team_folder_members.success and team_folder_members.data.users:
+                for user_info in team_folder_members.data.users:
+                    # Get the permission type string (e.g., 'editor')
+                    access_level_tag = user_info.access_type._tag
+                    
+                    # Map it to our internal PermissionType enum
+                    permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ) # Default to READ if unknown
+                    
+                    # Create the permission object
+                    user_permission = Permission(
+                        email=user_info.user.email,
+                        type=permission_type,
+                        entity_type=EntityType.USER
+                    )
+                    permissions_list.append(user_permission)
+            # ---
+            
+            # Append the record group and the list of user permissions
+            record_groups.append((record_group, permissions_list))
+        
+        await self.data_entities_processor.on_new_record_groups(record_groups)  
+
+    async def sync_personal_record_groups(self, users: List[AppUser]):
+        record_groups = []
+        for user in users:
+            record_group = RecordGroup(
+                name=user.full_name,
+                org_id=self.data_entities_processor.org_id,
+                description="Personal Folder",
+                external_group_id=user.source_user_id,
+                connector_name=Connectors.DROPBOX,
+                group_type=RecordGroupType.DRIVE,
+            )
+            
+            # Create permission for the user (OWNER)
+            user_permission = Permission(
+                email=user.email,
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER
+            )
+            
+            # Append the record group and its associated permissions
+            record_groups.append((record_group, [user_permission]))
+        
+        await self.data_entities_processor.on_new_record_groups(record_groups)
+
+    
     async def _run_sync_with_yield(self, user_id: str, user_email: str) -> None:
         """
         Synchronizes Dropbox files for a given user using the cursor-based approach.
 
-        This function fetches a list of all file and folder changes since the last
-        sync, processes them in batches, and yields control periodically to allow
-        for concurrent operations.
+        This function first lists all shared folders, then loops through the
+        personal folder (root) and each shared folder, running a separate sync
+        operation with a unique cursor for each.
 
         Args:
             user_id: The Dropbox team member ID of the user to sync.
+            user_email: The email of the user to sync.
         """
         try:
             self.logger.info(f"Starting Dropbox sync with yield for user {user_email}")
 
-            # 1. Get current sync state from the database
-            # Instead of deltaLink/nextLink, Dropbox uses a single 'cursor'.
-            sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "users", user_id)
-            sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
-            cursor = sync_point.get('cursor')
-
-            self.logger.info(f"Sync point key: {sync_point_key}")
-            self.logger.info(f"Retrieved sync point: {sync_point}")
-            self.logger.info(f"Cursor value: {cursor}")
-            self.logger.info(f"Cursor is None: {cursor is None}")
-            self.logger.info(f"Cursor is empty string: {cursor == ''}")
-
-            batch_records = []
-            batch_count = 0
-            has_more = True
-
+            # List all shared folders the user has access to
+            shared_folders = await self.data_source.sharing_list_folders(team_member_id=user_id)
             
+            # Create a list of folders to sync: None for personal, plus all shared folder IDs
+            folders_to_sync = [None]
+            if shared_folders.success:
+                self.logger.info(f"Found {len(shared_folders.data.entries)} shared folders for user {user_email}")
+                for folder in shared_folders.data.entries:
+                    self.logger.info(f"  - Will sync Folder: {folder.name}, ID: {folder.shared_folder_id}")
+                    folders_to_sync.append(folder.shared_folder_id)
+            else:
+                self.logger.warning(f"Could not list shared folders for user {user_email}: {shared_folders.error}")
 
-            while has_more:
-                # 2. Fetch changes from Dropbox
-                # We use files_list_folder() for the first call and
-                # files_list_folder_continue() for subsequent calls.
-                async with self.rate_limiter:
-                    if cursor:
-                        print("\n old cursor: ", cursor)
-                        print("\n!!!!!!!!! continue api should run here !!!!!!!\n")
-                        result = await self.data_source.files_list_folder_continue(cursor,
-                        team_member_id=user_id,
-                        )
-                        print("\n!!!!!!!!! continue api has ran !!!!!!!\n")
-                        
-                    else:
-                        # This is the first sync for this user
-                        result = await self.data_source.files_list_folder(path="", 
-                        team_member_id=user_id,
-                        recursive=True)
-    
+
+            # Loop through each folder (personal + shared) and run a separate sync
+            for folder_id in folders_to_sync:
                 
-                # print("Result:",result)
-                print("! new Cursor:", result.data.cursor)
-                # return
-                entries = result.data.entries
+                # 1. Determine sync parameters for this specific folder
+                if folder_id is None:
+                    # This is the user's personal root folder
+                    sync_context_id = user_id
+                    sync_group = "users"
+                    sync_log_name = f"personal folder for user {user_email}"
+                    current_record_group_id = user_id
+                else:
+                    # This is a shared folder
+                    sync_context_id = f"{user_id}_{folder_id}" # Safer key than using '/'
+                    sync_group = "shared_folders"
+                    sync_log_name = f"shared folder {folder_id} for user {user_email}"
+                    current_record_group_id = folder_id
 
-                # 3. Process the entries from the current page
-                # This requires a new generator that understands the Dropbox entry format
-                async for file_record, permissions, record_update in self._process_dropbox_items_generator(entries, user_id, user_email):
-                    # print("file_record: ", file_record)
-                    # print("permissions: ", permissions)
-                    # print("record_update: ", record_update)
-                    if record_update.is_deleted:
-                        # Handle deletion immediately
-                        await self._handle_record_updates(record_update)
-                        continue
+                self.logger.info(f"Starting sync loop for: {sync_log_name}")
 
-                    print("!!!!!!!!!!!!!!!!! D1")
+                # 2. Get current sync state from the database *for this folder*
+                sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, sync_group, sync_context_id)
+                sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
+                cursor = sync_point.get('cursor')
 
-                    if file_record:
-                        # Add to batch
-                        batch_records.append((file_record, permissions))
-                        batch_count += 1
+                self.logger.info(f"Sync point key: {sync_point_key}")
+                self.logger.info(f"Retrieved sync point: {sync_point}")
+                self.logger.info(f"Cursor value: {cursor}")
 
-                        # Handle updates if needed
-                        if record_update.is_updated:
-                            await self._handle_record_updates(record_update)
+                # Reset batching and state for each folder sync
+                batch_records = []
+                batch_count = 0
+                has_more = True
 
-                        print("!!!!!!!!!!!!!!!!! D2")
+                print("!!!!!!!!!!!!! folders to sync: ", folders_to_sync)
+                if folder_id:
+                    print("!!!!!!!!!!!!! got folder id: ", folder_id, len(folders_to_sync))
+                else:
+                    print("!!!!!!!!!!!!! doing personal folder !")
+                while has_more:
+                    # 3. Fetch changes from Dropbox
+                    print("!!!!!!!!! going to call api")
+                    try:
+                        async with self.rate_limiter:
+                            if cursor:
+                                self.logger.info(f"[{sync_log_name}] Calling files_list_folder_continue...")
+                                result = await self.data_source.files_list_folder_continue(
+                                    cursor,
+                                    team_member_id=user_id,
+                                    team_folder_id=folder_id,
+                                )
+                                
+                            else:
+                                print("!!!!!!!!! going to call api 1")
+                                # This is the first sync for this folder
+                                # self.logger.info(f"[{sync_log_name}] Calling files_list_folder for path: ")
+                                try:
+                                    result = await self.data_source.files_list_folder(
+                                        path="", 
+                                        team_member_id=user_id,
+                                        team_folder_id=folder_id,
+                                        recursive=True
+                                    )
+                                    print("!!!!!!!!! called api 1")
+                                except Exception as e:
+                                    print("error in api call:", e)
+                        if not result.success:
+                            self.logger.error(f"[{sync_log_name}] Dropbox API call failed: {result.error}")
+                            # Stop syncing this folder on API error
+                            has_more = False
+                            continue # Skip to the next 'while' iteration (which will exit)
+                        
+                        print(result)
+                        self.logger.info(f"[{sync_log_name}] Got {len(result.data.entries)} entries. Has_more: {result.data.has_more}")
+                        entries = result.data.entries
 
-                        # Process batch when it reaches the size limit
-                        if batch_count >= self.batch_size:
-                            print("!!!!! running on new records !!!!!")
+                        # 4. Process the entries from the current page
+                        async for file_record, permissions, record_update in self._process_dropbox_items_generator(
+                            entries, user_id, user_email, current_record_group_id
+                        ):
+                            if record_update.is_deleted:
+                                await self._handle_record_updates(record_update)
+                                continue
+
+                            if file_record:
+                                batch_records.append((file_record, permissions))
+                                batch_count += 1
+
+                                if record_update.is_updated:
+                                    await self._handle_record_updates(record_update)
+
+                                if batch_count >= self.batch_size:
+                                    self.logger.info(f"[{sync_log_name}] Processing batch of {batch_count} records.")
+                                    await self.data_entities_processor.on_new_records(batch_records)
+                                    batch_records = []
+                                    batch_count = 0
+                                    await asyncio.sleep(0.1)
+
+                        # Process any remaining records in the batch from the last page
+                        if batch_records:
+                            self.logger.info(f"[{sync_log_name}] Processing final batch of {len(batch_records)} records.")
                             await self.data_entities_processor.on_new_records(batch_records)
                             batch_records = []
                             batch_count = 0
 
-                            # Allow other operations to proceed (the "yield" part)
-                            await asyncio.sleep(0.1)
-                        
-                        print("!!!!!!!!!!!!!!!!! D3")
+                        # 5. Update the sync state for the next iteration
+                        cursor = result.data.cursor
+                        self.logger.info(f"[{sync_log_name}] Storing new cursor for key {sync_point_key}")
+                        await self.dropbox_cursor_sync_point.update_sync_point(
+                            sync_point_key,
+                            sync_point_data={"cursor": cursor}
+                        )
 
-                # Process any remaining records in the batch from the last page
-                print("OUT OF THE FOR LOOP- _process_dropbox_items_generator")
-                if batch_records:
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    batch_records = []
-                    batch_count = 0
+                        has_more = result.data.has_more
+                    
+                    except ApiError as api_ex:
+                        self.logger.error(f"Dropbox API Error during sync for {sync_log_name}: {api_ex}")
+                        # If path not found, stop this folder's sync and continue to the next
+                        if 'path/not_found' in str(api_ex):
+                            self.logger.warning(f"[{sync_log_name}] Path not found. Stopping sync for this folder.")
+                            has_more = False # Stop this 'while' loop
+                        else:
+                            raise # Re-raise other critical API errors
+                    except Exception as loop_ex:
+                        self.logger.error(f"Error in 'while has_more' loop for {sync_log_name}: {loop_ex}", exc_info=True)
+                        has_more = False # Stop this 'while' loop to be safe
 
-                # 4. Update the sync state for the next iteration
-                # We save the new cursor after every page. This makes the process
-                # resilient to interruptions.
-                
-                cursor = result.data.cursor
-                print("!!!!!!!!! Trying to store cursor: ", cursor)
-                await self.dropbox_cursor_sync_point.update_sync_point(
-                    sync_point_key,
-                    sync_point_data={"cursor": cursor}
-                )
+                self.logger.info(f"Completed sync loop for: {sync_log_name}")
 
-                # The loop continues as long as Dropbox says there's more data
-                has_more = result.has_more
-
-            self.logger.info(f"Completed Dropbox sync for user {user_id}")
+            self.logger.info(f"Completed all Dropbox sync loops for user {user_id}")
 
         except ApiError as ex:
-            self.logger.error(f"Dropbox API Error during sync for user {user_id}: {ex}")
-            # Here you could add specific handling for auth errors, etc.
+            # Error during initial shared folder list
+            self.logger.error(f"Dropbox API Error during sync setup for user {user_id}: {ex}")
             raise
         except Exception as ex:
-            self.logger.error(f"Error in Dropbox sync for user {user_id}: {ex}")
+            self.logger.error(f"Unhandled error in Dropbox sync for user {user_id}: {ex}", exc_info=True)
             raise
 
     async def run_sync(self) -> None:
@@ -687,17 +828,26 @@ class DropboxConnector(BaseConnector):
             self.logger.info("Starting Dropbox full sync.")
             # self.logger.info("Code will excecute here!")
 
-            # step 1: fetch ans sync all users
+            # step 1: fetch and sync all users / use continue here
+            self.logger.info("Syncing users...")
             users = await self.data_source.team_members_list()
-
             app_users = self.get_app_users(users)
-
             await self.data_entities_processor.on_new_app_users(app_users)
 
             # Step 2: fetch and sync all user groups
             #for later
+            self.logger.info("Syncing user groups...")
+            await self._sync_user_groups()
 
-            # Step 3: fetch and sync all user drives
+            #Step 3: List all shared folders within a team and create record groups / use continue here
+            self.logger.info("Syncing record groups...")
+            await self.sync_record_groups()
+            #Step 3.5: Create all personal folder record groups
+            await self.sync_personal_record_groups(app_users)
+
+            
+
+            # Step 4: fetch and sync all user drives
             self.logger.info("Syncing User Drives")
             await self._process_users_in_batches(app_users)
             
@@ -706,6 +856,122 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"❌ Error in DropBox connector run: {ex}")
             raise
     
+    async def _sync_user_groups(self) -> None:
+        """
+        Syncs all Dropbox groups and their members, collecting them into a 
+        single batch before sending to the processor.
+        """
+        try:
+            self.logger.info("Starting Dropbox user group synchronization")
+
+            # --- 1. Get all groups, with pagination ---
+            all_groups_list = []
+            try:
+                groups_response = await self.data_source.team_groups_list()
+                if not groups_response.success:
+                    raise Exception(f"Error fetching groups list: {groups_response.error}")
+
+                all_groups_list.extend(groups_response.data.groups)
+                cursor = groups_response.data.cursor
+                has_more = groups_response.data.has_more
+
+                while has_more:
+                    self.logger.info("Fetching more groups...")
+                    groups_response = await self.data_source.team_groups_list_continue(cursor)
+                    if not groups_response.success:
+                        self.logger.error(f"Error fetching more groups: {groups_response.error}")
+                        break  # Stop pagination on error
+                    all_groups_list.extend(groups_response.data.groups)
+                    cursor = groups_response.data.cursor
+                    has_more = groups_response.data.has_more
+            
+            except Exception as e:
+                self.logger.error(f"❌ Failed to fetch full group list: {e}", exc_info=True)
+                raise  # Stop the sync if we can't get the groups
+
+            self.logger.info(f"Found {len(all_groups_list)} total groups. Now processing members.")
+
+            # --- 2. Define permission mapping (similar to record_groups) ---
+            # Dropbox group members are either 'owner' or 'member'
+            dropbox_group_to_permission_type = {
+                'owner': PermissionType.OWNER,
+                'member': PermissionType.WRITE,  # 'member' implies edit access to the group itself
+            }
+
+            # This will hold our final list of tuples: List[Tuple[AppUserGroup, List[Permission]]]
+            user_groups_batch = []
+
+            # --- 3. Loop through all groups to build the batch (NO processor calls inside loop) ---
+            for group in all_groups_list:
+                try:
+                    # --- 3a. Get all members for this group (with pagination) ---
+                    all_members = []
+                    member_permissions = []
+
+                    members_response = await self.data_source.team_groups_members_list(group=group.group_id)
+                    if not members_response.success:
+                        self.logger.error(f"❌ Error fetching members for group {group.group_name}: {members_response.error}")
+                        continue  # Skip this group
+
+                    all_members.extend(members_response.data.members)
+                    member_cursor = members_response.data.cursor
+                    member_has_more = members_response.data.has_more
+                    
+                    while member_has_more:
+                        self.logger.debug(f"Fetching more members for {group.group_name}...")
+                        members_response = await self.data_source.team_groups_members_list_continue(member_cursor)
+                        
+                        if not members_response.success:
+                            self.logger.error(f"❌ Error during member pagination for {group.group_name}: {members_response.error}")
+                            break  # Stop processing this group's members
+                            
+                        all_members.extend(members_response.data.members)
+                        member_cursor = members_response.data.cursor
+                        member_has_more = members_response.data.has_more
+
+                    # --- 3b. Create the AppUserGroup object ---
+                    processor_group = AppUserGroup(
+                        app_name=self.connector_name,
+                        source_user_group_id=group.group_id,
+                        name=group.group_name,
+                        org_id=self.data_entities_processor.org_id
+                    )
+
+                    # --- 3c. Create permissions list (like sync_record_groups) ---
+                    for member in all_members:
+                        access_level_tag = member.access_type._tag
+                        
+                        # Map the tag (e.g., 'owner') to our PermissionType enum
+                        permission_type = dropbox_group_to_permission_type.get(access_level_tag, PermissionType.READ) # Default to READ
+                        
+                        user_permission = Permission(
+                            external_id=member.profile.team_member_id,
+                            email=member.profile.email,
+                            type=permission_type,
+                            entity_type=EntityType.USER
+                        )
+                        member_permissions.append(user_permission)
+
+                    # --- 3d. Add the tuple to our batch list ---
+                    user_groups_batch.append((processor_group, member_permissions))
+
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to process group {group.group_name}: {e}", exc_info=True)
+                    continue  # Skip this group and move to the next
+
+            # --- 4. Send the ENTIRE batch to the processor ONCE (outside the loop) ---
+            if user_groups_batch:
+                self.logger.info(f"Submitting {len(user_groups_batch)} user groups to the processor...")
+                await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+                self.logger.info("Successfully submitted batch to on_new_user_groups.")
+            else:
+                self.logger.info("No user groups found or processed.")
+
+            self.logger.info(f"Completed Dropbox user group synchronization.")
+
+        except Exception as e:
+            self.logger.error(f"❌ Fatal error in _sync_dropbox_groups: {e}", exc_info=True)
+            raise
 
     def get_app_users(self, users: DropboxResponse):
         app_users: List[AppUser] = []

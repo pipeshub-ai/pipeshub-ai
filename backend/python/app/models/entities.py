@@ -654,3 +654,33 @@ class AppUserGroup(BaseModel):
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
+    def to_arango_base_user_group(self) -> Dict[str, Any]:
+        """
+        Converts the AppUserGroup model to a dictionary that matches the ArangoDB schema.
+        """
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.name,
+            "externalGroupId": self.source_user_group_id,
+            "connectorName": self.app_name.value,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+           
+        }
+
+    @staticmethod
+    def from_arango_base_user_group(arango_doc: Dict[str, Any]) -> "AppUserGroup":
+        return AppUserGroup(
+            id=arango_doc["_key"],
+            org_id=arango_doc.get("orgId", ""),
+            name=arango_doc["name"],
+            source_user_group_id=arango_doc["externalGroupId"],
+            app_name=Connectors(arango_doc["connectorName"]),
+            created_at=arango_doc["createdAtTimestamp"],
+            updated_at=arango_doc["updatedAtTimestamp"],
+            source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
+        )

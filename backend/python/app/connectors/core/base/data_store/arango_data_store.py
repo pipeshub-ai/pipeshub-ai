@@ -69,6 +69,9 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
         return await self.arango_service.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
 
+    async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
+        return await self.arango_service.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
+
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
 

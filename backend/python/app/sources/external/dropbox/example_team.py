@@ -15,7 +15,7 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.logger import create_logger
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
-from app.models.entities import AppUser
+from app.models.entities import AppUser, RecordGroup, RecordGroupType
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
 
@@ -24,32 +24,154 @@ async def main() -> None:
     client = await DropboxClient.build_with_config(config, is_team=True)
     data_source = DropboxDataSource(client)
 
-    # #list all team members
+    #list all team members
     print("\nListing team members:")
     team_members = await data_source.team_members_list()
-    # print(team_members.data.members)
+    print(to_pretty_json(team_members.data.members))
 
-    users = []
-    for member in team_members.data.members:
-        profile = member.profile
-        print(member)
-        print("\n")
-        users.append(
-            AppUser(
-                # source_user_id=member.team_member_id,
-                app_name="DROPBOX",
-                source_user_id=profile.team_member_id,
-                first_name=profile.name.given_name,
-                last_name=profile.name.surname,
-                full_name=profile.name.display_name,
-                email=profile.email,
-                is_active=(profile.status._tag == "active"),
-                title=member.role._tag,
-                
-            )
-        )
-    # print(users)
+    #list team folder items
+    print("\nListing team folder:")
+    team_files = await data_source.files_list_folder(path="",team_member_id=team_members.data.members[2].profile.team_member_id, team_folder_id="13131350499", recursive=True)
+    print(to_pretty_json(team_files))
+
+    #list all folder groups in team:
+    folder_groups = await data_source.team_team_folder_list()
+    print(folder_groups)
+
+    #list mebers of team folder
+    print("\nListing team folder members:")
+    team_folder_members = await data_source.sharing_list_folder_members(shared_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id, as_admin=True)
+    print(team_folder_members)
+
+    #list dropbox groups
+    print("\nListing dropbox groups:")
+    dropbox_groups = await data_source.team_groups_list()
+    print(dropbox_groups.data.groups)
     
+    #list members of dropbox group
+    # print("\nListing dropbox groups:")
+    # # --- 1. Get ALL groups, handling pagination ---
+    # all_groups = []
+    # # (Assuming data_source.team_groups_list and data_source.team_groups_list_continue exist)
+    # try:
+    #     groups_response = await data_source.team_groups_list()
+    #     if not groups_response.success:
+    #         raise Exception(f"Error fetching groups: {groups_response.error}")
+
+    #     all_groups.extend(groups_response.data.groups)
+    #     cursor = groups_response.data.cursor
+    #     has_more = groups_response.data.has_more
+
+    #     while has_more:
+    #         print("Fetching more groups...")
+    #         groups_response = await data_source.team_groups_list_continue(cursor)
+    #         if not groups_response.success:
+    #             raise Exception(f"Error fetching more groups: {groups_response.error}")
+                
+    #         all_groups.extend(groups_response.data.groups)
+    #         cursor = groups_response.data.cursor
+    #         has_more = groups_response.data.has_more
+        
+    #     print(f"Total groups found: {len(all_groups)}")
+
+    #     # --- 2. Get ALL members for each group, handling pagination ---
+    #     print("\nListing dropbox group members:")
+    #     for group in all_groups:
+    #         print(f"\n--- Group: {group.group_name} ---")
+    #         all_members = []
+            
+    #         # Get first page of members
+    #         members_response = await data_source.team_groups_members_list(group=group.group_id)
+    #         if not members_response.success:
+    #             print(f"  Error fetching members: {members_response.error}")
+    #             continue  # Skip to the next group
+
+    #         all_members.extend(members_response.data.members)
+    #         member_cursor = members_response.data.cursor
+    #         member_has_more = members_response.data.has_more
+            
+    #         # Get all other pages of members
+    #         while member_has_more:
+    #             print(f"  Fetching more members for {group.group_name}...")
+    #             members_response = await data_source.team_groups_members_list_continue(member_cursor)
+                
+    #             if not members_response.success:
+    #                 print(f"  Error fetching more members: {members_response.error}")
+    #                 break  # Stop processing this group
+                    
+    #             all_members.extend(members_response.data.members)
+    #             member_cursor = members_response.data.cursor
+    #             member_has_more = members_response.data.has_more
+
+    #         # Now print the full, paginated list of members for this group
+    #         if not all_members:
+    #             print("  No members found.")
+    #         else:
+    #             for member in all_members:
+    #                 # Print the actual member details
+    #                 print(f"  - {member.profile.name} ({member.profile.email})")
+
+    # except Exception as e:
+    #     print(f"An error occurred: {e}")
+
+    # users = []
+    # for member in team_members.data.members:
+    #     profile = member.profile
+    #     print(member)
+    #     print("\n")
+    #     users.append(
+    #         AppUser(
+    #             # source_user_id=member.team_member_id,
+    #             app_name="DROPBOX",
+    #             source_user_id=profile.team_member_id,
+    #             first_name=profile.name.given_name,
+    #             last_name=profile.name.surname,
+    #             full_name=profile.name.display_name,
+    #             email=profile.email,
+    #             is_active=(profile.status._tag == "active"),
+    #             title=member.role._tag,
+                
+    #         )
+    #     )
+    # # print(users)
+    
+    # def get_parent_path_from_path(path: str):
+    #     """Extracts the parent path from a file/folder path."""
+    #     if not path or path == "/" or "/" not in path.lstrip("/"):
+    #         return None  # Root directory has no parent path in this context
+    #     parent_path = "/".join(path.strip("/").split("/")[:-1])
+    #     return f"/{parent_path}" if parent_path else "/"
+
+    # parent_path = get_parent_path_from_path("/hi/test1")
+    
+    # parent_metadata = await data_source.files_get_metadata(parent_path, team_member_id=team_members.data.members[2].profile.team_member_id)
+    # print(parent_metadata)
+
+    # #list all the folders I have access to 
+    # shared_folders = await data_source.sharing_list_folders(team_member_id=team_members.data.members[2].profile.team_member_id)
+    # # print(to_pretty_json(shared_folders))
+    # for folder in shared_folders.data.entries:
+    #     print("name: ", folder.name)
+    #     print("id: ", folder.shared_folder_id)
+    #     print()
+
+
+
+    # for folder_group in folder_groups.data.team_folders:
+    #     rg = RecordGroup(
+    #         name=folder_group.name,
+    #         external_group_id=folder_group.team_folder_id,
+    #         connector_name=Connectors.DROPBOX,
+    #         group_type=RecordGroupType.DRIVE,
+    #     )
+
+    #     print("name: ", folder_group.name)
+    #     print("id: ", type(folder_group.team_folder_id))
+    #     print("status:",folder_group.status._tag)
+    #     print()
+    
+
+
 
     # for member in team_members.data["members"]:
     #     print(member)
@@ -70,10 +192,7 @@ async def main() -> None:
     # recursive=True)
     # print(to_pretty_json(my_personal_folder))
 
-    #list team folder
-    # print("\nListing team folder:")
-    # team_files = await data_source.files_list_folder(path="",team_member_id=members[2].source_user_id, team_folder_id="13131350499", recursive=True)
-    # print(to_pretty_json(team_files))
+    
 
     # #list using cursor
     # print("\nListing using cursor:")

@@ -24,7 +24,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import Record, RecordGroup, User, FileRecord
+from app.models.entities import Record, RecordGroup, User, FileRecord, AppUserGroup
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
@@ -3167,6 +3167,54 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e)
+            )
+            return None
+
+    async def get_user_group_by_external_id(
+        self, 
+        connector_name: Connectors, 
+        external_id: str, 
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[AppUserGroup]:
+        """
+        Get a user group from the GROUPS collection using its external (source) ID.
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving user group for external ID %s %s", connector_name, external_id
+            )
+            
+            # Query the GROUPS collection using the schema fields
+            query = f"""
+            FOR group IN {CollectionNames.GROUPS.value}
+                FILTER group.externalGroupId == @external_id AND group.connectorName == @connector_name
+                LIMIT 1
+                RETURN group
+            """
+            
+            db = transaction if transaction else self.db
+            
+            
+            cursor = db.aql.execute(query, 
+                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+            )
+            
+            result = next(cursor, None)
+            
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved user group for external ID %s %s", connector_name, external_id
+                )
+                return AppUserGroup.from_arango_base_user_group(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No user group found for external ID %s %s", connector_name, external_id
+                )
+                return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
             )
             return None
 

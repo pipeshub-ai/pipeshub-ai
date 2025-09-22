@@ -74,7 +74,10 @@ class DataSourceEntitiesProcessor:
             self.org_id = orgs[0]["_key"]
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
+        print("!!!!!! got parent record !!!!!!!!", record.parent_external_record_id)
         if record.parent_external_record_id:
+            print("!!!!!!!!! Handling Parent Record Creation for: ", record.record_name)
+            print("!!!!!!!!! Parent External Record ID: ", record.parent_external_record_id)
             parent_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
                                                                      external_id=record.parent_external_record_id)
 
@@ -97,7 +100,8 @@ class DataSourceEntitiesProcessor:
 
             if parent_record and isinstance(parent_record, Record):
                 # Create a edge between the record and the parent record if it doesn't exist
-                tx_store.create_record_relation(parent_record.id, record.id, "PARENT_CHILD")
+                await tx_store.create_record_relation(parent_record.id, record.id, "PARENT_CHILD")
+                print("!!!!!!!!! Parent Record Created")
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
@@ -221,7 +225,7 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
-            self.logger.info("on_new_records for:", records_with_permissions)
+            self.logger.info(f"on_new_records for: {records_with_permissions}")
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -260,27 +264,82 @@ class DataSourceEntitiesProcessor:
             print("should be deleted by now !! ")
     
     
-
+    #- Create a permission edge between the record group and the org if it doesn't exist
+    #- Create a permission edge between the record group and the user if it doesn't exist
+    #  Create a permission edge between the record group and the user group if it doesn't exist
+    #! Create a edge between the record group and the app with sync status if it doesn't exist
+    #  Cleanup this code    
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:
             async with self.data_store_provider.transaction() as tx_store:
-                for record_group, _permissions in record_groups:
+                for record_group, permissions in record_groups:
                     record_group.org_id = self.org_id
 
-                    self.logger.info(f"Processing record group: {record_group}")
-                    existing_record_group = await tx_store.get_record_group_by_external_id(connector_name=record_group.connector_name,
-                                                                                           external_id=record_group.external_group_id)
+                    self.logger.info(f"Processing record group: {record_group.name}")
+                    existing_record_group = await tx_store.get_record_group_by_external_id(
+                        connector_name=record_group.connector_name,
+                        external_id=record_group.external_group_id
+                    )
+                    
                     if existing_record_group is None:
                         record_group.id = str(uuid.uuid4())
-                        # Create a permission edge between the record group and the org if it doesn't exist
-                        # Create a permission edge between the record group and the user if it doesn't exist
-                        # Create a permission edge between the record group and the user group if it doesn't exist
-                        # Create a permission edge between the record group and the org if it doesn't exist
-                        # Create a edge between the record group and the app with sync status if it doesn't exist
+                        self.logger.info(f"Creating new record group with id: {record_group.id}")
                     else:
                         record_group.id = existing_record_group.id
+                        self.logger.info(f"Updating existing record group with id: {record_group.id}")
+                        # Ensure update timestamp is fresh for the edge
+                        record_group.updated_at = get_epoch_timestamp_in_ms()
 
+                    # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
+
+                    # 2. Create the BELONGS_TO edge for the organization
+                    org_relation = {
+                        "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
+                        "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
+                        "createdAtTimestamp": record_group.created_at,
+                        "updatedAtTimestamp": record_group.updated_at,
+                        "entityType": "ORGANIZATION",
+                    }
+                    self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to Org {self.org_id}")
+                    await tx_store.batch_create_edges(
+                        [org_relation], collection=CollectionNames.BELONGS_TO.value
+                    )
+
+                    # 3. Handle User Permissions (from the passed 'permissions' list)
+                    if not permissions:
+                        continue
+
+                    record_group_permissions = []
+                    from_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
+
+                    for permission in permissions:
+                        to_collection = None
+                        
+                        if permission.entity_type == EntityType.USER:
+                            user = None
+                            if permission.email:
+                                user = await tx_store.get_user_by_email(permission.email)
+                            
+                            if user:
+                                to_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                            else:
+                                self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
+                        
+                        # (The ORG case is no longer needed here as it's handled by BELONGS_TO)
+
+                        if to_collection:
+                            record_group_permissions.append(
+                                permission.to_arango_permission(from_collection, to_collection)
+                            )
+
+                    # Batch create (upsert) all permission edges for this record group
+                    if record_group_permissions:
+                        self.logger.info(f"Creating/updating {len(record_group_permissions)} PERMISSION edges for RecordGroup {record_group.id}")
+                        await tx_store.batch_create_edges(
+                            record_group_permissions, collection=CollectionNames.PERMISSIONS.value
+                        )
+
         except Exception as e:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
@@ -303,14 +362,90 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
 
-    async def on_new_user_groups(self, user_groups: List[AppUserGroup], permissions: List[Permission]) -> None:
-        try:
-            async with self.data_store_provider.transaction():
+    # async def on_new_user_groups(self, user_groups: List[AppUserGroup], permissions: List[Permission]) -> None:
+    #     try:
+    #         async with self.data_store_provider.transaction():
 
-                for user_group in user_groups:
-                    self.logger.info(f"Processing user group: {user_group}")
-                    # Create user group if it doesn't exist
-                    # Create a edge between the user and user group
+    #             for user_group in user_groups:
+    #                 self.logger.info(f"Processing user group: {user_group}")
+    #                 # Create user group if it doesn't exist
+    #                 # Create a edge between the user and user group
+    #     except Exception as e:
+    #         self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
+    #         raise e
+
+    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[Permission]]]) -> None:
+        """
+        Processes new user groups, upserts them, and creates permission edges.
+        This follows the logic of 'on_new_record_groups'.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for user_group, permissions in user_groups:
+                    # Set the org_id on the object, as it's needed for the doc
+                    user_group.org_id = self.org_id
+
+                    self.logger.info(f"Processing user group: {user_group.name}")
+                    
+                    # Check if the user group already exists in the DB
+                    existing_user_group = await tx_store.get_user_group_by_external_id(
+                        connector_name=user_group.app_name,
+                        external_id=user_group.source_user_group_id
+                    )
+                    print("Got an existing UG!!: ",existing_user_group)
+                    
+                    if existing_user_group is None:
+                        # The ID is already set by default_factory, but we log
+                        self.logger.info(f"Creating new user group with id: {user_group.id}")
+                    else:
+                        # Overwrite the new UUID with the existing one
+                        user_group.id = existing_user_group.id
+                        self.logger.info(f"Updating existing user group with id: {user_group.id}")
+                        user_group.updated_at = get_epoch_timestamp_in_ms()
+
+                    # 1. Upsert the user group document
+                    # (This uses batch_upsert_user_groups and the to_arango... method)
+                    await tx_store.batch_upsert_user_groups([user_group])
+
+
+                    # 3. Handle User Permissions (from the passed 'permissions' list)
+                    if not permissions:
+                        continue
+
+                    user_group_permissions = []
+                    # Set the 'from' side of the edge to be this user group
+                    from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+
+                    for permission in permissions:
+                        to_collection = None
+                        
+                        if permission.entity_type == EntityType.USER:
+                            user = None
+                            if permission.email:
+                                # Find the user's internal DB ID
+                                user = await tx_store.get_user_by_email(permission.email)
+                            
+                            if user:
+                                # Set the 'to' side of the edge to be the user
+                                to_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                            else:
+                                self.logger.warning(f"Could not find user with email {permission.email} for UserGroup permission.")
+                        
+                        # (Other entity_type cases like GROUP could be added here if needed)
+
+                        if to_collection:
+                            # (Assuming Permission class has this method)
+                            user_group_permissions.append(
+                                permission.to_arango_permission(from_collection, to_collection)
+                            )
+
+                    # Batch create (upsert) all permission edges for this user group
+                    if user_group_permissions:
+                        self.logger.info(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
+                        await tx_store.batch_create_edges(
+                            user_group_permissions, collection=CollectionNames.PERMISSIONS.value
+                        )
+
         except Exception as e:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
             raise e
