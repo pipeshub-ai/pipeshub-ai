@@ -232,6 +232,10 @@ class DoclingDocToBlocksConverter():
 
         async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup:
             table_data = item.get("data", {})
+            cell_data = table_data.get("table_cells", [])
+            if len(cell_data) == 0:
+                self.logger.error(f"❌ No table cells found in the table data: {table_data}")
+                return
             response = await self.get_table_summary_n_headers(table_markdown)
             table_summary = response.summary
             column_headers = response.headers
@@ -377,7 +381,7 @@ class DoclingDocToBlocksConverter():
 
     async def get_rows_text(
         self, table_data: dict, table_summary: str, column_headers: list[str]
-    ) -> List[str]:
+    ) -> (List[str],List[List[dict]]):
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         table = table_data.get("grid")
         if table:
@@ -427,6 +431,9 @@ class DoclingDocToBlocksConverter():
                         return [content],table_rows
             except Exception:
                 raise
+        else:
+            self.logger.error(f"❌ No table found in the table data: {table_data}")
+            return [], []
 
     async def get_table_summary_n_headers(self, table_markdown: str) -> TableSummary:
         """
