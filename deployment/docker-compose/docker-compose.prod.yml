@@ -178,7 +178,7 @@ services:
       - KAFKA_NUM_IO_THREADS=8
 
   qdrant:
-    image: qdrant/qdrant:v1.13.6
+    image: qdrant/qdrant:v1.15
     ports:
       - "6333:6333"
       - "6334:6334"

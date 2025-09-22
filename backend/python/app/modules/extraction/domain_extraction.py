@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from typing import List, Literal
@@ -79,7 +80,6 @@ class DomainExtractor:
 
     async def _call_llm(self, messages) -> dict | None:
         """Wrapper for LLM calls with retry logic and timeout"""
-        import asyncio
         try:
             # Add a 300 second (5 minute) timeout to prevent indefinite hanging
             return await asyncio.wait_for(
