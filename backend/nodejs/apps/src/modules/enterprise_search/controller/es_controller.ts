@@ -20,6 +20,11 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  UnauthorizedError,
+  ForbiddenError,
+  ServiceUnavailableError,
+  BadGatewayError,
+  GatewayTimeoutError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -71,6 +76,87 @@ const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+  const handleBackendError = (error: any, operation: string): Error => {
+    // Network/connection failure handling first
+    if (
+      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
+      (typeof error?.message === 'string' && error.message.includes('fetch failed'))
+    ) {
+      return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+    }
+
+    if (error.response) {
+      const { status, data } = error.response;
+      const errorDetail =
+        data?.detail || data?.reason || data?.message || 'Unknown error';
+  
+      logger.error(`Backend error during ${operation}`, {
+        status,
+        errorDetail,
+        fullResponse: data,
+      });
+  
+      switch (status) {
+        case 400:
+          return new BadRequestError(errorDetail);
+        case 401:
+          return new UnauthorizedError(errorDetail);
+        case 403:
+          return new ForbiddenError(errorDetail);
+        case 404:
+          return new NotFoundError(errorDetail);
+        case 500:
+          return new InternalServerError(errorDetail);
+        case 502:
+          return new BadGatewayError(errorDetail);
+        case 503:
+          return new ServiceUnavailableError(errorDetail);
+        case 504:
+          return new GatewayTimeoutError(errorDetail);
+        default:
+          return new InternalServerError(`Backend error: ${errorDetail}`);
+      }
+    }
+  
+    if (error.request) {
+      logger.error(`No response from backend during ${operation}`);
+      return new ServiceUnavailableError('Backend service unavailable');
+    }
+  
+    return new InternalServerError(`${operation} failed: ${error.message}`);
+  };
+  
+  // Common helper to start AI streams with consistent error mapping and logging
+  const startAIStream = async (
+    options: AICommandOptions,
+    operation: string,
+    logContext: Record<string, any> = {},
+  ) => {
+    const aiServiceCommand = new AIServiceCommand(options);
+    try {
+      return await aiServiceCommand.executeStream();
+    } catch (error: any) {
+      if (error?.response) {
+        const mapped = handleBackendError(error, operation);
+        logger.error('AI service stream start failed', {
+          ...logContext,
+          status: error.response?.status,
+          data: error.response?.data,
+        });
+        throw mapped;
+      }
+      if (error?.cause && error.cause.code === 'ECONNREFUSED') {
+        throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+      }
+      logger.error('AI service stream start failed (unknown error)', {
+        ...logContext,
+        message: error?.message,
+      });
+      throw new InternalServerError(`Failed to start ${operation}`, error);
+    }
+  };
+
 
 export const streamChat =
   (appConfig: AppConfig) =>
@@ -156,8 +242,7 @@ export const streamChat =
         body: aiPayload,
       };
 
-      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-      const stream = await aiServiceCommand.executeStream();
+      const stream = await startAIStream(aiCommandOptions, 'Chat Stream', { requestId });
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -348,7 +433,7 @@ export const streamChat =
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
-
+      logger.error('Error in streamChat', { requestId, error: error.message, stack: error.stack });  
       const errorEvent = `event: error\ndata: ${JSON.stringify({
         error: error.message || 'Internal server error',
         details: error.message,
@@ -1112,8 +1197,7 @@ export const addMessageStream =
         body: aiPayload,
       };
 
-      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-      const stream = await aiServiceCommand.executeStream();
+      const stream = await startAIStream(aiCommandOptions, 'Add Message Stream', { requestId });
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -2922,12 +3006,14 @@ export const search =
         logger.error(' Failed error ', error);
         throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
       }
-      if (!aiResponse || aiResponse.statusCode !== 200 || !aiResponse.data) {
-        throw new InternalServerError(
-          'Failed to get response from AI service',
-          aiResponse?.data,
-        );
+      
+      if(aiResponse.data && aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse.data, 'Search');
       }
+      if (!aiResponse || !aiResponse.data) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      
 
       const results = aiResponse.data.searchResults;
       let citationIds;
@@ -3560,7 +3646,7 @@ export const createAgentTemplate =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to create agent template');
+        throw handleBackendError(aiResponse.data, 'Create Agent Template');
       }
       const agentTemplate = aiResponse.data;
       res.status(HTTP_STATUS.CREATED).json(agentTemplate);
@@ -3570,7 +3656,8 @@ export const createAgentTemplate =
         message: 'Error creating agent template',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Create Agent Template');
+      next(backendError);
     }
   };
 
@@ -3599,7 +3686,7 @@ export const getAgentTemplate =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to get agent template');
+        throw handleBackendError(aiResponse.data, 'Get Agent Template');
       }
       const agentTemplate = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agentTemplate);
@@ -3609,7 +3696,8 @@ export const getAgentTemplate =
         message: 'Error getting agent template',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Get Agent Template');
+      next(backendError);
     }
   };
 
@@ -3636,9 +3724,9 @@ export const listAgentTemplates =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to get agent templates');
-      }
+      // if (aiResponse && aiResponse.statusCode !== 200) {
+      //   throw handleBackendError(aiResponse.data, 'List Agent Templates');
+      // }
       const agentTemplates = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agentTemplates);
     } catch (error: any) {
@@ -3647,7 +3735,8 @@ export const listAgentTemplates =
         message: 'Error getting agent templates',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'List Agent Templates');
+      next(backendError);
     }
   };
 
@@ -3676,7 +3765,7 @@ export const shareAgentTemplate =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to share agent template');
+        throw handleBackendError(aiResponse.data, 'Share Agent Template');
       }
       const agentTemplate = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agentTemplate);
@@ -3686,7 +3775,8 @@ export const shareAgentTemplate =
         message: 'Error sharing agent template',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Share Agent Template');
+      next(backendError);
     }
   };
 
@@ -3716,7 +3806,7 @@ export const updateAgentTemplate =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to update agent template');
+        throw handleBackendError(aiResponse.data, 'Update Agent Template');
       }
       const agentTemplate = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agentTemplate);
@@ -3726,7 +3816,8 @@ export const updateAgentTemplate =
         message: 'Error updating agent template',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Update Agent Template');
+      next(backendError);
     }
   };
 
@@ -3755,7 +3846,7 @@ export const deleteAgentTemplate =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to delete agent template');
+        throw handleBackendError(aiResponse.data, 'Delete Agent Template');
       }
       const agentTemplate = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agentTemplate);
@@ -3765,7 +3856,8 @@ export const deleteAgentTemplate =
         message: 'Error deleting agent template',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Delete Agent Template');
+      next(backendError);
     }
   };
 
@@ -3796,7 +3888,7 @@ export const createAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to create agent');
+        throw handleBackendError(aiResponse.data, 'Create Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.CREATED).json(agent);
@@ -3806,7 +3898,8 @@ export const createAgent =
         message: 'Error creating agent',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Create Agent');
+      next(backendError);
     }
   };
 
@@ -3835,7 +3928,7 @@ export const getAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to get agent');
+        throw handleBackendError(aiResponse.data, 'Get Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -3845,7 +3938,8 @@ export const getAgent =
         message: 'Error getting agent',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Get Agent');
+      next(backendError);
     }
   };
 
@@ -3884,7 +3978,8 @@ export const listAgents =
         message: 'Error getting agents',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'List Agents');
+      next(backendError);
     }
   };
 
@@ -3914,7 +4009,7 @@ export const updateAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to update agent');
+        throw handleBackendError(aiResponse.data, 'Update Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -3924,7 +4019,8 @@ export const updateAgent =
         message: 'Error updating agent',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Update Agent');
+      next(backendError);
     }
   };
 
@@ -3953,7 +4049,7 @@ export const deleteAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to delete agent');
+        throw handleBackendError(aiResponse.data, 'Delete Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -3963,7 +4059,8 @@ export const deleteAgent =
         message: 'Error deleting agent',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Delete Agent');
+      next(backendError);
     }
   };
 
@@ -3993,7 +4090,7 @@ export const deleteAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to share agent');
+        throw handleBackendError(aiResponse.data, 'Share Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -4003,7 +4100,8 @@ export const deleteAgent =
         message: 'Error sharing agent',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Share Agent');
+      next(backendError);
     }
   };
 
@@ -4034,7 +4132,7 @@ export const unshareAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to unshare agent');
+        throw handleBackendError(aiResponse.data, 'Unshare Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -4044,7 +4142,8 @@ export const unshareAgent =
         message: 'Error unsharing agent',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Unshare Agent');
+      next(backendError);
     }
   };
 
@@ -4074,7 +4173,7 @@ export const unshareAgent =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to update agent permissions');
+        throw handleBackendError(aiResponse.data, 'Update Agent Permissions');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -4084,7 +4183,8 @@ export const unshareAgent =
         message: 'Error updating agent permissions',
         error: error.message,
       });
-      next(error);
+      const backendError = handleBackendError(error, 'Update Agent Permissions');
+      next(backendError);
     }
   };
 
@@ -4176,8 +4276,7 @@ export const unshareAgent =
         body: aiPayload,
       };
 
-      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-      const stream = await aiServiceCommand.executeStream();
+      const stream = await startAIStream(aiCommandOptions, 'Agent Chat Stream', { requestId, agentKey });
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -5019,8 +5118,7 @@ export const addMessageStreamToAgentConversation =
         body: aiPayload,
       };
 
-      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-      const stream = await aiServiceCommand.executeStream();
+      const stream = await startAIStream(aiCommandOptions, 'Add Message Agent Stream', { requestId, agentKey });
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -5660,7 +5758,7 @@ export const getAvailableTools = (appConfig: AppConfig) => async (
     const aiCommand = new AIServiceCommand(aiCommandOptions);
     const aiResponse = await aiCommand.execute();
     if (aiResponse && aiResponse.statusCode !== 200) {
-      throw new BadRequestError('Failed to get available tools');
+      throw handleBackendError(aiResponse.data, 'Get Available Tools');
     }
     const tools = aiResponse.data;
     res.status(HTTP_STATUS.OK).json(tools);
@@ -5670,7 +5768,8 @@ export const getAvailableTools = (appConfig: AppConfig) => async (
       message: 'Error getting available tools',
       error: error.message,
     });
-    next(error);
+    const backendError = handleBackendError(error, 'Get Available Tools');
+    next(backendError);
   }
 };
 
@@ -5690,7 +5789,7 @@ export const getAgentPermissions = (appConfig: AppConfig) => async (req: Authent
     const aiCommand = new AIServiceCommand(aiCommandOptions);
     const aiResponse = await aiCommand.execute();
     if (aiResponse && aiResponse.statusCode !== 200) {
-      throw new BadRequestError('Failed to get agent permissions');
+      throw handleBackendError(aiResponse.data, 'Get Agent Permissions');
     }
     const permissions = aiResponse.data;
     res.status(200).json(permissions);    
@@ -5700,6 +5799,7 @@ export const getAgentPermissions = (appConfig: AppConfig) => async (req: Authent
       message: 'Error getting agent permissions',
       error: error.message,
     });
-    next(error);
+    const backendError = handleBackendError(error, 'Get Agent Permissions');
+    next(backendError);
   }
 };  
