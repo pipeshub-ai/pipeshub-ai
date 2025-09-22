@@ -55,6 +55,7 @@ function getDocumentType(extension: string) {
   if (extension === 'html') return 'html';
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
+  if (extension === 'mdx') return 'mdx';
   return 'other';
 }
 
@@ -511,6 +512,9 @@ export default function KnowledgeBaseSearch() {
             setIsTextFile(true);
             break;
           case 'md':
+            setIsMarkdown(true);
+            break;
+          case 'mdx':
             setIsMarkdown(true);
             break;
           default:

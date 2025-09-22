@@ -30,7 +30,6 @@ from app.utils.aimodels import (
     get_generator_model,
 )
 
-
 class RetrievalService:
     def __init__(
         self,
@@ -125,10 +124,12 @@ class RetrievalService:
                         for config in ai_models["embedding"]:
                             if config.get("isDefault", False):
                                 dense_embeddings = get_embedding_model(config["provider"], config)
+                                self.logger.info(f"Embedding provider: {config['provider']}")
                                 break
                         if not dense_embeddings:
                             for config in ai_models["embedding"]:
                                 dense_embeddings = get_embedding_model(config["provider"], config)
+                                self.logger.info(f"Embedding provider: {config['provider']}")
                                 break
 
             except Exception as e:
@@ -331,6 +332,7 @@ class RetrievalService:
                     # FIX: Add null check for r before accessing r["_key"]
                     record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
                     if record:
+                        
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
