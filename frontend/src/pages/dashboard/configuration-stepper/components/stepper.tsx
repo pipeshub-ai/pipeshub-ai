@@ -266,7 +266,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     (stepData: LlmFormValues | EmbeddingFormValues | null, configType: 'llm' | 'embedding') => {
       if (!stepData) return null;
 
-      const { providerType, modelType, _provider, ...cleanConfig } = stepData;
+      const { providerType, modelType, _provider, isMultimodal, ...cleanConfig } = stepData;
       const provider = providerType || modelType;
       if (!provider) {
         console.warn(`Provider is undefined for ${configType} configuration`);
@@ -277,6 +277,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
         {
           provider,
           configuration: cleanConfig,
+          isMultimodal: Boolean(isMultimodal),
         },
       ];
     },

@@ -17,24 +17,36 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
     switch (configType) {
       case 'llm':
       case 'embedding': {
-        const response = await axios.get(`${API_BASE}/aiModelsConfig`);
-        const { data } = response;
+        try {
+          const response = await axios.get(`${API_BASE}/ai-models/${configType}`);
+          const { data } = response;
 
-        if (data[configType] && data[configType].length > 0) {
-          const config = data[configType][0];
-          return {
-            ...config.configuration,
-            providerType: config.provider,
-            modelType: config.provider, // For backward compatibility
-          };
-        }
+          if (data.status === 'success' && data.models && data.models.length > 0) {
+            const model = data.models.find((m: any) => m.isDefault) || data.models[0];
+            return {
+              ...model.configuration,
+              providerType: model.provider,
+              modelType: model.provider, // For backward compatibility
+              isMultimodal: model.isMultimodal || false,
+            };
+          }
 
-        // Special case for embedding default
-        if (configType === 'embedding') {
-          return {
-            providerType: 'default',
-            modelType: 'default',
-          };
+          // Special case for embedding default
+          if (configType === 'embedding') {
+            return {
+              providerType: 'default',
+              modelType: 'default',
+            };
+          }
+        } catch (error) {
+          // If no models exist, return default for embedding
+          if (configType === 'embedding') {
+            return {
+              providerType: 'default',
+              modelType: 'default',
+            };
+          }
+          throw error;
         }
         break;
       }
@@ -143,33 +155,30 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
     switch (configType) {
       case 'llm':
       case 'embedding': {
-        const response = await axios.get(`${API_BASE}/aiModelsConfig`);
-        const currentConfig = response.data;
-
         // Handle embedding default case
         if (configType === 'embedding' && config.providerType === 'default') {
-          const updatedConfig = {
-            ...currentConfig,
-            embedding: [],
-          };
-          return await axios.post(`${API_BASE}/aiModelsConfig`, updatedConfig);
+          // For default embedding, we don't need to do anything
+          return { status: 'success' };
         }
 
         // Remove meta fields and prepare clean config
-        const { providerType, modelType, _provider, ...cleanConfig } = config;
+        const { providerType, modelType, _provider, isMultimodal, ...cleanConfig } = config;
         const provider = providerType || modelType;
 
-        const updatedConfig = {
-          ...currentConfig,
-          [configType]: [
-            {
-              provider,
-              configuration: cleanConfig,
-            },
-          ],
+        if (!provider) {
+          throw new Error('Provider is required for AI model configuration');
+        }
+
+        // Use the individual provider API
+        const requestData = {
+          modelType: configType,
+          provider,
+          configuration: cleanConfig,
+          isMultimodal: Boolean(isMultimodal),
+          isDefault: true,
         };
 
-        return await axios.post(`${API_BASE}/aiModelsConfig`, updatedConfig);
+        return await axios.post(`${API_BASE}/ai-models/providers`, requestData);
       }
 
       case 'storage': {
@@ -295,22 +304,46 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
 };
 
 export const updateOnboardingAiModelsConfig = async (
-  llmConfig?: { provider: string; configuration: Record<string, any> }[] | null,
-  embeddingConfig?: { provider: string; configuration: Record<string, any> }[] | null
+  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null,
+  embeddingConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null
 ): Promise<any> => {
   try {
-    // Build the configuration payload directly (no GET needed for onboarding)
-    const updatedConfig = {
-      ocr: [],
-      embedding: embeddingConfig || [],
-      slm: [],
-      llm: llmConfig || [],
-      reasoning: [],
-      multiModal: [],
-    };
+    const promises: Promise<any>[] = [];
 
-    // Send single API call with merged configuration
-    return await axios.post(`${API_BASE}/aiModelsConfig`, updatedConfig);
+    // Add LLM configuration if provided
+    if (llmConfig && llmConfig.length > 0) {
+      const llmPromises = llmConfig.map((config) =>
+        axios.post(`${API_BASE}/ai-models/providers`, {
+          modelType: 'llm',
+          provider: config.provider,
+          configuration: config.configuration,
+          isMultimodal: config.isMultimodal || false,
+          isDefault: true,
+        })
+      );
+      promises.push(...llmPromises);
+    }
+
+    // Add embedding configuration if provided
+    if (embeddingConfig && embeddingConfig.length > 0) {
+      const embeddingPromises = embeddingConfig.map((config) =>
+        axios.post(`${API_BASE}/ai-models/providers`, {
+          modelType: 'embedding',
+          provider: config.provider,
+          configuration: config.configuration,
+          isMultimodal: config.isMultimodal || false,
+          isDefault: true,
+        })
+      );
+      promises.push(...embeddingPromises);
+    }
+
+    // Execute all API calls
+    if (promises.length > 0) {
+      return await Promise.all(promises);
+    }
+
+    return { status: 'success' };
   } catch (error) {
     console.error('Error updating onboarding AI models configuration:', error);
     throw error;
@@ -337,6 +370,6 @@ export const getSmtpConfig = () => getUniversalConfig('smtp');
 export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfig('smtp', config);
 
 export const updateStepperAiModelsConfig = async (
-  llmConfig?: { provider: string; configuration: Record<string, any> }[] | null,
-  embeddingConfig?: { provider: string; configuration: Record<string, any> }[] | null
+  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null,
+  embeddingConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null
 ): Promise<any> => updateOnboardingAiModelsConfig(llmConfig, embeddingConfig);

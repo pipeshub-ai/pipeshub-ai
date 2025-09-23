@@ -104,7 +104,7 @@ class BaseGmailSyncService(ABC):
                 for user in users:
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -149,7 +149,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -163,7 +163,7 @@ class BaseGmailSyncService(ABC):
 
                     # Update state in Arango
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
                     )
 
                     # Cancel current sync task
@@ -190,7 +190,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
                     )
                     if not sync_state:
                         self.logger.warning("⚠️ No user found, starting fresh")
@@ -229,13 +229,13 @@ class BaseGmailSyncService(ABC):
             users = await self.arango_service.get_users(org_id=org_id)
             for user in users:
                 current_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
                 )
                 if current_state:
                     current_state = current_state.get("syncState")
                     if current_state == "IN_PROGRESS":
                         await self.arango_service.update_user_sync_state(
-                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value
+                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
                         )
                         self.logger.info("✅ Gmail sync state updated before stopping")
                         return True
@@ -404,6 +404,7 @@ class BaseGmailSyncService(ABC):
                                 "isDirty": False,
                                 "reason": None,
                                 "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                                "mimeType": "text/html",
                             }
 
                             # Create is_of_type edge
@@ -517,6 +518,7 @@ class BaseGmailSyncService(ABC):
                                 "isDirty": False,
                                 "reason": None,
                                 "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                                "mimeType": attachment.get("mimeType"),
                             }
 
                             # Create is_of_type edge
@@ -880,7 +882,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.info("🚀 Connecting to enterprise services")
 
             # Connect to Google Admin
-            if not await self.gmail_admin_service.connect_admin(org_id):
+            if not await self.gmail_admin_service.connect_admin(org_id, "gmail"):
                 raise Exception("Failed to connect to Gmail Admin API")
 
             self.logger.info("✅ Enterprise services connected successfully")
@@ -1085,7 +1087,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 self.logger.info(f"Found enterprise user {user['email']}, continuing with sync")
 
                 sync_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
                 )
                 current_state = (
                     sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -1097,7 +1099,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     await self.arango_service.update_user_sync_state(
                         user["email"],
                         "PAUSED",
-                        service_type=Connectors.GOOGLE_MAIL.value,
+                        service_type=Connectors.GOOGLE_MAIL.value.lower(),
                     )
 
                 self.logger.info(
@@ -1168,12 +1170,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
 
                 sync_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
                 )
                 if sync_state is None:
                     apps = await self.arango_service.get_org_apps(org_id)
                     for app in apps:
-                        if app["name"] == Connectors.GOOGLE_MAIL.value:
+                        if app["name"].lower() == Connectors.GOOGLE_MAIL.value.lower():
                             app_key = app["_key"]
                             break
                     # Create edge between user and app
@@ -1211,7 +1213,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 await self.arango_service.update_user_sync_state(
                     user["email"],
                     "IN_PROGRESS",
-                    service_type=Connectors.GOOGLE_MAIL.value,
+                    service_type=Connectors.GOOGLE_MAIL.value.lower(),
                 )
 
                 # Stop checks
@@ -1222,7 +1224,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     await self.arango_service.update_user_sync_state(
                         user["email"],
                         "PAUSED",
-                        service_type=Connectors.GOOGLE_MAIL.value,
+                        service_type=Connectors.GOOGLE_MAIL.value.lower(),
                     )
                     return False
 
@@ -1484,7 +1486,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 await self.arango_service.update_user_sync_state(
                     user["email"],
                     "COMPLETED",
-                    service_type=Connectors.GOOGLE_MAIL.value,
+                    service_type=Connectors.GOOGLE_MAIL.value.lower(),
                 )
 
             # Add completion handling
@@ -1494,7 +1496,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value
+                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower()
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -1506,7 +1508,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Verify user exists in the database
             sync_state = await self.arango_service.get_user_sync_state(
-                user_email, Connectors.GOOGLE_MAIL.value
+                user_email, Connectors.GOOGLE_MAIL.value.lower()
             )
             current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
             if current_state == "IN_PROGRESS":
@@ -1564,7 +1566,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     "❌ Failed to create Gmail service for user %s", user_email
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value
+                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
                 )
                 return False
 
@@ -1613,7 +1615,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             if not threads:
                 self.logger.info("No threads found for user %s", user_email)
                 await self.arango_service.update_user_sync_state(
-                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value
+                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
                 )
                 return True
 
@@ -1678,7 +1680,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         "Sync stopped during batch processing at index %s", i
                     )
                     await self.arango_service.update_user_sync_state(
-                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value
+                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
                     )
                     return False
 
@@ -1808,14 +1810,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value
+                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
             )
             self.logger.info("✅ Successfully completed sync for user %s", user_email)
             return True
 
         except Exception as e:
             await self.arango_service.update_user_sync_state(
-                user_email, "FAILED", Connectors.GOOGLE_MAIL.value
+                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
             )
             self.logger.error("❌ Failed to sync user %s: %s", user_email, str(e))
             return False
@@ -2006,10 +2008,20 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         """Connect to services for individual setup"""
         try:
             self.logger.info("🚀 Connecting to individual user services")
+            user_id = None
             user_info = await self.arango_service.get_users(org_id, active=True)
-            if user_info:
-                # Add sync state to user info
+            if user_info and user_info[0].get("userId"):
+                # Use existing active user
                 user_id = user_info[0]["userId"]
+            else:
+                # Fallback: fetch individual user directly from Gmail API
+                self.logger.warning("⚠️ No active users found in DB; fetching individual user from Gmail API")
+                fetched_users = await self.gmail_user_service.list_individual_user(org_id)
+                if fetched_users and len(fetched_users) > 0 and fetched_users[0].get("userId"):
+                    user_id = fetched_users[0]["userId"]
+                else:
+                    self.logger.error("❌ Unable to determine user_id for individual Gmail connection")
+                    return False
 
             # Connect to Google Gmail
             if not await self.gmail_user_service.connect_individual_user(
@@ -2103,7 +2115,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Check if sync is already running
             sync_state = await self.arango_service.get_user_sync_state(
-                user_info["email"], Connectors.GOOGLE_MAIL.value
+                user_info["email"], Connectors.GOOGLE_MAIL.value.lower()
             )
             current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
             if current_state == "IN_PROGRESS":
@@ -2111,7 +2123,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     f"Gmail sync is currently RUNNING for user {user_info['email']}. Pausing it."
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value
+                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
                 )
 
             try:
@@ -2168,12 +2180,12 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             user = user[0]
 
             sync_state = await self.arango_service.get_user_sync_state(
-                user["email"], Connectors.GOOGLE_MAIL.value
+                user["email"], Connectors.GOOGLE_MAIL.value.lower()
             )
             if sync_state is None:
                 apps = await self.arango_service.get_org_apps(org_id)
                 for app in apps:
-                    if app["name"] == Connectors.GOOGLE_MAIL.value:
+                    if app["name"].lower() == Connectors.GOOGLE_MAIL.value.lower():
                         app_key = app["_key"]
                         break
                 # Create edge between user and app
@@ -2210,7 +2222,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             account_type = await self.arango_service.get_account_type(org_id)
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value
+                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower()
             )
 
             if await self._should_stop(org_id):
@@ -2218,7 +2230,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     "Sync stopped during user %s processing", user["email"]
                 )
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value
+                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
                 )
                 return False
 
@@ -2247,7 +2259,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             if not threads:
                 self.logger.info(f"No threads found for user {user['email']}")
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value
+                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
                 )
                 return False
 
@@ -2309,7 +2321,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         f"Sync stopped during batch processing at index {i}"
                     )
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
                     )
                     return False
 
@@ -2441,7 +2453,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value
+                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
             )
 
             self.is_completed = True
@@ -2450,7 +2462,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value
+                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower()
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False

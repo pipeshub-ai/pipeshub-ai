@@ -66,6 +66,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
     """
+
     # Extract all citation numbers from the answer text
     citation_pattern = r'\[R(\d+)-(\d+)\]'
     matches = re.findall(citation_pattern, answer_text)
@@ -113,10 +114,10 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     # Create mapping from old citation keys to new sequential numbers
     for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
-        citation_mapping[old_citation_key] = new_citation_num
 
         # Get the corresponding chunk from final_results
         if old_citation_key in block_number_to_index:
+            citation_mapping[old_citation_key] = new_citation_num
             chunk_index = block_number_to_index[old_citation_key]
 
             if 0 <= chunk_index < len(flattened_final_results):

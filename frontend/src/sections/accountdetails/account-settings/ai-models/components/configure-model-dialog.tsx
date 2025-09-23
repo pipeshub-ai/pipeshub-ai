@@ -166,12 +166,15 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
         const formDataResults = await Promise.all(formDataPromises);
 
         formDataResults.forEach(({ type, formData }) => {
-          const { providerType, modelType, _provider, ...cleanConfig } = formData;
+          const { providerType, modelType, _provider,isMultimodal, ...cleanConfig } = formData;
+          console.log("isMultimodal", isMultimodal);
+          console.log("cleanConfig", cleanConfig);
           promises.push(
             modelService.addModel(type as ModelType, {
               provider: currentProvider.id,
               configuration: cleanConfig,
               name: formData.name || `${currentProvider.name} ${type.toUpperCase()} Model`,
+              isMultimodal,
             })
           );
           configuredTypes.push(type);
@@ -215,6 +218,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
           providerType: currentProvider.id,
           modelType: currentProvider.id,
           _provider: currentProvider.id,
+          isMultimodal: currentProvider.editingModel!.isMultimodal === true,
         };
       }
       return {
@@ -225,7 +229,9 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
     },
     updateConfig: async (config: any) => {
       if (isEditMode && currentProvider.editingModel!.modelType === modelType) {
-        const { providerType, modelType: configModelType, _provider, ...cleanConfig } = config;
+        const { providerType, modelType: configModelType, _provider,isMultimodal, ...cleanConfig } = config;
+        console.log("isMultimodal", isMultimodal);
+        console.log("cleanConfig", cleanConfig);
         const result = await modelService.updateModel(
           currentProvider.editingModel!.modelType as ModelType,
           currentProvider.editingModel!.modelKey || currentProvider.editingModel!.id,
@@ -233,7 +239,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             provider: currentProvider.id,
             configuration: cleanConfig,
             isDefault: currentProvider.editingModel!.isDefault,
-            isMultimodal: currentProvider.editingModel!.isMultimodal,
+            isMultimodal,
             name: config.name || currentProvider.editingModel!.name,
           }
         );

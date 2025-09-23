@@ -694,12 +694,12 @@ class GoogleAdminService:
             return None
 
     @exponential_backoff()
-    async def create_admin_watch(self, org_id: str) -> None:
+    async def create_admin_watch(self, org_id: str, app_name: str) -> None:
         """Create a watch for admin activities (user creation/deletion)"""
         try:
             self.logger.info("🔍 Setting up admin activity watch")
 
-            if not await self.connect_admin(org_id):
+            if not await self.connect_admin(org_id, app_name):
                 raise AdminServiceError(
                     "Failed to connect admin service for watch creation",
                     details={"org_id": org_id},

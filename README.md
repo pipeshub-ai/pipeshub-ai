@@ -9,14 +9,61 @@
 <p align="center"></p>
 <p align="center">Workplace AI Platform</p>
 
+<p align="center" style="display: flex; justify-content: center; gap: 20px; align-items: center;">
+  <a href="https://trendshift.io/repositories/14618" target="_blank">
+    <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+  </a>
+
 <!--Links in Readme-->
 <p align="center">
-<a href="https://docs.pipeshub.com/" target="_blank">
-    <img src="https://img.shields.io/badge/docs-view-blue?style=for-the-badge" alt="Documentation">
-</a>
-<a href="https://discord.com/invite/K5RskzJBm2" target="_blank">
-     <img src="https://img.shields.io/badge/discord-join-red?logo=discord&logoColor=white&style=for-the-badge" alt="Discord">
-</a>
+  <a href="https://docs.pipeshub.com/" target="_blank">
+    <img src="https://img.shields.io/badge/Docs-View-informational?style=flat-square&logo=readthedocs&logoColor=white" 
+        alt="Docs" style="height:28px;">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://discord.com/invite/K5RskzJBm2" target="_blank">
+    <img src="https://img.shields.io/discord/1359557598222745670?label=Discord&logo=discord&logoColor=white&style=flat-square" 
+        alt="Discord" style="height:28px;">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
+    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub Repo stars">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/network/members">
+    <img src="https://img.shields.io/github/forks/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub forks">
+  </a>
+  &nbsp;
+  <a href="https://opensource.org/licenses/Apache-2.0">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">
+    <img src="https://img.shields.io/github/issues/pipeshub-ai/pipeshub-ai" alt="GitHub issues">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
+    <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/pipeshub-ai/pipeshub-ai" alt="Contributors">
+  </a>
+  &nbsp;
+  <img src="https://img.shields.io/github/last-commit/pipeshub-ai/pipeshub-ai" alt="Last commit">
+</p>
+
+<p align="center">
+  <a href="https://x.com/PipesHub">
+    <img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter Follow">
+  </a>
+  <a href="https://www.linkedin.com/company/pipeshub/" target="_blank">
+    <img src="https://img.shields.io/badge/LinkedIn-Follow-blue?logo=linkedin&logoColor=white&style=flat-square" alt="Follow on LinkedIn">
+  </a>
 </p>
 
 <!--Intro-->
@@ -28,9 +75,9 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 <h2>High Level Architecture Diagram</h2>
   <img
-    width="700"
-    height="500"
-    src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/Architecture%20Diagram.svg"
+    width="800"
+    height="1200"
+    src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/ad.jpg"
     alt="PipesHub System Architecture"
   />
 
@@ -39,10 +86,10 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 #### Your Workplace, Our AI.
 
 <p align="center">
-  <a href="https://youtu.be/PJ_b7IFhnsc">
-    <img src="https://img.youtube.com/vi/PJ_b7IFhnsc/maxresdefault.jpg" alt="PipesHub Workplace AI" width="600" style="border-radius:10px"/>
+  <a href="https://youtu.be/nQcMHxORWtY">
+    <img src="https://img.youtube.com/vi/nQcMHxORWtY/0.jpg" alt="PipesHub Workplace AI" width="600" style="border-radius:10px"/>
     <br>
-    <img src="https://img.shields.io/badge/Watch%20Video-red?style=for-the-badge&logo=youtube&logoColor=white" alt="Watch on YouTube"/>
+    <img src="https://img.shields.io/badge/Watch%20Video-FF0000?style=plastic&logo=youtube&logoColor=white" alt="Watch Video">
   </a>
 </p>
 

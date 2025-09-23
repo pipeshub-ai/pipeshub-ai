@@ -5,11 +5,25 @@ services:
     build:
       context: ../../
       dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+      shm_size: 4gb
+      ulimits:
+        memlock:
+          soft: -1
+          hard: -1
     ports:
       - "8091:8091"
       - "8088:8088"
       - "3000:3000"
       - "8001:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+          cpus: '6'
+    shm_size: 2gb
+    init: true
     environment:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-development}
@@ -172,7 +186,7 @@ services:
       - KAFKA_NUM_IO_THREADS=8
 
   qdrant:
-    image: qdrant/qdrant:v1.13.6
+    image: qdrant/qdrant:v1.15
     ports:
       - "6333:6333"
       - "6334:6334"

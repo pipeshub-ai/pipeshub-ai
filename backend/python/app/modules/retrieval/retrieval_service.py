@@ -29,6 +29,7 @@ from app.utils.aimodels import (
     get_embedding_model,
     get_generator_model,
 )
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
 class RetrievalService:
@@ -122,14 +123,17 @@ class RetrievalService:
                     dense_embeddings = None
                     if ai_models["embedding"]:
                         self.logger.info("No default embedding model found, using first available provider")
-                        for config in ai_models["embedding"]:
-                            if config.get("isDefault", False):
-                                dense_embeddings = get_embedding_model(config["provider"], config)
-                                break
-                        if not dense_embeddings:
-                            for config in ai_models["embedding"]:
-                                dense_embeddings = get_embedding_model(config["provider"], config)
-                                break
+                        configs = ai_models["embedding"]
+                        # Try to find the default config
+                        selected_config = next((c for c in configs if c.get("isDefault", False)), None)
+                        # If no default, take the first one
+                        if not selected_config and configs:
+                            selected_config = configs[0]
+
+                        if selected_config:
+                            dense_embeddings = get_embedding_model(selected_config["provider"], selected_config)
+                            self.logger.info(f"Embedding provider: {selected_config['provider']}")
+
 
             except Exception as e:
                 self.logger.error(f"Error creating embedding model: {str(e)}")
@@ -258,7 +262,7 @@ class RetrievalService:
             accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
 
             if not accessible_records:
-                return self._create_empty_response("No accessible records found for this user with provided filters.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # FIX: Filter out None records before processing
             accessible_records = [r for r in accessible_records if r is not None]
@@ -275,7 +279,7 @@ class RetrievalService:
             search_results = await self._execute_parallel_searches(queries, filter, limit, vector_store)
 
             if not search_results:
-                return self._create_empty_response("No search results found", Status.EMPTY_RESPONSE)
+                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -310,7 +314,7 @@ class RetrievalService:
             unique_record_ids = set(virtual_to_record_map.values())
 
             if not unique_record_ids:
-                return self._create_empty_response("No accessible records found for this user with provided filters.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             # Replace virtualRecordId with first accessible record ID in search results
@@ -331,6 +335,7 @@ class RetrievalService:
                     # FIX: Add null check for r before accessing r["_key"]
                     record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
                     if record:
+
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
@@ -340,6 +345,12 @@ class RetrievalService:
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
+                        result["metadata"]["mimeType"] = record.get("mimeType")
+                        result["metadata"]["recordName"] = record.get("recordName")
+                        ext =  get_extension_from_mimetype(record.get("mimeType"))
+                        if ext:
+                            result["metadata"]["extension"] = ext
+
 
                         # Fetch additional file URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
@@ -382,6 +393,19 @@ class RetrievalService:
                     if record:  # Only append non-None records
                         records.append(record)
 
+            # Filter out incomplete results to prevent citation validation failures
+            required_fields = ['origin', 'recordName', 'recordId', 'mimeType']
+            complete_results = []
+
+            for result in search_results:
+                metadata = result.get('metadata', {})
+                if all(field in metadata and metadata[field] is not None for field in required_fields):
+                    complete_results.append(result)
+                else:
+                    self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
+
+            search_results = complete_results
+
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,
@@ -400,15 +424,24 @@ class RetrievalService:
 
                 return response_data
             else:
-                return self._create_empty_response("Query processed, but no relevant results were found.", Status.EMPTY_RESPONSE)
+                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
+        except ValueError as e:
+            # Provide specific, user-friendly errors for known cases
+            # Avoid string matching: detect our dedicated error by class name
+            if e.__class__.__name__ == "VectorDBEmptyError":
+                return self._create_empty_response(
+                    "Vector database is not ready. Please index content and try again.",
+                    Status.VECTOR_DB_EMPTY,
+                )
+            return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
             import traceback
             tb_str = traceback.format_exc()
             self.logger.error(f"Filtered search failed: {str(e)}")
             self.logger.error(f"Full traceback:\n{tb_str}")
 
-            return self._create_empty_response(f"An error occurred during search: {str(e)}", Status.ERROR)
+            return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service) -> List[Dict[str, Any]]:
         """Separate task for getting accessible records"""
@@ -438,7 +471,11 @@ class RetrievalService:
             )
             self.logger.info(f"Collection info: {collection_info}")
             if not collection_info or collection_info.points_count == 0: # type: ignore
-                raise ValueError("Vector DB is empty or collection not found")
+                # Define a scoped custom error for clarity; safe to identify by class upstream
+                class VectorDBEmptyError(ValueError):
+                    pass
+
+                raise VectorDBEmptyError("Vector DB is empty or collection not found")
 
             # Get cached embedding model
             dense_embeddings = await self.get_embedding_model_instance()
@@ -499,12 +536,24 @@ class RetrievalService:
         return self._format_results(all_results)
 
     def _create_empty_response(self, message: str, status: Status) -> Dict[str, Any]:
-        """Helper to create empty response"""
+        """Helper to create empty response with appropriate HTTP status codes"""
+        # Map status types to appropriate HTTP status codes
+        status_code_mapping = {
+            Status.SUCCESS: 200,
+            Status.ERROR: 500,
+            Status.ACCESSIBLE_RECORDS_NOT_FOUND: 404,  # Not Found - no accessible records
+            Status.VECTOR_DB_EMPTY: 503,  # Service Unavailable - vector DB is empty
+            Status.VECTOR_DB_NOT_READY: 503,  # Service Unavailable - vector DB not ready
+            Status.EMPTY_RESPONSE: 200,  # OK but no results found
+        }
+
+        status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status
+
         return {
             "searchResults": [],
             "records": [],
-            "status": status,
-            "status_code": 200,
+            "status": status.value,
+            "status_code": status_code,
             "message": message,
         }
 

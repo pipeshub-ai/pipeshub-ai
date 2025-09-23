@@ -18,17 +18,18 @@ version = "0.1"
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
+    "aioboto3>=12.0.0",
     "aiohttp==3.11.2",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "aioredis==2.0.1",
-    "atlassian-python-api==3.41.0",
     "azure-ai-formrecognizer==3.3.3",
+    "box-sdk-gen==1.12.0",
     "celery==5.4.0",
     "confluent-kafka==2.8.0",
     "cryptography==44.0.1",
     "dependency-injector==4.44.0",
-    "docling==2.42.1",
+    "docling==2.53.0",
     "docx2python==3.5.0",
     "etcd3==0.12.0",
     "fastapi==0.115.6",
@@ -37,7 +38,6 @@ dependencies = [
     "google-api-python-client==2.161.0",
     "google-auth-oauthlib==1.2.1",
     "Jinja2==3.1.6",
-    "jira==3.5.0",
     "jsonschema==4.23.0",
     "langchain-anthropic==0.3.17",
     "langchain-aws==0.2.18",

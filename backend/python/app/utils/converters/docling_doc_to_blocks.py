@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import List, Union
+from typing import List, Tuple, Union
 
 from docling.datamodel.document import DoclingDocument
 from jinja2 import Template
@@ -112,8 +112,8 @@ class DoclingDocToBlocksConverter():
 
         def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict) -> None:
             page_metadata = doc_dict.get("pages", {})
-            # print(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
-            # print(f"Item: {json.dumps(item, indent=4)}")
+            # self.logger.debug(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
+            # self.logger.debug(f"Item: {json.dumps(item, indent=4)}")
             if "prov" in item:
                 prov = item["prov"]
                 if isinstance(prov, list) and len(prov) > 0:
@@ -193,11 +193,17 @@ class DoclingDocToBlocksConverter():
                 return item.get("text", "")
             return ""
 
+        def _resolve_ref_list(refs: list) -> list[str]:
+                return [
+                    _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
+                    for ref in refs
+                ]
+
         async def _handle_image_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
             _captions = item.get("captions", [])
-            _captions = [_get_ref_text(ref.get(DOCLING_REF_NODE, ""),doc_dict) for ref in _captions]
+            _captions = _resolve_ref_list(_captions)
             _footnotes = item.get("footnotes", [])
-            _footnotes = [_get_ref_text(ref.get(DOCLING_REF_NODE, ""),doc_dict) for ref in _footnotes]
+            _footnotes = _resolve_ref_list(_footnotes)
             item.get("prov", {})
             block = Block(
                     id=str(uuid.uuid4()),
@@ -224,13 +230,22 @@ class DoclingDocToBlocksConverter():
             for child in children:
                 await _process_item(child, doc, level + 1)
 
-        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup:
+        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
             table_data = item.get("data", {})
+            cell_data = table_data.get("table_cells", [])
+            if len(cell_data) == 0:
+                self.logger.error(f"❌ No table cells found in the table data: {table_data}")
+                return None
             response = await self.get_table_summary_n_headers(table_markdown)
             table_summary = response.summary
             column_headers = response.headers
             table_rows_text,table_rows = await self.get_rows_text(table_data, table_summary, column_headers)
 
+            # Convert caption and footnote references to text strings
+            _captions = item.get("captions", [])
+            _captions = _resolve_ref_list(_captions)
+            _footnotes = item.get("footnotes", [])
+            _footnotes = _resolve_ref_list(_footnotes)
             block_group = BlockGroup(
                 index=len(block_groups),
                 name=item.get("name", ""),
@@ -241,8 +256,8 @@ class DoclingDocToBlocksConverter():
                 table_metadata=TableMetadata(
                     num_of_rows=table_data.get("num_rows", 0),
                     num_of_cols=table_data.get("num_cols", 0),
-                    captions=item.get("captions", []),
-                    footnotes=item.get("footnotes", []),
+                    captions=_captions,
+                    footnotes=_footnotes,
                 ),
                 data={
                     "table_summary": table_summary,
@@ -255,7 +270,7 @@ class DoclingDocToBlocksConverter():
 
             childBlocks = []
             for i,row in enumerate(table_rows):
-                print(f"Processing table row: {json.dumps(row, indent=4)}")
+                self.logger.debug(f"Processing table row: {json.dumps(row, indent=4)}")
                 index = len(blocks)
                 block = Block(
                     id=str(uuid.uuid4()),
@@ -321,7 +336,7 @@ class DoclingDocToBlocksConverter():
                 self.logger.error(f"Invalid item type: {item_type} {item}")
                 return None
 
-            print(f"Processing item: {item_type} {ref_path}")
+            self.logger.debug(f"Processing item: {item_type} {ref_path}")
 
             # Create block
             if item_type == DOCLING_TEXT_BLOCK_TYPE:
@@ -366,7 +381,7 @@ class DoclingDocToBlocksConverter():
 
     async def get_rows_text(
         self, table_data: dict, table_summary: str, column_headers: list[str]
-    ) -> List[str]:
+    ) -> Tuple[List[str], List[List[dict]]]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         table = table_data.get("grid")
         if table:
@@ -416,6 +431,9 @@ class DoclingDocToBlocksConverter():
                         return [content],table_rows
             except Exception:
                 raise
+        else:
+            self.logger.error(f"❌ No table found in the table data: {table_data}")
+            return [], []
 
     async def get_table_summary_n_headers(self, table_markdown: str) -> TableSummary:
         """

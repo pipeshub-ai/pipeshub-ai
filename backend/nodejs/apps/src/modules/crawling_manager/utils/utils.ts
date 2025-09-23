@@ -11,10 +11,11 @@ export const constructSyncConnectorEvent = (
     'drive': EventType.SyncDriveEvent,
     'gmail': EventType.SyncGmailEvent,
     'onedrive': EventType.SyncOneDriveEvent,
+    'sharepointonline': EventType.SyncSharePointOnlineEvent,
     'outlook': EventType.SyncOutlookEvent,
   };
 
-  const eventType = eventTypeMap[connector] || EventType.ReindexAllRecordEvent;
+  const eventType = eventTypeMap[connector.replace(' ', '').toLowerCase()] || EventType.ReindexAllRecordEvent;
 
   const payload = {
     orgId: orgId,

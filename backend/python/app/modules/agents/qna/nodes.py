@@ -549,7 +549,7 @@ async def final_response_node(
         completion_data = None
 
         try:
-            async for stream_event in stream_llm_response(llm, validated_messages, final_results):
+            async for stream_event in stream_llm_response(llm, validated_messages, final_results, logger):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
                 logger.debug(f"🔥 Stream event: {event_type} {type(event_data)} {event_data}")

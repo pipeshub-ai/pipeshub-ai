@@ -53,17 +53,15 @@ class ParserUserService:
             )
 
     @token_refresh
-    async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
+    async def connect_individual_user(self, org_id: str, user_id: str, app_name: str) -> bool:
         """Connect using Oauth2 credentials for individual user"""
         try:
             self.org_id = org_id
             self.user_id = user_id
 
-            SCOPES = GOOGLE_PARSER_SCOPES
-
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id
+                    org_id, user_id, app_name=app_name
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -84,7 +82,7 @@ class ParserUserService:
                     token_uri="https://oauth2.googleapis.com/token",
                     client_id=creds_data.get(CredentialKeys.CLIENT_ID.value),
                     client_secret=creds_data.get(CredentialKeys.CLIENT_SECRET.value),
-                    scopes=SCOPES,
+                    scopes=GOOGLE_PARSER_SCOPES,
                 )
             except Exception as e:
                 raise GoogleAuthError(
@@ -92,23 +90,38 @@ class ParserUserService:
                     details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
-            # Update token expiry time
+                        # Update token expiry time using created_at + expires_in if possible
             try:
-                self.token_expiry = datetime.fromtimestamp(
-                    creds_data.get("access_token_expiry_time", 0) / 1000,
-                    tz=timezone.utc,
-                )
-                self.logger.info("✅ Token expiry time: %s", self.token_expiry)
+                expires_in = creds_data.get("expires_in")
+                created_at_str = creds_data.get("created_at")
+                if expires_in and created_at_str:
+                    created_at = datetime.fromisoformat(created_at_str)
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    self.token_expiry = created_at + timedelta(seconds=int(expires_in))
+                else:
+                    expiry_ms = creds_data.get("access_token_expiry_time")
+                    if expiry_ms:
+                        self.token_expiry = datetime.fromtimestamp(
+                            int(expiry_ms) / 1000, tz=timezone.utc
+                        )
+                    else:
+                        self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             except Exception as e:
+                self.logger.warning("Failed to set refreshed token expiry: %s", str(e))
                 raise GoogleAuthError(
                     "Failed to set token expiry: " + str(e),
                     details={
                         "org_id": org_id,
                         "user_id": user_id,
-                        "expiry_time": creds_data.get("access_token_expiry_time"),
                         "error": str(e),
+                        "expiry_time": creds_data.get("expires_in"),
                     },
                 )
+
+
+            self.logger.info("✅ Token expiry time: %s", self.token_expiry)
+
 
             try:
                 self.docs_service = build("docs", "v1", credentials=creds)
@@ -132,7 +145,7 @@ class ParserUserService:
                 details={"org_id": org_id, "user_id": user_id, "error": str(e)},
             )
 
-    async def _check_and_refresh_token(self) -> None:
+    async def _check_and_refresh_token(self, app_name: str) -> None:
         """Check token expiry and refresh if needed"""
         self.logger.info("Checking token expiry and refreshing if needed")
 
@@ -151,10 +164,11 @@ class ParserUserService:
         )
 
         if time_until_refresh.total_seconds() <= 0:
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id)
+            # Parser uses Docs/Sheets/Slides; use Drive connector tokens for content access
+            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name=app_name)
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id
+                self.org_id, self.user_id, app_name=app_name
             )
 
             creds = google.oauth2.credentials.Credentials(
@@ -170,10 +184,35 @@ class ParserUserService:
             self.sheets_service = build("sheets", "v4", credentials=creds)
             self.slides_service = build("slides", "v1", credentials=creds)
 
-            # Update token expiry time
-            self.token_expiry = datetime.fromtimestamp(
-                creds_data.get("access_token_expiry_time", 0) / 1000, tz=timezone.utc
-            )
+                        # Update token expiry time using created_at + expires_in if possible
+            try:
+                expires_in = creds_data.get("expires_in")
+                created_at_str = creds_data.get("created_at")
+                if expires_in and created_at_str:
+                    created_at = datetime.fromisoformat(created_at_str)
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    self.token_expiry = created_at + timedelta(seconds=int(expires_in))
+                else:
+                    expiry_ms = creds_data.get("access_token_expiry_time")
+                    if expiry_ms:
+                        self.token_expiry = datetime.fromtimestamp(
+                            int(expiry_ms) / 1000, tz=timezone.utc
+                        )
+                    else:
+                        self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+            except Exception as e:
+                self.logger.warning("Failed to set refreshed token expiry: %s", str(e))
+                raise GoogleAuthError(
+                    "Failed to set token expiry: " + str(e),
+                    details={
+                        "org_id": self.org_id,
+                        "user_id": self.user_id,
+                        "error": str(e),
+                        "expiry_time": creds_data.get("expires_in"),
+                    },
+                )
+
 
             self.logger.info("✅ Token refreshed, new expiry: %s", self.token_expiry)
 

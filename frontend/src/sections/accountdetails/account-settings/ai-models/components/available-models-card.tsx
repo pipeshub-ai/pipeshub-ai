@@ -12,11 +12,16 @@ import {
   Chip,
   TextField,
   InputAdornment,
+  Stack,
+  Tooltip,
 } from '@mui/material';
 import addIcon from '@iconify-icons/mdi/plus';
 import robotIcon from '@iconify-icons/mdi/robot';
 import searchIcon from '@iconify-icons/mdi/magnify';
 import clearIcon from '@iconify-icons/mdi/close';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle';
+import settingsIcon from '@iconify-icons/mdi/settings';
+import boltIcon from '@iconify-icons/mdi/bolt';
 import { Iconify } from 'src/components/iconify';
 import { AVAILABLE_MODEL_PROVIDERS, ModelProvider, ModelType } from '../types';
 
@@ -51,11 +56,6 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Enhanced dark mode support
-  const cardBg = isDark ? 'rgba(32, 30, 30, 0.5)' : '#ffffff';
-  const cardBorder = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)';
-  const textPrimary = isDark ? '#ffffff' : '#1f2937';
 
   // Filter providers based on search query
   const filteredProviders = useMemo(() => {
@@ -96,50 +96,25 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
     });
   }, [searchQuery]);
 
-  // Theme-based chip colors with light backgrounds for all modes
-  const getChipStyles = (type?: 'capability' | 'llm' | 'embedding' | 'popular' | 'success') => {
-    switch (type) {
-      case 'capability':
-        return {
-          color: isDark ? '#6b7280' : '#6b7280',
-          bgcolor: 'rgba(107, 114, 128, 0.08)',
-          border: 'rgba(107, 114, 128, 0.15)',
-        };
-      case 'llm':
-        return {
-          color: '#059669',
-          bgcolor: 'rgba(81, 88, 86, 0.1)',
-          border: '1px solid rgba(5, 150, 105, 0.2)',
-        };
-      case 'embedding':
-        return {
-          color: '#7c3aed',
-          bgcolor: 'rgba(124, 58, 237, 0.1)',
-          border: '1px solid rgba(124, 58, 237, 0.2)',
-        };
-      case 'popular':
-        return {
-          color: '#dc2626',
-          bgcolor: 'rgba(220, 38, 38, 0.1)',
-          border: '1px solid rgba(220, 38, 38, 0.2)',
-        };
-      case 'success':
-        return {
-          color: '#059669',
-          bgcolor: 'rgba(5, 150, 105, 0.1)',
-          border: '1px solid rgba(5, 150, 105, 0.15)',
-        };
-      default:
-        return {
-          color: isDark ? '#6b7280' : '#6b7280',
-          bgcolor: 'rgba(107, 114, 128, 0.08)',
-          border: 'rgba(107, 114, 128, 0.15)',
-        };
-    }
-  };
-
   const handleClearSearch = () => {
     setSearchQuery('');
+  };
+
+  const getStatusConfig = (totalConfigured: number) => {
+    if (totalConfigured > 0) {
+      return {
+        label: 'Configured',
+        color: theme.palette.success.main,
+        bgColor: isDark ? alpha(theme.palette.success.main, 0.8) : alpha(theme.palette.success.main, 0.1),
+        icon: checkCircleIcon,
+      };
+    }
+    return {
+      label: 'Setup Required',
+      color: theme.palette.text.secondary,
+      bgColor: isDark ? alpha(theme.palette.text.secondary, 0.8) : alpha(theme.palette.text.secondary, 0.08),
+      icon: settingsIcon,
+    };
   };
 
   return (
@@ -186,15 +161,15 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
             }}
             sx={{
               width: '100%',
-              minWidth: '380px' ,
+              minWidth: '380px',
               '& .MuiOutlinedInput-root': {
-                bgcolor: isDark ? 'rgba(255, 255, 255, 0.05)' : '#ffffff',
+                bgcolor: theme.palette.background.paper,
                 borderRadius: '8px',
                 '& fieldset': {
-                  borderColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)',
+                  borderColor: theme.palette.divider,
                 },
                 '&:hover fieldset': {
-                  borderColor: alpha(theme.palette.primary.main, 0.3),
+                  borderColor: alpha(theme.palette.primary.main, 0.5),
                 },
                 '&.Mui-focused fieldset': {
                   borderColor: theme.palette.primary.main,
@@ -259,228 +234,289 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
             const totalConfigured = llmCount + embeddingCount;
             const hasLlm = provider.supportedTypes.includes('llm');
             const hasEmbedding = provider.supportedTypes.includes('embedding');
-            const isSingleType = provider.supportedTypes.length === 1;
             const capabilities =
               PROVIDER_CAPABILITIES[provider.id as keyof typeof PROVIDER_CAPABILITIES] ||
               provider.supportedTypes.map((type) => type.toUpperCase());
 
+            const statusConfig = getStatusConfig(totalConfigured);
+
             return (
               <Grid item xs={12} sm={6} md={4} lg={3} key={provider.id}>
                 <Card
+                  elevation={0}
                   sx={{
                     height: '100%',
-                    minHeight: '300px',
+                    minHeight: '320px',
                     display: 'flex',
                     flexDirection: 'column',
-                    borderRadius: '10px',
-                    bgcolor: cardBg,
-                    border: `1px solid ${totalConfigured > 0 ? 'white' : cardBorder}`,
-                    transition: 'all 0.2s ease-in-out',
+                    borderRadius: 2,
+                    border: `1px solid ${theme.palette.divider}`,
+                    backgroundColor: theme.palette.background.paper,
+                    cursor: 'pointer',
+                    transition: theme.transitions.create(
+                      ['transform', 'box-shadow', 'border-color'],
+                      {
+                        duration: theme.transitions.duration.shorter,
+                        easing: theme.transitions.easing.easeOut,
+                      }
+                    ),
                     position: 'relative',
-                    overflow: 'hidden',
                     '&:hover': {
-                      boxShadow: `0 0 5px ${alpha(theme.palette.primary.main, 0.15)}`,
-                      borderColor: alpha(theme.palette.primary.main, 0.8),
+                      transform: 'translateY(-2px)',
+                      borderColor: alpha(theme.palette.primary.main, 0.5),
+                      boxShadow: isDark
+                        ? `0 8px 32px ${alpha('#000', 0.3)}`
+                        : `0 8px 32px ${alpha(theme.palette.primary.main, 0.12)}`,
+                      '& .provider-avatar': {
+                        transform: 'scale(1.05)',
+                      },
                     },
                   }}
                 >
-                  {/* Status Indicator */}
+                  {/* Status Dot */}
                   {totalConfigured > 0 && (
                     <Box
                       sx={{
                         position: 'absolute',
-                        top: 10,
-                        right: 10,
-                        width: 8,
-                        height: 8,
+                        top: 12,
+                        right: 12,
+                        width: 6,
+                        height: 6,
                         borderRadius: '50%',
-                        bgcolor: theme.palette.success.main,
-                        zIndex: 1,
+                        backgroundColor: theme.palette.success.main,
+                        boxShadow: `0 0 0 2px ${theme.palette.background.paper}`,
                       }}
                     />
                   )}
 
                   <CardContent
                     sx={{
-                      p: 2.5,
+                      p: 2,
                       display: 'flex',
                       flexDirection: 'column',
                       height: '100%',
                       gap: 1.5,
+                      '&:last-child': { pb: 2 },
                     }}
                   >
-                    {/* Provider Icon & Name */}
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: 1,
-                      }}
-                    >
+                    {/* Header */}
+                    <Stack spacing={1.5} alignItems="center">
                       <Avatar
+                        className="provider-avatar"
                         sx={{
-                          width: 40,
-                          height: 40,
-                          bgcolor: 'white',
-                          // border: `1.5px solid ${alpha(provider.color, 0.2)}`,
+                          width: 48,
+                          height: 48,
+                          backgroundColor: isDark
+                            ? alpha(theme.palette.common.white, 0.9)
+                            : alpha(theme.palette.grey[100], 0.8),
+                          border: `1px solid ${theme.palette.divider}`,
+                          transition: theme.transitions.create('transform'),
                         }}
                       >
                         {provider.src ? (
-                          <img src={provider.src} alt={provider.name} width={22} height={22} />
+                          <img 
+                            src={provider.src} 
+                            alt={provider.name} 
+                            width={24} 
+                            height={24}
+                            style={{ objectFit: 'contain' }}
+                          />
                         ) : (
-                          <Iconify icon={robotIcon} width={22} height={22} />
+                          <Iconify icon={robotIcon} width={24} height={24} />
                         )}
                       </Avatar>
 
-                      <Typography
-                        variant="subtitle2"
-                        align="center"
-                        sx={{
-                          fontWeight: 600,
-                          color: textPrimary,
-                          fontSize: '0.875rem',
-                          lineHeight: 1.2,
-                        }}
-                      >
-                        {provider.name}
-                      </Typography>
-                    </Box>
-
-                    {/* Capabilities - Compact */}
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        justifyContent: 'center',
-                        gap: 0.5,
-                        mb: 1,
-                      }}
-                    >
-                      {capabilities.slice(0, 3).map((capability, index) => (
-                        <Chip
-                          key={index}
-                          label={capability}
-                          size="small"
+                      <Box sx={{ textAlign: 'center', width: '100%' }}>
+                        <Typography
+                          variant="subtitle2"
                           sx={{
-                            height: 18,
-                            fontSize: '0.65rem',
-                            fontWeight: 500,
-                            bgcolor: theme.palette.grey[200],
-                            color: theme.palette.grey[800],
-                            '&:hover': {
-                              bgcolor: theme.palette.grey[300],
-                              color: theme.palette.grey[900],
-                            },
+                            fontWeight: 600,
+                            color: theme.palette.text.primary,
+                            mb: 0.25,
+                            lineHeight: 1.2,
                           }}
-                        />
-                      ))}
-                    </Box>
-
-                    {/* Model Count Display - Compact */}
-                    {totalConfigured > 0 && (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          justifyContent: 'center',
-                          mb: 1.5,
-                          p: 0.75,
-                          ...getChipStyles('success'),
-                          borderRadius: '6px',
-                        }}
-                      >
+                        >
+                          {provider.name}
+                        </Typography>
                         <Typography
                           variant="caption"
                           sx={{
-                            color: theme.palette.success.main,
-                            fontWeight: 600,
-                            fontSize: '0.7rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 0.5,
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.8125rem',
                           }}
                         >
-                          <Box
-                            sx={{
-                              width: 4,
-                              height: 4,
-                              borderRadius: '50%',
-                              bgcolor: theme.palette.success.main,
-                            }}
-                          />
-                          {totalConfigured} configured
+                          AI Provider
                         </Typography>
                       </Box>
-                    )}
+                    </Stack>
 
-                    {/* Action Buttons - Improved for single type */}
+                    {/* Status */}
+                    <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                      <Chip
+                        icon={<Iconify icon={statusConfig.icon} width={14} height={14} />}
+                        label={statusConfig.label}
+                        size="small"
+                        sx={{
+                          height: 24,
+                          fontSize: '0.75rem',
+                          fontWeight: 500,
+                          backgroundColor: statusConfig.bgColor,
+                          color: statusConfig.color,
+                          border: `1px solid ${alpha(statusConfig.color, 0.2)}`,
+                          '& .MuiChip-icon': {
+                            color: statusConfig.color,
+                          },
+                        }}
+                      />
+                    </Box>
+
+                    {/* Capabilities */}
+                    <Stack 
+                      direction="row" 
+                      spacing={0.5} 
+                      justifyContent="center" 
+                      alignItems="center"
+                      sx={{ minHeight: 20, flexWrap: 'wrap', gap: 0.5 }}
+                    >
+                      {capabilities.slice(0, 3).map((capability, index) => (
+                        <Typography
+                          key={index}
+                          variant="caption"
+                          sx={{
+                            px: 1,
+                            py: 0.25,
+                            borderRadius: 0.5,
+                            fontSize: '0.6875rem',
+                            fontWeight: 500,
+                            color: theme.palette.text.secondary,
+                            backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                            border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
+                          }}
+                        >
+                          {capability}
+                        </Typography>
+                      ))}
+                      
+                    </Stack>
+
+                    {/* Model Count Status */}
                     <Box
                       sx={{
-                        mt: 'auto',
                         display: 'flex',
-                        flexDirection: 'column',
-                        gap: 1,
-                        alignItems: 'flex-start',
-                        justifyContent: 'flex-start',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        px: 1.5,
+                        py: 1,
+                        borderRadius: 1,
+                        backgroundColor: isDark 
+                          ? alpha(theme.palette.background.default, 0.3) 
+                          : alpha(theme.palette.grey[50], 0.8),
+                        border: `1px solid ${theme.palette.divider}`,
                       }}
                     >
-                      <Box sx={{ width: '100%' }}>
-                        {hasLlm && (
-                          <Button
-                            variant="outlined"
-                            fullWidth
-                            size="small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onProviderSelect(provider, 'llm');
-                            }}
-                            startIcon={<Iconify icon={addIcon} width={14} height={14} />}
-                            sx={{
-                              borderColor: alpha(theme.palette.primary.main, 0.3),
-                              color: theme.palette.primary.main,
-                              borderRadius: '6px',
-                              textTransform: 'none',
-                              fontWeight: 600,
-                              fontSize: '0.75rem',
-                              py: 0.75,
-                              '&:hover': {
-                                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                              },
-                            }}
-                          >
-                            Add LLM
-                          </Button>
-                        )}
-                      </Box>
-                      <Box sx={{ width: '100%' }}>
-                        {hasEmbedding && (
-                          <Button
-                            variant="outlined"
-                            fullWidth
-                            size="small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onProviderSelect(provider, 'embedding');
-                            }}
-                            startIcon={<Iconify icon={addIcon} width={14} height={14} />}
-                            sx={{
-                              borderColor: alpha(theme.palette.primary.main, 0.3),
-                              color: theme.palette.primary.main,
-                              borderRadius: '6px',
-                              textTransform: 'none',
-                              fontWeight: 600,
-                              fontSize: '0.75rem',
-                              py: 0.75,
-                              '&:hover': {
-                                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                              },
-                            }}
-                          >
-                            Add Embedding
-                          </Button>
-                        )}
-                      </Box>
+                      <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Box
+                          sx={{
+                            width: 4,
+                            height: 4,
+                            borderRadius: '50%',
+                            backgroundColor: llmCount > 0 
+                              ? theme.palette.success.main 
+                              : theme.palette.text.disabled,
+                          }}
+                        />
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            fontSize: '0.75rem',
+                            fontWeight: 500,
+                            color: theme.palette.text.secondary,
+                          }}
+                        >
+                          {llmCount > 0 ? `${llmCount} LLM` : 'No LLM'}
+                        </Typography>
+                      </Stack>
+                      
+                      <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Box
+                          sx={{
+                            width: 4,
+                            height: 4,
+                            borderRadius: '50%',
+                            backgroundColor: embeddingCount > 0 
+                              ? theme.palette.warning.main 
+                              : theme.palette.text.disabled,
+                          }}
+                        />
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            fontSize: '0.75rem',
+                            fontWeight: 500,
+                            color: theme.palette.text.secondary,
+                          }}
+                        >
+                          {embeddingCount > 0 ? `${embeddingCount} Embed` : 'No Embed'}
+                        </Typography>
+                      </Stack>
                     </Box>
+
+                    {/* Action Buttons */}
+                    <Stack spacing={1} sx={{ mt: 'auto' }}>
+                      {hasLlm && (
+                        <Button
+                          fullWidth 
+                          variant="outlined"
+                          size="medium"
+                          startIcon={<Iconify icon={addIcon} width={16} height={16} />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onProviderSelect(provider, 'llm');
+                          }}
+                          sx={{
+                            height: 38,
+                            borderRadius: 1.5,
+                            textTransform: 'none',
+                            fontWeight: 600,
+                            fontSize: '0.8125rem',
+                            borderColor: alpha(theme.palette.primary.main, 0.3),
+                            '&:hover': {
+                              borderColor: theme.palette.primary.main,
+                              backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                            },
+                          }}
+                        >
+                          Add LLM
+                        </Button>
+                      )}
+                      
+                      {hasEmbedding && (
+                        <Button
+                          fullWidth 
+                          variant="outlined"
+                          size="medium"
+                          startIcon={<Iconify icon={addIcon} width={16} height={16} />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onProviderSelect(provider, 'embedding');
+                          }}
+                          sx={{
+                            height: 38,
+                            borderRadius: 1.5,
+                            textTransform: 'none',
+                            fontWeight: 600,
+                            fontSize: '0.8125rem',
+                            borderColor: alpha(theme.palette.primary.main, 0.3),
+                            '&:hover': {
+                              borderColor: theme.palette.primary.main,
+                              backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                            },
+                          }}
+                        >
+                          Add Embedding
+                        </Button>
+                      )}
+                    </Stack>
                   </CardContent>
                 </Card>
               </Grid>

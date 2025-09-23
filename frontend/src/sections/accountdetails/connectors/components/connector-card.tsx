@@ -139,7 +139,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
           },
         },
       }}
-    //   onClick={() => navigate(`/account-details/connectors/${connector._key}`)}
+      onClick={() => configureConnector()}
     >
       {/* Status Dot */}
       {isActive && (
@@ -363,11 +363,16 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
 
         {/* Action Button */}
         {isConfigFormOpen && (
-          <ConnectorConfigForm 
-            connector={connector} 
-            onClose={handleConfigFormClose}
-            onSuccess={handleConfigSuccess}
-          />
+          <Box
+            // Prevent clicks inside the dialog from bubbling to the Card
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ConnectorConfigForm 
+              connector={connector} 
+              onClose={handleConfigFormClose}
+              onSuccess={handleConfigSuccess}
+            />
+          </Box>
         )}
         <Button
           fullWidth 
@@ -381,7 +386,11 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
               height={16}
             />
           }
-          onClick={() => configureConnector()}
+          onClick={(e) => {
+            // Avoid re-triggering Card's onClick when clicking the button
+            e.stopPropagation();
+            configureConnector();
+          }}
           sx={{
             mt: 'auto',
             height: 38,

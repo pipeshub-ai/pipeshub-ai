@@ -37,6 +37,7 @@ class RecordBuilder:
         self._is_dirty = False
         self._reason = None
         self._web_url = None
+        self._mime_type = None
 
     def with_key(self, key: str) -> 'RecordBuilder':
         self._key = key
@@ -158,6 +159,11 @@ class RecordBuilder:
         self._web_url = web_url
         return self
 
+    def with_mime_type(self, mime_type: str) -> 'RecordBuilder':
+        self._mime_type = mime_type
+        return self
+
+
     def build(self) -> 'Record':
         """Build and validate the Record instance"""
         if not self._org_id:
@@ -196,7 +202,8 @@ class RecordBuilder:
             last_extraction_timestamp=self._last_extraction_timestamp,
             is_dirty=self._is_dirty,
             reason=self._reason,
-            web_url=self._web_url
+            web_url=self._web_url,
+            mime_type=self._mime_type
         )
 
 class FileRecordBuilder:

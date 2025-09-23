@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
-  TextField,
   FormControl,
   Select,
   MenuItem,
@@ -14,20 +13,14 @@ import {
 } from '@mui/material';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
-import dayjs from 'dayjs';
-import timezone from 'dayjs/plugin/timezone';
-import utc from 'dayjs/plugin/utc';
-import { MobileDateTimePicker } from '@mui/x-date-pickers/MobileDateTimePicker';
 import { ScheduledConfig } from '../types/types';
 
 // Extend dayjs with timezone support
-dayjs.extend(utc);
-dayjs.extend(timezone);
+// Note: Date/time features are currently not used; keeping LocalizationProvider for future use
 
 interface ScheduledSyncConfigProps {
   value: ScheduledConfig;
   onChange: (value: ScheduledConfig) => void;
-  error?: string;
   disabled?: boolean;
 }
 
@@ -62,95 +55,37 @@ const INTERVAL_OPTIONS = [
 const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
   value = {},
   onChange,
-  error,
   disabled = false,
 }) => {
   const theme = useTheme();
   const [localValue, setLocalValue] = useState<ScheduledConfig>({
     intervalMinutes: 60,
     timezone: 'UTC',
-    startTime: 0,
-    maxRepetitions: undefined,
     ...value,
   });
 
-  // Initialize from existing data when value changes
+  // Initialize from existing data when value changes (only interval and timezone supported)
   useEffect(() => {
     if (value) {
-      let startTime = value.startTime || 0;
-
-      // Convert seconds to milliseconds if needed
-      if (startTime > 0 && startTime < 1e10) {
-        startTime *= 1000;
-      }
-
-      const newLocalValue = {
+      setLocalValue({
         intervalMinutes: value.intervalMinutes || 60,
         timezone: value.timezone || 'UTC',
-        startTime,
-        maxRepetitions: value.maxRepetitions ?? undefined,
-        nextTime: value.nextTime || 0,
-        endTime: value.endTime || 0,
-        repetitionCount: value.repetitionCount || 0,
-      };
-
-      setLocalValue(newLocalValue);
+      });
     }
   }, [value]);
 
-  // Helper function to convert epoch time to dayjs object
-  const epochToDayjs = (epochMs: number) => {
-    if (!epochMs || epochMs === 0) return null;
-    return dayjs(epochMs).tz(localValue.timezone || 'UTC');
-  };
-
-  // Helper function to convert dayjs object to epoch time
-  const dayjsToEpoch = (dayjsObj: dayjs.Dayjs | null): number => {
-    if (!dayjsObj) return 0;
-    return dayjsObj.valueOf(); // Returns milliseconds
-  };
-
-  // Calculate time values based on user input
-  const calculateTimes = useCallback((config: ScheduledConfig) => {
-    if (!config.startTime || config.startTime === 0) {
-      return null;
-    }
-
-    const startTimeMs = config.startTime;
-    const nextTimeMs = startTimeMs;
-    const endTimeMs = startTimeMs;
-    const totalRepetitions = 1;
-
-    return {
-      startTime: startTimeMs,
-      nextTime: nextTimeMs || 0,
-      endTime: endTimeMs,
-      totalRepetitions,
-    };
-  }, []);
-
-  // Update time calculation when config changes
+  // Propagate interval and timezone to parent when changed
   useEffect(() => {
     // Debounce calculation
     const timeoutId = setTimeout(() => {
-      const calculation = calculateTimes(localValue);
-
-      if (calculation) {
-        const updatedValue = {
-          ...localValue,
-          startTime: calculation.startTime,
-          nextTime: calculation.nextTime,
-          endTime: calculation.endTime,
-          // do not override maxRepetitions here; leave as user provided (undefined means not set)
-          repetitionCount: 0,
-        };
-
-        onChange(updatedValue);
-      }
+      onChange({
+        intervalMinutes: localValue.intervalMinutes,
+        timezone: localValue.timezone,
+      });
     }, 300);
 
     return () => clearTimeout(timeoutId);
-  }, [localValue, calculateTimes, onChange]);
+  }, [localValue, onChange]);
 
   const handleFieldChange = (field: string, newValue: any) => {
     setLocalValue((prev: ScheduledConfig) => ({
@@ -163,141 +98,6 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
     <LocalizationProvider dateAdapter={AdapterDayjs}>
       <Stack spacing={2}>
         <Grid container spacing={2}>
-          {/* Start Date & Time */}
-          <Grid item xs={12} md={6}>
-            <Typography
-              variant="body2"
-              sx={{
-                mb: 1,
-                fontWeight: 500,
-                fontSize: '0.8125rem',
-                color: theme.palette.text.primary,
-              }}
-            >
-              Start Date & Time
-            </Typography>
-            <MobileDateTimePicker
-              orientation="landscape"
-              value={epochToDayjs(localValue.startTime || 0)}
-              onChange={(newValue) => {
-                const epochTime = dayjsToEpoch(newValue);
-                handleFieldChange('startTime', epochTime);
-              }}
-              disabled={disabled}
-              timezone={localValue.timezone || 'UTC'}
-              format="MMM DD, YYYY hh:mm A"
-              slotProps={{
-                textField: {
-                  fullWidth: true,
-                  size: 'small',
-                  error: !!error,
-                  placeholder: 'Select date and time',
-                  sx: {
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1.25,
-                      fontSize: '0.8125rem',
-                      '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: alpha(theme.palette.primary.main, 0.25),
-                      },
-                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                        borderColor: theme.palette.primary.main,
-                        borderWidth: '1px',
-                      },
-                    },
-                  },
-                },
-
-                layout: {
-                  sx: {
-                    '& .MuiPickersLayout-root': {
-                      overflow: 'hidden',
-                    },
-                    '& .MuiPickersLayout-contentWrapper': {
-                      position: 'relative',
-                    },
-                  },
-                },
-                calendarHeader: {
-                  sx: {
-                    '& .MuiPickersCalendarHeader-root': {
-                      paddingTop: '16px',
-                      paddingBottom: '8px',
-                      borderBottom: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
-                      marginBottom: '8px',
-                    },
-                    '& .MuiPickersCalendarHeader-label': {
-                      fontSize: '0.9375rem',
-                      fontWeight: 600,
-                      color: theme.palette.text.primary,
-                    },
-                    '& .MuiPickersCalendarHeader-switchViewButton': {
-                      fontSize: '0.9375rem',
-                      fontWeight: 600,
-                    },
-                    '& .MuiPickersArrowSwitcher-button': {
-                      borderRadius: 1,
-                      '&:hover': {
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
-                      },
-                    },
-                  },
-                },
-                day: {
-                  sx: {
-                    '&.MuiPickersDay-root': {
-                      borderRadius: 1,
-                      fontSize: '0.8125rem',
-                      '&:hover': {
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
-                      },
-                      '&.Mui-selected': {
-                        bgcolor: theme.palette.primary.main,
-                        '&:hover': {
-                          bgcolor: theme.palette.primary.dark,
-                        },
-                      },
-                      '&.MuiPickersDay-today': {
-                        border: `1px solid ${alpha(theme.palette.primary.main, 0.3)}`,
-                        '&:not(.Mui-selected)': {
-                          color: theme.palette.primary.main,
-                          fontWeight: 500,
-                        },
-                      },
-                    },
-                  },
-                },
-
-                actionBar: {
-                  sx: {
-                    '& .MuiPickersActionBar-root': {
-                      borderTop: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
-                      padding: '12px 16px',
-                    },
-                    '& .MuiButton-root': {
-                      borderRadius: 1,
-                      textTransform: 'none',
-                      fontWeight: 500,
-                      fontSize: '0.8125rem',
-                      '&.MuiButton-text': {
-                        color: theme.palette.text.secondary,
-                        '&:hover': {
-                          bgcolor: alpha(theme.palette.text.secondary, 0.08),
-                        },
-                      },
-                      '&.MuiButton-outlined': {
-                        borderColor: alpha(theme.palette.divider, 0.15),
-                        '&:hover': {
-                          borderColor: alpha(theme.palette.primary.main, 0.25),
-                          bgcolor: alpha(theme.palette.primary.main, 0.04),
-                        },
-                      },
-                    },
-                  },
-                },
-              }}
-            />
-          </Grid>
-
           {/* Timezone */}
           <Grid item xs={12} md={6}>
             <Typography
@@ -392,50 +192,10 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
             </FormControl>
           </Grid>
 
-          {/* Max Repetitions */}
-          <Grid item xs={12} md={6}>
-            <Typography
-              variant="body2"
-              sx={{
-                mb: 1,
-                fontWeight: 500,
-                fontSize: '0.8125rem',
-                color: theme.palette.text.primary,
-              }}
-            >
-              Max Repetitions
-            </Typography>
-            <TextField
-              fullWidth
-              size="small"
-              placeholder="Leave empty if not set"
-              type="number"
-              value={localValue.maxRepetitions ?? ''}
-              onChange={(e) => {
-                const raw = e.target.value;
-                const parsed = raw === '' ? undefined : parseInt(raw, 10);
-                handleFieldChange('maxRepetitions', Number.isNaN(parsed as number) ? undefined : (parsed as number | undefined));
-              }}
-              disabled={disabled}
-              inputProps={{ min: 1 }}
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: 1.25,
-                  fontSize: '0.8125rem',
-                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                    borderColor: alpha(theme.palette.primary.main, 0.25),
-                  },
-                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme.palette.primary.main,
-                    borderWidth: '1px',
-                  },
-                },
-              }}
-            />
-          </Grid>
+          {/* Max Repetitions is currently not supported */}
         </Grid>
 
-        {/* Simple Summary */}
+        {/* Summary */}
         <Box
           sx={{
             p: 1.5,
@@ -452,12 +212,7 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
               lineHeight: 1.4,
             }}
           >
-            {localValue.startTime
-              ? `Sync every ${INTERVAL_OPTIONS.find((opt) => opt.value === localValue.intervalMinutes)?.label || '1 hour'} starting ${epochToDayjs(localValue.startTime)?.format('MMM DD, YYYY hh:mm A') || 'when configured'} (${TIMEZONES.find((tz) => tz.name === localValue.timezone)?.displayName || 'UTC'})`
-              : 'Configure the start date and time to set up scheduled sync'}
-            {localValue.maxRepetitions &&
-              localValue.maxRepetitions > 0 &&
-              ` for ${localValue.maxRepetitions} executions`}
+            {`Sync every ${INTERVAL_OPTIONS.find((opt) => opt.value === localValue.intervalMinutes)?.label || '1 hour'} in ${TIMEZONES.find((tz) => tz.name === localValue.timezone)?.displayName || 'UTC'}`}
           </Typography>
         </Box>
 

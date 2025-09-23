@@ -124,6 +124,7 @@ export const modelService = {
         ...activeModel.configuration,
         providerType: activeModel.provider,
         modelType: activeModel.provider,
+        isMultimodal: activeModel.isMultimodal,
       };
     }
     return null;
@@ -137,6 +138,7 @@ export const modelService = {
         ...activeModel.configuration,
         providerType: activeModel.provider,
         modelType: activeModel.provider,
+        isMultimodal: activeModel.isMultimodal,
       };
     }
     // Default embedding fallback
@@ -147,7 +149,9 @@ export const modelService = {
   },
 
   async updateLlmConfig(config: any): Promise<any> {
-    const { modelType, providerType, _provider, ...cleanConfig } = config;
+    const { modelType, providerType, _provider, isMultimodal, ...cleanConfig } = config;
+    console.log("isMultimodal", isMultimodal);
+    console.log("cleanConfig", cleanConfig);
     const provider = providerType || modelType || _provider;
 
     // Update or create model
@@ -159,17 +163,19 @@ export const modelService = {
         provider,
         configuration: cleanConfig,
         isDefault: true,
+        isMultimodal: Boolean(isMultimodal),
       });
     }
     return this.addModel('llm', {
       provider,
       configuration: cleanConfig,
       isDefault: true,
+      isMultimodal: Boolean(isMultimodal),
     });
   },
 
   async updateEmbeddingConfig(config: any): Promise<any> {
-    const { modelType, providerType, _provider, ...cleanConfig } = config;
+    const { modelType, providerType, _provider, isMultimodal, ...cleanConfig } = config;
     const provider = providerType || modelType || _provider;
 
     if (provider === 'default') {
@@ -185,12 +191,14 @@ export const modelService = {
         provider,
         configuration: cleanConfig,
         isDefault: true,
+        isMultimodal: Boolean(isMultimodal),
       });
     }
     return this.addModel('embedding', {
       provider,
       configuration: cleanConfig,
       isDefault: true,
+      isMultimodal: Boolean(isMultimodal),
     });
   },
 };

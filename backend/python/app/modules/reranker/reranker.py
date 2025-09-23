@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 import torch
 from sentence_transformers import CrossEncoder
 
-from app.models.blocks import BlockType
+from app.models.blocks import BlockType, GroupType
 
 
 class RerankerService:
@@ -47,7 +47,15 @@ class RerankerService:
             return []
 
                 # Create document-query pairs for scoring
-        doc_query_pairs = [(query, doc.get("content", "")) for doc in documents if doc.get("content") and doc.get("block_type") != BlockType.IMAGE.value ]
+        doc_query_pairs = []
+        for doc in documents:
+            content = doc.get("content", "")
+            if content:
+                block_type = doc.get("block_type")
+                if block_type == GroupType.TABLE.value:
+                    doc_query_pairs.append((query, content[0]))
+                elif block_type != BlockType.IMAGE.value:
+                    doc_query_pairs.append((query, content))
 
         # If no valid document-query pairs, return documents as-is
         if not doc_query_pairs:
@@ -58,7 +66,13 @@ class RerankerService:
             return documents
 
         # Get relevance scores
-        scores = self.model.predict(doc_query_pairs)
+        try:
+            scores = self.model.predict(doc_query_pairs)
+        except Exception:
+            for doc in documents:
+                doc["reranker_score"] = 0.0
+                doc["final_score"] = doc.get("score", 0.0)
+            return documents
 
         # Add scores to documents, but only for non-IMAGE blocks
         score_index = 0

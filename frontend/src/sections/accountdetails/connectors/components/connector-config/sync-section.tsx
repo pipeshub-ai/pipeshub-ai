@@ -107,7 +107,7 @@ const SyncSection: React.FC<SyncSectionProps> = ({
         </FormControl>
       </Paper>
 
-      {/* Scheduled Sync Configuration */}
+      {/* Scheduled Sync Configuration (Start time and max repetitions hidden for now) */}
       {formData.selectedStrategy === 'SCHEDULED' && (
         <Paper
           variant="outlined"
@@ -149,14 +149,13 @@ const SyncSection: React.FC<SyncSectionProps> = ({
                 fontSize: '0.75rem',
                 lineHeight: 1.3
               }}>
-                Configure periodic synchronization intervals
+                Configure synchronization interval and timezone
               </Typography>
             </Box>
           </Box>
           <ScheduledSyncConfig
             value={formData.scheduledConfig || {}}
             onChange={(value) => onFieldChange('sync', 'scheduledConfig', value)}
-            error={formErrors.scheduledConfig}
             disabled={saving}
           />
         </Paper>

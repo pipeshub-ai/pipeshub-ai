@@ -15,6 +15,7 @@ export interface ConnectorServiceResponse<T> {
   statusCode: number;
   data?: T;
   msg?: string;
+  headers?: Record<string, string>;
 }
 
 const logger = Logger.getInstance({
@@ -56,10 +57,18 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
 
       // Assuming the response is JSON; adjust if needed.
       const data = await response.json();
+      
+      // Convert Headers object to plain object
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+      
       return {
         statusCode: response.status,
         data: data,
         msg: response.statusText,
+        headers: responseHeaders,
       };
     } catch (error: any) {
       logger.error('Connector service command failed', {

@@ -1020,11 +1020,8 @@ class BaseArangoService:
 
             base_kb_roles = {"OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"}
             if permissions:
-                # This ensures we only filter by roles that are valid for KBs AND requested by the user.
                 final_kb_roles = list(base_kb_roles.intersection(set(permissions)))
-                # If the intersection is empty, no KB records will match, which is correct.
                 if not final_kb_roles:
-                    # To prevent an empty `IN []` which can be inefficient, we can just disable the kbRecords part.
                     include_kb_records = False
             else:
                 final_kb_roles = list(base_kb_roles)
@@ -1035,13 +1032,14 @@ class BaseArangoService:
                     return " AND permissionEdge.role IN @permissions"
                 return ""
 
-            # ===== MAIN QUERY (with pagination and filters and file records) =====
+            # ===== MAIN QUERY (with pagination and filters and file/mail records) =====
             record_filter = build_record_filters(True)
             permission_filter = build_permission_filter(True)
 
             main_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
+
             // KB Records Section - Get records DIRECTLY from belongs_to edges (not through folders)
             LET kbRecords = {
                 f'''(
@@ -1070,7 +1068,8 @@ class BaseArangoService:
                             }}
                 )''' if include_kb_records else '[]'
             }
-            // Connector Records Section - Direct connector permissions (FIXED: _to == user_from)
+
+            // Connector Records Section - Direct connector permissions
             LET connectorRecords = {
                 f'''(
                     FOR permissionEdge IN @@permissions
@@ -1090,26 +1089,60 @@ class BaseArangoService:
                         }}
                 )''' if include_connector_records else '[]'
             }
+
             LET allRecords = APPEND(kbRecords, connectorRecords)
-            FOR item IN allRecords
-                LET record = item.record
-                SORT record.{sort_by} {sort_order.upper()}
+            LET sortedRecords = (
+                FOR item IN allRecords
+                    LET record = item.record
+                    SORT record.{sort_by} {sort_order.upper()}
+                    RETURN item
+            )
+
+            FOR item IN sortedRecords
                 LIMIT @skip, @limit
-                LET fileRecord = FIRST(
-                    FOR fileEdge IN @@is_of_type
-                        FILTER fileEdge._from == record._id
-                        LET file = DOCUMENT(fileEdge._to)
-                        FILTER file != null
-                        RETURN {{
-                            id: file._key,
-                            name: file.name,
-                            extension: file.extension,
-                            mimeType: file.mimeType,
-                            sizeInBytes: file.sizeInBytes,
-                            isFile: file.isFile,
-                            webUrl: file.webUrl
-                        }}
+                LET record = item.record
+
+                // Get file record for FILE type records
+                LET fileRecord = (
+                    record.recordType == "FILE" ? (
+                        FOR fileEdge IN @@is_of_type
+                            FILTER fileEdge._from == record._id
+                            LET file = DOCUMENT(fileEdge._to)
+                            FILTER file != null
+                            RETURN {{
+                                id: file._key,
+                                name: file.name,
+                                extension: file.extension,
+                                mimeType: file.mimeType,
+                                sizeInBytes: file.sizeInBytes,
+                                isFile: file.isFile,
+                                webUrl: file.webUrl
+                            }}
+                    ) : []
                 )
+
+                // Get mail record for MAIL type records
+                LET mailRecord = (
+                    record.recordType == "MAIL" ? (
+                        FOR mailEdge IN @@is_of_type
+                            FILTER mailEdge._from == record._id
+                            LET mail = DOCUMENT(mailEdge._to)
+                            FILTER mail != null
+                            RETURN {{
+                                id: mail._key,
+                                messageId: mail.messageId,
+                                threadId: mail.threadId,
+                                subject: mail.subject,
+                                from: mail.from,
+                                to: mail.to,
+                                cc: mail.cc,
+                                bcc: mail.bcc,
+                                body: mail.body,
+                                webUrl: mail.webUrl
+                            }}
+                    ) : []
+                )
+
                 RETURN {{
                     id: record._key,
                     externalRecordId: record.externalRecordId,
@@ -1129,16 +1162,18 @@ class BaseArangoService:
                     deletedByUserId: record.deletedByUserId,
                     isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
                     webUrl: record.webUrl,
-                    fileRecord: fileRecord,
+                    fileRecord: LENGTH(fileRecord) > 0 ? fileRecord[0] : null,
+                    mailRecord: LENGTH(mailRecord) > 0 ? mailRecord[0] : null,
                     permission: {{role: item.permission.role, type: item.permission.type}},
                     kb: {{id: item.kb_id || null, name: item.kb_name || null }}
                 }}
             """
 
-            # ===== COUNT QUERY (FIXED: _to == user_from for connector records) =====
+            # ===== COUNT QUERY (Fixed) =====
             count_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
+
             LET kbCount = {
                 f'''LENGTH(
                     FOR kbEdge IN @@permissions_to_kb
@@ -1159,6 +1194,7 @@ class BaseArangoService:
                             RETURN 1
                 )''' if include_kb_records else '0'
             }
+
             LET connectorCount = {
                 f'''LENGTH(
                     FOR permissionEdge IN @@permissions
@@ -1166,8 +1202,8 @@ class BaseArangoService:
                         FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
-                        FILTER record.recordType != @drive_record_type
                         FILTER record != null
+                        FILTER record.recordType != @drive_record_type
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
@@ -1175,13 +1211,15 @@ class BaseArangoService:
                         RETURN 1
                 )''' if include_connector_records else '0'
             }
+
             RETURN kbCount + connectorCount
             """
 
-            # ===== FILTERS QUERY (FIXED: _to == user_from for connector records) =====
+            # ===== FILTERS QUERY (Fixed) =====
             filters_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
+
             LET allKbRecords = {
                 '''(
                     FOR kbEdge IN @@permissions_to_kb
@@ -1204,14 +1242,15 @@ class BaseArangoService:
                             }
                 )''' if include_kb_records else '[]'
             }
+
             LET allConnectorRecords = {
                 '''(
                     FOR permissionEdge IN @@permissions
                         FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._from)
-                        FILTER record.recordType != @drive_record_type
                         FILTER record != null
+                        FILTER record.recordType != @drive_record_type
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
@@ -1221,21 +1260,26 @@ class BaseArangoService:
                         }
                 )''' if include_connector_records else '[]'
             }
+
             LET allRecords = APPEND(allKbRecords, allConnectorRecords)
+
             LET flatRecords = (
                 FOR item IN allRecords
                     RETURN item.record
             )
+
             LET permissionValues = (
                 FOR item IN allRecords
                     FILTER item.permission != null
                     RETURN item.permission.role
             )
+
             LET connectorValues = (
                 FOR record IN flatRecords
                     FILTER record.connectorName != null
                     RETURN record.connectorName
             )
+
             RETURN {{
                 recordTypes: UNIQUE(flatRecords[*].recordType) || [],
                 origins: UNIQUE(flatRecords[*].origin) || [],
@@ -1452,7 +1496,7 @@ class BaseArangoService:
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 elif connector_name == Connectors.GOOGLE_MAIL.value:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
-                elif connector_name == Connectors.ONEDRIVE.value:
+                elif connector_name in (Connectors.ONEDRIVE.value, Connectors.SHAREPOINT_ONLINE.value):
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 else:
                     user_role = None
@@ -3621,13 +3665,13 @@ class BaseArangoService:
 
     async def get_app_by_name(self, name: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """
-        Get an app by its name
+        Get an app by its name (case-insensitive, ignoring spaces)
         """
         try:
             self.logger.info("🚀 Getting app by name: %s", name)
             query = """
             FOR app IN @@collection
-                FILTER app.name == @name
+                FILTER LOWER(SUBSTITUTE(app.name, ' ', '')) == LOWER(SUBSTITUTE(@name, ' ', ''))
                 RETURN app
             """
             db = transaction if transaction else self.db

@@ -133,7 +133,7 @@ export const highlightText = (text: string, query: string, theme: any) => {
 };
 
 function isDocViewable(extension: string) {
-  const viewableExtensions = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md'];
+  const viewableExtensions = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md','mdx'];
   return viewableExtensions.includes(extension);
 }
 
@@ -205,7 +205,7 @@ const KnowledgeSearch = ({
     const isDocx = ['docx'].includes(extension.toLowerCase());
     const isHtml = ['html'].includes(extension.toLowerCase());
     const isTextFile = ['txt'].includes(extension.toLowerCase());
-    const isMarkdown = ['md'].includes(extension.toLowerCase());
+    const isMarkdown = ['mdx', 'md'].includes(extension.toLowerCase());
     if (isPdf || isExcel || isDocx || isHtml || isTextFile || isMarkdown) {
       if (onViewCitations) {
         onViewCitations(recordId, extension, record).finally(() => {

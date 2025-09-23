@@ -1382,7 +1382,7 @@ const ChatInterface = () => {
     setOpenPdfView(true);
     const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citationMeta?.extension);
     setIsDocx(['docx'].includes(citationMeta?.extension));
-    setIsMarkdown(['md'].includes(citationMeta?.extension));
+    setIsMarkdown(['mdx', 'md'].includes(citationMeta?.extension));
     setIsHtml(['html'].includes(citationMeta?.extension));
     setIsTextFile(['txt'].includes(citationMeta?.extension));
     setIsExcel(isExcelOrCSV);

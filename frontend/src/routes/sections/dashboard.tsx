@@ -39,6 +39,11 @@ const ConnectorManagementPage = lazy(
   () => import('src/pages/dashboard/account/connectors/[connectorName]')
 );
 
+  // OAuth callback page for connectors
+  const ConnectorOAuthCallback = lazy(
+    () => import('src/pages/dashboard/account/connectors/oauth-callback')
+  );
+
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
 // knowledge-base
@@ -190,6 +195,12 @@ export const dashboardRoutes = [
       { path: 'agents/:agentKey/conversations/:conversationId', element: <AgentChatPage key="agent-conversation" /> },
       { path: 'record/:recordId', element: <RecordDetails /> },
       { path: 'connectors', element: <Navigate to="/account/individual/settings/connector" replace /> },
+      
+      // OAuth callback route for connectors
+      {
+        path: 'connectors/oauth/callback/:connectorName',
+        element: <ConnectorOAuthCallback />,
+      },
       {
         path: 'account',
         children: [
@@ -321,6 +332,14 @@ export const dashboardRoutes = [
                         index: true,
                       },
                       {
+                        path: 'oauth/callback/:connectorName',
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorOAuthCallback />
+                        ) : (
+                          <BusinessAdminOnlyRoute component={ConnectorOAuthCallback} />
+                        ),
+                      },
+                      {
                         path: ':connectorName',
                         element: CONFIG.auth.skip ? (
                           <ConnectorManagementPage />
@@ -421,6 +440,14 @@ export const dashboardRoutes = [
                           <IndividualOnlyRoute component={ConnectorSettings} />
                         ),
                         index: true,
+                      },
+                      {
+                        path: 'oauth/callback/:connectorName',
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorOAuthCallback />
+                        ) : (
+                          <IndividualOnlyRoute component={ConnectorOAuthCallback} />
+                        ),
                       },
                       // Parameterized connector management page
                       {

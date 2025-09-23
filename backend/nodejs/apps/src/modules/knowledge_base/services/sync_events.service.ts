@@ -8,7 +8,7 @@ export enum EventType {
   SyncDriveEvent = 'drive.resync',
   SyncGmailEvent = 'gmail.resync',
   SyncOneDriveEvent = 'onedrive.resync',
-  SyncSharePointOnlineEvent = 'sharepointOnline.resync',
+  SyncSharePointOnlineEvent = 'sharepointonline.resync',
   SyncOutlookEvent = 'outlook.resync',
 }
 

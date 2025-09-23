@@ -87,17 +87,18 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             return True
 
         logger.info("Found %d organizations in the system", len(orgs))
-
         # Process each organization
         for org in orgs:
             org_id = org["_key"]
             accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
-
+            enabled_apps = await arango_service.get_org_apps(org_id)
+            app_names = [app["name"].replace(" ", "").lower() for app in enabled_apps]
+            logger.info(f"App names: {app_names}")
             # Ensure the method is called on the correct object
             if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
-                await initialize_enterprise_google_account_services_fn(org_id, app_container)
+                await initialize_enterprise_google_account_services_fn(org_id, app_container, app_names)
             elif accountType == AccountType.INDIVIDUAL.value:
-                await initialize_individual_google_account_services_fn(org_id, app_container)
+                await initialize_individual_google_account_services_fn(org_id, app_container, app_names)
             else:
                 logger.error("Account Type not valid")
                 continue
@@ -115,7 +116,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             logger.info("Found %d users for organization %s", len(users), org_id)
 
-            enabled_apps = await arango_service.get_org_apps(org_id)
 
             drive_sync_service = None
             gmail_sync_service = None
@@ -146,7 +146,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     asyncio.create_task(onedrive_connector.run_sync())
                     logger.info("OneDrive connector initialized for org %s", org_id)
 
-                if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
+                if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
                     data_store_provider = ArangoDataStore(logger, arango_service)

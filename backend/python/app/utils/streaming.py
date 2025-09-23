@@ -71,6 +71,7 @@ async def stream_llm_response(
     llm,
     messages,
     final_results,
+    logger,
     target_words_per_chunk: int = 5,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
@@ -90,9 +91,9 @@ async def stream_llm_response(
     words_in_chunk = 0
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        print(f"LLM bound with structured output: {llm}")
+        logger.debug(f"LLM bound with structured output: {llm}")
     except Exception as e:
-        print(f"LLM provider or api does not support structured output: {e}")
+        logger.warning(f"LLM provider or api does not support structured output: {e}")
 
     try:
         async for token in aiter_llm_stream(llm, messages):
@@ -148,8 +149,9 @@ async def stream_llm_response(
         try:
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
-
+            logger.debug(f"final_answer: {final_answer}")
             normalized, c = normalize_citations_and_chunks(final_answer, final_results)
+
             yield {
                 "event": "complete",
                 "data": {

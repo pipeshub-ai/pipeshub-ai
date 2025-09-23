@@ -64,8 +64,11 @@ class DocumentExtraction(Transformer):
         )
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool) -> List[dict]:
-        MAX_TOKENS = 4096
+        MAX_TOKENS = 30000
+        MAX_IMAGES = 50
         total_tokens = 0
+        image_count = 0
+        image_cap_logged = False
         content = []
 
         # Lazy import tiktoken; fall back to a rough heuristic if unavailable
@@ -104,6 +107,12 @@ class DocumentExtraction(Transformer):
                     content.append(candidate)
                     total_tokens += increment
             elif block.type.value == "image" and is_multimodal_llm:
+                # Respect provider limits on images per request
+                if image_count >= MAX_IMAGES:
+                    if not image_cap_logged:
+                        self.logger.info("🛑 Reached image cap of %d. Skipping additional images.", MAX_IMAGES)
+                        image_cap_logged = True
+                    continue
                 if block.data and block.format.value == "base64":
                     image_data = block.data
                     image_data = image_data.get("uri")
@@ -116,6 +125,7 @@ class DocumentExtraction(Transformer):
                     }
                     # Images are provider-specific for token accounting; treat as zero-text here
                     content.append(candidate)
+                    image_count += 1
             elif block.type.value == "table_row":
                 if block.data:
                     if isinstance(block.data, dict):

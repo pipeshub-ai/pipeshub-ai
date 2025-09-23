@@ -194,7 +194,7 @@ class ConnectorRegistry:
             'config': {}
         }
 
-    async def _create_app_in_db(self, app_name: str, metadata: Dict[str, Any]) -> bool:
+    async def _create_app_in_db(self, app_name: str, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Create a new app entry in the database.
 
@@ -203,7 +203,7 @@ class ConnectorRegistry:
             metadata: Connector metadata from decorator
 
         Returns:
-            True if successful
+            App document if successful
         """
         try:
             arango_service = await self._get_arango_service()
@@ -213,14 +213,14 @@ class ConnectorRegistry:
                 self.logger.warning(
                     f"No organizations found in DB; skipping app creation for {app_name}"
                 )
-                return False
+                return None
 
             org_id = orgs[0].get("_key")
             if not org_id:
                 self.logger.warning(
                     f"First organization document missing _key; skipping app creation for {app_name}"
                 )
-                return False
+                return None
 
             # for having same app group id for same app group
             app_group_id = hashlib.sha256(metadata['appGroup'].encode()).hexdigest()
@@ -259,11 +259,11 @@ class ConnectorRegistry:
                 raise Exception(f"Failed to create edge for {app_name} in database")
 
             self.logger.info(f"Created database entry for {app_name}")
-            return True
+            return app_doc
 
         except Exception as e:
             self.logger.error(f"Error creating app {app_name} in database: {e}")
-            return False
+            return None
 
     async def _deactivate_app_in_db(self, app_name: str) -> bool:
         """
@@ -506,7 +506,7 @@ class ConnectorRegistry:
             'permissions': Permissions.values()
         }
 
-    async def create_app_when_configured(self, app_name: str) -> bool:
+    async def create_app_when_configured(self, app_name: str) -> Optional[Dict[str, Any]]:
         """
         Create an app in the database when it's actually configured.
         This method should be called when a connector is being configured for the first time.
@@ -516,11 +516,11 @@ class ConnectorRegistry:
             app_name: Name of the application to create
 
         Returns:
-            True if successful or if app already exists
+            App document if successful or if app already exists
         """
         if app_name not in self._connectors:
             self.logger.error(f"App {app_name} not found in registry")
-            return False
+            return None
 
         # Check if app already exists in database
         try:
@@ -528,7 +528,7 @@ class ConnectorRegistry:
             existing_app = await arango_service.get_app_by_name(app_name)
             if existing_app:
                 self.logger.info(f"App {app_name} already exists in database, skipping creation")
-                return True
+                return existing_app
         except Exception as e:
             self.logger.debug(f"Could not check if app {app_name} exists: {e}")
 
@@ -536,7 +536,7 @@ class ConnectorRegistry:
         metadata = self._connectors[app_name]
         return await self._create_app_in_db(app_name, metadata)
 
-    async def update_connector(self, app_name: str, updates: Dict[str, Any]) -> bool:
+    async def update_connector(self, app_name: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Update connector in database.
 
@@ -545,7 +545,7 @@ class ConnectorRegistry:
             updates:  Updates to apply
 
         Returns:
-            True if successful
+            App document if successful
         """
         try:
             arango_service = await self._get_arango_service()
@@ -553,7 +553,7 @@ class ConnectorRegistry:
             existing_doc = await arango_service.get_app_by_name(app_name)
             if not existing_doc:
                 self.logger.error(f"App {app_name} not found in database. Please configure the connector first.")
-                return False
+                return None
 
             updated_doc = {**existing_doc, **updates}
 
@@ -571,11 +571,11 @@ class ConnectorRegistry:
             })
             if not list(cursor):
                 self.logger.warning(f"Failed to update connector for app {app_name}: app not found.")
-                return False
+                return None
 
             self.logger.info(f"Updated connector for app {app_name}")
-            return True
+            return updated_doc
 
         except Exception as e:
             self.logger.error(f"Error updating connector for app {app_name}: {e}")
-            return False
+            return None

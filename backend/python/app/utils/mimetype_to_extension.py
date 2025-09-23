@@ -43,6 +43,7 @@ mime_to_extension = {
     "text/csv": "csv",
     "application/csv": "csv",
     "text/markdown": "md",
+    "text/mdx": "mdx",
 }
 
 

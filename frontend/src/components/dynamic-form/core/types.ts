@@ -14,6 +14,7 @@ export interface LlmFormValues extends BaseFormValues {
   awsAccessSecretKey?: string;
   region?: string;
   provider?: string;
+  isMultimodal?: boolean;
 }
 
 export interface EmbeddingFormValues extends BaseFormValues {
@@ -24,6 +25,7 @@ export interface EmbeddingFormValues extends BaseFormValues {
   awsAccessSecretKey?: string;
   region?: string;
   provider?: string;
+  isMultimodal?: boolean;
 }
 
 export interface StorageFormValues extends BaseFormValues {

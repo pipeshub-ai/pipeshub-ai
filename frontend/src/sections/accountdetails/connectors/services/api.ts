@@ -36,7 +36,10 @@ export class ConnectorApiService {
     }
 
     static async updateConnectorConfig(connectorName: string, config: any): Promise<any> {
-        const response = await axios.put(`${BASE_URL}/config/${connectorName}`, config);
+        const response = await axios.put(`${BASE_URL}/config/${connectorName}`, {
+            ...config,
+            baseUrl: window.location.origin
+        });
         if (!response.data) throw new Error('Failed to update connector config');
         return response.data.config;
     }
@@ -48,7 +51,12 @@ export class ConnectorApiService {
     }
 
     static async getOAuthAuthorizationUrl(connectorName: string): Promise<{ authorizationUrl: string; state: string }> {
-        const response = await axios.get(`${BASE_URL}/${connectorName}/oauth/authorize`);
+        const baseUrl = window.location.origin;
+        const response = await axios.get(`${BASE_URL}/${connectorName}/oauth/authorize`, {
+            params: {
+                baseUrl
+            }
+        });
         if (!response.data) throw new Error('Failed to get OAuth authorization URL');
         return {
             authorizationUrl: response.data.authorizationUrl,
@@ -59,7 +67,8 @@ export class ConnectorApiService {
     static async handleOAuthCallback(connectorName: string, code: string, state: string): Promise<{ filterOptions: any }> {
         const response = await axios.post(`${BASE_URL}/${connectorName}/oauth/callback`, {
             code,
-            state
+            state,
+            baseUrl: window.location.origin
         });
         if (!response.data) throw new Error('Failed to handle OAuth callback');
         return {
@@ -75,7 +84,8 @@ export class ConnectorApiService {
 
     static async saveConnectorFilters(connectorName: string, filters: any): Promise<any> {
         const response = await axios.post(`${BASE_URL}/${connectorName}/filters`, {
-            filters
+            filters,
+            baseUrl: window.location.origin
         });
         if (!response.data) throw new Error('Failed to save connector filters');
         return response.data;

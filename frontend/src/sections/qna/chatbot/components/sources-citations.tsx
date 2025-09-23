@@ -63,7 +63,7 @@ const FILE_CONFIG = {
     jpg: '#E91E63',
     jpeg: '#E91E63',
   },
-  viewableExtensions: ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'ppt', 'pptx'],
+  viewableExtensions: ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'mdx', 'ppt', 'pptx'],
 };
 
 // Default fallback icon for unknown connectors

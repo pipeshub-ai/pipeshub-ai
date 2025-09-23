@@ -335,14 +335,14 @@ async def askAIStream(
                     messages.append({"role": "assistant", "content": conversation.get("content")})
 
 
-            content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query)
+            content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
             messages.append({"role": "user", "content": content})
 
 
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
 
             # Stream LLM response with real-time answer updates
-            async for stream_event in stream_llm_response(llm, messages, final_results):
+            async for stream_event in stream_llm_response(llm, messages, final_results,logger):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
                 yield create_sse_event(event_type, event_data)
@@ -523,7 +523,7 @@ async def askAI(
                 messages.append(
                     {"role": "assistant", "content": conversation.get("content")}
                 )
-        content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query)
+        content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
         messages.append({"role": "user", "content": content})
 
         # Add current query with context

@@ -39,10 +39,10 @@ class GoogleSheetsParser:
         self.max_wait = 10  # seconds
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None
+        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive"
     ) -> None:
         if self.user_service:
-            if not await self.user_service.connect_individual_user(org_id, user_id):
+            if not await self.user_service.connect_individual_user(org_id, user_id,app_name=app_name):
                 self.logger.error("❌ Failed to connect to Google Sheets service")
                 return None
 
@@ -169,7 +169,13 @@ class GoogleSheetsParser:
             }
 
         except Exception as e:
-            self.logger.error("❌ Failed to parse spreadsheet: %s", str(e))
+            error_msg = str(e)
+            if "SERVICE_DISABLED" in error_msg or "API has not been used" in error_msg:
+                self.logger.error(f"❌ Google Sheets API is not enabled. Please enable it in Google Cloud Console: {error_msg}")
+            elif "PERMISSION_DENIED" in error_msg:
+                self.logger.error(f"❌ Permission denied for Google Sheets API: {error_msg}")
+            else:
+                self.logger.error(f"❌ Failed to parse spreadsheet: {error_msg}")
             raise
 
     def _get_column_letter(self, col_idx: int) -> str:

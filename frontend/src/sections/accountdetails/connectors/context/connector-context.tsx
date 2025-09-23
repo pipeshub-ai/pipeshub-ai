@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useReducer, ReactNode, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useReducer, ReactNode, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Connector } from '../types/types';
+import { ConnectorApiService } from '../services/api';
 
 // State interface
 interface ConnectorState {
@@ -107,18 +108,36 @@ interface ConnectorProviderProps {
 export const ConnectorProvider: React.FC<ConnectorProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(connectorReducer, initialState);
 
+  // Prevent concurrent/duplicate fetches
+  const isFetchingRef = useRef(false);
+  const hasMountedFetchedRef = useRef(false);
+
   const refreshConnectors = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
     dispatch({ type: 'SET_LOADING', payload: true });
     dispatch({ type: 'SET_ERROR', payload: null });
-    
+
     try {
-      // This will be implemented in the hook
-      // For now, just clear loading state
-      dispatch({ type: 'SET_LOADING', payload: false });
+      const [active, inactive] = await Promise.all([
+        ConnectorApiService.getActiveConnectors(),
+        ConnectorApiService.getInactiveConnectors(),
+      ]);
+      dispatch({ type: 'SET_CONNECTORS', payload: { active, inactive } });
     } catch (error) {
-      dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Unknown error' });
+      dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to fetch connectors' });
+    } finally {
+      isFetchingRef.current = false;
     }
   }, []);
+
+  // Initial fetch once on mount
+  useEffect(() => {
+    if (hasMountedFetchedRef.current) return;
+    hasMountedFetchedRef.current = true;
+    refreshConnectors();
+  }, [refreshConnectors]);
 
   const updateConnector = useCallback((name: string, updates: Partial<Connector>) => {
     dispatch({ type: 'UPDATE_CONNECTOR', payload: { name, updates } });
