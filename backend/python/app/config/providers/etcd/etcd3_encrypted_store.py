@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
+import etcd3
 
 import dotenv
 
@@ -54,13 +55,11 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.logger.debug("✅ KeyValueStore initialized successfully")
 
     @property
-    def client(self):
+    def client(self) -> Optional[etcd3.client]:
         """Expose the underlying ETCD client for watchers and diagnostics."""
-        try:
-            # Delegate to inner store's client if available
-            return getattr(self.store, "client", None)
-        except Exception:
-            return None
+
+        return getattr(self.store, "client", None)
+
 
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
         self.logger.debug("🔧 Creating ETCD store configuration...")
