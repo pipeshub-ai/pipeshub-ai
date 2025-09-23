@@ -53,6 +53,15 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         self.logger.debug("✅ KeyValueStore initialized successfully")
 
+    @property
+    def client(self):
+        """Expose the underlying ETCD client for watchers and diagnostics."""
+        try:
+            # Delegate to inner store's client if available
+            return getattr(self.store, "client", None)
+        except Exception:
+            return None
+
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
         self.logger.debug("🔧 Creating ETCD store configuration...")
         self.logger.debug("ETCD URL: %s", os.getenv("ETCD_URL"))
