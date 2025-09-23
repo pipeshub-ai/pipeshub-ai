@@ -178,6 +178,8 @@ async def askAIStream(
         try:
             container = request.app.container
             logger = container.logger()
+
+            logger.info(f"\n\n\n\n\n\nquery_info: {query_info} \n\n\n\n\n\n")
             # Send initial event
             yield create_sse_event("status", {"status": "started", "message": "Starting AI processing..."})
 

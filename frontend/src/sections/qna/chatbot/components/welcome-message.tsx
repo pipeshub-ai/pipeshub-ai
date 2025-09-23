@@ -68,12 +68,23 @@ const Footer = memo(({ isDark }: { isDark: boolean }) => {
 Footer.displayName = 'Footer';
 
 interface WelcomeMessageProps {
-  onSubmit: (message: string, modelProvider?: string, modelName?: string, chatMode?: string) => Promise<void>;
+  onSubmit: (
+    message: string,
+    modelProvider?: string,
+    modelName?: string,
+    chatMode?: string,
+    filters?: { apps: string[]; kb: string[] }
+  ) => Promise<void>;
   isLoading?: boolean;
   selectedModel: Model | null;
   selectedChatMode: ChatMode | null;
   onModelChange: (model: Model) => void;
   onChatModeChange: (mode: ChatMode) => void;
+  apps: Array<{ id: string; name: string; iconPath?: string }>;
+  knowledgeBases: Array<{ id: string; name: string }>;
+  initialSelectedApps?: string[];
+  initialSelectedKbIds?: string[];
+  onFiltersChange?: (filters: { apps: string[]; kb: string[] }) => void;
 }
 
 // Main WelcomeMessage component
@@ -83,7 +94,12 @@ const WelcomeMessageComponent = ({
   selectedModel, 
   selectedChatMode, 
   onModelChange, 
-  onChatModeChange 
+  onChatModeChange,
+  apps,
+  knowledgeBases,
+  initialSelectedApps = [],
+  initialSelectedKbIds = [],
+  onFiltersChange,
 }: WelcomeMessageProps) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -91,12 +107,18 @@ const WelcomeMessageComponent = ({
 
   // Direct submission handler that stores message text in a ref
   const handleDirectSubmit = useCallback(
-    async (text: string, modelKey?: string, modelName?: string, chatMode?: string) => {
+    async (
+      text: string,
+      modelKey?: string,
+      modelName?: string,
+      chatMode?: string,
+      filters?: { apps: string[]; kb: string[] }
+    ) => {
       if (isSubmittingRef.current) return;
 
       isSubmittingRef.current = true;
       try {
-        await onSubmit(text, modelKey, modelName, chatMode);
+        await onSubmit(text, modelKey, modelName, chatMode, filters);
       } catch (error) {
         console.error('Error during message submission:', error);
         // Potentially handle error display to the user here
@@ -178,6 +200,11 @@ const WelcomeMessageComponent = ({
           selectedChatMode={selectedChatMode}
           onModelChange={onModelChange}
           onChatModeChange={onChatModeChange}
+          apps={apps}
+          knowledgeBases={knowledgeBases}
+          initialSelectedApps={initialSelectedApps}
+          initialSelectedKbIds={initialSelectedKbIds}
+          onFiltersChange={onFiltersChange}
         />
 
       {/* Footer */}

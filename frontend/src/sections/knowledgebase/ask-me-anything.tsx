@@ -664,6 +664,10 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
               selectedChatMode={selectedChatMode}
               onModelChange={setSelectedModel}
               onChatModeChange={setSelectedChatMode}
+              apps={[]}
+              knowledgeBases={[]}
+              initialSelectedApps={[]}
+              initialSelectedKbIds={[]}
             />
           </Box>
         </Box>
