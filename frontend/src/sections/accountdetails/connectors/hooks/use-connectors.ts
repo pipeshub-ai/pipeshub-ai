@@ -1,5 +1,4 @@
 import { useEffect, useCallback, useMemo } from 'react';
-import { ConnectorApiService } from '../services/api';
 import { useConnectorContext } from '../context/connector-context';
 
 // Cache duration in milliseconds (5 minutes)
@@ -14,79 +13,28 @@ export const useConnectors = () => {
     return Date.now() - state.lastFetched > CACHE_DURATION;
   }, [state.lastFetched]);
 
-  // Fetch active connectors
+  // The hook no longer fetches by itself; it delegates to provider-level refresh
   const fetchActiveConnectors = useCallback(async () => {
-    try {
-      dispatch({ type: 'SET_LOADING', payload: true });
-      dispatch({ type: 'SET_ERROR', payload: null });
+    await contextRefreshConnectors();
+  }, [contextRefreshConnectors]);
 
-      const connectors = await ConnectorApiService.getActiveConnectors();
-      dispatch({ type: 'SET_ACTIVE_CONNECTORS', payload: connectors });
-    } catch (error) {
-      console.error('Failed to fetch active connectors:', error);
-      dispatch({
-        type: 'SET_ERROR',
-        payload: error instanceof Error ? error.message : 'Failed to fetch active connectors',
-      });
-    }
-  }, [dispatch]);
-
-  // Fetch inactive connectors
   const fetchInactiveConnectors = useCallback(async () => {
-    try {
-      dispatch({ type: 'SET_LOADING', payload: true });
-      dispatch({ type: 'SET_ERROR', payload: null });
+    await contextRefreshConnectors();
+  }, [contextRefreshConnectors]);
 
-      const connectors = await ConnectorApiService.getInactiveConnectors();
-      dispatch({ type: 'SET_INACTIVE_CONNECTORS', payload: connectors });
-    } catch (error) {
-      console.error('Failed to fetch inactive connectors:', error);
-      dispatch({
-        type: 'SET_ERROR',
-        payload: error instanceof Error ? error.message : 'Failed to fetch inactive connectors',
-      });
-    }
-  }, [dispatch]);
-
-  // Fetch all connectors
   const fetchAllConnectors = useCallback(async () => {
-    try {
-      dispatch({ type: 'SET_LOADING', payload: true });
-      dispatch({ type: 'SET_ERROR', payload: null });
-
-      const [activeConnectors, inactiveConnectors] = await Promise.all([
-        ConnectorApiService.getActiveConnectors(),
-        ConnectorApiService.getInactiveConnectors(),
-      ]);
-
-      dispatch({
-        type: 'SET_CONNECTORS',
-        payload: { active: activeConnectors, inactive: inactiveConnectors },
-      });
-    } catch (error) {
-      console.error('Failed to fetch connectors:', error);
-      dispatch({
-        type: 'SET_ERROR',
-        payload: error instanceof Error ? error.message : 'Failed to fetch connectors',
-      });
-    }
-  }, [dispatch]);
+    await contextRefreshConnectors();
+  }, [contextRefreshConnectors]);
 
   // Refresh connectors (force fetch)
   const refreshConnectors = useCallback(async () => {
     await fetchAllConnectors();
   }, [fetchAllConnectors]);
 
-  // Auto-fetch on mount and when data is stale
+  // Auto-fetch is handled in the Provider; only optionally refresh if explicitly asked
   useEffect(() => {
-    if (state.activeConnectors.length === 0 && state.inactiveConnectors.length === 0) {
-      // Initial load
-      fetchAllConnectors();
-    } else if (isStale) {
-      // Refresh stale data
-      fetchAllConnectors();
-    }
-  }, [fetchAllConnectors, isStale, state.activeConnectors.length, state.inactiveConnectors.length]);
+    // No-op to avoid multiple consumers triggering parallel fetches
+  }, []);
 
   // Get all connectors combined
   const allConnectors = useMemo(() => 
