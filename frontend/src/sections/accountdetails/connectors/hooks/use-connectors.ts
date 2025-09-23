@@ -13,28 +13,26 @@ export const useConnectors = () => {
     return Date.now() - state.lastFetched > CACHE_DURATION;
   }, [state.lastFetched]);
 
-  // The hook no longer fetches by itself; it delegates to provider-level refresh
-  const fetchActiveConnectors = useCallback(async () => {
-    await contextRefreshConnectors();
-  }, [contextRefreshConnectors]);
-
-  const fetchInactiveConnectors = useCallback(async () => {
-    await contextRefreshConnectors();
-  }, [contextRefreshConnectors]);
-
+  // Fetch all connectors via Provider method
   const fetchAllConnectors = useCallback(async () => {
     await contextRefreshConnectors();
   }, [contextRefreshConnectors]);
 
   // Refresh connectors (force fetch)
   const refreshConnectors = useCallback(async () => {
-    await fetchAllConnectors();
-  }, [fetchAllConnectors]);
+    await contextRefreshConnectors();
+  }, [contextRefreshConnectors]);
 
-  // Auto-fetch is handled in the Provider; only optionally refresh if explicitly asked
+  // Auto-fetch on mount and when data is stale
   useEffect(() => {
-    // No-op to avoid multiple consumers triggering parallel fetches
-  }, []);
+    if (state.activeConnectors.length === 0 && state.inactiveConnectors.length === 0) {
+      // Initial load
+      fetchAllConnectors();
+    } else if (isStale) {
+      // Refresh stale data
+      fetchAllConnectors();
+    }
+  }, [fetchAllConnectors, isStale, state.activeConnectors.length, state.inactiveConnectors.length]);
 
   // Get all connectors combined
   const allConnectors = useMemo(() => 
@@ -82,8 +80,6 @@ export const useConnectors = () => {
 
     // Actions
     refreshConnectors,
-    fetchActiveConnectors,
-    fetchInactiveConnectors,
     fetchAllConnectors,
 
     // Utilities

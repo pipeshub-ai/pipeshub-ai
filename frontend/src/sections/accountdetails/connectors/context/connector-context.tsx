@@ -108,7 +108,7 @@ interface ConnectorProviderProps {
 export const ConnectorProvider: React.FC<ConnectorProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(connectorReducer, initialState);
 
-  // Prevent concurrent/duplicate fetches (e.g., StrictMode double mount)
+  // Prevent concurrent/duplicate fetches
   const isFetchingRef = useRef(false);
   const hasMountedFetchedRef = useRef(false);
 
@@ -124,21 +124,15 @@ export const ConnectorProvider: React.FC<ConnectorProviderProps> = ({ children }
         ConnectorApiService.getActiveConnectors(),
         ConnectorApiService.getInactiveConnectors(),
       ]);
-
       dispatch({ type: 'SET_CONNECTORS', payload: { active, inactive } });
     } catch (error) {
-      dispatch({
-        type: 'SET_ERROR',
-        payload: error instanceof Error ? error.message : 'Failed to fetch connectors',
-      });
-      // Even on error, stop loading
-      dispatch({ type: 'SET_LOADING', payload: false });
+      dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to fetch connectors' });
     } finally {
       isFetchingRef.current = false;
     }
   }, []);
 
-  // Initial fetch once at provider mount
+  // Initial fetch once on mount
   useEffect(() => {
     if (hasMountedFetchedRef.current) return;
     hasMountedFetchedRef.current = true;
