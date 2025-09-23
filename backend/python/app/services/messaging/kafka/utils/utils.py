@@ -9,6 +9,7 @@ from app.connectors.sources.google.google_drive.services.event_service.event_ser
     GoogleDriveEventService,
 )
 from app.connectors.sources.microsoft.onedrive.event_service import OneDriveEventService
+from app.connectors.sources.microsoft.outlook.event_service import OutlookEventService
 from app.connectors.sources.microsoft.sharepoint_online.event_service import (
     SharePointOnlineEventService,
 )
@@ -274,6 +275,16 @@ class KafkaUtils:
 
                     logger.info(f"Processing sync event: {event_type} for MICROSOFT ONEDRIVE")
                     return await onedrive_event_service.process_event(event_type, payload)
+
+                elif connector.lower() == Connectors.OUTLOOK.value.lower():
+                    outlook_event_service = OutlookEventService(
+                        logger=logger,
+                        arango_service=arango_service,
+                        app_container=app_container,
+                    )
+
+                    logger.info(f"Processing sync event: {event_type} for MICROSOFT OUTLOOK")
+                    return await outlook_event_service.process_event(event_type, payload)
 
                 elif connector.replace(" ", "").lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
                     sharepoint_event_service = SharePointOnlineEventService(

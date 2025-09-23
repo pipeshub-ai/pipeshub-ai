@@ -11,6 +11,7 @@ export const constructSyncConnectorEvent = (
     'drive': EventType.SyncDriveEvent,
     'gmail': EventType.SyncGmailEvent,
     'onedrive': EventType.SyncOneDriveEvent,
+    'outlook': EventType.SyncOutlookEvent,
   };
 
   const eventType = eventTypeMap[connector] || EventType.ReindexAllRecordEvent;

@@ -25,6 +25,10 @@ export const configPaths = {
       base: '/services/connectors/sharepoint/',
       config: '/services/connectors/sharepoint/config',
     },
+    outlook: {
+      base: '/services/connectors/outlook/',
+      config: '/services/connectors/outlook/config',
+    },
   },
   smtp: '/services/smtp',
   auth: {

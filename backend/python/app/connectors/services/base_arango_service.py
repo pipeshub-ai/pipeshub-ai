@@ -147,6 +147,20 @@ class BaseArangoService:
                     CollectionNames.FILES.value,  # For attachments
                 ]
             },
+            Connectors.OUTLOOK.value: {
+                "allowed_roles": ["OWNER", "WRITER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.FILES.value,
+                ]
+            },
             Connectors.KNOWLEDGE_BASE.value: {
                 "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
                 "edge_collections": [
@@ -1598,6 +1612,8 @@ class BaseArangoService:
                 return await self.delete_google_drive_record(record_id, user_id, record)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
                 return await self.delete_gmail_record(record_id, user_id, record)
+            elif connector_name == Connectors.OUTLOOK.value:
+                return await self.delete_outlook_record(record_id, user_id, record)
             else:
                 return {
                     "success": False,
@@ -1613,7 +1629,7 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
         """
         Delete a record by external ID
         """
@@ -1626,13 +1642,136 @@ class BaseArangoService:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
                 return
 
-            # Delete record
-            await self.delete_record(record["key"])
+            # Delete record using the record's internal ID and user_id
+            deletion_result = await self.delete_record(record.id, user_id)
 
-            self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            # Check if deletion was successful
+            if deletion_result.get("success"):
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            else:
+                error_reason = deletion_result.get("reason", "Unknown error")
+                self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
+                raise Exception(f"Deletion failed: {error_reason}")
+
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
             raise
+
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions)
+        This removes the user's permissions and belongsTo edges without deleting the record itself
+        """
+        try:
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+
+            # Get record
+            record = await self.get_record_by_external_id(connector_name, external_id)
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Remove user's access instead of deleting the entire record
+            result = await self._remove_user_access_from_record(record.id, user_id)
+
+            if result.get("success"):
+                self.logger.info(f"✅ User access removed: {external_id} from {connector_name}")
+
+                # Check if any users still have access - if not, delete the record completely
+                has_remaining_access = await self._check_remaining_record_access(record.id)
+                if not has_remaining_access:
+                    self.logger.info(f"🗑️ No remaining access to record {record.id}, deleting completely")
+                    # Use a direct deletion method that bypasses permission checks since no one has access
+                    await self._delete_orphaned_record(record.id, connector_name)
+                else:
+                    self.logger.info(f"📧 Record {record.id} still has other users with access, keeping record")
+            else:
+                self.logger.error(f"❌ Failed to remove user access: {result.get('reason', 'Unknown error')}")
+                raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            raise
+
+    async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
+        """Remove a specific user's access to a record"""
+        try:
+            self.logger.info(f"🚀 Removing user {user_id} access to record {record_id}")
+
+            # Remove user's permission edges
+            user_removal_query = """
+            FOR perm IN permissions
+                FILTER perm._from == @record_from
+                FILTER perm._to == @user_to
+                REMOVE perm IN permissions
+                RETURN OLD
+            """
+
+            cursor = self.db.aql.execute(user_removal_query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "user_to": f"users/{user_id}"
+            })
+
+            removed_permissions = list(cursor)
+
+            if removed_permissions:
+                self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": len(removed_permissions)}
+            else:
+                self.logger.warning(f"⚠️ No permissions found for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": 0}
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Access removal failed: {str(e)}"
+            }
+
+    async def _check_remaining_record_access(self, record_id: str) -> bool:
+        """Check if any users still have access to a record"""
+        try:
+            access_check_query = """
+            FOR perm IN permissions
+                FILTER perm._from == @record_from
+                LIMIT 1
+                RETURN perm
+            """
+
+            cursor = self.db.aql.execute(access_check_query, bind_vars={
+                "record_from": f"records/{record_id}"
+            })
+
+            remaining_access = next(cursor, None)
+            return remaining_access is not None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check remaining access: {str(e)}")
+            return True  # Assume access exists on error to be safe
+
+    async def _delete_orphaned_record(self, record_id: str, connector_name: Connectors) -> None:
+        """Delete a record that has no remaining user access"""
+        try:
+            self.logger.info(f"🗑️ Deleting orphaned record {record_id}")
+
+            # Get the record to determine what type it is
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not record:
+                self.logger.warning(f"⚠️ Orphaned record {record_id} not found")
+                return
+
+            # Use the appropriate deletion method based on connector
+            if connector_name == Connectors.OUTLOOK.value:
+                result = await self._execute_outlook_record_deletion(record_id, record, "ORPHAN_CLEANUP")
+                if result.get("success"):
+                    self.logger.info(f"✅ Orphaned Outlook record {record_id} deleted successfully")
+                else:
+                    self.logger.error(f"❌ Failed to delete orphaned record: {result.get('reason')}")
+            else:
+                self.logger.warning(f"⚠️ Orphan cleanup not implemented for connector: {connector_name}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete orphaned record {record_id}: {str(e)}")
 
     async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
         """
@@ -2189,6 +2328,145 @@ class BaseArangoService:
             "@records_collection": CollectionNames.RECORDS.value,
         })
 
+    async def delete_outlook_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
+        """
+        Delete an Outlook record - handles Outlook-specific permissions and logic
+        """
+        try:
+            self.logger.info(f"📧 Deleting Outlook record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check Outlook-specific permissions
+            user_role = await self._check_outlook_permissions(record_id, user_key)
+            if not user_role or user_role not in self.connector_delete_permissions[Connectors.OUTLOOK.value]["allowed_roles"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient Outlook permissions. Role: {user_role}"
+                }
+
+            # Execute Outlook-specific deletion
+            return await self._execute_outlook_record_deletion(record_id, record, user_role)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Outlook record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Outlook record deletion failed: {str(e)}"
+            }
+
+    async def _execute_outlook_record_deletion(self, record_id: str, record: Dict, user_role: str) -> Dict:
+        """Execute Outlook record deletion with transaction"""
+        try:
+            existing_record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not existing_record:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": "Record not found before deletion"
+                }
+
+            transaction = self.db.begin_transaction(
+                write=self.connector_delete_permissions[Connectors.OUTLOOK.value]["document_collections"] +
+                      self.connector_delete_permissions[Connectors.OUTLOOK.value]["edge_collections"]
+            )
+
+            await self._delete_outlook_specific_edges(transaction, record_id)
+            await self._delete_file_record(transaction, record_id)
+            await self._delete_mail_record(transaction, record_id)
+            await self._delete_main_record(transaction, record_id)
+
+            transaction.commit()
+
+            event_payload = await self._create_deleted_record_event_payload(record)
+
+            return {
+                "success": True,
+                "code": 200,
+                "reason": "Outlook record deleted successfully",
+                "user_role": user_role,
+                "event_payload": event_payload
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Outlook record deletion transaction failed: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _delete_outlook_specific_edges(self, transaction, record_id: str) -> None:
+        """Delete Outlook-specific edges from various collections"""
+        outlook_edge_collections = self.connector_delete_permissions[Connectors.OUTLOOK.value]["edge_collections"]
+
+        edge_deletion_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "IS_OF_TYPE edges"
+            },
+            CollectionNames.RECORD_RELATIONS.value: {
+                "filter": "edge._from == @record_from OR edge._to == @record_to",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}"
+                },
+                "description": "Record relations"
+            },
+            CollectionNames.PERMISSIONS.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Permission edges"
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Belongs to edges"
+            },
+            "default": {
+                "filter": "edge._from == @record_from OR edge._to == @record_to",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}"
+                },
+                "description": "Bidirectional edges"
+            }
+        }
+
+        deletion_query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        for edge_collection in outlook_edge_collections:
+            try:
+                strategy = edge_deletion_strategies.get(edge_collection, edge_deletion_strategies["default"])
+                deletion_query = deletion_query_template.format(filter=strategy["filter"])
+                bind_vars = {
+                    "@edge_collection": edge_collection,
+                    **strategy["bind_vars"]
+                }
+
+                transaction.aql.execute(deletion_query, bind_vars=bind_vars)
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
+                raise
+
     async def _check_connector_reindex_permissions(self, user_key: str, org_id: str, connector: str, origin: str) -> Dict:
         """
         Simple permission check for connector reindex operations
@@ -2590,6 +2868,99 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(f"❌ Failed to check Gmail permissions: {str(e)}")
+            return None
+
+    async def _check_outlook_permissions(self, record_id: str, user_key: str) -> Optional[str]:
+        """
+        Check Outlook specific permissions
+        Outlook permission model: Similar to Gmail - User must be sender, recipient (to/cc/bcc), or have explicit permissions
+        """
+        try:
+            self.logger.info(f"🔍 Checking Outlook permissions for record {record_id} and user {user_key}")
+
+            outlook_permission_query = """
+            LET user_from = CONCAT('users/', @user_key)
+            LET record_from = CONCAT('records/', @record_id)
+            // Get user details
+            LET user = DOCUMENT(user_from)
+            LET user_email = user ? user.email : null
+            // 1. Check if user is sender/recipient of the email
+            LET email_access = user_email ? (
+                FOR record IN @@records
+                    FILTER record._key == @record_id
+                    FILTER record.recordType == "MAIL"
+                    // Get the mail record
+                    FOR mail_edge IN @@is_of_type
+                        FILTER mail_edge._from == record._id
+                        LET mail = DOCUMENT(mail_edge._to)
+                        FILTER mail != null
+                        // Check if user is sender
+                        LET is_sender = mail.from == user_email OR mail.senderEmail == user_email
+                        // Check if user is in recipients (to, cc, bcc)
+                        LET is_in_to = user_email IN (mail.to || [])
+                        LET is_in_cc = user_email IN (mail.cc || [])
+                        LET is_in_bcc = user_email IN (mail.bcc || [])
+                        LET is_recipient = is_in_to OR is_in_cc OR is_in_bcc
+                        FILTER is_sender OR is_recipient
+                        // Return role based on relationship
+                        RETURN is_sender ? "OWNER" : "READER"
+            ) : []
+            LET email_permission = LENGTH(email_access) > 0 ? FIRST(email_access) : null
+            // 2. Check direct user permissions on the record
+            LET direct_permission = FIRST(
+                FOR perm IN @@permissions
+                    FILTER perm._from == record_from
+                    FILTER perm._to == user_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+            // Return the highest permission level found (direct permissions take precedence)
+            LET final_permission = (
+                direct_permission ? direct_permission :
+                email_permission ? email_permission :
+                null
+            )
+            RETURN {
+                permission: final_permission,
+                source: (
+                    direct_permission ? "DIRECT" :
+                    email_permission ? "EMAIL_ACCESS" :
+                    "NONE"
+                ),
+                user_email: user_email,
+                is_sender: email_permission == "OWNER",
+                is_recipient: email_permission == "READER"
+            }
+            """
+
+            cursor = self.db.aql.execute(outlook_permission_query, bind_vars={
+                "record_id": record_id,
+                "user_key": user_key,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "@permissions": CollectionNames.PERMISSIONS.value,
+            })
+
+            result = next(cursor, None)
+
+            if result and result.get("permission"):
+                permission = result["permission"]
+                source = result["source"]
+                user_email = result.get("user_email", "unknown")
+
+                if source == "EMAIL_ACCESS":
+                    role_type = "sender" if result.get("is_sender") else "recipient"
+                    self.logger.info(f"✅ Outlook permission found: {permission} (user {user_email} is {role_type})")
+                else:
+                    self.logger.info(f"✅ Outlook permission found: {permission} (via {source})")
+
+                return permission
+            else:
+                self.logger.warning(f"⚠️ No Outlook permissions found for user {user_key} on record {record_id}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check Outlook permissions: {str(e)}")
             return None
 
     async def _create_deleted_record_event_payload(

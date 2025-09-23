@@ -3,6 +3,7 @@ export const APP_TYPES = {
   GMAIL: 'gmail',
   ONEDRIVE: 'onedrive',
   SHAREPOINT_ONLINE: 'sharepointOnline',
+  OUTLOOK: 'outlook',
   LOCAL: 'local',
 } as const;
 

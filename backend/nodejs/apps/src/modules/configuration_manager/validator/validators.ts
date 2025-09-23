@@ -298,6 +298,8 @@ export const sharepointCredentialsSchema = z.object({
 
 export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
 
+export const outlookCredentialsSchema = microsoftConnectorCredentialsSchema;
+
 
 
 // export const aiModelsConfigSchema = z.object({

@@ -893,7 +893,7 @@ export const uploadRecordsToFolder =
       }
 
       console.log(
-        '✅ Files processed, calling Python service for folder upload', 
+        '✅ Files processed, calling Python service for folder upload',
       );
 
       // Single API call to Python service with all data
@@ -2304,7 +2304,7 @@ export const removeKBPermission =
 
         res.status(200).json({
           kbId: kbId,
-            userIds: removeResult.userIds,
+          userIds: removeResult.userIds,
           teamIds: removeResult.teamIds,
         });
       } catch (pythonServiceError: any) {
@@ -2579,7 +2579,16 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK', 'SHAREPOINT ONLINE', 'JIRA'];
+      const allowedApps = [
+        'ONEDRIVE',
+        'DRIVE',
+        'GMAIL',
+        'CONFLUENCE',
+        'SLACK',
+        'SHAREPOINT ONLINE',
+        'JIRA',
+        'OUTLOOK',
+      ];
       if (!allowedApps.includes(app)) {
         throw new BadRequestError('APP not allowed');
       }
@@ -2622,6 +2631,7 @@ export const resyncConnectorRecords =
         'ONEDRIVE',
         'DRIVE',
         'GMAIL',
+        'OUTLOOK',
         'CONFLUENCE',
         'JIRA',
         'SLACK',

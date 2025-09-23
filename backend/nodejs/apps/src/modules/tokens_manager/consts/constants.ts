@@ -25,3 +25,8 @@ export const SHAREPOINT_CONFIG_PATH =
 
 export const SHAREPOINT_INTERNAL_CONFIG_PATH =
   'api/v1/configurationManager/internal/connectors/sharepoint/config';
+
+export const OUTLOOK_CONFIG_PATH =
+  'api/v1/configurationManager/connectors/outlook/config';
+export const OUTLOOK_INTERNAL_CONFIG_PATH =
+  'api/v1/configurationManager/internal/connectors/outlook/config';

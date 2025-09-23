@@ -12981,6 +12981,7 @@ class OutlookCalendarContactsDataSource:
         self,
         user_id: str,
         mailFolder_id: str,
+        delta_link: Optional[str] = None,
         changeType: Optional[str] = None,
         dollar_select: Optional[List[str]] = None,
         dollar_orderby: Optional[List[str]] = None,
@@ -13001,6 +13002,7 @@ class OutlookCalendarContactsDataSource:
         Args:
             user_id (str, required): Outlook user id identifier
             mailFolder_id (str, required): Outlook mailFolder id identifier
+            delta_link (str, optional): Complete deltaLink URL from previous response for incremental sync
             changeType (str, optional): A custom query option to filter the delta response based on the type of change. Supported values are created, updated or deleted.
             dollar_select (List[str], optional): Select properties to be returned
             dollar_orderby (List[str], optional): Order items by property values
@@ -13019,39 +13021,43 @@ class OutlookCalendarContactsDataSource:
         """
         # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
+            if delta_link:
+                # Use the complete deltaLink URL for subsequent requests
+                response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta.with_url(delta_link).get()
+            else:
+                # Use typed query parameters
+                query_params = RequestConfiguration()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                # Set query parameters using typed object properties
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = RequestConfiguration()
-            config.query_parameters = query_params
+                # Create proper typed request configuration
+                config = RequestConfiguration()
+                config.query_parameters = query_params
 
-            if headers:
-                config.headers = headers
+                if headers:
+                    config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                # Add consistency level for search operations in Outlook
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta().get(request_configuration=config)
+                response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
