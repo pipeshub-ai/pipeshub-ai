@@ -163,8 +163,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const [modelMenuAnchor, setModelMenuAnchor] = useState<null | HTMLElement>(null);
   const [modeMenuAnchor, setModeMenuAnchor] = useState<null | HTMLElement>(null);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [appsMenuAnchor, setAppsMenuAnchor] = useState<null | HTMLElement>(null);
-  const [kbMenuAnchor, setKbMenuAnchor] = useState<null | HTMLElement>(null);
+  // Removed unused menu anchors in favor of unified dialog
   const [selectedApps, setSelectedApps] = useState<string[]>(initialSelectedApps || []);
   const [selectedKbIds, setSelectedKbIds] = useState<string[]>(initialSelectedKbIds || []);
   // Enhanced dialog states
@@ -178,20 +177,20 @@ const ChatInput: React.FC<ChatInputProps> = ({
     return map;
   }, [knowledgeBases]);
 
-  // Sync from parent only when arrays actually change
+  // Sync from parent only when props actually change
   useEffect(() => {
-    const same =
-      (initialSelectedApps?.length || 0) === selectedApps.length &&
-      (initialSelectedApps || []).every((v, i) => v === selectedApps[i]);
+    const initialSet = new Set(initialSelectedApps || []);
+    const currentSet = new Set(selectedApps);
+    const same = initialSet.size === currentSet.size && [...initialSet].every(value => currentSet.has(value));
     if (!same) {
       setSelectedApps(initialSelectedApps || []);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSelectedApps]);
   useEffect(() => {
-    const same =
-      (initialSelectedKbIds?.length || 0) === selectedKbIds.length &&
-      (initialSelectedKbIds || []).every((v, i) => v === selectedKbIds[i]);
+    const initialSet = new Set(initialSelectedKbIds || []);
+    const currentSet = new Set(selectedKbIds);
+    const same = initialSet.size === currentSet.size && [...initialSet].every(value => currentSet.has(value));
     if (!same) {
       setSelectedKbIds(initialSelectedKbIds || []);
     }
@@ -216,8 +215,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
     } catch (e) {
       // ignore prefetch errors
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appItems.length]);
+  }, [appItems]);
 
   // Memoized filtered lists for performance and stability
   const filteredApps = useMemo(() => {
@@ -270,11 +268,9 @@ const ChatInput: React.FC<ChatInputProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const openKbMenu = (event: React.MouseEvent<HTMLElement>) => setKbMenuAnchor(event.currentTarget);
-
-  const closeKbMenu = () => setKbMenuAnchor(null);
-  const openAppsMenu = (event: React.MouseEvent<HTMLElement>) => setAppsMenuAnchor(event.currentTarget);
-  const closeAppsMenu = () => setAppsMenuAnchor(null);
+  // Open resources dialog helpers
+  const openAppsSelector = () => { setResourcesDialogOpen(true); setResourcesTab(0); };
+  const openKbSelector = () => { setResourcesDialogOpen(true); setResourcesTab(1); };
 
   const toggleApp = (id: string) => {
     setSelectedApps((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
@@ -823,12 +819,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
         </Menu>
 
         {/* Resources Selection Dialog */}
-        <Menu
-          anchorEl={null}
-          open={false}
-          onClose={() => {}}
-          sx={{ display: 'none' }}
-        />
         <Dialog
           open={resourcesDialogOpen}
           onClose={() => setResourcesDialogOpen(false)}
@@ -958,7 +948,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 size="small"
                 label={`+${selectedApps.length - 3} more`}
                 sx={{ height: 22, borderRadius: '12px' }}
-                onClick={openAppsMenu}
+                onClick={openAppsSelector}
               />
             )}
             {selectedKbIds.slice(0, 3).map((id) => {
@@ -980,7 +970,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 label={`+${selectedKbIds.length - 3} more`}
                 variant="outlined"
                 sx={{ height: 22, borderRadius: '12px' }}
-                onClick={openKbMenu}
+                onClick={openKbSelector}
               />
             )}
           </Box>
