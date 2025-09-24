@@ -186,7 +186,7 @@ class EventProcessor:
                 virtual_record_id = str(uuid4())
 
             # Update indexing status to IN_PROGRESS
-            
+
             doc = dict(record)
 
             # Extract necessary data
