@@ -211,21 +211,21 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials for embeddings.',
     modelPlaceholder: 'e.g., text-embedding-3-small, text-embedding-3-large',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: false }],
   },
   {
     id: 'gemini',
     label: 'Gemini API',
     description: 'Enter your Gemini API credentials for embeddings.',
     modelPlaceholder: 'e.g., gemini-embedding-001',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: false }],
   },
   {
     id: 'cohere',
     label: 'Cohere',
     description: 'Enter your Cohere API credentials for embeddings.',
     modelPlaceholder: 'e.g., embed-v4.0',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: false }],
   },
   {
     id: 'azureOpenAI',
@@ -237,7 +237,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       'apiKey',
       'deploymentName',
       'model',
-      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isMultimodal', required: false, defaultValue: false },
     ],
     customFields: {
       endpoint: {
@@ -250,7 +250,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Sentence Transformers',
     description: 'Use local Sentence Transformers models (no API key required).',
     modelPlaceholder: 'e.g., all-MiniLM-L6-v2',
-    fields: ['model', { name: 'isMultimodal', required: false, defaultValue: true }],
+    fields: ['model', { name: 'isMultimodal', required: false, defaultValue: false }],
   },
   {
     id: 'ollama',
@@ -265,7 +265,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
         defaultValue: 'http://host.docker.internal:11434',
         placeholder: 'e.g. http://localhost:11434',
       }, // Optional endpoint
-      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isMultimodal', required: false, defaultValue: false },
     ],
   },
   {
@@ -279,7 +279,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'Model ID/ARN' },
       { name: 'provider', required: true, defaultValue: 'cohere' },
-      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isMultimodal', required: false, defaultValue: false },
     ],
   },
   {
@@ -290,7 +290,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     fields: [
       { name: 'model', required: true },
       { name: 'apiKey', required: true },
-      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isMultimodal', required: false, defaultValue: false },
     ],
   },
   {
@@ -298,7 +298,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Mistral',
     description: 'Enter your Mistral API credentials for embeddings.',
     modelPlaceholder: 'e.g., mistral-embed',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: false }],
   },
   {
     id: 'voyage',
@@ -308,7 +308,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     fields: [
       { name: 'model', required: true },
       { name: 'apiKey', required: true },
-      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isMultimodal', required: false, defaultValue: false },
     ],
   },
 ] as const;
