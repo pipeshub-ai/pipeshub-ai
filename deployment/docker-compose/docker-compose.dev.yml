@@ -22,7 +22,6 @@ services:
       resources:
         limits:
           memory: 10G
-          cpus: '6'
     shm_size: 2gb
     init: true
     environment:
