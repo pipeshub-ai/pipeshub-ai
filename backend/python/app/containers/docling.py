@@ -45,6 +45,6 @@ async def initialize_container(container: DoclingAppContainer) -> bool:
         # Skip system health checks for Docling service as it doesn't need databases
         return True
 
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Docling service resources: {str(e)}")
+    except Exception:
+        logger.exception("❌ Failed to initialize Docling service resources")
         raise
