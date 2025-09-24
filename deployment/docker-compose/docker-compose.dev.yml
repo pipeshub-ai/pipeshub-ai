@@ -14,13 +14,14 @@ services:
           hard: -1
     ports:
       - "8091:8091"
+      - "8081:8081"
       - "8088:8088"
       - "3000:3000"
       - "8001:8000"
     deploy:
       resources:
         limits:
-          memory: 12G
+          memory: 10G
           cpus: '6'
     shm_size: 2gb
     init: true

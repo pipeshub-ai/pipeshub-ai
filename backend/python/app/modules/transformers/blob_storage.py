@@ -348,8 +348,8 @@ class BlobStorage(Transformer):
                             data = await resp.json()
                             if(data.get("signedUrl")):
                                 signed_url = data.get("signedUrl")
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.get(signed_url, headers=headers) as resp:
+                                # Reuse the same session for signed URL fetch
+                                async with session.get(signed_url, headers=headers) as resp:
                                         if resp.status == HttpStatusCode.OK.value:
                                             data = await resp.json()
                             self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)

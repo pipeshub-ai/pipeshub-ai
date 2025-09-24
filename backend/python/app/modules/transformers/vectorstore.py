@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import List
+from typing import List, Optional
 
 import spacy
 from langchain.chat_models.base import BaseChatModel
@@ -31,6 +31,25 @@ from app.utils.aimodels import (
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Module-level shared spaCy pipeline to avoid repeated heavy loads
+_SHARED_NLP: Optional[Language] = None
+
+def _get_shared_nlp() -> Language:
+    # Avoid global mutation; attach cache to function attribute
+    cached = getattr(_get_shared_nlp, "_cached_nlp", None)
+    if cached is None:
+        nlp = spacy.load("en_core_web_sm")
+        if "sentencizer" not in nlp.pipe_names:
+            nlp.add_pipe("sentencizer", before="parser")
+        if "custom_sentence_boundary" not in nlp.pipe_names:
+            try:
+                nlp.add_pipe("custom_sentence_boundary", after="sentencizer")
+            except Exception:
+                pass
+        setattr(_get_shared_nlp, "_cached_nlp", nlp)
+        return nlp
+    return cached
+
 LENGTH_THRESHOLD = 2
 OUTPUT_DIMENSION = 1024
 
@@ -48,7 +67,8 @@ class VectorStore(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
-        self.nlp = self._create_custom_tokenizer(spacy.load("en_core_web_sm"))
+        # Reuse a single spaCy pipeline across instances to avoid memory bloat
+        self.nlp = _get_shared_nlp()
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.vector_store = None
@@ -173,7 +193,8 @@ class VectorStore(Transformer):
             nlp.add_pipe("sentencizer", before="parser")
 
         # Add custom sentence boundary detection
-        nlp.add_pipe("custom_sentence_boundary", after="sentencizer")
+        if "custom_sentence_boundary" not in nlp.pipe_names:
+            nlp.add_pipe("custom_sentence_boundary", after="sentencizer")
 
         # Configure the tokenizer to handle special cases
         special_cases = {
@@ -247,6 +268,10 @@ class VectorStore(Transformer):
     async def get_embedding_model_instance(self) -> bool:
         try:
             self.logger.info("Getting embedding model")
+            # Return cached configuration if already initialized
+            if getattr(self, "vector_store", None) is not None and getattr(self, "dense_embeddings", None) is not None:
+                return bool(getattr(self, "_is_multimodal_embedding", False))
+
             dense_embeddings = None
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,use_cache=False
@@ -326,8 +351,8 @@ class VectorStore(Transformer):
                 self.cohere_api_key = configuration["apiKey"]
                 self.cohere_embedding_model_name = model_name
 
-
-            return is_multimodal
+            self._is_multimodal_embedding = bool(is_multimodal)
+            return self._is_multimodal_embedding
         except IndexingError as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             raise IndexingError(
@@ -376,6 +401,7 @@ class VectorStore(Transformer):
                     image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
 
                     import cohere
+                    # Create client once and reuse inside this call
                     co = cohere.ClientV2(api_key=self.cohere_api_key)
 
                     # Process images one at a time since Cohere API only allows max 1 image per request
@@ -422,6 +448,7 @@ class VectorStore(Transformer):
                         points.append(point)
 
                     if points:
+                        # upsert_points is a synchronous interface; do not await
                         self.vector_db_service.upsert_points(
                                 collection_name=self.collection_name, points=points
                             )
@@ -518,7 +545,15 @@ class VectorStore(Transformer):
             except Exception as e:
                 return {"index": i, "success": False, "error": str(e)}
 
-        tasks = [describe(i, img) for i, img in enumerate(base64_images)]
+        # Limit concurrency to avoid memory growth when many images
+        concurrency_limit = 10
+        semaphore = asyncio.Semaphore(concurrency_limit)
+
+        async def limited_describe(i: int, base64_string: str) -> dict:
+            async with semaphore:
+                return await describe(i, base64_string)
+
+        tasks = [limited_describe(i, img) for i, img in enumerate(base64_images)]
         results = await asyncio.gather(*tasks)
         return results
 

@@ -7,6 +7,7 @@ services:
       - "8088:8088"
       - "3000:3000"
       - "8001:8000"
+      - "8081:8081"
     deploy:
       resources:
         limits:

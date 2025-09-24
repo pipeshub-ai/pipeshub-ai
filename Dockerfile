@@ -78,11 +78,12 @@ COPY --from=frontend-build /app/frontend/dist ./backend/dist/public
 COPY backend/python/app/ /app/python/app/
 
 # Expose necessary ports
-EXPOSE 3000 8000 8088 8091
+EXPOSE 3000 8000 8088 8091 8081
 
 # Start all services in development mode
 CMD sh -c "cd /app/backend && node dist/index.js & \
            cd /app/python && python -m app.connectors_main & \
            cd /app/python && python -m app.indexing_main & \
            cd /app/python && python -m app.query_main & \
+           cd /app/python && python -m app.docling_main & \
            wait"

@@ -10,7 +10,7 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 
 # Concurrency control settings
-MAX_CONCURRENT_TASKS = 2  # Maximum number of messages to process concurrently
+MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
 RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 class KafkaMessagingConsumer(IMessagingConsumer):

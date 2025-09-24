@@ -19,6 +19,7 @@ from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
+from app.services.docling.client import DoclingClient
 from app.utils.llm import get_llm
 
 
@@ -86,6 +87,9 @@ class Processor:
         self.document_extraction = document_extractor
         self.sink_orchestrator = sink_orchestrator
         self.domain_extractor = domain_extractor
+
+        # Initialize Docling client for external service
+        self.docling_client = DoclingClient()
 
     async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         """Process Google Slides presentation and extract structured content
@@ -591,12 +595,16 @@ class Processor:
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None|bool:
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
-            self.logger.debug("📄 Processing PDF binary content")
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
+            self.logger.debug("📄 Processing PDF binary content using external Docling service")
+
+            # Use external Docling service
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
-            block_containers = await processor.load_document(record_name, pdf_binary)
-            if block_containers is False:
+
+            block_containers = await self.docling_client.process_pdf(record_name, pdf_binary)
+            if block_containers is None:
+                self.logger.error(f"❌ External Docling service failed to process {recordName}")
                 return False
+
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
@@ -609,10 +617,10 @@ class Processor:
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            self.logger.info("✅ PDF processing completed successfully using docling")
+            self.logger.info("✅ PDF processing completed successfully using external Docling service")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with docling: {str(e)}")
+            self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
             raise
 
     async def process_pdf_document(
