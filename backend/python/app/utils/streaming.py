@@ -3,8 +3,11 @@ import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import aiohttp
+from app.utils.chat_helpers import record_to_message_content
 from fastapi import HTTPException
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain.schema import  HumanMessage
+
+from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
@@ -28,7 +31,6 @@ async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to fetch file content from signed URL {str(e)}"
         )
-
 
 def find_unescaped_quote(text: str) -> int:
     """Return index of first un-escaped quote (") or -1 if none."""
@@ -74,6 +76,7 @@ async def execute_tool_calls(
     messages: List[Dict],
     tools: List,
     tool_runtime_kwargs: Dict[str, Any],
+    final_results: List[Dict[str, Any]],
     max_hops: int = 4
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
@@ -87,7 +90,8 @@ async def execute_tool_calls(
 
     hops = 0
     tools_executed = False
-
+    tool_args = []
+    tool_results = []
     while hops < max_hops:
         # Get response from LLM
         ai: AIMessage = await llm_with_tools.ainvoke(messages)
@@ -113,11 +117,12 @@ async def execute_tool_calls(
 
         # Execute tools
         tool_msgs = []
+        
         for call in ai.tool_calls:
             name = call["name"]
             args = call.get("args", {}) or {}
             call_id = call.get("id")
-
+            tool_args.append(args)
             tool = next((t for t in tools if t.name == name), None)
 
             if tool is None:
@@ -136,44 +141,32 @@ async def execute_tool_calls(
             else:
                 try:
                     tool_result = await tool.arun(args, **tool_runtime_kwargs)
-
                     # Parse result for user feedback
-                    try:
-                        parsed_result = json.loads(tool_result)
-                        if parsed_result.get("ok", False):
-                            yield {
-                                "event": "tool_success",
-                                "data": {
-                                    "tool_name": name,
-                                    "summary": f"Successfully executed {name}",
-                                    "call_id": call_id,
-                                    "record_info": parsed_result.get("record_info", {})
-                                }
-                            }
-                        else:
-                            yield {
-                                "event": "tool_error",
-                                "data": {
-                                    "tool_name": name,
-                                    "error": parsed_result.get("error", "Unknown error"),
-                                    "call_id": call_id
-                                }
-                            }
-                    except json.JSONDecodeError:
+                    if tool_result.get("ok", False):
+                        tool_results.append(tool_result)
                         yield {
                             "event": "tool_success",
                             "data": {
                                 "tool_name": name,
-                                "summary": f"Tool {name} executed successfully",
+                                "summary": f"Successfully executed {name}",
+                                "call_id": call_id,
+                                "record_info": tool_result.get("record_info", {})
+                            }
+                        }
+                    else:
+                        yield {
+                            "event": "tool_error",
+                            "data": {
+                                "tool_name": name,
+                                "error": tool_result.get("error", "Unknown error"),
                                 "call_id": call_id
                             }
                         }
-
                 except Exception as e:
-                    tool_result = json.dumps({
+                    tool_result = {
                         "ok": False,
                         "error": str(e)
-                    })
+                    }
                     yield {
                         "event": "tool_error",
                         "data": {
@@ -182,20 +175,31 @@ async def execute_tool_calls(
                             "call_id": call_id
                         }
                     }
-
-            tool_msgs.append(ToolMessage(content=tool_result, tool_call_id=call_id))
+            
+            tool_message_content = record_to_message_content(tool_result, final_results)
+            tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
 
         # Add messages for next iteration
         messages.append(ai)
         messages.extend(tool_msgs)
+        
         hops += 1
+    
+    if len(tool_results)>0:
+        messages.append(HumanMessage(content=""" Now produce the final answer STRICTLY following the previously provided Output format.\n
+                CRITICAL REQUIREMENTS:\n
+                - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
+                - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
+                - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""))
 
     # Return the final values as the last yielded item
     yield {
         "event": "tool_execution_complete",
         "data": {
             "messages": messages,
-            "tools_executed": tools_executed
+            "tools_executed": tools_executed,
+            "tool_args": tool_args,
+            "tool_results": tool_results
         }
     }
 
@@ -337,7 +341,8 @@ async def stream_llm_response_with_tools(
     For each chunk we also emit the citations visible so far.
     Now supports tool calls before generating the final answer.
     """
-
+    records = []
+    
     # Handle tool calls first if tools are provided
     if tools and tool_runtime_kwargs:
         yield {
@@ -347,11 +352,15 @@ async def stream_llm_response_with_tools(
 
         # Execute tools and get updated messages
         final_messages = messages.copy()
-        async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs):
+        async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results):
             if tool_event.get("event") == "tool_execution_complete":
                 # Extract the final messages and tools_executed status
                 final_messages = tool_event["data"]["messages"]
-                tool_event["data"]["tools_executed"]
+                # tool_args = tool_event["data"]["tool_args"]
+                tool_results = tool_event["data"]["tool_results"]
+                if tool_results:
+                    records = [r.get("record") for r in tool_results]
+                # tool_event["data"]["tools_executed"]
             else:
                 yield tool_event
 
@@ -366,7 +375,7 @@ async def stream_llm_response_with_tools(
             "event": "status",
             "data": {"status": "generating_answer", "message": "Generating final answer..."}
         }
-
+    
     # Original streaming logic for the final answer
     full_json_buf: str = ""         # whole JSON as it trickles in
     answer_buf: str = ""            # the running "answer" value (no quotes)
@@ -428,7 +437,7 @@ async def stream_llm_response_with_tools(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks(
-                            current_raw, final_results
+                            current_raw, final_results,records
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -443,13 +452,12 @@ async def stream_llm_response_with_tools(
                             },
                         }
 
-        # Final processing
         try:
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
-
-            normalized, c = normalize_citations_and_chunks(final_answer, final_results)
-
+            print("final_answerrr",final_answer)
+            normalized, c = normalize_citations_and_chunks(final_answer, final_results,records)
+            print("normalizedddddd",normalized)
             yield {
                 "event": "complete",
                 "data": {
@@ -461,7 +469,7 @@ async def stream_llm_response_with_tools(
             }
         except Exception:
             # Fallback if JSON parsing fails
-            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
+            normalized, c = normalize_citations_and_chunks(answer_buf, final_results,records)
             yield {
                 "event": "complete",
                 "data": {

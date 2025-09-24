@@ -307,7 +307,7 @@ async def process_chat_query(
         "org_id": org_id,
     }
 
-    return llm, messages, tools, tool_runtime_kwargs, final_results, virtual_record_id_to_result, config
+    return llm, messages, tools, tool_runtime_kwargs, final_results
 
 
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
@@ -452,7 +452,7 @@ async def askAIStream(
 
             # Process query using shared logic
             try:
-                llm, messages, tools, tool_runtime_kwargs, final_results, virtual_record_id_to_result, config = await process_chat_query(
+                llm, messages, tools, tool_runtime_kwargs, final_results = await process_chat_query(
                     query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
                 )
             except HTTPException as e:
@@ -511,7 +511,7 @@ async def askAI(
         logger = container.logger()
 
         # Process query using shared logic
-        llm, messages, tools, tool_runtime_kwargs, final_results, virtual_record_id_to_result, config = await process_chat_query(
+        llm, messages, tools, tool_runtime_kwargs, final_results = await process_chat_query(
             query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
         )
 

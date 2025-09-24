@@ -3,7 +3,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
-from app.models.blocks import GroupType
+from app.models.blocks import BlockType, GroupType
+from app.utils.chat_helpers import get_enhanced_metadata
 
 
 @dataclass
@@ -61,7 +62,7 @@ def fix_json_string(json_str) -> str:
 
 
 
-def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]],records: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
@@ -70,7 +71,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     # Extract all citation numbers from the answer text
     citation_pattern = r'\[R(\d+)-(\d+)\]'
     matches = re.findall(citation_pattern, answer_text)
-
+    
     if not matches:
         return answer_text, []
 
@@ -90,28 +91,44 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     block_number_to_index = {}
     flattened_final_results = []
     seen = set()
+    vrids = [record.get("virtual_record_id") for record in records]
+
     for i,doc in enumerate(final_results):
         virtual_record_id = doc.get("virtual_record_id")
+
         if virtual_record_id not in seen:
             record_number += 1
             seen.add(virtual_record_id)
-        block_index = doc.get("block_index")
-        block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value:
-            _,child_results = doc.get("content")
-            if child_results:
-                for child in child_results:
-                    child_block_index = child.get("block_index")
-                    flattened_final_results.append(child)
-                    block_number_to_index[f"R{record_number}-{child_block_index}"] = len(flattened_final_results) - 1
+        
+
+        if virtual_record_id not in vrids:
+            block_index = doc.get("block_index")
+            block_type = doc.get("block_type")
+            if block_type == GroupType.TABLE.value:
+                _,child_results = doc.get("content")
+                if child_results:
+                    for child in child_results:
+                        child_block_index = child.get("block_index")
+                        flattened_final_results.append(child)
+                        block_number_to_index[f"R{record_number}-{child_block_index}"] = len(flattened_final_results) - 1
+                else:
+                    flattened_final_results.append(doc)
+                    block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
             else:
                 flattened_final_results.append(doc)
                 block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
-        else:
-            flattened_final_results.append(doc)
-            block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
-
+        # else:
+        #     block_container = record.get("block_containers",{})
+        #     blocks = block_container.get("blocks",[])
+        #     block_index = doc.get("block_index")
+        #     block_type = doc.get("block_type")
+        #     if block_type == GroupType.TABLE.value:
+        #         _,child_results = doc.get("content")
+        #         if child_results:
     # Create mapping from old citation keys to new sequential numbers
+    records = sorted(records, key=lambda x: x.get("virtual_record_id"))
+    record_index = 0
+    record_number_to_record_index = {}
     for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
 
@@ -128,6 +145,30 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                     "metadata": doc.get("metadata", {}),
                     "citationType": "vectordb|document",
                 })
+        else:
+            record_number = old_citation_key.split("-")[0]
+            if record_number not in record_number_to_record_index:
+                record_number_to_record_index[record_number] = record_index
+                record_index += 1
+            record_index = record_number_to_record_index[record_number]
+            block_index = int(old_citation_key.split("-")[1])
+            record = records[record_index]
+            block_container = record.get("block_containers",{})
+            blocks = block_container.get("blocks",[])
+            block = blocks[block_index]
+            block_type = block.get("type")
+            data = block.get("data")
+            if block_type == BlockType.TABLE_ROW.value:
+                data = data.get("row_natural_language_text","")
+            elif block_type == BlockType.IMAGE.value:
+                data = data.get("uri","")
+            enhanced_metadata = get_enhanced_metadata(record,block,{})
+            new_citations.append({
+                "content": data,
+                "chunkIndex": new_citation_num,  # Use new sequential number
+                "metadata": enhanced_metadata,
+                "citationType": "vectordb|document",
+            })
 
     # Replace citation numbers in answer text
     def replace_citation(match) -> str:

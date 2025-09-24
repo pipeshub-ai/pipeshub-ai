@@ -144,6 +144,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         "block_type": GroupType.TABLE.value,
                         "virtual_record_id": virtual_record_id,
                         "block_index": first_block_index,
+                        "block_group_index": index,
                         "metadata": get_enhanced_metadata(record,block,meta),
                     }
                     flattened_results.append(table_result)
@@ -198,6 +199,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             "block_type": GroupType.TABLE.value,
             "virtual_record_id": virtual_record_id,
             "block_index": first_child_block_index,
+            "block_group_index": block_group_index,
             "metadata": get_enhanced_metadata(record,block_group,{}),
         }
         flattened_results.append(table_result)
@@ -517,6 +519,160 @@ def checkForLargeTable(markdown: str) -> bool:
     return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
 
 
+def record_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """
+    Convert a record JSON object to message content format matching get_message_content.
+    
+    Args:
+        record: The record JSON object containing block_containers and other metadata
+        user_data: Optional user data for context
+        query: Optional query for context
+        
+    Returns:
+        List of message content dictionaries in the same format as get_message_content
+    """
+    record = tool_result.get("record", {})
+    if record is None:
+        return []
+    try:
+        content = []
+        record_id = record.get("id", "")
+        record_name = record.get("record_name", "")
+        content.append({
+            "type": "text",
+            "text": f"""<record>
+            * Record Id: {record_id}
+            * Record Name: {record_name}
+            * Record content:
+            """
+        })
+        # Process blocks
+        block_containers = record.get("block_containers", {})
+        blocks = block_containers.get("blocks", [])
+        block_groups = block_containers.get("block_groups", [])
+        
+        seen_block_groups = set()
+        record_number = 1
+        # Determine record_number consistent with previously sent context if possible
+        try:
+            if final_results:
+                # Build ordered list of unique virtual_record_ids as used in get_message_content
+                ordered_unique_vrids = []
+                seen_vrids = set()
+                for res in final_results:
+                    vrid = res.get("virtual_record_id")
+                    if vrid is not None and vrid not in seen_vrids:
+                        seen_vrids.add(vrid)
+                        ordered_unique_vrids.append(vrid)
+
+                # Map current record's virtual_record_id to its position (1-based)
+                current_vrid = record.get("virtual_record_id")
+                if current_vrid in ordered_unique_vrids:
+                    record_number = ordered_unique_vrids.index(current_vrid) + 1
+        except Exception as e:
+            pass
+            
+        
+        # Group blocks with parent_index (like table rows) for processing as block groups
+        
+        # Process individual blocks
+        for block in blocks:
+            block_index = block.get("index", 0)
+            block_type = block.get("type")
+            
+            block_number = f"R{record_number}-{block_index}"
+            data = block.get("data", "")
+            
+            if block_type == BlockType.IMAGE.value:
+                continue
+                if isinstance(data, dict):
+                    image_uri = data.get("uri", "")
+                    if image_uri and image_uri.startswith("data:image/"):
+                        content.append({
+                            "type": "text",
+                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:\n\n"
+                        })
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": image_uri}
+                        })
+                    # else:
+                        # Todo: Handle image description
+                        # content.append({
+                        #     "type": "text",
+                        #     "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {image_uri}\n\n"
+                        # })
+            elif block_type == BlockType.TEXT.value:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
+            elif block_type == BlockType.TABLE_ROW.value:
+                # Group table rows by their parent_index for block group processing
+                block_group_index = block.get("parent_index")
+                block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
+                if block_group_id in seen_block_groups:
+                    continue
+                seen_block_groups.add(block_group_id)
+                if block_group_index is not None:
+                    corresponding_block_group = block_groups[block_group_index]
+            
+                    # Process the block group with its child rows
+                    block_type = corresponding_block_group.get("type")
+                    data = corresponding_block_group.get("data", {})
+                    
+                    if block_type == GroupType.TABLE.value:
+                        table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
+                        rows_to_be_included_list = [ child.get("block_index") for child in corresponding_block_group.get("children", [])]
+                        # Process table rows
+                        child_results = []
+                        for row_index in rows_to_be_included_list:
+                            if row_index < len(blocks):
+                                block = blocks[row_index]
+                                block_data = block.get("data", {})
+                                if isinstance(block_data, dict):
+                                    row_text = block_data.get("row_natural_language_text", "")
+                                else:
+                                    row_text = str(block_data)
+                                
+                                child_results.append({
+                                    "content": row_text,
+                                    "block_index": row_index,
+                                })
+                        
+                        if child_results:
+                            template = Template(table_prompt)
+                            rendered_form = template.render(
+                                block_group_index=block_group_index,
+                                table_summary=table_summary,
+                                table_rows=child_results,
+                                record_number=record_number,
+                            )
+                            content.append({
+                                "type": "text",
+                                "text": f"{rendered_form}\n\n"
+                            })
+                        else:
+                            content.append({
+                                "type": "text",
+                                "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
+                            })
+            else:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
+        
+        # Add closing tags
+        content.append({
+            "type": "text",
+            "text": "</record>"
+        })
+        
+        return content
+    except Exception as e:
+        raise Exception(f"Error in record_to_message_content: {e}") from e
+
 def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger) -> str:
     content = []
 
@@ -580,40 +736,41 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 else:
                     content.append({
                         "type": "text",
-                        "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}"
+                        "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
                     })
             elif block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
                 if child_results:
                     template = Template(table_prompt)
                     rendered_form = template.render(
+                        block_group_index=result.get("block_group_index"),
                         table_summary=table_summary,
                         table_rows=child_results,
                         record_number=record_number,
                     )
                     content.append({
                         "type": "text",
-                        "text": rendered_form
+                        "text": f"{rendered_form}\n\n"
                     })
                 else:
                     content.append({
                         "type": "text",
-                        "text": f"* Block Number: {block_number}\n* Block Type: table summary \n* Block Content: {table_summary}"
+                        "text": f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
                     })
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
             elif block_type == BlockType.TABLE_ROW.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}"
+                    "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
                 })
             else:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
         else:
             continue
@@ -624,4 +781,63 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
     })
 
     logger.debug(f"content: {content}")
+    return content
+
+def block_group_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    content = []
+    block_group = tool_result.get("block_group", {})
+    block_group_index = block_group.get("index", 0)
+    record_number = tool_result.get("record_number", 1)
+    record_id = tool_result.get("record_id", "")
+    record_name = tool_result.get("record_name", "")
+    content.append({
+            "type": "text",
+            "text": f"""<record>
+            * Record Id: {record_id}
+            * Record Name: {record_name}
+            * Block Group:
+            """
+        })
+
+    child_results = []
+    blocks = block_group.get("blocks",[])
+    table_summary = block_group.get("data",{}).get("table_summary","")
+    for block in blocks:
+        block_data = block.get("data", {})
+        if isinstance(block_data, dict):
+            row_text = block_data.get("row_natural_language_text", "")
+        else:
+            row_text = str(block_data)
+        
+        child_results.append({
+            "content": row_text,
+            "block_index": block.get("index", 0),
+        })
+    
+    if child_results:
+        template = Template(table_prompt)
+        rendered_form = template.render(
+            block_group_index=block_group_index,
+            table_summary=table_summary,
+            table_rows=child_results,
+            record_number=record_number,
+        )
+        content.append({
+            "type": "text",
+            "text": rendered_form
+        })
+    else:
+        content.append({
+            "type": "text",
+            "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}"
+        })
+    content.append({
+        "type": "text",
+        "text": """</record>
+        Now produce the final answer STRICTLY following the previously provided Output format.\n
+        CRITICAL REQUIREMENTS:\n
+        - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
+        - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
+        - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""
+    })
     return content

@@ -280,11 +280,20 @@ qna_prompt_instructions_2 = """
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
 """
 
-table_prompt = """* Block Type: table
+table_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
+                  * Block Group Type: table
                   * Table Summary: {{ table_summary }}
                   * Table Rows/Blocks:
                     {% for row in table_rows %}
                     - Block Number: R{{record_number}}-{{row.block_index}}
                     - Block Content: {{row.content}}
+                    {% endfor %}
+"""
+
+block_group_prompt = """* Block Group Type: {{block_group_type}}
+                  * Blocks in Block Group:
+                    {% for block in block_group_blocks %}
+                    - Block Number: R{{record_number}}-{{block.block_index}}
+                    - Block Content: {{block.content}}
                     {% endfor %}
 """
