@@ -1,5 +1,4 @@
 import base64
-
 from typing import Optional
 
 import uvicorn
@@ -7,7 +6,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
-
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.utils.logger import create_logger
