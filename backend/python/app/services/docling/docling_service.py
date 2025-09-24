@@ -6,6 +6,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from app.config.constants.http_status_code import HttpStatusCode
+
 # Add the app directory to Python path for imports
 sys.path.append('/app')
 
@@ -29,12 +31,12 @@ class ProcessResponse(BaseModel):
 
 
 class DoclingService:
-    def __init__(self, config_service=None, logger=None):
+    def __init__(self, config_service=None, logger=None) -> None:
         self.logger = logger or create_logger(__name__)
         self.config_service = config_service
         self.processor = None
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         """Initialize the service with configuration"""
         try:
             # Allow external wiring to provide config_service. If not provided,
@@ -89,7 +91,7 @@ app = FastAPI(
 
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     """Initialize the service on startup when running this module standalone.
     When mounted by an external app (e.g., app.docling_main), the external app
     should wire and initialize the service via set_docling_service().
@@ -102,13 +104,13 @@ async def startup_event():
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict:
     """Health check endpoint"""
     return {"status": "healthy", "service": "docling"}
 
 
 @app.post("/process-pdf", response_model=ProcessResponse)
-async def process_pdf_endpoint(request: ProcessRequest):
+async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
     """Process PDF document using Docling"""
     try:
         # Decode base64 PDF binary data
@@ -116,7 +118,7 @@ async def process_pdf_endpoint(request: ProcessRequest):
             pdf_binary = base64.b64decode(request.pdf_binary)
         except Exception as e:
             raise HTTPException(
-                status_code=400,
+                status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid base64 PDF data: {str(e)}"
             )
 
@@ -210,7 +212,7 @@ async def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
         }
 
 
-def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False):
+def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
     """Run the Docling service"""
     uvicorn.run(
         "app.services.docling.docling_service:app",

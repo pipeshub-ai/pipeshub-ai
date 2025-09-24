@@ -5,6 +5,7 @@ from typing import Optional
 
 import httpx
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.models.blocks import BlocksContainer
 from app.utils.logger import create_logger
 
@@ -12,7 +13,7 @@ from app.utils.logger import create_logger
 class DoclingClient:
     """Client for communicating with the Docling processing service"""
 
-    def __init__(self, service_url: str = "http://localhost:8081", timeout: float = 2400.0):
+    def __init__(self, service_url: str = "http://localhost:8081", timeout: float = 2400.0) -> None:
         self.service_url = service_url.rstrip('/')
         self.timeout = timeout
         self.logger = create_logger(__name__)
@@ -80,7 +81,7 @@ class DoclingClient:
                         }
                     )
 
-                    if response.status_code == 200:
+                    if response.status_code == HttpStatusCode.SUCCESS.value:
                         # Parse JSON response in thread pool to avoid blocking
                         result = await asyncio.to_thread(response.json)
                         if result.get("success"):
@@ -175,7 +176,7 @@ class DoclingClient:
 
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 response = await client.get(f"{self.service_url}/health")
-                return response.status_code == 200
+                return response.status_code == HttpStatusCode.SUCCESS.value
         except Exception as e:
             self.logger.error(f"❌ Health check failed: {str(e)}")
             return False

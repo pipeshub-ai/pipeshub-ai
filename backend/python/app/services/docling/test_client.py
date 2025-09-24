@@ -11,7 +11,7 @@ from pathlib import Path
 backend_python_path = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(backend_python_path))
 
-async def test_docling_client():
+async def test_docling_client() -> None:
     """Test the Docling client functionality"""
     print("🧪 Testing Docling Client")
 
