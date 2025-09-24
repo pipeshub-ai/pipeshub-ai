@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 from typing import Optional
 
 import httpx
@@ -13,8 +14,8 @@ from app.utils.logger import create_logger
 class DoclingClient:
     """Client for communicating with the Docling processing service"""
 
-    def __init__(self, service_url: str = "http://localhost:8081", timeout: float = 2400.0) -> None:
-        self.service_url = service_url.rstrip('/')
+    def __init__(self, service_url: Optional[str] = None, timeout: float = 2400.0) -> None:
+        self.service_url = (service_url or os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081")).rstrip('/')
         self.timeout = timeout
         self.logger = create_logger(__name__)
         self.max_retries = 3
@@ -37,40 +38,41 @@ class DoclingClient:
             self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: 100MB)")
             return None
 
-        for attempt in range(self.max_retries):
-            try:
-                # Encode PDF binary to base64
-                pdf_base64 = base64.b64encode(pdf_binary).decode('utf-8')
+        # Configure httpx with proper connection settings
+        timeout_config = httpx.Timeout(
+            connect=30.0,  # Connection timeout
+            read=self.timeout,  # Read timeout
+            write=30.0,  # Write timeout
+            pool=30.0  # Pool timeout
+        )
 
-                # Prepare request payload
-                payload = {
-                    "record_name": record_name,
-                    "pdf_binary": pdf_base64,
-                    "org_id": org_id
-                }
+        # Use connection pooling and keep-alive
+        limits = httpx.Limits(
+            max_keepalive_connections=5,
+            max_connections=10,
+            keepalive_expiry=30.0
+        )
 
-                self.logger.info(f"🚀 Sending PDF processing request for: {record_name} (attempt {attempt + 1}/{self.max_retries})")
+        # Create client once and reuse for all retry attempts
+        async with httpx.AsyncClient(
+            timeout=timeout_config,
+            limits=limits,
+            http2=True  # Enable HTTP/2 for better performance
+        ) as client:
+            for attempt in range(self.max_retries):
+                try:
+                    # Encode PDF binary to base64
+                    pdf_base64 = base64.b64encode(pdf_binary).decode('utf-8')
 
-                # Configure httpx with proper connection settings
-                timeout_config = httpx.Timeout(
-                    connect=30.0,  # Connection timeout
-                    read=self.timeout,  # Read timeout
-                    write=30.0,  # Write timeout
-                    pool=30.0  # Pool timeout
-                )
+                    # Prepare request payload
+                    payload = {
+                        "record_name": record_name,
+                        "pdf_binary": pdf_base64,
+                        "org_id": org_id
+                    }
 
-                # Use connection pooling and keep-alive
-                limits = httpx.Limits(
-                    max_keepalive_connections=5,
-                    max_connections=10,
-                    keepalive_expiry=30.0
-                )
+                    self.logger.info(f"🚀 Sending PDF processing request for: {record_name} (attempt {attempt + 1}/{self.max_retries})")
 
-                async with httpx.AsyncClient(
-                    timeout=timeout_config,
-                    limits=limits,
-                    http2=True  # Enable HTTP/2 for better performance
-                ) as client:
                     response = await client.post(
                         f"{self.service_url}/process-pdf",
                         json=payload,
@@ -103,49 +105,49 @@ class DoclingClient:
                             continue
                         return None
 
-            except httpx.TimeoutException as e:
-                self.logger.error(f"❌ Timeout processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                if attempt < self.max_retries - 1:
-                    self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                    await asyncio.sleep(self.retry_delay)
-                    continue
-                return None
-            except httpx.ConnectError as e:
-                self.logger.error(f"❌ Connection error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                if attempt < self.max_retries - 1:
-                    self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                    await asyncio.sleep(self.retry_delay)
-                    continue
-                return None
-            except httpx.WriteError as e:
-                # Handle the specific "write could not complete without blocking" error
-                self.logger.error(f"❌ Write error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                if "write could not complete without blocking" in str(e):
-                    self.logger.warning("⚠️ Network buffer issue detected, retrying with exponential backoff...")
+                except httpx.TimeoutException as e:
+                    self.logger.error(f"❌ Timeout processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
                     if attempt < self.max_retries - 1:
-                        # Exponential backoff for write errors
-                        delay = self.retry_delay * (2 ** attempt)
-                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-                        await asyncio.sleep(delay)
+                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
+                        await asyncio.sleep(self.retry_delay)
                         continue
-                return None
-            except httpx.RequestError as e:
-                self.logger.error(f"❌ Request error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                if attempt < self.max_retries - 1:
-                    self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                    await asyncio.sleep(self.retry_delay)
-                    continue
-                return None
-            except Exception as e:
-                self.logger.error(f"❌ Unexpected error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
-                if attempt < self.max_retries - 1:
-                    self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                    await asyncio.sleep(self.retry_delay)
-                    continue
-                return None
+                    return None
+                except httpx.ConnectError as e:
+                    self.logger.error(f"❌ Connection error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
+                    if attempt < self.max_retries - 1:
+                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
+                        await asyncio.sleep(self.retry_delay)
+                        continue
+                    return None
+                except httpx.WriteError as e:
+                    # Handle the specific "write could not complete without blocking" error
+                    self.logger.error(f"❌ Write error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
+                    if "write could not complete without blocking" in str(e):
+                        self.logger.warning("⚠️ Network buffer issue detected, retrying with exponential backoff...")
+                        if attempt < self.max_retries - 1:
+                            # Exponential backoff for write errors
+                            delay = self.retry_delay * (2 ** attempt)
+                            self.logger.info(f"🔄 Retrying in {delay} seconds...")
+                            await asyncio.sleep(delay)
+                            continue
+                    return None
+                except httpx.RequestError as e:
+                    self.logger.error(f"❌ Request error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
+                    if attempt < self.max_retries - 1:
+                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
+                        await asyncio.sleep(self.retry_delay)
+                        continue
+                    return None
+                except Exception as e:
+                    self.logger.error(f"❌ Unexpected error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
+                    if attempt < self.max_retries - 1:
+                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
+                        await asyncio.sleep(self.retry_delay)
+                        continue
+                    return None
 
-        self.logger.error(f"❌ Failed to process PDF {record_name} after {self.max_retries} attempts")
-        return None
+            self.logger.error(f"❌ Failed to process PDF {record_name} after {self.max_retries} attempts")
+            return None
 
     def _parse_blocks_container(self, block_containers_data) -> BlocksContainer:
         """

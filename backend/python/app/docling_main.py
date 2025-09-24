@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
 from app.services.docling.docling_service import (
     DoclingService,
@@ -59,15 +60,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await app.state.docling_service.initialize()
         # Wire the initialized instance into the mounted routes
         set_docling_service(app.state.docling_service)
-        print("✅ Docling service initialized successfully")
     except Exception as e:
-        print(f"❌ Failed to initialize Docling service: {str(e)}")
+        logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
         raise
 
     yield
 
     # Shutdown
-    print("🔄 Shutting down Docling service")
+    logger.info("🔄 Shutting down Docling service")
 
 app = FastAPI(
     lifespan=lifespan,
@@ -85,16 +85,50 @@ async def health_check() -> JSONResponse:
     try:
         # Check if Docling service is healthy
         svc = getattr(app.state, "docling_service", None)
-        await svc.health_check() if svc and hasattr(svc, "health_check") else True
+        if not svc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "service": "docling",
+                    "error": "DoclingService not initialized",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "service": "docling",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        # Check if service has health_check method and call it
+        if not hasattr(svc, "health_check"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "service": "docling",
+                    "error": "DoclingService does not have health_check method",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+
+        # Call the health check method
+        is_healthy = await svc.health_check()
+
+        if is_healthy:
+            return JSONResponse(
+                status_code=HttpStatusCode.SUCCESS.value,
+                content={
+                    "status": "healthy",
+                    "service": "docling",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        else:
+            return JSONResponse(
+                status_code=HttpStatusCode.UNHEALTHY.value,
+                content={
+                    "status": "unhealthy",
+                    "service": "docling",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
     except Exception as e:
         return JSONResponse(
             status_code=500,
