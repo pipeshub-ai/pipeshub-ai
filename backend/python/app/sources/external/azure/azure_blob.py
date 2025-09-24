@@ -1,7 +1,18 @@
+from ctypes import Union
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 try:
+    from azure.storage.blob import (  # type: ignore
+        AccountSasPermissions,
+        BlobSasPermissions,
+        ContainerSasPermissions,
+        ResourceTypes,
+        UserDelegationKey,
+        generate_account_sas,
+        generate_blob_sas,
+        generate_container_sas,
+    )
     from azure.storage.blob.aio import (  # type: ignore
         BlobServiceClient as AsyncBlobServiceClient,
     )
@@ -2567,6 +2578,304 @@ class AzureBlobDataSource:
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
             return AzureBlobResponse(success=False, error=str(e))
+
+
+    # =================================
+    # 🔗 SAS URL GENERATION METHODS
+    # =================================
+
+    async def generate_account_sas_url(
+        self,
+        resource_types: str,
+        permission: str,
+        expiry: datetime,
+        start: Optional[datetime] = None,
+        ip: Optional[str] = None,
+        protocol: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> AzureBlobResponse:
+        """
+        Generate an Account-level SAS URL for Azure Blob Storage.
+        Args:
+            resource_types (str): Resource types (s=service, c=container, o=object)
+            permission (str): Permissions (r=read, w=write, d=delete, l=list, etc.)
+            expiry (datetime): Expiration time for the SAS URL
+            start (Optional[datetime]): Start time for SAS validity
+            ip (Optional[str]): IP address or range to restrict access
+            protocol (Optional[str]): Protocol (https/http)
+            headers (Optional[Dict[str, str]]): Additional headers
+        Returns:
+            AzureBlobResponse: Response containing the SAS URL
+        """
+        try:
+            client = await self._get_async_blob_service_client()
+            account_name = client.account_name
+            account_key = client.credential.account_key if hasattr(client.credential, "account_key") else None
+
+            if not account_key:
+                return AzureBlobResponse(
+                    success=False,
+                    error="Account key required for SAS generation. Use connection string or account key authentication."
+                )
+
+            sas_token = generate_account_sas(
+                account_name=account_name,
+                account_key=account_key,
+                resource_types=ResourceTypes.from_string(resource_types),
+                permission=AccountSasPermissions.from_string(permission),
+                expiry=expiry,
+                start=start,
+                ip=ip,
+                protocol=protocol
+            )
+
+            account_url = f"https://{account_name}.blob.core.windows.net"
+            sas_url = f"{account_url}?{sas_token}"
+
+            return AzureBlobResponse(
+                success=True,
+                data={
+                    "sas_url": sas_url,
+                    "sas_token": sas_token,
+                    "account_url": account_url,
+                    "expiry": expiry.isoformat(),
+                    "permissions": permission,
+                    "resource_types": resource_types
+                }
+            )
+        except Exception as e:
+            return AzureBlobResponse(success=False, error=f"SAS generation failed: {str(e)}")
+
+    async def generate_container_sas_url(
+        self,
+        container_name: str,
+        permission: str,
+        expiry: datetime,
+        start: Optional[datetime] = None,
+        policy_id: Optional[str] = None,
+        ip: Optional[str] = None,
+        protocol: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> AzureBlobResponse:
+        """
+        Generate a Container-level SAS URL.
+        Args:
+            container_name (str): Name of the container
+            permission (str): Permissions (r=read, w=write, d=delete, l=list, etc.)
+            expiry (datetime): Expiration time for the SAS URL
+            start (Optional[datetime]): Start time for SAS validity
+            policy_id (Optional[str]): Stored access policy ID
+            ip (Optional[str]): IP address or range to restrict access
+            protocol (Optional[str]): Protocol (https/http)
+            headers (Optional[Dict[str, str]]): Additional headers
+        Returns:
+            AzureBlobResponse: Response containing the SAS URL
+        """
+        try:
+            client = await self._get_async_blob_service_client()
+            account_name = client.account_name
+            account_key = client.credential.account_key if hasattr(client.credential, "account_key") else None
+
+            if not account_key:
+                return AzureBlobResponse(
+                    success=False,
+                    error="Account key required for SAS generation. Use connection string or account key authentication."
+                )
+
+            sas_token = generate_container_sas(
+                account_name=account_name,
+                container_name=container_name,
+                account_key=account_key,
+                permission=ContainerSasPermissions.from_string(permission) if not policy_id else None,
+                expiry=expiry,
+                start=start,
+                policy_id=policy_id,
+                ip=ip,
+                protocol=protocol
+            )
+
+            container_url = f"https://{account_name}.blob.core.windows.net/{container_name}"
+            sas_url = f"{container_url}?{sas_token}"
+
+            return AzureBlobResponse(
+                success=True,
+                data={
+                    "sas_url": sas_url,
+                    "sas_token": sas_token,
+                    "container_url": container_url,
+                    "container_name": container_name,
+                    "expiry": expiry.isoformat(),
+                    "permissions": permission
+                }
+            )
+        except Exception as e:
+            return AzureBlobResponse(success=False, error=f"Container SAS generation failed: {str(e)}")
+
+    async def generate_blob_sas_url(
+        self,
+        container_name: str,
+        blob_name: str,
+        permission: str,
+        expiry: datetime,
+        start: Optional[datetime] = None,
+        policy_id: Optional[str] = None,
+        ip: Optional[str] = None,
+        protocol: Optional[str] = None,
+        cache_control: Optional[str] = None,
+        content_disposition: Optional[str] = None,
+        content_encoding: Optional[str] = None,
+        content_language: Optional[str] = None,
+        content_type: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> AzureBlobResponse:
+        """
+        Generate a Blob-level SAS URL.
+        Args:
+            container_name (str): Name of the container
+            blob_name (str): Name of the blob
+            permission (str): Permissions (r=read, w=write, d=delete, etc.)
+            expiry (datetime): Expiration time for the SAS URL
+            start (Optional[datetime]): Start time for SAS validity
+            policy_id (Optional[str]): Stored access policy ID
+            ip (Optional[str]): IP address or range to restrict access
+            protocol (Optional[str]): Protocol (https/http)
+            cache_control (Optional[str]): Cache control header override
+            content_disposition (Optional[str]): Content disposition header override
+            content_encoding (Optional[str]): Content encoding header override
+            content_language (Optional[str]): Content language header override
+            content_type (Optional[str]): Content type header override
+            headers (Optional[Dict[str, str]]): Additional headers
+        Returns:
+            AzureBlobResponse: Response containing the SAS URL
+        """
+        try:
+            client = await self._get_async_blob_service_client()
+            account_name = client.account_name
+            account_key = client.credential.account_key if hasattr(client.credential, "account_key") else None
+
+            if not account_key:
+                return AzureBlobResponse(
+                    success=False,
+                    error="Account key required for SAS generation. Use connection string or account key authentication."
+                )
+
+            sas_token = generate_blob_sas(
+                account_name=account_name,
+                container_name=container_name,
+                blob_name=blob_name,
+                account_key=account_key,
+                permission=BlobSasPermissions.from_string(permission) if not policy_id else None,
+                expiry=expiry,
+                start=start,
+                policy_id=policy_id,
+                ip=ip,
+                protocol=protocol,
+                cache_control=cache_control,
+                content_disposition=content_disposition,
+                content_encoding=content_encoding,
+                content_language=content_language,
+                content_type=content_type
+            )
+
+            blob_url = f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}"
+            sas_url = f"{blob_url}?{sas_token}"
+
+            return AzureBlobResponse(
+                success=True,
+                data={
+                    "sas_url": sas_url,
+                    "sas_token": sas_token,
+                    "blob_url": blob_url,
+                    "container_name": container_name,
+                    "blob_name": blob_name,
+                    "expiry": expiry.isoformat(),
+                    "permissions": permission
+                }
+            )
+        except Exception as e:
+            return AzureBlobResponse(success=False, error=f"Blob SAS generation failed: {str(e)}")
+
+    async def generate_user_delegation_sas_url(
+        self,
+        container_name: str,
+        blob_name: str,
+        permission: str,
+        expiry: datetime,
+        user_delegation_key: Union[UserDelegationKey, Dict[str, Any]],
+        start: Optional[datetime] = None,
+        ip: Optional[str] = None,
+        protocol: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> AzureBlobResponse:
+        """
+        Generate a User Delegation SAS URL (for Azure AD authentication).
+        Args:
+            container_name (str): Name of the container
+            blob_name (str): Name of the blob
+            permission (str): Permissions (r=read, w=write, d=delete, etc.)
+            expiry (datetime): Expiration time for the SAS URL
+            user_delegation_key (Dict[str, Any]): User delegation key from get_user_delegation_key()
+            start (Optional[datetime]): Start time for SAS validity
+            ip (Optional[str]): IP address or range to restrict access
+            protocol (Optional[str]): Protocol (https/http)
+            headers (Optional[Dict[str, str]]): Additional headers
+        Returns:
+            AzureBlobResponse: Response containing the SAS URL
+        """
+        try:
+            client = await self._get_async_blob_service_client()
+            account_name = client.account_name
+
+            # Convert dict to UserDelegationKey object if needed
+            if isinstance(user_delegation_key, dict):
+                try:
+                    delegation_key = UserDelegationKey()
+                    delegation_key.signed_oid = user_delegation_key['signed_oid']
+                    delegation_key.signed_tid = user_delegation_key['signed_tid']
+                    delegation_key.signed_start = user_delegation_key['signed_start']
+                    delegation_key.signed_expiry = user_delegation_key['signed_expiry']
+                    delegation_key.signed_service = user_delegation_key['signed_service']
+                    delegation_key.signed_version = user_delegation_key['signed_version']
+                    delegation_key.value = user_delegation_key['value']
+                except KeyError as e:
+                    return AzureBlobResponse(success=False, error=f"User delegation key dictionary is missing required key: {e}")
+            else:
+                delegation_key = user_delegation_key
+
+            sas_token = generate_blob_sas(
+                account_name=account_name,
+                container_name=container_name,
+                blob_name=blob_name,
+                user_delegation_key=delegation_key,
+                permission=BlobSasPermissions.from_string(permission),
+                expiry=expiry,
+                start=start,
+                ip=ip,
+                protocol=protocol
+            )
+
+            blob_url = f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}"
+            sas_url = f"{blob_url}?{sas_token}"
+
+            return AzureBlobResponse(
+                success=True,
+                data={
+                    "sas_url": sas_url,
+                    "sas_token": sas_token,
+                    "blob_url": blob_url,
+                    "container_name": container_name,
+                    "blob_name": blob_name,
+                    "expiry": expiry.isoformat(),
+                    "permissions": permission,
+                    "delegation_key_used": True
+                }
+            )
+        except Exception as e:
+            return AzureBlobResponse(success=False, error=f"User delegation SAS generation failed: {str(e)}")
 
     async def close_async_client(self) -> None:
         """Close the async client if it exists."""

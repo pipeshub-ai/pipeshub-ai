@@ -1,4 +1,5 @@
 import base64
+
 from typing import Optional
 
 import uvicorn
@@ -6,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
+
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.utils.logger import create_logger
@@ -146,6 +148,7 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
         # We'll need to implement a proper serialization method
         block_containers_dict = serialize_blocks_container(block_containers)
 
+
         return ProcessResponse(
             success=True,
             block_containers=block_containers_dict
@@ -159,7 +162,6 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             error=f"Processing failed: {str(e)}"
         )
 
-
 def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
     """Serialize BlocksContainer to dictionary for JSON response"""
     try:
@@ -170,6 +172,7 @@ def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
         # Re-raise the exception to make the serialization issue visible and easier to debug.
         # A logger should be used here to capture the error details.
         raise TypeError(f"Failed to serialize BlocksContainer: {e}") from e
+
 
 def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
     """Run the Docling service"""

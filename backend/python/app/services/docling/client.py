@@ -16,6 +16,7 @@ class DoclingClient:
 
     def __init__(self, service_url: Optional[str] = None, timeout: float = 2400.0) -> None:
         self.service_url = (service_url or os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081")).rstrip('/')
+
         self.timeout = timeout
         self.logger = create_logger(__name__)
         self.max_retries = 3

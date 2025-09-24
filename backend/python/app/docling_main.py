@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("🔄 Shutting down Docling service")
 
+
 app = FastAPI(
     lifespan=lifespan,
     title="Docling Processing Service",
