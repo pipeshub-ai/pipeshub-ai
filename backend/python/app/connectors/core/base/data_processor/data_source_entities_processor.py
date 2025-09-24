@@ -128,6 +128,13 @@ class DataSourceEntitiesProcessor:
         self.logger.info("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
+    async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
+        # Set org_id for the record
+        record.org_id = self.org_id
+        self.logger.info("Updating existing record: %s, version %d -> %d", 
+                         record.record_name, existing_record.version, record.version)
+        await tx_store.batch_upsert_records([record])
+
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
@@ -139,17 +146,15 @@ class DataSourceEntitiesProcessor:
             print(record)
 
             for permission in permissions:
-                from_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
-                to_collection = None
-                print("!!!!!!! C1")
+                from_collection = None
+                to_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
+                
                 if permission.entity_type == EntityType.USER.value:
                     user = None
                     if permission.email:
                         user = await tx_store.get_user_by_email(permission.email)
-                    print("!!!!!!! C2")
                     if user:
-                        to_collection = f"{CollectionNames.USERS.value}/{user.id}"
-                    print("!!!!!!! C3")
+                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                 # elif permission.entity_type == EntityType.GROUP.value:
                 #     if permission.external_id:
                 #         user_group = await self.data_store.get_user_group_by_external_id(permission.external_id)
@@ -157,39 +162,37 @@ class DataSourceEntitiesProcessor:
                 #         user_group = await self.data_store.get_user_group_by_email(permission.email)
 
                 #     if user_group:
-                #         to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                #         from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
 
                 # if permission.entity_type == EntityType.ORG.value:
                 #     org = await self.data_store.get_org_by_external_id(permission.external_id)
                 #     if org:
-                #         to_collection = f"{CollectionNames.ORGS.value}/{org.id}"
+                #         from_collection = f"{CollectionNames.ORGS.value}/{org.id}"
 
                 # if permission.entity_type == EntityType.DOMAIN.value:
                 #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
                 #     if domain:
-                #         to_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
+                #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
 
                 # if permission.entity_type == EntityType.ANYONE.value:
-                #     to_collection = f"{CollectionNames.ANYONE.value}"
+                #     from_collection = f"{CollectionNames.ANYONE.value}"
 
                 # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-                #     to_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
+                #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
 
-                if to_collection:
+                if from_collection:
                     record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
-                    print("!!!!!!! C4")
 
-            print("!!!!! Out of permission loop !!!!!!!")
             if record_permissions:
-                
-                print("!!!! create permision edge")
                 await tx_store.batch_create_edges(
-                    record_permissions, collection=CollectionNames.PERMISSIONS.value
+                    record_permissions, collection=CollectionNames.PERMISSION.value
                 )
                 print("!!!! created permision edge")
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
-           
+    
+    async def on_updated_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
+        pass
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
         existing_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
@@ -200,10 +203,13 @@ class DataSourceEntitiesProcessor:
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
-            await self._handle_updated_record(record, existing_record, tx_store)
+            # pass
+            #check if revision Id is same as existing record
+            if record.external_revision_id != existing_record.external_revision_id:
+                await self._handle_updated_record(record, existing_record, tx_store) 
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store)
+        await self._handle_parent_record(record, tx_store) 
 
         # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
         await self._handle_record_group(record, tx_store)
@@ -230,30 +236,35 @@ class DataSourceEntitiesProcessor:
 
             async with self.data_store_provider.transaction() as tx_store:
                 for record, permissions in records_with_permissions:
-                    print("!!!!! going to process_record")
+                    print("!!!!! going to process_record", record.record_name)
                     processed_record = await self._process_record(record, permissions, tx_store)
+                    
                     if processed_record:
+                        print("!!!!! processed_record: ", processed_record)
+                        print("!!!!! adding to records_to_publish")
                         records_to_publish.append(processed_record)
 
-                if records_to_publish:
-                    for record in records_to_publish:
-                        await self.messaging_producer.send_message(
-                                "record-events",
-                                {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
-                                key=record.id
-                            )
+            if records_to_publish:
+                for record in records_to_publish:
+                    print("!!!!!!!!!!!!!!!!! publishing record 0: ", record)
+                    await self.messaging_producer.send_message(
+                            "record-events",
+                            {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
+                            key=record.id
+                        )
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
 
-    async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
-        pass
-
-    async def on_updated_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
-        pass
 
     async def on_record_content_update(self, record: Record, tx_store: TransactionStore) -> None:
-        pass
+        print("!!!!!!!!!!!!!!!!! publishing record 1: ", record)
+        await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
+                key=record.id
+            )
+        print("!!!!!!!!!!!!!!!!! published record 1")
 
     async def on_record_metadata_update(self, record: Record, tx_store: TransactionStore) -> None:
         pass
@@ -306,15 +317,15 @@ class DataSourceEntitiesProcessor:
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
 
-                    # 3. Handle User Permissions (from the passed 'permissions' list)
+                    # 3. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
                         continue
 
                     record_group_permissions = []
-                    from_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
+                    to_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
 
                     for permission in permissions:
-                        to_collection = None
+                        from_collection = None
                         
                         if permission.entity_type == EntityType.USER:
                             user = None
@@ -322,13 +333,26 @@ class DataSourceEntitiesProcessor:
                                 user = await tx_store.get_user_by_email(permission.email)
                             
                             if user:
-                                to_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                                from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                             else:
                                 self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
                         
+                        elif permission.entity_type == EntityType.GROUP:
+                            user_group = None
+                            if permission.external_id:
+                                user_group = await tx_store.get_user_group_by_external_id(
+                                    connector_name=record_group.connector_name,
+                                    external_id=permission.external_id
+                                )
+                            
+                            if user_group:
+                                from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                            else:
+                                self.logger.warning(f"Could not find group with external_id {permission.external_id} for RecordGroup permission.")
+                        
                         # (The ORG case is no longer needed here as it's handled by BELONGS_TO)
 
-                        if to_collection:
+                        if from_collection:
                             record_group_permissions.append(
                                 permission.to_arango_permission(from_collection, to_collection)
                             )
@@ -337,7 +361,7 @@ class DataSourceEntitiesProcessor:
                     if record_group_permissions:
                         self.logger.info(f"Creating/updating {len(record_group_permissions)} PERMISSION edges for RecordGroup {record_group.id}")
                         await tx_store.batch_create_edges(
-                            record_group_permissions, collection=CollectionNames.PERMISSIONS.value
+                            record_group_permissions, collection=CollectionNames.PERMISSION.value
                         )
 
         except Exception as e:
@@ -407,17 +431,16 @@ class DataSourceEntitiesProcessor:
                     # (This uses batch_upsert_user_groups and the to_arango... method)
                     await tx_store.batch_upsert_user_groups([user_group])
 
-
                     # 3. Handle User Permissions (from the passed 'permissions' list)
                     if not permissions:
                         continue
 
                     user_group_permissions = []
-                    # Set the 'from' side of the edge to be this user group
-                    from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                    # Set the 'to' side of the edge to be this user group
+                    to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
 
                     for permission in permissions:
-                        to_collection = None
+                        from_collection = None
                         
                         if permission.entity_type == EntityType.USER:
                             user = None
@@ -426,14 +449,14 @@ class DataSourceEntitiesProcessor:
                                 user = await tx_store.get_user_by_email(permission.email)
                             
                             if user:
-                                # Set the 'to' side of the edge to be the user
-                                to_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                                # Set the 'from' side of the edge to be the user
+                                from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                             else:
                                 self.logger.warning(f"Could not find user with email {permission.email} for UserGroup permission.")
                         
                         # (Other entity_type cases like GROUP could be added here if needed)
 
-                        if to_collection:
+                        if from_collection:
                             # (Assuming Permission class has this method)
                             user_group_permissions.append(
                                 permission.to_arango_permission(from_collection, to_collection)
@@ -443,7 +466,7 @@ class DataSourceEntitiesProcessor:
                     if user_group_permissions:
                         self.logger.info(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
                         await tx_store.batch_create_edges(
-                            user_group_permissions, collection=CollectionNames.PERMISSIONS.value
+                            user_group_permissions, collection=CollectionNames.PERMISSION.value
                         )
 
         except Exception as e:

@@ -12,6 +12,9 @@ from app.connectors.sources.microsoft.onedrive.event_service import OneDriveEven
 from app.connectors.sources.microsoft.sharepoint_online.event_service import (
     SharePointOnlineEventService,
 )
+from app.connectors.sources.dropbox.event_service import (
+    DropboxEventService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -282,9 +285,23 @@ class KafkaUtils:
                         app_container=app_container,
                     )
                     return await sharepoint_event_service.process_event(event_type, payload)
+                #create dropbox event service
+                elif connector.lower() == Connectors.DROPBOX.value.lower():
+                    dropbox_event_service = DropboxEventService(
+                        logger=logger,
+                        arango_service=arango_service,
+                        app_container=app_container,
+                    )
+
+                    logger.info(f"Processing sync event: {event_type} for DROPBOX")
+                    return await dropbox_event_service.process_event(event_type, payload)
+
                 else:
                     logger.warning(f"Unknown connector in sync message: {connector}")
                     return False
+                
+                
+
 
             except Exception as e:
                 logger.error(f"Error processing sync message: {str(e)}", exc_info=True)

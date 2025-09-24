@@ -630,6 +630,7 @@ class AppUser(BaseModel):
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
     is_active: bool = Field(default=False, description="Whether the user is active")
+    title: Optional[str] = Field(default=None, description="Title of the user")
 
     def to_arango_base_user(self) -> Dict:
         return {

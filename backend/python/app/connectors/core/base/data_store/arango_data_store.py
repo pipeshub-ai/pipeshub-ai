@@ -76,6 +76,12 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.get_users(org_id, active)
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
+
+        record_ids = [r.id for r in records]
+        duplicates = [x for x in record_ids if record_ids.count(x) > 1]
+        if duplicates:
+            self.logger.warning(f"!!!!!!!!!!!!!!!!!!!!! DUPLICATE RECORD IDS IN BATCH: {duplicates}")
+
         self.logger.info("Upserting records in batch_record_upsert: %s", records)
 
         try:
@@ -116,7 +122,7 @@ class ArangoTransactionStore(TransactionStore):
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
 
-                print("record to upsert: ", record.to_arango_base_record())
+                print("!!!!!!!!!!!!!!!!!!! record to upsert: ", record.to_arango_base_record())
                 # Upsert base record
                 await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
                 # Upsert specific record type if it has a specific method

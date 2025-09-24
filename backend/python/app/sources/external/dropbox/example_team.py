@@ -16,8 +16,29 @@ from app.utils.logger import create_logger
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
+from app.sources.external.dropbox.dropbox_ import DropboxResponse
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
+
+def get_app_users(users: DropboxResponse):
+        app_users: List[AppUser] = []
+        for member in users.data.members:
+            profile = member.profile
+            app_users.append(
+                AppUser(
+                    # source_user_id=member.team_member_id,
+                    app_name="DROPBOX",
+                    source_user_id=profile.team_member_id,
+                    # first_name=profile.name.given_name,
+                    # last_name=profile.name.surname,
+                    full_name=profile.name.display_name,
+                    email=profile.email,
+                    is_active=(profile.status._tag == "active"),
+                    title=member.role._tag,
+                    
+                )
+            )
+        return app_users
 
 async def main() -> None:
     config = DropboxTokenConfig(token=ACCESS_TOKEN)
@@ -27,24 +48,28 @@ async def main() -> None:
     #list all team members
     print("\nListing team members:")
     team_members = await data_source.team_members_list()
-    print(to_pretty_json(team_members.data.members))
+    print((team_members.data.members))
 
-    #list team folder items
-    print("\nListing team folder:")
-    team_files = await data_source.files_list_folder(path="",team_member_id=team_members.data.members[2].profile.team_member_id, team_folder_id="13131350499", recursive=True)
-    print(to_pretty_json(team_files))
+    # #list team folder items
+    # print("\nListing team folder:")
+    # team_files = await data_source.files_list_folder(path="",team_member_id=team_members.data.members[2].profile.team_member_id, team_folder_id="13131350499", recursive=True)
+    # print(to_pretty_json(team_files))
 
-    #list all folder groups in team:
-    folder_groups = await data_source.team_team_folder_list()
-    print(folder_groups)
+    # #list all folder groups in team:
+    # folder_groups = await data_source.team_team_folder_list()
+    # print(folder_groups)
 
     #list mebers of team folder
-    print("\nListing team folder members:")
-    team_folder_members = await data_source.sharing_list_folder_members(shared_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id, as_admin=True)
-    print(team_folder_members)
+    # print("\nListing team folder members:")
+    # team_folder_members = await data_source.sharing_list_folder_members(shared_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id, as_admin=True)
+    # print(team_folder_members)
 
-    #list dropbox groups
-    print("\nListing dropbox groups:")
+    # print("\nListing team folder members2:")
+    # team_folder_members = await data_source.sharing_list_folder_members(shared_folder_id="13160107251", team_member_id=team_members.data.members[2].profile.team_member_id, as_admin=True)
+    # print(team_folder_members)
+
+    # #list dropbox user groups
+    print("\nListing dropbox user groups:")
     dropbox_groups = await data_source.team_groups_list()
     print(dropbox_groups.data.groups)
     

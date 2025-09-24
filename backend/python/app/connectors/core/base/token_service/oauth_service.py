@@ -58,6 +58,9 @@ class OAuthToken:
     scope: Optional[str] = None
     id_token: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
+    uid: Optional[str] = None   # used for dropbox
+    account_id: Optional[str] = None
+    team_id: Optional[str] = None 
 
     @property
     def is_expired(self) -> bool:
@@ -83,7 +86,9 @@ class OAuthToken:
             "refresh_token": self.refresh_token,
             "scope": self.scope,
             "id_token": self.id_token,
-            "created_at": self.created_at.isoformat()
+            "created_at": self.created_at.isoformat(),
+            "uid": self.uid,
+            "account_id": self.account_id
         }
 
     @classmethod
@@ -160,6 +165,7 @@ class OAuthProvider:
             response.raise_for_status()
             token_data = await response.json()
 
+        print("!!!!!!!!!!!!!!!!!!!!! got token data1 : ",token_data)
         token = OAuthToken(**token_data)
         return token
 
@@ -178,6 +184,8 @@ class OAuthProvider:
             token_data = await response.json()
 
         # Create new token with current timestamp
+
+        print("!!!!!!!!!!!!!!!!!!!!! got token data2 : ",token_data)
         token = OAuthToken(**token_data)
         # Preserve refresh_token (Google omits it on refresh)
         if not token.refresh_token:
@@ -264,6 +272,7 @@ class OAuthProvider:
 
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
+        print("!!!!!!!!!!!!!!!!!!!!! stored_state: ", stored_state)
 
         # Validate state
         if not stored_state or stored_state != state:

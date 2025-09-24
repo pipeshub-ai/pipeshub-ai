@@ -27,6 +27,12 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+    CommonFields,
+    ConnectorBuilder,
+    DocumentationLink,
+)
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 
@@ -124,6 +130,46 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 #     new_permissions: Optional[List[Permission]] = None
 #     external_record_id: Optional[str] = None
 
+@ConnectorBuilder("Dropbox")\
+    .in_group("Cloud Storage")\
+    .with_auth_type("OAUTH")\
+    .with_description("Sync files and folders from Dropbox")\
+    .with_categories(["Storage"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/dropbox.svg")
+        .with_realtime_support(True)
+        .add_documentation_link(DocumentationLink(
+            "Dropbox App Setup",
+            "https://developers.dropbox.com/oauth-guide"
+        ))
+        .with_redirect_uri("connectors/oauth/callback/Dropbox", True)
+        .with_oauth_urls(
+            "https://www.dropbox.com/oauth2/authorize",
+            "https://api.dropboxapi.com/oauth2/token",
+            [
+                "account_info.read",
+                "files.content.read",
+                "files.metadata.read",
+                "file_requests.read",
+                "groups.read",
+                "members.read",
+                "sharing.read",
+                "team_data.member",
+                "team_data.team_space",
+                "team_info.read",
+                "events.read"
+            ]
+        )
+        .add_auth_field(CommonFields.client_id("Dropbox App Console"))
+        .add_auth_field(CommonFields.client_secret("Dropbox App Console"))
+        .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
+        .with_scheduled_config(True, 60)
+        .add_sync_custom_field(CommonFields.batch_size_field())
+        .add_filter_field(CommonFields.file_types_filter(), "static")
+        .add_filter_field(CommonFields.folders_filter(),
+                          "https://api.dropboxapi.com/2/files/list_folder")
+    )\
+    .build_decorator()
 class DropboxConnector(BaseConnector):
     """
     Connector for synchronizing data from a Dropbox account.
@@ -165,15 +211,19 @@ class DropboxConnector(BaseConnector):
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
-        credentials_config = await self.config_service.get_config(
-            f"/services/connectors/dropbox/config/{self.data_entities_processor.org_id}" 
+        config = await self.config_service.get_config(
+            f"/services/connectors/dropbox/config" 
         )
-        if not credentials_config or not credentials_config.get("accessToken"):
+        if not config:
             self.logger.error("Dropbox access token not found in configuration.")
             return False
+        
+        credentials_config = config.get("credentials")
+        access_token = credentials_config.get("access_token")
+        is_team = credentials_config.get("isTeam", True)
 
-        access_token = credentials_config.get("accessToken")
-        is_team = credentials_config.get("isTeam", False)
+        print("!!!!!!!!!!!!! got access_token: ", access_token)
+        print("!!!!!!!!!!!!! got is_team: ", is_team)
 
         try:
             config = DropboxTokenConfig(token=access_token)
@@ -207,7 +257,8 @@ class DropboxConnector(BaseConnector):
     async def _process_dropbox_entry(
         self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
          user_id: str, user_email: str,
-          record_group_id: str
+          record_group_id: str,
+          is_person_folder: bool
     ) -> Optional[RecordUpdate]:
         """
         Process a single Dropbox entry and detect changes.
@@ -263,6 +314,7 @@ class DropboxConnector(BaseConnector):
             is_file = isinstance(entry, FileMetadata)
 
             if existing_record:
+                print("!!!!!!!!!!!! got existing record !!!!!!!!!!!!!!: ", existing_record.record_name  )
                 if existing_record.record_name != entry.name:
                     metadata_changed = True
                     is_updated = True
@@ -288,7 +340,7 @@ class DropboxConnector(BaseConnector):
                 temp_link_result = await self.data_source.files_get_temporary_link(
                     entry.path_lower,
                     team_member_id=user_id,
-                    team_folder_id=record_group_id
+                    team_folder_id=record_group_id if not is_person_folder else None
                 )
                 if temp_link_result.success:
                     signed_url = temp_link_result.data.link
@@ -304,7 +356,7 @@ class DropboxConnector(BaseConnector):
                 parent_metadata = await self.data_source.files_get_metadata(
                     parent_path,
                     team_member_id=user_id,
-                    team_folder_id=record_group_id,
+                    team_folder_id=record_group_id if not is_person_folder else None,
                 )
                 if parent_metadata.success:
                     parent_external_record_id = parent_metadata.data.id
@@ -368,7 +420,7 @@ class DropboxConnector(BaseConnector):
             return None
 
     async def _process_dropbox_items_generator(
-        self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str
+        self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str, is_person_folder: bool
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Dropbox entries and yield records with their permissions.
@@ -376,7 +428,7 @@ class DropboxConnector(BaseConnector):
         """
         for entry in entries:
             try:
-                record_update = await self._process_dropbox_entry(entry, user_id, user_email, record_group_id)
+                record_update = await self._process_dropbox_entry(entry, user_id, user_email, record_group_id, is_person_folder)
                 if record_update:
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
@@ -384,7 +436,7 @@ class DropboxConnector(BaseConnector):
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
 
-    async def   _handle_record_updates(self, record_update: RecordUpdate) -> None:
+    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
         Handle different types of record updates (new, updated, deleted).
         """
@@ -577,83 +629,7 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Error processing users in batches: {e}")
             raise
     
-    async def sync_record_groups(self):
-        team_folders = await self.data_source.team_team_folder_list()
-        record_groups = []
-
-        dropbox_to_permission_type = {
-            'owner': PermissionType.OWNER,
-            'editor': PermissionType.WRITE,
-            'viewer': PermissionType.READ,
-        }
-
-        for folder in team_folders.data.team_folders:
-            team_folder_members = await self.data_source.sharing_list_folder_members(
-                shared_folder_id=folder.team_folder_id,
-                team_member_id="dbmid:AABsmEXHCICJNHgxi1y-pXtGoK4uNnxEhlU",
-                as_admin=True
-            )
-
-            if folder.status._tag != "active":
-                continue
-                
-            record_group = RecordGroup(
-                name=folder.name,
-                org_id=self.data_entities_processor.org_id,
-                external_group_id=folder.team_folder_id,
-                description="Team Folder",
-                connector_name=Connectors.DROPBOX,
-                group_type=RecordGroupType.DRIVE,
-            )
-
-            # --- Create permissions list from folder members ---
-            permissions_list = []
-            if team_folder_members.success and team_folder_members.data.users:
-                for user_info in team_folder_members.data.users:
-                    # Get the permission type string (e.g., 'editor')
-                    access_level_tag = user_info.access_type._tag
-                    
-                    # Map it to our internal PermissionType enum
-                    permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ) # Default to READ if unknown
-                    
-                    # Create the permission object
-                    user_permission = Permission(
-                        email=user_info.user.email,
-                        type=permission_type,
-                        entity_type=EntityType.USER
-                    )
-                    permissions_list.append(user_permission)
-            # ---
-            
-            # Append the record group and the list of user permissions
-            record_groups.append((record_group, permissions_list))
-        
-        await self.data_entities_processor.on_new_record_groups(record_groups)  
-
-    async def sync_personal_record_groups(self, users: List[AppUser]):
-        record_groups = []
-        for user in users:
-            record_group = RecordGroup(
-                name=user.full_name,
-                org_id=self.data_entities_processor.org_id,
-                description="Personal Folder",
-                external_group_id=user.source_user_id,
-                connector_name=Connectors.DROPBOX,
-                group_type=RecordGroupType.DRIVE,
-            )
-            
-            # Create permission for the user (OWNER)
-            user_permission = Permission(
-                email=user.email,
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER
-            )
-            
-            # Append the record group and its associated permissions
-            record_groups.append((record_group, [user_permission]))
-        
-        await self.data_entities_processor.on_new_record_groups(record_groups)
-
+    
     
     async def _run_sync_with_yield(self, user_id: str, user_email: str) -> None:
         """
@@ -761,7 +737,7 @@ class DropboxConnector(BaseConnector):
 
                         # 4. Process the entries from the current page
                         async for file_record, permissions, record_update in self._process_dropbox_items_generator(
-                            entries, user_id, user_email, current_record_group_id
+                            entries, user_id, user_email, current_record_group_id, folder_id is None
                         ):
                             if record_update.is_deleted:
                                 await self._handle_record_updates(record_update)
@@ -822,6 +798,22 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Unhandled error in Dropbox sync for user {user_id}: {ex}", exc_info=True)
             raise
 
+    def get_app_users(self, users: DropboxResponse):
+        app_users: List[AppUser] = []
+        for member in users.data.members:
+            profile = member.profile
+            app_users.append(
+                AppUser(
+                    app_name="DROPBOX",
+                    source_user_id=profile.team_member_id,
+                    full_name=profile.name.display_name,
+                    email=profile.email,
+                    is_active=(profile.status._tag == "active"),
+                    title=member.role._tag,
+                )
+            )
+        return app_users
+
     async def run_sync(self) -> None:
         """Runs a full synchronization from the Dropbox account root."""
         try:
@@ -832,6 +824,7 @@ class DropboxConnector(BaseConnector):
             self.logger.info("Syncing users...")
             users = await self.data_source.team_members_list()
             app_users = self.get_app_users(users)
+
             await self.data_entities_processor.on_new_app_users(app_users)
 
             # Step 2: fetch and sync all user groups
@@ -841,7 +834,7 @@ class DropboxConnector(BaseConnector):
 
             #Step 3: List all shared folders within a team and create record groups / use continue here
             self.logger.info("Syncing record groups...")
-            await self.sync_record_groups()
+            await self.sync_record_groups(app_users)
             #Step 3.5: Create all personal folder record groups
             await self.sync_personal_record_groups(app_users)
 
@@ -972,26 +965,118 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Fatal error in _sync_dropbox_groups: {e}", exc_info=True)
             raise
+    
 
-    def get_app_users(self, users: DropboxResponse):
-        app_users: List[AppUser] = []
-        for member in users.data.members:
-            profile = member.profile
-            app_users.append(
-                AppUser(
-                    # source_user_id=member.team_member_id,
-                    app_name="DROPBOX",
-                    source_user_id=profile.team_member_id,
-                    first_name=profile.name.given_name,
-                    last_name=profile.name.surname,
-                    full_name=profile.name.display_name,
-                    email=profile.email,
-                    is_active=(profile.status._tag == "active"),
-                    title=member.role._tag,
-                    
-                )
+    async def sync_record_groups(self, users: List[AppUser]):
+        # Find a team admin user
+        team_admin_user = None
+        for user in users:
+            if user.title == "team_admin":
+                team_admin_user = user
+                break
+        
+        if not team_admin_user:
+            self.logger.error("No team admin user found. Cannot sync record groups.")
+            return
+        
+        self.logger.info(f"Using team admin user: {team_admin_user.email} (ID: {team_admin_user.source_user_id})")
+        
+        team_folders = await self.data_source.team_team_folder_list()
+        record_groups = []
+
+        dropbox_to_permission_type = {
+            'owner': PermissionType.OWNER,
+            'editor': PermissionType.WRITE,
+            'viewer': PermissionType.READ,
+        }
+
+        for folder in team_folders.data.team_folders:
+            team_folder_members = await self.data_source.sharing_list_folder_members(
+                shared_folder_id=folder.team_folder_id,
+                team_member_id=team_admin_user.source_user_id,
+                as_admin=True
             )
-        return app_users
+
+            if folder.status._tag != "active":
+                continue
+                
+            record_group = RecordGroup(
+                name=folder.name,
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=folder.team_folder_id,
+                description="Team Folder",
+                connector_name=Connectors.DROPBOX,
+                group_type=RecordGroupType.DRIVE,
+            )
+
+            # --- Create permissions list from folder members ---
+            permissions_list = []
+            
+            if team_folder_members.success:
+                # Handle USER permissions
+                if team_folder_members.data.users:
+                    for user_info in team_folder_members.data.users:
+                        # Get the permission type string (e.g., 'editor')
+                        access_level_tag = user_info.access_type._tag
+                        
+                        # Map it to our internal PermissionType enum
+                        permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
+                        
+                        # Create the permission object
+                        user_permission = Permission(
+                            email=user_info.user.email,
+                            type=permission_type,
+                            entity_type=EntityType.USER
+                        )
+                        permissions_list.append(user_permission)
+                
+                # Handle GROUP permissions
+                if team_folder_members.data.groups:
+                    for group_info in team_folder_members.data.groups:
+                        # Get the permission type string (e.g., 'editor')
+                        access_level_tag = group_info.access_type._tag
+                        
+                        # Map it to our internal PermissionType enum
+                        permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
+                        
+                        # Create the permission object for group
+                        group_permission = Permission(
+                            external_id=group_info.group.group_id,  # Use group_id as external_id
+                            type=permission_type,
+                            entity_type=EntityType.GROUP
+                            # Note: groups don't have email, so we use external_id instead
+                        )
+                        permissions_list.append(group_permission)
+            # ---
+            
+            # Append the record group and the list of user/group permissions
+            record_groups.append((record_group, permissions_list))
+        
+        await self.data_entities_processor.on_new_record_groups(record_groups)
+
+    async def sync_personal_record_groups(self, users: List[AppUser]):
+        record_groups = []
+        for user in users:
+            record_group = RecordGroup(
+                name=user.full_name,
+                org_id=self.data_entities_processor.org_id,
+                description="Personal Folder",
+                external_group_id=user.source_user_id,
+                connector_name=Connectors.DROPBOX,
+                group_type=RecordGroupType.DRIVE,
+            )
+            
+            # Create permission for the user (OWNER)
+            user_permission = Permission(
+                email=user.email,
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER
+            )
+            
+            # Append the record group and its associated permissions
+            record_groups.append((record_group, [user_permission]))
+        
+        await self.data_entities_processor.on_new_record_groups(record_groups)
     
     async def run_incremental_sync(self) -> None:
         """Runs an incremental sync using the last known cursor."""

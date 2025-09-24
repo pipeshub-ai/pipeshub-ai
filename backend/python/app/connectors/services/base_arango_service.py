@@ -2926,6 +2926,7 @@ class BaseArangoService:
     ) -> bool | None:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
+            print("!!!!!!!!!!!!!!!!! nodes:", nodes)
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
 
             batch_query = """

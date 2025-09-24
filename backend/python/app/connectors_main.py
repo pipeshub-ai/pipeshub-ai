@@ -28,6 +28,9 @@ from app.connectors.sources.microsoft.onedrive.connector import (
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.dropbox.connector2 import (
+    DropboxConnector
+)
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
@@ -151,6 +154,16 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     asyncio.create_task(sharepoint_connector.run_sync())
                     logger.info("SharePoint connector initialized for org %s", org_id)
 
+                if app["name"].lower() == Connectors.DROPBOX.value.lower():
+                    config_service = app_container.config_service()
+                    arango_service = await app_container.arango_service()
+                    data_store_provider = ArangoDataStore(logger, arango_service)
+                    dropbox_connector = await DropboxConnector.create_connector(logger, data_store_provider, config_service)
+                    await dropbox_connector.init()
+                    app_container.dropbox_connector.override(providers.Object(dropbox_connector))
+                    asyncio.create_task(dropbox_connector.run_sync())
+                    logger.info("Dropbox connector initialized for org %s", org_id)
+
             if drive_sync_service is not None:
                 try:
                     asyncio.create_task(drive_sync_service.perform_initial_sync(org_id))  # type: ignore
@@ -200,6 +213,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         registry.register_connector(GmailConnector)
         registry.register_connector(OneDriveConnector)
         registry.register_connector(SharePointConnector)
+        registry.register_connector(DropboxConnector)
 
         logger.info(f"Registered {len(registry._connectors)} connectors")
 

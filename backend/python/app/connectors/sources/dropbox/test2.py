@@ -15,7 +15,7 @@ from app.utils.logger import create_logger
 
 async def test_run() -> None:
     """Initializes and runs the Dropbox connector sync process for testing."""
-    org_id = "org_dbx"
+    org_id = "68d28814cdabcc98a3e02605"
     
     # Helper function to set up a test user and organization in ArangoDB
     async def create_test_users(arango_service: BaseArangoService) -> None:
@@ -72,21 +72,23 @@ async def test_run() -> None:
         return
 
     config = {
-        "accessToken": dropbox_team_token,
-        "isTeam": True  # Set to True if using a team token
+        "credentials": {
+            "access_token": dropbox_team_token,
+            "isTeam": True  # Set to True if using a team token
+        }
     }
 
 
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # key_value_store.set_config(f"/services/connectors/dropbox/config/{org_id}", config)
     # Corrected line using the create_key method
-    await key_value_store.create_key(f"/services/connectors/dropbox/config/{org_id}", config)
+    await key_value_store.create_key(f"/services/connectors/dropbox/config", config)
 
     #### logs
-    print(f"\n\nDEBUG: Stored config at key: /services/connectors/dropbox/config/{org_id}")
+    print(f"\n\nDEBUG: Stored config at key: /services/connectors/dropbox/config")
 
     # Try to retrieve it immediately
-    stored_config = await key_value_store.get_key(f"/services/connectors/dropbox/config/{org_id}")
+    stored_config = await key_value_store.get_key(f"/services/connectors/dropbox/config")
     print(f"\n\nDEBUG: Retrieved config: {stored_config}")
 
     # Also list all keys to see what's actually in the store

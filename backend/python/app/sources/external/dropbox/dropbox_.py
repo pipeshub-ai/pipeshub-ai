@@ -6040,7 +6040,9 @@ class DropboxDataSource:
 
     async def sharing_list_folder_members_continue(
         self,
-        cursor: str
+        cursor: str,
+        team_member_id: Optional[str] = None,
+        as_admin: bool = False
     ) -> DropboxResponse:
         """Once a cursor has been retrieved from
 
@@ -6050,6 +6052,8 @@ class DropboxDataSource:
 
         Args:
             cursor (str, required): Parameter for sharing_list_folder_members_continue
+            team_member_id (str, optional): Parameter for sharing_list_folder_members_continue
+            as_admin (bool, optional): Parameter for sharing_list_folder_members_continue
 
         Returns:
             DropboxResponse: SDK response
@@ -6067,8 +6071,8 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.ListFolderMembersContinueError`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id=team_member_id, as_admin=as_admin)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_folder_members_continue(cursor))
             return DropboxResponse(success=True, data=response)
