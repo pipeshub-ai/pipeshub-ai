@@ -182,6 +182,9 @@ class MimeTypes(Enum):
     NOTION_PAGE_COMMENT_TEXT = "notion/pageCommentText"
     HTML = "text/html"
     PLAIN_TEXT = "text/plain"
+    MARKDOWN = "text/markdown"
+    MDX = "text/mdx"
+   
 
 
 class ProgressStatus(Enum):

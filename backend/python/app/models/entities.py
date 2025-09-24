@@ -119,7 +119,7 @@ class Record(BaseModel):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record.get("connectorName", Connectors.KNOWLEDGE_BASE.value)),
-            mime_type=arango_base_record.get("mimeType", None),
+            mime_type=MimeTypes(arango_base_record.get("mimeType", None)),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
             updated_at=arango_base_record.get("updatedAtTimestamp", None),

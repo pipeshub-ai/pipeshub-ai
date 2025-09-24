@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, Optional
+import re
+
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -23,6 +25,19 @@ class FetchFullRecordArgs(BaseModel):
         description="Why the full record is needed (explain the gap in the provided blocks)."
     )
 
+class FetchBlockGroupArgs(BaseModel):
+    """
+    Required tool args for fetching a block group.
+    """
+    block_group_number: str = Field(
+        ...,
+        description="Number of the block group to fetch."
+    )
+    reason: str = Field(
+        ...,
+        description="Why the block group is needed (explain the gap in the provided blocks)."
+    )
+
 
 async def _try_blobstore_fetch(blob_store: BlobStorage, org_id: str, record_id: str) -> Optional[Dict[str, Any]]:
     """
@@ -36,6 +51,15 @@ async def _try_blobstore_fetch(blob_store: BlobStorage, org_id: str, record_id: 
     except Exception:
         pass
 
+async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_id: str) -> Dict[str, Any]:
+    """
+    Fetch complete record using virtual record id.
+    """
+    record = await _try_blobstore_fetch(blob_store, org_id, vrid)
+    if record:
+        return {"ok": True, "record": record}
+    else:
+        return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}   
 
 async def _fetch_full_record_impl(
     record_id: str,
@@ -54,9 +78,7 @@ async def _fetch_full_record_impl(
     }
     """
     print(f"record_id: {record_id}")
-    print(f"arango_service: {arango_service}")
     record = await arango_service.get_record_by_id(record_id)
-    print(f"record: {record}")
     # 1) Try blob store (fast path in your pipeline)
     record = await _try_blobstore_fetch(blob_store, org_id, record.virtual_record_id)
     if record:
@@ -79,6 +101,57 @@ def create_fetch_full_record_tool(blob_store: BlobStorage, arango_service: Arang
         """
 
         result = await _fetch_full_record_impl(record_id, blob_store, arango_service, org_id)
-        return json.dumps(result)
+        return result
 
     return fetch_full_record_tool
+
+def create_fetch_block_group_tool(blob_store: BlobStorage,final_results: List[Dict[str, Any]],org_id: str) -> Callable:
+    """
+    Factory function to create the tool with runtime dependencies injected.
+    """
+    @tool("fetch_block_group", args_schema=FetchBlockGroupArgs)
+    async def fetch_block_group_tool(block_group_number: str, reason: str) -> str:
+        record_number = block_group_number.split("-")[0]
+        number = int(re.findall(r'\d+', record_number)[0])
+        count =0
+        seen = set()
+        record = None
+        vrid = None
+        for result in final_results:
+            if result.get("virtual_record_id") not in seen:
+                seen.add(result.get("virtual_record_id"))
+                count += 1
+                if count == number:
+                    vrid = result.get("virtual_record_id")
+                    break
+        
+        if vrid:
+            record = await _fetch_full_record_using_vrid(vrid, blob_store,org_id)
+            if record:
+                block_group_index = int(block_group_number.split("-")[1])
+                block_container = record.get("block_containers",{})
+                block_groups = block_container.get("block_groups",[])
+                blocks = block_container.get("blocks",[])
+                if block_groups and block_group_index < len(block_groups):
+                    block_group = block_groups[block_group_index]
+                    children = block_group.get("children",[])
+                    result_blocks = []
+                    for child in children:
+                        block_index = child.get("block_index")
+                        block = blocks[block_index]
+                        result_blocks.append(block)
+                    record = create_record_for_fetch_block_group(record, block_group, result_blocks)
+                    return {"ok": True, "record": record}
+            else:
+                return {"ok": False, "error": f"Block group '{block_group_number}' not found in record with vrid '{vrid}'."}
+        else:
+            return {"ok": False, "error": f"Block group '{block_group_number}' not found."}
+    return fetch_block_group_tool
+
+def create_record_for_fetch_block_group(record: Dict[str, Any],block_group: Dict[str, Any],blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    block_container = {
+        "blocks": blocks,
+        "block_groups": [block_group]
+    }
+    record["block_containers"] = block_container
+    return record
