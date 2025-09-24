@@ -160,6 +160,16 @@ class EventProcessor:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
+            record = await self.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
+
             # For both create and update events, we need to process the document
             if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
@@ -172,12 +182,7 @@ class EventProcessor:
                 virtual_record_id = str(uuid4())
 
             # Update indexing status to IN_PROGRESS
-            record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return
+            
             doc = dict(record)
 
             # Extract necessary data
