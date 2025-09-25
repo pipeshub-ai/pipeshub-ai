@@ -1082,7 +1082,7 @@ class DropboxConnector(BaseConnector):
         """Runs an incremental sync using the last known cursor."""
         self.logger.info("Starting Dropbox incremental sync.")
         sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root", )
-        sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
+        sync_point = await self.record_sync_point.dropbox_cursor_sync_point(sync_point_key)
         
         cursor = sync_point.get('cursor') if sync_point else None
         if not cursor:

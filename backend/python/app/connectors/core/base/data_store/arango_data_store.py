@@ -58,7 +58,7 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
-        return await self.arango_service.get_user_by_user_id(user_id)
+        return await self.arango_service.get_user_by_user_id(user_id, transaction=self.txn)
     
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
@@ -75,7 +75,7 @@ class ArangoTransactionStore(TransactionStore):
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
 
-    async def batch_upsert_records(self, records: List[Record]) -> None:
+    async def batch_upsert_records(self, records: List[Record]) -> bool:
 
         record_ids = [r.id for r in records]
         duplicates = [x for x in record_ids if record_ids.count(x) > 1]

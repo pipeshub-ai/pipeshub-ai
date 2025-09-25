@@ -20,7 +20,6 @@ class SyncPoint(ISyncPoint):
     connector_name: str
     org_id: str
     data_store_provider: DataStoreProvider
-    # arango_service: BaseArangoService
     sync_data_point_type: SyncDataPointType
 
 

@@ -171,5 +171,4 @@ class TransactionStore(BaseDataStore):
         """Rollback the transaction"""
         pass
 
-    # async def batch_upsert_records(self, records: List[Record]) -> None:
         
