@@ -144,7 +144,7 @@ export const FIELD_TEMPLATES = {
   // MODEL OPTIONS
   isMultimodal: {
     name: 'isMultimodal',
-    label: 'Multimodal',
+    label: 'Is Multimodal',
     type: 'checkbox' as const,
     placeholder: 'Supports (text + image)',
     icon: mediaIcon,

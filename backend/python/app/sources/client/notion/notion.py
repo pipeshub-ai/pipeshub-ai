@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.http_status_code import HttpStatusCode
 from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
@@ -177,13 +176,10 @@ class NotionRESTClientViaOAuth(HTTPClient):
             body=data
         )
         token_data: Dict[str, Any]
-        response = await self.execute(request)
-
-        # Check response status before parsing JSON
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Token request failed with status {response.status}: {response.text}")
-
-        token_data = response.json()
+        async with HTTPClient(token="") as client:
+            response = await client.execute(request)
+            token_data = await response.json()
+        token_data = await response.json()
         self.access_token = token_data.get("access_token")
 
         # Update headers with new token

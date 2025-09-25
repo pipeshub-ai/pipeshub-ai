@@ -75,7 +75,6 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     filters: z
       .object({
         apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE])).optional(),
-        kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
     modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
@@ -105,7 +104,6 @@ export const regenerateAnswersParamsSchema = z.object({
     filters: z
       .object({
         apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE])).optional(),
-        kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
     modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),

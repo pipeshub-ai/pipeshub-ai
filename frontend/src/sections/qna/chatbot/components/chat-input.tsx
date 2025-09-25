@@ -1,11 +1,8 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
 import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
 import sparklesIcon from '@iconify-icons/mdi/star-four-points';
-import plusIcon from '@iconify-icons/mdi/plus';
-import closeIcon from '@iconify-icons/mdi/close';
-import checkIcon from '@iconify-icons/mdi/check';
 import {
   Box,
   Paper,
@@ -18,18 +15,6 @@ import {
   Chip,
   Tooltip,
   Divider,
-  Checkbox,
-  ListItemIcon,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField,
-  InputAdornment,
-  Tabs,
-  Tab,
-  Button,
-  Badge,
 } from '@mui/material';
 import axios from 'src/utils/axios';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
@@ -54,8 +39,7 @@ export type ChatInputProps = {
     message: string,
     modelKey?: string,
     modelName?: string,
-    chatMode?: string,
-    filters?: { apps: string[]; kb: string[] }
+    chatMode?: string
   ) => Promise<void>;
   isLoading: boolean;
   disabled?: boolean;
@@ -64,11 +48,6 @@ export type ChatInputProps = {
   selectedChatMode: ChatMode | null;
   onModelChange: (model: Model) => void;
   onChatModeChange: (mode: ChatMode) => void;
-  apps: Array<{ id: string; name: string; iconPath?: string }>;
-  knowledgeBases: Array<{ id: string; name: string }>;
-  initialSelectedApps?: string[];
-  initialSelectedKbIds?: string[];
-  onFiltersChange?: (filters: { apps: string[]; kb: string[] }) => void;
 };
 
 // Define chat modes locally in the frontend
@@ -150,11 +129,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
   selectedChatMode,
   onModelChange,
   onChatModeChange,
-  apps,
-  knowledgeBases,
-  initialSelectedApps = [],
-  initialSelectedKbIds = [],
-  onFiltersChange,
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -163,72 +137,12 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const [modelMenuAnchor, setModelMenuAnchor] = useState<null | HTMLElement>(null);
   const [modeMenuAnchor, setModeMenuAnchor] = useState<null | HTMLElement>(null);
   const [loadingModels, setLoadingModels] = useState(false);
-  // Removed unused menu anchors in favor of unified dialog
-  const [selectedApps, setSelectedApps] = useState<string[]>(initialSelectedApps || []);
-  const [selectedKbIds, setSelectedKbIds] = useState<string[]>(initialSelectedKbIds || []);
-  // Enhanced dialog states
-  const [resourcesDialogOpen, setResourcesDialogOpen] = useState(false);
-  const [resourcesTab, setResourcesTab] = useState(0); // 0: Apps, 1: KBs
-  const [appSearchTerm, setAppSearchTerm] = useState('');
-  const [kbSearchTerm, setKbSearchTerm] = useState('');
-  const kbNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    knowledgeBases.forEach((kb) => map.set(kb.id, kb.name));
-    return map;
-  }, [knowledgeBases]);
-
-  // Sync from parent only when props actually change
-  useEffect(() => {
-    const initialSet = new Set(initialSelectedApps || []);
-    const currentSet = new Set(selectedApps);
-    const same = initialSet.size === currentSet.size && [...initialSet].every(value => currentSet.has(value));
-    if (!same) {
-      setSelectedApps(initialSelectedApps || []);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSelectedApps]);
-  useEffect(() => {
-    const initialSet = new Set(initialSelectedKbIds || []);
-    const currentSet = new Set(selectedKbIds);
-    const same = initialSet.size === currentSet.size && [...initialSet].every(value => currentSet.has(value));
-    if (!same) {
-      setSelectedKbIds(initialSelectedKbIds || []);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSelectedKbIds]);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
-  const appItems = useMemo(() => apps || [], [apps]);
-  // Prefetch app icons to avoid flicker when switching tabs
-  useEffect(() => {
-    try {
-      (appItems || []).forEach((app) => {
-        if (app?.iconPath) {
-          const img = new Image();
-          img.src = app.iconPath;
-        }
-      });
-    } catch (e) {
-      // ignore prefetch errors
-    }
-  }, [appItems]);
-
-  // Memoized filtered lists for performance and stability
-  const filteredApps = useMemo(() => {
-    const term = appSearchTerm.trim().toLowerCase();
-    if (!term) return appItems;
-    return appItems.filter((a) => (a?.name || '').toLowerCase().includes(term));
-  }, [appItems, appSearchTerm]);
-
-  const filteredKBs = useMemo(() => {
-    const term = kbSearchTerm.trim().toLowerCase();
-    if (!term) return knowledgeBases;
-    return knowledgeBases.filter((kb) => (kb?.name || '').toLowerCase().includes(term));
-  }, [knowledgeBases, kbSearchTerm]);
 
   const fetchAvailableModels = async () => {
     try {
@@ -268,36 +182,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Open resources dialog helpers
-  const openAppsSelector = () => { setResourcesDialogOpen(true); setResourcesTab(0); };
-  const openKbSelector = () => { setResourcesDialogOpen(true); setResourcesTab(1); };
-
-  const toggleApp = (id: string) => {
-    setSelectedApps((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
-  };
-
-  const toggleKb = (id: string) => {
-    setSelectedKbIds((prev) => (prev.includes(id) ? prev.filter((k) => k !== id) : [...prev, id]));
-  };
-
-  // Notify parent about filters so first submit has correct filters
-  const lastEmittedRef = useRef<{ apps: string[]; kb: string[] } | null>(null);
-  useEffect(() => {
-    if (!onFiltersChange) return;
-    const payload = { apps: selectedApps, kb: selectedKbIds };
-    const last = lastEmittedRef.current;
-    const same =
-      !!last &&
-      last.apps.length === payload.apps.length &&
-      last.kb.length === payload.kb.length &&
-      last.apps.every((v, i) => v === payload.apps[i]) &&
-      last.kb.every((v, i) => v === payload.kb[i]);
-    if (!same) {
-      lastEmittedRef.current = payload;
-      onFiltersChange(payload);
-    }
-  }, [selectedApps, selectedKbIds, onFiltersChange]);
-
   useEffect(() => {
     if (inputRef.current) {
       const actuallyDisabled = inputRef.current.disabled;
@@ -312,7 +196,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const autoResizeTextarea = useCallback(() => {
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
-      const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 64), 300);
+      const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 64), 200);
       inputRef.current.style.height = `${newHeight}px`;
     }
   }, []);
@@ -352,13 +236,12 @@ const ChatInput: React.FC<ChatInputProps> = ({
           }
         }, 50);
       }
-      
+
       await onSubmit(
         trimmedValue,
         selectedModel?.modelKey,
         selectedModel?.modelName,
-        selectedChatMode?.id,
-        { apps: selectedApps, kb: selectedKbIds }
+        selectedChatMode?.id
       );
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -372,7 +255,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
         inputRef.current.focus();
       }
     }
-  }, [localValue, isLoading, isSubmitting, disabled, onSubmit, selectedModel, selectedChatMode, selectedApps, selectedKbIds]);
+  }, [localValue, isLoading, isSubmitting, disabled, onSubmit, selectedModel, selectedChatMode]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -595,31 +478,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                   />
                 ))}
               </Box>
-              <Box sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center' }}>
-                {/* Unified Resources selector with badge */}
-                <Tooltip title="Select apps and knowledge bases">
-                  <Badge badgeContent={selectedApps.length + selectedKbIds.length} color="primary" max={99}>
-                    <IconButton
-                      onClick={() => setResourcesDialogOpen(true)}
-                      size="small"
-                      sx={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: '50%',
-                        bgcolor: 'transparent',
-                        border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.12)}`,
-                        color: isDark ? alpha('#fff', 0.8) : alpha('#000', 0.7),
-                        '&:hover': {
-                          bgcolor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
-                          borderColor: isDark ? alpha('#fff', 0.2) : alpha('#000', 0.2),
-                        },
-                      }}
-                    >
-                      <Icon icon={plusIcon} width={14} height={14} />
-                    </IconButton>
-                  </Badge>
-                </Tooltip>
- 
+              <Box sx={{ display: 'flex', gap: 2, flexDirection: 'row', mr: 2 }}>
                 {/* Model Selector */}
                 <Tooltip
                   title={`AI Model: ${selectedModel ? `${formattedProvider(selectedModel.provider)} - ${selectedModel.modelName}` : 'Select AI model'}`}
@@ -817,164 +676,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
             ))}
           </Box>
         </Menu>
-
-        {/* Resources Selection Dialog */}
-        <Dialog
-          open={resourcesDialogOpen}
-          onClose={() => setResourcesDialogOpen(false)}
-          maxWidth="sm"
-          fullWidth
-          PaperProps={{ sx: { borderRadius: 2, maxHeight: '80vh' } }}
-        >
-          <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}>
-            <Typography variant="h6" sx={{ fontSize: '1.05rem' }}>Select Resources</Typography>
-            <IconButton size="small" onClick={() => setResourcesDialogOpen(false)}>
-              <Icon icon={closeIcon} width={16} height={16} />
-            </IconButton>
-          </DialogTitle>
-          <DialogContent sx={{ pt: 0, pb: 1 }}>
-            <Tabs value={resourcesTab} onChange={(_, v) => setResourcesTab(v)} variant="fullWidth" sx={{ mb: 2 }}>
-              <Tab label={`Apps ${selectedApps.length ? `(${selectedApps.length})` : ''}`} />
-              <Tab label={`Knowledge ${selectedKbIds.length ? `(${selectedKbIds.length})` : ''}`} />
-            </Tabs>
-
-            {/* Keep both panels mounted to prevent jarring re-mounts */}
-            <Box sx={{ display: resourcesTab === 0 ? 'block' : 'none' }}>
-              <TextField
-                fullWidth
-                placeholder="Search apps..."
-                value={appSearchTerm}
-                onChange={(e) => setAppSearchTerm(e.target.value)}
-                size="small"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Icon icon={plusIcon} width={14} height={14} />
-                    </InputAdornment>
-                  ),
-                }}
-                sx={{ mb: 1.5 }}
-              />
-              <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
-                {filteredApps.map((app) => {
-                    const checked = selectedApps.includes(app.id);
-                    return (
-                      <MenuItem key={app.id} onClick={() => toggleApp(app.id)} sx={{ borderRadius: 1, py: 1 }}>
-                        <ListItemIcon sx={{ minWidth: 28 }}>
-                          <Checkbox edge="start" size="small" checked={checked} tabIndex={-1} />
-                        </ListItemIcon>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <img
-                            src={app.iconPath}
-                            alt={app.name}
-                            width={16}
-                            height={16}
-                            style={{ objectFit: 'contain' }}
-                            loading="eager"
-                            onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/assets/icons/connectors/default.svg'; }}
-                          />
-                          <Typography variant="body2">{app.name}</Typography>
-                        </Box>
-                        {checked && <Icon icon={checkIcon} width={14} height={14} style={{ marginLeft: 'auto' }} />}
-                      </MenuItem>
-                    );
-                  })}
-              </Box>
-            </Box>
-
-            <Box sx={{ display: resourcesTab === 1 ? 'block' : 'none' }}>
-              <TextField
-                fullWidth
-                placeholder="Search knowledge bases..."
-                value={kbSearchTerm}
-                onChange={(e) => setKbSearchTerm(e.target.value)}
-                size="small"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Icon icon={plusIcon} width={14} height={14} />
-                    </InputAdornment>
-                  ),
-                }}
-                sx={{ mb: 1.5 }}
-              />
-              <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
-                {filteredKBs.map((kb) => {
-                    const checked = selectedKbIds.includes(kb.id);
-                    return (
-                      <MenuItem key={kb.id} onClick={() => toggleKb(kb.id)} sx={{ borderRadius: 1, py: 1 }}>
-                        <ListItemIcon sx={{ minWidth: 28 }}>
-                          <Checkbox edge="start" size="small" checked={checked} tabIndex={-1} />
-                        </ListItemIcon>
-                        <Typography variant="body2">{kb.name}</Typography>
-                        {checked && <Icon icon={checkIcon} width={14} height={14} style={{ marginLeft: 'auto' }} />}
-                      </MenuItem>
-                    );
-                  })}
-              </Box>
-            </Box>
-          </DialogContent>
-          <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-              {selectedApps.length + selectedKbIds.length} items selected
-            </Typography>
-            <Button onClick={() => { setSelectedApps([]); setSelectedKbIds([]); }} size="small">
-              Clear
-            </Button>
-            <Button onClick={() => setResourcesDialogOpen(false)} variant="contained" size="small" sx={{ borderRadius: 1.5 }}>
-              Done
-            </Button>
-          </DialogActions>
-        </Dialog>
-
-        {/* Selected Filters Preview */}
-        {(selectedApps.length > 0 || selectedKbIds.length > 0) && (
-          <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap', px: 0.5 }}>
-            {selectedApps.slice(0, 3).map((id) => {
-              const app = appItems.find((a) => a.id === id);
-              const label = app ? app.name : id;
-              return (
-                <Chip
-                  key={`app-${id}`}
-                  size="small"
-                  label={label}
-                  onDelete={() => toggleApp(id)}
-                  sx={{ height: 22, borderRadius: '12px' }}
-                />
-              );
-            })}
-            {selectedApps.length > 3 && (
-              <Chip
-                size="small"
-                label={`+${selectedApps.length - 3} more`}
-                sx={{ height: 22, borderRadius: '12px' }}
-                onClick={openAppsSelector}
-              />
-            )}
-            {selectedKbIds.slice(0, 3).map((id) => {
-              const label = kbNameMap.get(id) || id;
-              return (
-                <Chip
-                  key={`kb-${id}`}
-                  size="small"
-                  label={label}
-                  onDelete={() => toggleKb(id)}
-                  variant="outlined"
-                  sx={{ height: 22, borderRadius: '12px' }}
-                />
-              );
-            })}
-            {selectedKbIds.length > 3 && (
-              <Chip
-                size="small"
-                label={`+${selectedKbIds.length - 3} more`}
-                variant="outlined"
-                sx={{ height: 22, borderRadius: '12px' }}
-                onClick={openKbSelector}
-              />
-            )}
-          </Box>
-        )}
       </Box>
     </>
   );
