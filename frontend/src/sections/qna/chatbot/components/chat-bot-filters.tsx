@@ -10,6 +10,7 @@ import chevronUpIcon from '@iconify-icons/mdi/chevron-up';
 import appsIcon from '@iconify-icons/mdi/connection';
 import databaseIcon from '@iconify-icons/mdi/database-outline';
 import filterIcon from '@iconify-icons/mdi/filter-variant';
+import { Theme } from '@mui/material/styles';
 
 import {
   Box,
@@ -28,7 +29,6 @@ import {
   Stack,
 } from '@mui/material';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
-import { Theme } from '@mui/material/styles';
 
 // Types
 interface Resource {
