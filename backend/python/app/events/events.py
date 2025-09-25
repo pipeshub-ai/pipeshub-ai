@@ -154,7 +154,6 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            print(f"virtual_record_iddddddddddddd 157: {virtual_record_id}")
             self.logger.info(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
@@ -168,7 +167,6 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-            print(f"virtual_record_iddddddddddddd 174: {virtual_record_id}")
 
 
             # For both create and update events, we need to process the document
@@ -185,7 +183,6 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
-            print(f"virtual_record_iddddddddddddd 191: {virtual_record_id}")
 
             # Update indexing status to IN_PROGRESS
 
