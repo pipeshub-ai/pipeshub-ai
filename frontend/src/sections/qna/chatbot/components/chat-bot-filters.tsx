@@ -28,6 +28,7 @@ import {
   Stack,
 } from '@mui/material';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
+import { Theme } from '@mui/material/styles';
 
 // Types
 interface Resource {
@@ -85,7 +86,7 @@ const SECTIONS = {
 } as const;
 
 // Professional Styling Hook
-const useStyles = (theme: any, isDark: boolean) =>
+const useStyles = (theme: Theme, isDark: boolean) =>
   useMemo(() => {
     const surfaceColor = isDark ? '#1a1a1a' : '#ffffff';
     const borderColor = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)';
@@ -157,7 +158,7 @@ const SectionHeader = React.memo(
     isExpanded: boolean;
     selectedCount: number;
     onToggle: () => void;
-    theme: any;
+    theme: Theme;
     isDark: boolean;
   }) => {
     const config = SECTIONS[section];
@@ -246,7 +247,7 @@ const ResourceItem = React.memo(
     isSelected: boolean;
     onToggle: () => void;
     isSearchResult?: boolean;
-    theme: any;
+    theme: Theme;
     isDark: boolean;
   }) => {
     const config = SECTIONS[type === 'app' ? 'apps' : 'kb'];
@@ -298,7 +299,7 @@ const ResourceItem = React.memo(
             {type === 'app' ? (
               <img
                 src={resource.iconPath || '/assets/icons/connectors/default.svg'}
-                alt=""
+                alt={resource.name}
                 width={12}
                 height={12}
                 style={{ opacity: 0.8 }}
