@@ -29,7 +29,7 @@ export const enterpriseSearchCreateSchema = z.object({
       .optional(),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE])).optional(),
+        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
@@ -74,7 +74,7 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE])).optional(),
+        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
@@ -104,7 +104,7 @@ export const regenerateAnswersParamsSchema = z.object({
   body: z.object({
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE])).optional(),
+        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),

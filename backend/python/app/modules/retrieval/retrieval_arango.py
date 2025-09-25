@@ -132,7 +132,8 @@ class ArangoService:
                     'subcategories3': [subcat3_ids],
                     'languages': [language_ids],
                     'topics': [topic_ids],
-                    'kb': [kb_ids]
+                    'kb': [kb_ids],
+                    'apps': [app_names]
                 }
         """
         self.logger.info(
@@ -140,10 +141,21 @@ class ArangoService:
         )
 
         try:
-            # Extract KB IDs from filters if present
+            # Extract filters
             kb_ids = filters.get("kb") if filters else None
+            app_names = filters.get("apps") if filters else None
 
-            # First get counts separately
+            # Process app names
+            has_local = False
+            non_local_apps = []
+            if app_names:
+                apps_lower = [app.lower() for app in app_names]
+                has_local = "local" in apps_lower
+                non_local_apps = [app for app in apps_lower if app != "local"]
+
+            self.logger.info(f"🔍 Filter analysis - KB IDs: {kb_ids}, Apps: {app_names}, Has local: {has_local}, Non-local apps: {non_local_apps}")
+
+            # Build base query
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -171,31 +183,7 @@ class ArangoService:
             )
 
             LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords)
-            """
 
-            # Add KB records section with optional KB filtering
-            if kb_ids:
-                self.logger.info(f"🔍 Applying KB filtering for KBs: {kb_ids}")
-                query += f"""
-                LET kbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
-                    FILTER kb._key IN @kb_ids  // Filter by specific KB IDs
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-                """
-            else:
-                # No KB filtering - get all accessible KB records
-                query += f"""
-                LET kbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-                """
-
-            # Build anyoneRecords (always, for app-based selection)
-            query += """
             LET anyoneRecords = (
                 FOR records IN @@anyone
                     FILTER records.organization == @orgId
@@ -205,49 +193,90 @@ class ArangoService:
             )
             """
 
-            # Build base accessible from direct/group/org plus anyone and kb (union of paths)
-            query += """
-            LET baseAccessible = UNIQUE(UNION(directAndGroupRecords, kbRecords, anyoneRecords))
-            """
-
-            # Apps filtering when provided (works over baseAccessible)
-            if filters and filters.get("apps"):
-                query += """
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER LENGTH(
-                            FOR app IN @apps
-                                FILTER LOWER(record.connectorName) == app
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN DISTINCT record
+            unions = []
+            if has_local:
+                self.logger.info("🔍 Getting all KB records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
                 )
                 """
+                unions.append("kbRecords")
+                if non_local_apps:
+                    self.logger.info("🔍 Getting app filtered records, filter applied : local + apps")
+                    query += """
+                    LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                    LET appFilteredRecords = (
+                        FOR record IN baseAccessible
+                            FILTER LOWER(record.connectorName) IN @non_local_apps
+                            RETURN DISTINCT record
+                    )
+                    """
+                    unions.append("appFilteredRecords")
+
+            elif kb_ids or non_local_apps:
+
+                # KB records - conditional based on whether KB filtering is applied
+                if kb_ids:
+                    self.logger.info(f"🔍 Applying KB filtering for specific KBs: {kb_ids}")
+                    query += f"""
+                    LET kbRecords = (
+                        FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                        FILTER kb._key IN @kb_ids
+                        FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                        RETURN DISTINCT records
+                    )
+                    """
+                    unions.append("kbRecords")
+                if non_local_apps:
+                    self.logger.info("🔍 Getting app filtered records, filter applied : kb + apps")
+                    query += """
+                        LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                        LET appFilteredRecords = (
+                            FOR record IN baseAccessible
+                                FILTER LOWER(record.connectorName) IN @non_local_apps
+                                RETURN DISTINCT record
+                        )
+                    """
+                    unions.append("appFilteredRecords")
             else:
-                query += """
-                LET appFilteredRecords = []
+                self.logger.info("🔍 Getting all accessible records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
                 """
 
-            # Final accessible set logic (KB and Apps are OR-ed when both are present)
-            if kb_ids and (filters and filters.get("apps")):
-                query += """
-                LET allAccessibleRecords = UNIQUE(UNION(kbRecords, appFilteredRecords))
-                """
-            elif kb_ids:
-                query += """
-                LET allAccessibleRecords = UNIQUE(kbRecords)
-                """
-            elif filters and filters.get("apps"):
-                query += """
-                LET allAccessibleRecords = UNIQUE(appFilteredRecords)
-                """
+                unions.append("baseAccessible")
+
+
+            if unions and len(unions) > 0:
+                if len(unions) == 1 :
+                    query += f"""
+                    LET allAccessibleRecords = {unions[0]}
+                    """
+                else:
+                    query += f"""
+                    LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
+                    """
             else:
-                query += """
-                LET allAccessibleRecords = baseAccessible
+                self.logger.info("🔍 Fallback logic to all accessible records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+                LET allAccessibleRecords = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
                 """
 
-            # Add filter conditions if provided
+            # Add additional filter conditions (departments, categories, etc.)
             filter_conditions = []
             if filters:
                 if filters.get("departments"):
@@ -273,6 +302,7 @@ class ArangoService:
                     ) > 0
                     """
                     )
+
                 if filters.get("subcategories1"):
                     filter_conditions.append(
                         f"""
@@ -333,18 +363,7 @@ class ArangoService:
                     """
                     )
 
-                if filters.get("apps"):
-                    filter_conditions.append(
-                        """
-                    LENGTH(
-                        FOR app IN @apps
-                        FILTER LOWER(record.connectorName) == app
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-            # Add filter conditions to main query
+            # Apply additional filters if any
             if filter_conditions:
                 query += (
                     """
@@ -369,43 +388,32 @@ class ArangoService:
                 "@anyone": CollectionNames.ANYONE.value,
             }
 
-            # Add KB IDs to bind variables if filtering by KB
+            # Add conditional bind variables
             if kb_ids:
                 bind_vars["kb_ids"] = kb_ids
+
+            if non_local_apps:
+                bind_vars["non_local_apps"] = non_local_apps
+
             # Add filter bind variables
             if filters:
                 if filters.get("departments"):
-                    bind_vars["departmentNames"] = filters[
-                        "departments"
-                    ]  # Direct department names
+                    bind_vars["departmentNames"] = filters["departments"]
                 if filters.get("categories"):
-                    bind_vars["categoryNames"] = filters[
-                        "categories"
-                    ]  # Direct category names
+                    bind_vars["categoryNames"] = filters["categories"]
                 if filters.get("subcategories1"):
-                    bind_vars["subcat1Names"] = filters[
-                        "subcategories1"
-                    ]  # Direct subcategory names
+                    bind_vars["subcat1Names"] = filters["subcategories1"]
                 if filters.get("subcategories2"):
-                    bind_vars["subcat2Names"] = filters[
-                        "subcategories2"
-                    ]  # Direct subcategory names
+                    bind_vars["subcat2Names"] = filters["subcategories2"]
                 if filters.get("subcategories3"):
-                    bind_vars["subcat3Names"] = filters[
-                        "subcategories3"
-                    ]  # Direct subcategory names
+                    bind_vars["subcat3Names"] = filters["subcategories3"]
                 if filters.get("languages"):
-                    bind_vars["languageNames"] = filters[
-                        "languages"
-                    ]  # Direct language names
+                    bind_vars["languageNames"] = filters["languages"]
                 if filters.get("topics"):
-                    bind_vars["topicNames"] = filters["topics"]  # Direct topic names
-                if filters.get("apps"):
-                    bind_vars["apps"] = [
-                        app.lower() for app in filters["apps"]
-                    ]  # Lowercase app names
+                    bind_vars["topicNames"] = filters["topics"]
 
-            # Execute with profiling enabled
+            # Execute query
+            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
             cursor = self.db.aql.execute(
                 query,
                 bind_vars=bind_vars,
@@ -415,21 +423,29 @@ class ArangoService:
             )
             result = list(cursor)
 
-            if kb_ids:
-                self.logger.info(f"✅ KB filtering applied - found {len(result[0]) if result and isinstance(result[0], list) else len(result)} records from {len(kb_ids)} KBs")
-
+            # Log results
+            record_count = 0
             if result:
-                if isinstance(result[0], dict):
-                    return result
+                if isinstance(result[0], list):
+                    record_count = len(result[0])
+                    result = result[0]
                 else:
-                    return result[0]
-            else:
-                return []
+                    record_count = len(result)
+
+            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
+
+            if kb_ids:
+                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
+            if non_local_apps:
+                self.logger.info(f"✅ App filtering applied for apps: {non_local_apps}")
+            if has_local:
+                self.logger.info("✅ 'local' app included - returning broader record set")
+
+            return result if result else []
 
         except Exception as e:
-            self.logger.error(f"Failed to get accessible records: {str(e)}")
+            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
             raise
-
     async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
         """Get user by user ID"""
         try:
