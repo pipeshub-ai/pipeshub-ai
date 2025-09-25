@@ -569,8 +569,8 @@ def record_to_message_content(tool_result: Dict[str, Any], final_results: List[D
                 current_vrid = record.get("virtual_record_id")
                 if current_vrid in ordered_unique_vrids:
                     record_number = ordered_unique_vrids.index(current_vrid) + 1
-        except Exception as e:
-            pass
+        except Exception:
+            return []   
             
         
         # Group blocks with parent_index (like table rows) for processing as block groups

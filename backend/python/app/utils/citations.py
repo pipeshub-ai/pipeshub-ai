@@ -92,12 +92,13 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     flattened_final_results = []
     seen = set()
     vrids = [record.get("virtual_record_id") for record in records]
-
+    record_number_to_vrid = {}
     for i,doc in enumerate(final_results):
         virtual_record_id = doc.get("virtual_record_id")
 
         if virtual_record_id not in seen:
             record_number += 1
+            record_number_to_vrid[record_number] = virtual_record_id
             seen.add(virtual_record_id)
         
 
@@ -117,6 +118,8 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             else:
                 flattened_final_results.append(doc)
                 block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
+            
+            
         # else:
         #     block_container = record.get("block_containers",{})
         #     blocks = block_container.get("blocks",[])
@@ -126,8 +129,6 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
         #         _,child_results = doc.get("content")
         #         if child_results:
     # Create mapping from old citation keys to new sequential numbers
-    records = sorted(records, key=lambda x: x.get("virtual_record_id"))
-    record_index = 0
     record_number_to_record_index = {}
     for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
@@ -147,12 +148,12 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 })
         else:
             record_number = old_citation_key.split("-")[0]
-            if record_number not in record_number_to_record_index:
-                record_number_to_record_index[record_number] = record_index
-                record_index += 1
-            record_index = record_number_to_record_index[record_number]
+            number = int(re.findall(r'\d+', record_number)[0])
+            vrid = record_number_to_vrid[number]
+            record = next ((r for r in records if r.get("virtual_record_id") == vrid),None)
+            if record is None:
+                continue
             block_index = int(old_citation_key.split("-")[1])
-            record = records[record_index]
             block_container = record.get("block_containers",{})
             blocks = block_container.get("blocks",[])
             block = blocks[block_index]
@@ -169,6 +170,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
             })
+        citation_mapping[old_citation_key] = new_citation_num
 
     # Replace citation numbers in answer text
     def replace_citation(match) -> str:

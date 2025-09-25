@@ -153,6 +153,8 @@ async def execute_tool_calls(
                                 "record_info": tool_result.get("record_info", {})
                             }
                         }
+                        tool_message_content = record_to_message_content(tool_result, final_results)
+                        tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
                     else:
                         yield {
                             "event": "tool_error",
@@ -175,9 +177,6 @@ async def execute_tool_calls(
                             "call_id": call_id
                         }
                     }
-            
-            tool_message_content = record_to_message_content(tool_result, final_results)
-            tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
 
         # Add messages for next iteration
         messages.append(ai)
@@ -186,7 +185,7 @@ async def execute_tool_calls(
         hops += 1
     
     if len(tool_results)>0:
-        messages.append(HumanMessage(content=""" Now produce the final answer STRICTLY following the previously provided Output format.\n
+        messages.append(HumanMessage(content="""Now produce the final answer STRICTLY following the previously provided Output format.\n
                 CRITICAL REQUIREMENTS:\n
                 - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
                 - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
