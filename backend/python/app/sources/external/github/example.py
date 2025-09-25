@@ -3,7 +3,7 @@ import asyncio
 import os
 import sys
 
-from dotenv import load_dotenv #
+from dotenv import load_dotenv # type: ignore
 
 load_dotenv()
 
