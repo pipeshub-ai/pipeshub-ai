@@ -10,6 +10,7 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
@@ -34,6 +35,13 @@ const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
   'Connector Service is currently unavailable. Please check your network connection or try again later.';
 
 const handleBackendError = (error: any, operation: string): Error => {
+  if (
+    (error?.cause && error.cause.code === 'ECONNREFUSED') ||
+    (typeof error?.message === 'string' && error.message.includes('fetch failed'))
+  ) {
+    return new ServiceUnavailableError(CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE, error);
+  }
+  
   if (error.response) {
     const { status, data } = error.response;
     const errorDetail =
@@ -893,7 +901,7 @@ export const uploadRecordsToFolder =
       }
 
       console.log(
-        '✅ Files processed, calling Python service for folder upload', 
+        '✅ Files processed, calling Python service for folder upload',
       );
 
       // Single API call to Python service with all data
@@ -1770,68 +1778,41 @@ export const getRecordById =
         );
       }
 
-      try {
-        // Call the Python service to get record
-        const response = await axios.get(
-          `${appConfig.connectorBackend}/api/v1/records/${recordId}`,
-          {
-            params: {
-              user_id: userId,
-              org_id: orgId,
-            },
+      // Call the Python service to get record
+      const response = await axios.get(
+        `${appConfig.connectorBackend}/api/v1/records/${recordId}`,
+        {
+          params: {
+            user_id: userId,
+            org_id: orgId,
           },
+        },
+      );
+
+      if (response.data && response.status !== 200) {
+        throw new InternalServerError(
+          'Failed to get record via Python service',
         );
-
-        if (response.status !== 200) {
-          throw new InternalServerError(
-            'Failed to get record via Python service',
-          );
-        }
-
-        const result = response.data;
-
-        // Log successful retrieval
-        logger.info('Record retrieved successfully', {
-          userId,
-          orgId,
-          requestId: req.context?.requestId,
-        });
-
-        // Send response
-        res.status(200).json(result);
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for record', {
-          userId,
-          orgId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-          requestId: req.context?.requestId,
-        });
-
-        // Handle different error types from Python service
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'You do not have permission to access record',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError('No records found or user not found');
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid request parameters',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to get record: ${pythonServiceError.message}`,
-          );
-        }
       }
+
+      const result = response.data;
+
+      // Log successful retrieval
+      logger.info('Record retrieved successfully', {
+        userId,
+        orgId,
+        requestId: req.context?.requestId,
+      });
+
+      // Send response
+      res.status(200).json(result);
     } catch (error: any) {
       logger.error('Error getting record by id', {
         recordId: req.params.recordId,
         error,
       });
-      next(error);
+      const handleError = handleBackendError(error, 'get record by id');
+      next(handleError);
       return; // Added return statement
     }
   };
@@ -2268,7 +2249,9 @@ export const removeKBPermission =
         throw new BadRequestError('User IDs or team IDs are required');
       }
 
-      logger.info(`Removing permission for ${userIds.length} users and ${teamIds.length} teams from KB ${kbId}`);
+      logger.info(
+        `Removing permission for ${userIds.length} users and ${teamIds.length} teams from KB ${kbId}`,
+      );
 
       try {
         const response = await axios.delete(
@@ -2304,7 +2287,7 @@ export const removeKBPermission =
 
         res.status(200).json({
           kbId: kbId,
-            userIds: removeResult.userIds,
+          userIds: removeResult.userIds,
           teamIds: removeResult.teamIds,
         });
       } catch (pythonServiceError: any) {
@@ -2564,7 +2547,11 @@ export const getRecordBuffer =
           throw new InternalServerError('Failed to retrieve record data');
         }
       }
-      next(error);
+      const handleError = handleBackendError(error, 'get record buffer');
+      logger.error('Error fetching record buffer', {
+        error: error.message,
+      });
+      next(handleError);
     }
   };
 
@@ -2579,7 +2566,15 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK', 'SHAREPOINT ONLINE', 'JIRA'];
+      const allowedApps = [
+        'ONEDRIVE',
+        'DRIVE',
+        'GMAIL',
+        'CONFLUENCE',
+        'SLACK',
+        'SHAREPOINT ONLINE',
+        'JIRA',
+      ];
       if (!allowedApps.includes(app)) {
         throw new BadRequestError('APP not allowed');
       }
