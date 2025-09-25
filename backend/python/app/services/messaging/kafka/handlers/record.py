@@ -125,7 +125,7 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
                 return False
-            
+
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
@@ -152,7 +152,7 @@ class RecordEventHandler(BaseEventService):
                 # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
                 event_type = EventTypes.NEW_RECORD.value
-               
+
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
@@ -165,7 +165,7 @@ class RecordEventHandler(BaseEventService):
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-           
+
             doc = dict(record)
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:

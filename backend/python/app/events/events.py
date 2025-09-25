@@ -167,7 +167,7 @@ class EventProcessor:
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
-            
+
             print(f"virtual_record_iddddddddddddd 174: {virtual_record_id}")
 
 
@@ -181,10 +181,10 @@ class EventProcessor:
                     f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
                 )
                 await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-            
+
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
-            
+
             print(f"virtual_record_iddddddddddddd 191: {virtual_record_id}")
 
             # Update indexing status to IN_PROGRESS
@@ -296,7 +296,7 @@ class EventProcessor:
                 except Exception as e:
                     self.logger.error(f"❌ Error in file processing: {repr(e)}")
                     raise
-            
+
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 # Decode JSON content if it's streamed data
