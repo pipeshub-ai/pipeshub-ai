@@ -64,6 +64,7 @@ export interface DynamicFormRef {
   getFormData: () => Promise<any>;
   validateForm: () => Promise<boolean>;
   hasFormData: () => Promise<boolean>;
+  rehydrateForm?: (data: any) => Promise<void>;
 
   // Legacy method names for backward compatibility
   handleSubmit?: () => Promise<SaveResult>; // Alias for handleSave
@@ -422,6 +423,17 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         });
       },
 
+      // Allow parent to rehydrate form with previously captured data (including provider)
+      rehydrateForm: async (data: any): Promise<void> => {
+        if (!data) return;
+        const providerType = data.providerType || (data as any).modelType || currentProvider;
+        if (providerType && resetToProvider) {
+          resetToProvider(providerType, data);
+        } else if (reset) {
+          reset(data);
+        }
+      },
+
       handleSubmit: handleSaveImpl,
     };
   }, [
@@ -436,6 +448,8 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     updateConfig,
     onSaveSuccess,
     fetchConfig,
+    resetToProvider,
+    reset,
   ]);
 
   // Add legacy method alias
