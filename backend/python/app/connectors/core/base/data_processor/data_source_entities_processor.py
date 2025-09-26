@@ -131,7 +131,6 @@ class DataSourceEntitiesProcessor:
 
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
-        import hashlib
         record_permissions = []
 
         for permission in permissions:
@@ -185,7 +184,7 @@ class DataSourceEntitiesProcessor:
         """Create an external user record."""
         import hashlib
         external_source_id = f"external_{hashlib.md5(email.encode()).hexdigest()[:12]}"
-        
+
         # Create external user record
         external_user = AppUser(
             app_name=connector_name,
@@ -194,13 +193,13 @@ class DataSourceEntitiesProcessor:
             full_name=email.split('@')[0],
             is_active=False
         )
-        
+
         # Save the external user
         await tx_store.batch_upsert_app_users([external_user])
-        
+
         # Fetch the created user to get the ID
         user = await tx_store.get_user_by_email(email)
-        
+
         self.logger.info(f"Created external user record for: {email}")
         return user
 

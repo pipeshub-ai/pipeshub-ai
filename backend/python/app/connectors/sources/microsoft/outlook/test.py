@@ -187,8 +187,9 @@ async def test_session_access(org_id: str, record_id: str) -> dict:
             }
 
     except Exception as e:
+        print(f"Error in test_session_access: {str(e)}")
         return {
-            "error": str(e),
+            "error": "Failed to test session access",
             "success": False
         }
 

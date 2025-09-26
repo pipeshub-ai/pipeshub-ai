@@ -378,29 +378,9 @@ async def stream_sharepoint_file_content(request: Request, arango_service: BaseA
         logger.error(f"Error accessing SharePoint connector or streaming file: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not available or file streaming failed")
 
-async def stream_outlook_email_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
+async def stream_outlook_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
     """
-    Helper function to stream email content from Outlook.
-    """
-    try:
-        outlook_connector: OutlookConnector = await get_outlook_connector(request)
-        if not outlook_connector:
-            raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Outlook connector not available")
-
-        record = await arango_service.get_record_by_id(record_id)
-
-        if not record:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
-
-        return await outlook_connector.stream_record(record)
-
-    except Exception as e:
-        logger.error(f"Error accessing Outlook connector or streaming email: {str(e)}")
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Outlook connector not available or email streaming failed")
-
-async def stream_outlook_attachment_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
-    """
-    Helper function to stream attachment content from Outlook.
+    Helper function to stream content from Outlook (emails and attachments).
     """
     try:
         outlook_connector: OutlookConnector = await get_outlook_connector(request)
@@ -415,8 +395,8 @@ async def stream_outlook_attachment_content(request: Request, arango_service: Ba
         return await outlook_connector.stream_record(record)
 
     except Exception as e:
-        logger.error(f"Error accessing Outlook connector or streaming attachment: {str(e)}")
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Outlook connector not available or attachment streaming failed")
+        logger.error(f"Error accessing Outlook connector or streaming content: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Outlook connector not available or content streaming failed")
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -828,14 +808,7 @@ async def download_file(
             elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
                 return await stream_sharepoint_file_content(request, arango_service, record_id)
             elif connector.lower() == Connectors.OUTLOOK.value.lower():
-                # Check record type to determine if it's email or attachment
-                record_type = record.get('recordType')
-                if record_type == RecordTypes.MAIL.value:
-                    return await stream_outlook_email_content(request, arango_service, record_id)
-                elif record_type == RecordTypes.FILE.value:
-                    return await stream_outlook_attachment_content(request, arango_service, record_id)
-                else:
-                    raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Unsupported Outlook record type")
+                return await stream_outlook_content(request, arango_service, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -1457,7 +1430,7 @@ async def stream_record(
                 return await stream_sharepoint_file_content(request, arango_service, record_id)
 
             elif connector.lower() == Connectors.OUTLOOK.value.lower():
-                return await stream_outlook_email_content(request, arango_service, record_id)
+                return await stream_outlook_content(request, arango_service, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -1527,17 +1500,11 @@ async def stream_record_internal(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         connector = record.get("connectorName")
-        recordType = record.get("recordType")
 
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.OUTLOOK.value.lower():
-                if recordType == RecordTypes.MAIL.value:
-                    return await stream_outlook_email_content(request, arango_service, record_id)
-                elif recordType == RecordTypes.FILE.value:
-                    return await stream_outlook_attachment_content(request, arango_service, record_id)
-                else:
-                    raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Unsupported Outlook record type")
+                return await stream_outlook_content(request, arango_service, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 

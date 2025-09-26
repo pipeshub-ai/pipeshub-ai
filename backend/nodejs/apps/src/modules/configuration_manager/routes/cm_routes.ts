@@ -55,8 +55,6 @@ import {
   getSharePointCredentials,
   setSharePointCredentials,
   setOneDriveCredentials,
-  getOutlookCredentials,
-  setOutlookCredentials,
   getConnectorConfig,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -87,7 +85,6 @@ import {
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
   sharepointCredentialsSchema,
-  outlookCredentialsSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -329,46 +326,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
         throw new NotFoundError('User not found');
       }
       return setOneDriveCredentials(keyValueStoreService)(req, res, next);
-    },
-  );
-
-  router.get(
-    '/connectors/outlook/config',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-      if (!req.user) {
-        throw new NotFoundError('User not found');
-      }
-      return getOutlookCredentials(keyValueStoreService)(req, res, next);
-    },
-  );
-
-  router.post(
-    '/internal/connectors/outlook/config',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(outlookCredentialsSchema),
-    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
-      if (!req.tokenPayload) {
-        throw new NotFoundError('User not found');
-      }
-      return setOutlookCredentials(keyValueStoreService)(req, res, next);
-    },
-  );
-
-  router.post(
-    '/connectors/outlook/config',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(outlookCredentialsSchema),
-    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-      if (!req.user) {
-        throw new NotFoundError('User not found');
-      }
-      return setOutlookCredentials(keyValueStoreService)(req, res, next);
     },
   );
 

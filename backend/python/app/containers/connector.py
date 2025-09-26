@@ -839,9 +839,6 @@ class ConnectorAppContainer(BaseAppContainer):
     # Outlook connector
     outlook_connector = providers.Dependency()
 
-    # Data entities processor
-    data_entities_processor = providers.Dependency()
-
     # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

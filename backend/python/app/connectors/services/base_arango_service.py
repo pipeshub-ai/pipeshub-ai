@@ -1673,7 +1673,7 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
         """
@@ -1681,7 +1681,7 @@ class BaseArangoService:
             self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id)
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
                 return
@@ -1701,7 +1701,7 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
             raise
 
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Remove a user's access to a record (for inbox-based deletions)
         This removes the user's permissions and belongsTo edges without deleting the record itself
@@ -1710,7 +1710,7 @@ class BaseArangoService:
             self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id)
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
                 return

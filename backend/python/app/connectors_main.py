@@ -18,9 +18,6 @@ from app.connectors.core.registry.connector import (
     GmailConnector,
     GoogleDriveConnector,
 )
-from app.connectors.core.registry.connector import (
-    OutlookConnector as OutlookRegistryConnector,
-)
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
@@ -29,7 +26,7 @@ from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
 )
 from app.connectors.sources.microsoft.outlook.connector import (
-    OutlookConnector as OutlookConnectorImpl,
+    OutlookConnector,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
@@ -162,7 +159,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     arango_service = await app_container.arango_service()
                     data_store_provider = ArangoDataStore(logger, arango_service)
 
-                    outlook_connector = await OutlookConnectorImpl.create_connector(logger, data_store_provider, config_service)
+                    outlook_connector = await OutlookConnector.create_connector(logger, data_store_provider, config_service)
                     await outlook_connector.init()
                     app_container.outlook_connector.override(providers.Object(outlook_connector))
                     asyncio.create_task(outlook_connector.run_sync())
@@ -217,7 +214,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         registry.register_connector(GmailConnector)
         registry.register_connector(OneDriveConnector)
         registry.register_connector(SharePointConnector)
-        registry.register_connector(OutlookRegistryConnector)
+        registry.register_connector(OutlookConnector)
 
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
