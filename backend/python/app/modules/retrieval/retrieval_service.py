@@ -345,12 +345,29 @@ class RetrievalService:
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
-                        result["metadata"]["mimeType"] = record.get("mimeType")
+
+                        mime_type = record.get("mimeType")
+                        result["metadata"]["mimeType"] = mime_type
                         result["metadata"]["recordName"] = record.get("recordName")
-                        ext =  get_extension_from_mimetype(record.get("mimeType"))
+                        # fallback for mimetype and extension
+                        if not mime_type and record.get("recordType", "") == RecordTypes.FILE.value:
+                            try:
+                                file = await self.arango_service.get_document(
+                                    record_id, CollectionNames.FILES.value
+                                )
+                                if file:
+                                    mime_type = file.get("mimeType")
+                                    result["metadata"]["mimeType"] = mime_type
+                            except Exception as e:
+                                self.logger.warning(f"Failed to fetch file document for {record_id}: {str(e)}")
+
+                        if not mime_type and record.get("recordType", "") == RecordTypes.MAIL.value:
+                            mime_type = "text/html"
+                            result["metadata"]["mimeType"] = mime_type
+
+                        ext =  get_extension_from_mimetype(mime_type)
                         if ext:
                             result["metadata"]["extension"] = ext
-
 
                         # Fetch additional file URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
@@ -393,18 +410,6 @@ class RetrievalService:
                     if record:  # Only append non-None records
                         records.append(record)
 
-            # Filter out incomplete results to prevent citation validation failures
-            required_fields = ['origin', 'recordName', 'recordId', 'mimeType']
-            complete_results = []
-
-            for result in search_results:
-                metadata = result.get('metadata', {})
-                if all(field in metadata and metadata[field] is not None for field in required_fields):
-                    complete_results.append(result)
-                else:
-                    self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
-
-            search_results = complete_results
 
             if search_results or records:
                 response_data = {
