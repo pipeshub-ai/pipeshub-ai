@@ -389,7 +389,7 @@ class ArangoService:
             }
 
             # Add conditional bind variables
-            if kb_ids:
+            if kb_ids and not has_local:
                 bind_vars["kb_ids"] = kb_ids
 
             if non_local_apps:
