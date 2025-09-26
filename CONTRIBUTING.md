@@ -189,6 +189,7 @@ python -c "import nltk; nltk.download('punkt')"
 python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
+python -m app.docling_main
 ```
 
 ### Setting Up Frontend
