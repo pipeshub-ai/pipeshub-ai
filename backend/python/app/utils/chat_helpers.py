@@ -287,9 +287,14 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             else:
                 block_text = ""
 
+            mime_type = record.get("mime_type")
+            if mime_type is None or mime_type == "":
+                mime_type = meta.get("mimeType")
+
             extension = meta.get("extension")
             if extension is None:
-                extension = get_extension_from_mimetype(record.get("mime_type"))
+                extension = get_extension_from_mimetype(mime_type)
+
 
             block_num = meta.get("blockNum")
             if block_num is None:
@@ -316,7 +321,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "bounding_box": extract_bounding_boxes(block.get("citation_metadata")),
                         "pageNum":[page_num],
                         "extension": extension,
-                        "mimeType": record.get("mime_type",""),
+                        "mimeType": mime_type,
                         "blockNum":block_num
                     }
             if extension == "xlsx" or meta.get("sheetName"):
