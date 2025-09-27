@@ -24,7 +24,7 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
+from app.models.permission import EntityType, Permission, PermissionType
 
 @dataclass
 class RecordGroupWithPermissions:
@@ -202,6 +202,8 @@ class DataSourceEntitiesProcessor:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
         else:
+            print("!!!!!!!!!!!!!!!!! existing record: ", existing_record)
+            print("!!!!!!!!!!!!!!!!! new record: ", record)
             record.id = existing_record.id
             # pass
             #check if revision Id is same as existing record
@@ -227,7 +229,7 @@ class DataSourceEntitiesProcessor:
         if existing_record is None:
             return record
 
-        return None
+        return record
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
@@ -258,14 +260,15 @@ class DataSourceEntitiesProcessor:
 
 
     async def on_record_content_update(self, record: Record, tx_store: TransactionStore) -> None:
+        processed_record = await self._process_record(record, [], tx_store)
         print("!!!!!!!!!!!!!!!!! publishing record 1: ", record)
         await self.messaging_producer.send_message(
                 "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
                 key=record.id
             )
         print("!!!!!!!!!!!!!!!!! published record 1")
-
+        
     async def on_record_metadata_update(self, record: Record, tx_store: TransactionStore) -> None:
         pass
 
@@ -486,3 +489,248 @@ class DataSourceEntitiesProcessor:
 
             return [User.from_arango_user(user) for user in users if user is not None]
 
+
+    async def on_user_group_member_removed(
+        self, 
+        external_group_id: str, 
+        user_email: str, 
+        connector_name: str
+    ) -> bool:
+
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the user by email
+                user = await tx_store.get_user_by_email(user_email)
+                if not user:
+                    self.logger.warning(
+                        f"Cannot remove member from group {external_group_id}: "
+                        f"User with email {user_email} not found in database"
+                    )
+                    return False
+                
+                # 2. Look up the user group by external ID
+                user_group = await tx_store.get_user_group_by_external_id(
+                    connector_name=connector_name,
+                    external_id=external_group_id
+                )
+                if not user_group:
+                    self.logger.warning(
+                        f"Cannot remove member from group: "
+                        f"Group with external ID {external_group_id} not found in database"
+                    )
+                    return False
+                
+                # 3. Construct the edge keys
+                from_key = f"{CollectionNames.USERS.value}/{user.id}"
+                to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                
+                # 4. Delete the permission edge
+                edge_deleted = await tx_store.delete_edge(
+                    from_key=from_key,
+                    to_key=to_key,
+                    collection=CollectionNames.PERMISSION.value
+                )
+                
+                if edge_deleted:
+                    self.logger.info(
+                        f"Successfully removed user {user_email} from group {user_group.name} "
+                        f"(external_id: {external_group_id})"
+                    )
+                    return True
+                else:
+                    self.logger.warning(
+                        f"No permission edge found between user {user_email} "
+                        f"and group {user_group.name} (external_id: {external_group_id})"
+                    )
+                    return False
+                    
+        except Exception as e:
+            self.logger.error(
+                f"Failed to remove user {user_email} from group {external_group_id}: {str(e)}", 
+                exc_info=True
+            )
+            return False
+
+    async def on_user_group_member_added(
+        self, 
+        external_group_id: str, 
+        user_email: str, 
+        permission_type: PermissionType,
+        connector_name: str
+    ) -> bool:
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the user by email
+                user = await tx_store.get_user_by_email(user_email)
+                if not user:
+                    self.logger.warning(
+                        f"Cannot add member to group {external_group_id}: "
+                        f"User with email {user_email} not found in database"
+                    )
+                    return False
+                
+                # 2. Look up the user group by external ID
+                user_group = await tx_store.get_user_group_by_external_id(
+                    connector_name=connector_name,
+                    external_id=external_group_id
+                )
+                if not user_group:
+                    self.logger.warning(
+                        f"Cannot add member to group: "
+                        f"Group with external ID {external_group_id} not found in database"
+                    )
+                    return False
+                
+                # 3. Check if permission edge already exists
+                from_key = f"{CollectionNames.USERS.value}/{user.id}"
+                to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                
+                # TODO: Implement a method to check if edge exists
+                existing_edge = await tx_store.get_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                if existing_edge:
+                    self.logger.info(f"Permission edge already exists between {user_email} and group {user_group.name}")
+                    return True
+                
+                # 4. Create the permission object
+                permission = Permission(
+                    external_id=user.id,  
+                    email=user_email,
+                    type=permission_type,
+                    entity_type=EntityType.USER
+                )
+                
+                if existing_edge:
+                    # Check if permission type has changed
+                    current_permission_type = existing_edge.get('permissionType')  # Adjust based on your edge schema
+                    
+                    if current_permission_type == permission_type.value:
+                        self.logger.info(
+                            f"Permission edge already exists between {user_email} and group {user_group.name} "
+                            f"with correct permission type {permission_type}"
+                        )
+                        return True
+                    else:
+                        # Permission type has changed - update the edge
+                        self.logger.info(
+                            f"Updating permission for {user_email} in group {user_group.name} "
+                            f"from {current_permission_type} to {permission_type}"
+                        )
+                        
+                        # Option 1: Delete old edge and create new one
+                        await tx_store.delete_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                        permission_edge = permission.to_arango_permission(from_key, to_key)
+                        await tx_store.batch_create_edges(
+                            [permission_edge], 
+                            collection=CollectionNames.PERMISSION.value
+                        )
+                        
+                        self.logger.info(
+                            f"Successfully updated permission for {user_email} in group {user_group.name} "
+                            f"to {permission_type}"
+                        )
+                        return True
+                else:
+                    # 5. Create new permission edge since it doesn't exist
+                    permission_edge = permission.to_arango_permission(from_key, to_key)
+                    
+                    await tx_store.batch_create_edges(
+                        [permission_edge], 
+                        collection=CollectionNames.PERMISSION.value
+                    )
+                    
+                    self.logger.info(
+                        f"Successfully added user {user_email} to group {user_group.name} "
+                        f"(external_id: {external_group_id}) with permission {permission_type}"
+                    )
+                    return True
+                    
+        except Exception as e:
+            self.logger.error(
+                f"Failed to add user {user_email} to group {external_group_id}: {str(e)}", 
+                exc_info=True
+            )
+            return False
+    
+    async def on_user_group_deleted(
+        self, 
+        external_group_id: str, 
+        connector_name: str
+    ) -> bool:
+        """
+        Delete a user group and all its associated edges from the database.
+        
+        Args:
+            external_group_id: The external ID of the group from the source system
+            connector_name: The name of the connector (e.g., 'DROPBOX')
+        
+        Returns:
+            bool: True if the group was successfully deleted, False otherwise
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the user group by external ID
+                user_group = await tx_store.get_user_group_by_external_id(
+                    connector_name=connector_name,
+                    external_id=external_group_id
+                )
+
+                await tx_store.delete_edges_to("groups/051b4f1e-7d21-4879-a1a6-66c42eb61195", CollectionNames.PERMISSION.value)
+                await tx_store.delete_edges_from("groups/051b4f1e-7d21-4879-a1a6-66c42eb61195", CollectionNames.BELONGS_TO.value)
+                
+                if not user_group:
+                    self.logger.warning(
+                        f"Cannot delete group: Group with external ID {external_group_id} not found in database"
+                    )
+                    return False
+                
+                group_internal_id = user_group.id
+                group_name = user_group.name
+                
+                self.logger.info(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
+
+                #x Delete the node and edges
+                await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
+                
+                # 2. Delete all edges connected to this group
+                # group_collection_id = f"{CollectionNames.GROUPS.value}/{group_internal_id}"
+                # print("!!!!!!!!!!!!!!!! group_collection_id", group_collection_id)
+                # await tx_store.delete_edges_to(group_collection_id, CollectionNames.PERMISSION.value)
+                # await tx_store.delete_edges_from(group_collection_id, CollectionNames.BELONGS_TO.value)
+                
+                # # 3. Delete the group node itself
+                # await tx_store.delete_nodes([group_internal_id], CollectionNames.GROUPS.value)
+                
+                self.logger.info(
+                    f"Successfully deleted user group {group_name} "
+                    f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
+                    f"and all associated edges"
+                )
+                return True
+                    
+        except Exception as e:
+            self.logger.error(
+                f"Failed to delete user group {external_group_id}: {str(e)}", 
+                exc_info=True
+            )
+            return False
+    
+    async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:
+        """Delete BELONGS_TO edges between group and organization."""
+        try:
+            group_collection_id = f"{CollectionNames.GROUPS.value}/{group_internal_id}"
+            org_collection_id = f"{CollectionNames.ORGS.value}/{self.org_id}"
+            
+            # Delete the BELONGS_TO edge from group to organization
+            edge_deleted = await tx_store.delete_edge(
+                from_key=group_collection_id,
+                to_key=org_collection_id,
+                collection=CollectionNames.BELONGS_TO.value
+            )
+            
+            if edge_deleted:
+                self.logger.info(f"Deleted BELONGS_TO edge from group {group_internal_id} to org {self.org_id}")
+            else:
+                self.logger.debug(f"No BELONGS_TO edge found from group {group_internal_id} to org")
+                
+        except Exception as e:
+            self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")

@@ -154,7 +154,7 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
+            self.logger.info(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")
@@ -163,18 +163,16 @@ class EventProcessor:
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
-                
+
+
+
             # For both create and update events, we need to process the document
             if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
                 if virtual_record_id is None:
-                    self.logger.error(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
                     raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
                 
                 self.logger.info(

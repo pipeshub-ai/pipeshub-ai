@@ -2926,7 +2926,6 @@ class BaseArangoService:
     ) -> bool | None:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
-            print("!!!!!!!!!!!!!!!!! nodes:", nodes)
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
 
             batch_query = """
@@ -3445,6 +3444,91 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete nodes by keys: %s: %s", keys, str(e))
             return False
 
+    async def delete_nodes_and_edges(
+        self,
+        keys: List[str],
+        collection: str,
+        graph_name: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """
+        Deletes a list of nodes by key and all their connected edges within a named graph.
+        
+        This method is efficient for bulk deletions by first discovering all edge 
+        collections in the graph and then running one bulk-delete query per collection.
+        """
+        if not keys:
+            self.logger.info("No keys provided for deletion. Skipping.")
+            return True
+
+        # Use the provided transaction or the main DB connection
+        db = transaction if transaction else self.db
+        if not db:
+            self.logger.error("❌ Database connection is not available.")
+            return False
+        
+        try:
+            self.logger.info(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
+
+            # --- Step 1: Get all edge collections from the named graph definition ---
+            graph = db.graph(graph_name)
+            edge_definitions = graph.edge_definitions()
+            edge_collections = [e['edge_collection'] for e in edge_definitions]
+            
+            if not edge_collections:
+                self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
+            else:
+                self.logger.info(f"🔎 Found edge collections in graph: {edge_collections}")
+
+            # --- Step 2: Delete all edges connected to the target nodes ---
+            # Construct the full node IDs to match against _from and _to fields
+            node_ids = [f"{collection}/{key}" for key in keys]
+            
+            edge_delete_query = """
+            FOR edge IN @@edge_collection
+                FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+                REMOVE edge IN @@edge_collection
+                OPTIONS { ignoreErrors: true }
+            """
+
+            for edge_collection in edge_collections:
+                db.aql.execute(
+                    edge_delete_query,
+                    bind_vars={
+                        "node_ids": node_ids,
+                        "@edge_collection": edge_collection
+                    }
+                )
+            self.logger.info(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
+
+            # --- Step 3: Delete the nodes themselves use delete node here---
+            # node_delete_query = """
+            # FOR node IN @@collection
+            #     FILTER node._key IN @keys
+            #     REMOVE node IN @@collection
+            #     RETURN OLD
+            # """
+            # cursor = db.aql.execute(
+            #     node_delete_query,
+            #     bind_vars={"keys": keys, "@collection": collection}
+            # )
+            
+            # deleted_nodes = [item for item in cursor]
+
+            deleted_nodes = await self.delete_nodes(keys, collection)
+
+            if deleted_nodes:
+                self.logger.info(f"✅ Successfully deleted {len(deleted_nodes)} nodes and their associated edges: {keys}")
+                return True
+            else:
+                self.logger.warning(f"⚠️ No nodes found in '{collection}' with keys: {keys}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete nodes and edges for keys {keys}: {e}", exc_info=True)
+            return False
+
+
     async def delete_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Delete an edge by from_key and to_key
@@ -3469,6 +3553,113 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to delete edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return False
+    
+    async def delete_edges_from(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges originating from a specific source node
+        
+        Args:
+            from_key: The source node key (e.g., "groups/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+        
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting all edges from source: %s in collection: %s", from_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "@collection": collection})
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+            
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges from source: %s", count, from_key)
+            else:
+                self.logger.warning("⚠️ No edges found from source: %s in collection: %s", from_key, collection)
+            
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
+            return 0
+
+    async def delete_edges_to(self, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges pointing to a specific target node
+        
+        Args:
+            to_key: The target node key (e.g., "groups/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+        
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting all edges to target: %s in collection: %s", to_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._to == @to_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"to_key": to_key, "@collection": collection})
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+            
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges to target: %s", count, to_key)
+            else:
+                self.logger.warning("⚠️ No edges found to target: %s in collection: %s", to_key, collection)
+            
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges to target: %s in collection: %s: %s", to_key, collection, str(e))
+            return 0
+
+    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges connected to a node (both incoming and outgoing)
+        
+        Args:
+            node_key: The node key (e.g., "groups/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+        
+        Returns:
+            int: Total number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting all edges for node: %s in collection: %s", node_key, collection)
+            
+            # Delete both incoming and outgoing edges in a single query
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @node_key OR edge._to == @node_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+            
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges for node: %s", count, node_key)
+            else:
+                self.logger.warning("⚠️ No edges found for node: %s in collection: %s", node_key, collection)
+            
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges for node: %s in collection: %s: %s", node_key, collection, str(e))
+            return 0
 
     async def get_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """

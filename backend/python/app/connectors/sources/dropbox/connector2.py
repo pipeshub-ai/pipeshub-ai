@@ -39,7 +39,7 @@ from app.connectors.services.base_arango_service import BaseArangoService
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.common.apps import DropboxApp
 from app.sources.client.dropbox.dropbox_ import DropboxClient, DropboxResponse, DropboxTokenConfig
-
+from app.config.constants.arangodb import CollectionNames
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 
 # Model imports
@@ -61,7 +61,10 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
 )
 
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.config.constants.arangodb import MimeTypes
+from dropbox.team_log import EventCategory
+# from dropbox.team import GroupSelector
 
 # Add these helper functions at the top of the file
 def get_parent_path_from_path(path: str) -> Optional[str]:
@@ -436,36 +439,6 @@ class DropboxConnector(BaseConnector):
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
 
-    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """
-        Handle different types of record updates (new, updated, deleted).
-        """
-        try:
-            if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
-                )
-                print("should be deleted by now 2")
-            elif record_update.is_new:
-                self.logger.info(f"New record detected: {record_update.record.record_name}")
-            elif record_update.is_updated:
-                async with self.data_store_provider.transaction() as tx_store:
-                    if record_update.content_changed:
-                        self.logger.info(f"Content changed for record: {record_update.record.record_name}")
-                        await self.data_entities_processor.on_record_content_update(record_update.record, tx_store)
-                    if record_update.metadata_changed:
-                        self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
-                        await self.data_entities_processor.on_record_metadata_update(record_update.record, tx_store)
-                    if record_update.permissions_changed:
-                        self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
-                        await self.data_entities_processor.on_updated_record_permissions(
-                            record_update.record,
-                            record_update.new_permissions,
-                            tx_store
-                        )
-        except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
-
     async def _process_entry(
         self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]
     ) -> Optional[Tuple[FileRecord, List[Permission]]]:
@@ -742,14 +715,15 @@ class DropboxConnector(BaseConnector):
                             if record_update.is_deleted:
                                 await self._handle_record_updates(record_update)
                                 continue
-
+                            
+                            if record_update.is_updated:
+                                await self._handle_record_updates(record_update)
+                                continue
+                            
                             if file_record:
                                 batch_records.append((file_record, permissions))
                                 batch_count += 1
-
-                                if record_update.is_updated:
-                                    await self._handle_record_updates(record_update)
-
+                                    
                                 if batch_count >= self.batch_size:
                                     self.logger.info(f"[{sync_log_name}] Processing batch of {batch_count} records.")
                                     await self.data_entities_processor.on_new_records(batch_records)
@@ -797,6 +771,36 @@ class DropboxConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Unhandled error in Dropbox sync for user {user_id}: {ex}", exc_info=True)
             raise
+    
+    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
+        """
+        Handle different types of record updates (new, updated, deleted).
+        """
+        try:
+            if record_update.is_deleted:
+                await self.data_entities_processor.on_record_deleted(
+                    record_id=record_update.external_record_id
+                )
+                print("should be deleted by now 2")
+            elif record_update.is_new:
+                self.logger.info(f"New record detected: {record_update.record.record_name}")
+            elif record_update.is_updated:
+                async with self.data_store_provider.transaction() as tx_store:
+                    if record_update.content_changed:
+                        self.logger.info(f"Content changed for record: {record_update.record.record_name}")
+                        await self.data_entities_processor.on_record_content_update(record_update.record, tx_store)
+                    if record_update.metadata_changed:
+                        self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
+                        await self.data_entities_processor.on_record_metadata_update(record_update.record, tx_store)
+                    if record_update.permissions_changed:
+                        self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            record_update.record,
+                            record_update.new_permissions,
+                            tx_store
+                        )
+        except Exception as e:
+            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
     def get_app_users(self, users: DropboxResponse):
         app_users: List[AppUser] = []
@@ -829,8 +833,29 @@ class DropboxConnector(BaseConnector):
 
             # Step 2: fetch and sync all user groups
             #for later
-            self.logger.info("Syncing user groups...")
-            await self._sync_user_groups()
+            # self.logger.info("Syncing user groups...")
+            # await self._sync_user_groups()
+
+            group_sync_key = generate_record_sync_point_key("user_group_events", "team_events", "global")
+            group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(group_sync_key)
+            
+            if not group_sync_point.get('cursor'):
+                self.logger.info("Running a FULL sync for user groups...")
+                await self._sync_user_groups()
+                
+                # Initialize cursor after full sync by getting current state
+                try:
+                    response = await self.data_source.team_log_get_events(category=EventCategory.groups, limit=1)
+                    if response.success and response.data.cursor:
+                        await self.dropbox_cursor_sync_point.update_sync_point(
+                            group_sync_key, {"cursor": response.data.cursor}
+                        )
+                        self.logger.info("Initialized cursor for future incremental group syncs")
+                except Exception as e:
+                    self.logger.warning(f"Could not initialize group sync cursor: {e}")
+            else:
+                self.logger.info("Running an INCREMENTAL sync for user groups...")
+                await self._sync_group_changes_with_cursor()
 
             #Step 3: List all shared folders within a team and create record groups / use continue here
             self.logger.info("Syncing record groups...")
@@ -897,53 +922,9 @@ class DropboxConnector(BaseConnector):
             # --- 3. Loop through all groups to build the batch (NO processor calls inside loop) ---
             for group in all_groups_list:
                 try:
-                    # --- 3a. Get all members for this group (with pagination) ---
-                    all_members = []
-                    member_permissions = []
-
-                    members_response = await self.data_source.team_groups_members_list(group=group.group_id)
-                    if not members_response.success:
-                        self.logger.error(f"❌ Error fetching members for group {group.group_name}: {members_response.error}")
-                        continue  # Skip this group
-
-                    all_members.extend(members_response.data.members)
-                    member_cursor = members_response.data.cursor
-                    member_has_more = members_response.data.has_more
-                    
-                    while member_has_more:
-                        self.logger.debug(f"Fetching more members for {group.group_name}...")
-                        members_response = await self.data_source.team_groups_members_list_continue(member_cursor)
-                        
-                        if not members_response.success:
-                            self.logger.error(f"❌ Error during member pagination for {group.group_name}: {members_response.error}")
-                            break  # Stop processing this group's members
-                            
-                        all_members.extend(members_response.data.members)
-                        member_cursor = members_response.data.cursor
-                        member_has_more = members_response.data.has_more
-
-                    # --- 3b. Create the AppUserGroup object ---
-                    processor_group = AppUserGroup(
-                        app_name=self.connector_name,
-                        source_user_group_id=group.group_id,
-                        name=group.group_name,
-                        org_id=self.data_entities_processor.org_id
+                    processor_group, member_permissions = self._create_user_group_with_permissions(
+                        group.group_id, group.group_name, all_members
                     )
-
-                    # --- 3c. Create permissions list (like sync_record_groups) ---
-                    for member in all_members:
-                        access_level_tag = member.access_type._tag
-                        
-                        # Map the tag (e.g., 'owner') to our PermissionType enum
-                        permission_type = dropbox_group_to_permission_type.get(access_level_tag, PermissionType.READ) # Default to READ
-                        
-                        user_permission = Permission(
-                            external_id=member.profile.team_member_id,
-                            email=member.profile.email,
-                            type=permission_type,
-                            entity_type=EntityType.USER
-                        )
-                        member_permissions.append(user_permission)
 
                     # --- 3d. Add the tuple to our batch list ---
                     user_groups_batch.append((processor_group, member_permissions))
@@ -966,6 +947,540 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"❌ Fatal error in _sync_dropbox_groups: {e}", exc_info=True)
             raise
     
+    async def _sync_group_changes_with_cursor(self) -> None:
+        """
+        Syncs user group changes incrementally using the team event log cursor.
+        """
+        try:
+            print("!!!!!!!!!!!!!!!!!!!!!! running incremental sync for user groups")
+            self.logger.info("Starting incremental sync for user groups...")
+
+            # 1. Define a single, global key for the team-wide group event cursor
+            sync_point_key = generate_record_sync_point_key(
+                "user_group_events", "team_events", "global"
+            )
+
+            # 2. Get the last saved cursor from your database
+            sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
+            cursor = sync_point.get('cursor')
+
+            if not cursor:
+                self.logger.warning("No cursor found for incremental group sync. Running full sync instead.")
+                await self._sync_user_groups()
+                return
+
+            has_more = True
+            latest_cursor_to_save = cursor 
+            events_processed = 0
+
+            while has_more:
+                try:
+                    # 3. Fetch the latest events from the Dropbox audit log
+                    async with self.rate_limiter:
+                        response = await self.data_source.team_log_get_events_continue(cursor)
+
+                    if not response.success:
+                        self.logger.error(f"⚠️ Error fetching team event log: {response.error}")
+                        break
+
+                    events = response.data.events
+                    self.logger.info(f"Processing {len(events)} new group-related events.")
+
+                    # 4. Process each event individually
+                    for event in events:
+                        try:
+                            await self._process_group_event(event)
+                            events_processed += 1
+                        except Exception as e:
+                            self.logger.error(f"Error processing group event: {e}", exc_info=True)
+                            continue
+
+                    # 5. Update state for the next loop iteration and for final saving
+                    latest_cursor_to_save = response.data.cursor
+                    has_more = response.data.has_more
+                    cursor = latest_cursor_to_save
+
+                except Exception as e:
+                    self.logger.error(f"⚠️ Error in group sync loop: {e}", exc_info=True)
+                    has_more = False
+
+            # 6. Save the final, most recent cursor back to the database
+            if latest_cursor_to_save:
+                self.logger.info(f"Storing latest group sync cursor for key {sync_point_key}")
+                await self.dropbox_cursor_sync_point.update_sync_point(
+                    sync_point_key,
+                    sync_point_data={"cursor": latest_cursor_to_save}
+                )
+            
+            self.logger.info(f"Incremental group sync completed. Processed {events_processed} events.")
+
+        except Exception as e:
+            self.logger.error(f"⚠️ Fatal error in incremental group sync: {e}", exc_info=True)
+            raise
+
+    async def _process_group_event(self, event) -> None:
+        """
+        Process a single group-related event from the Dropbox audit log.
+        Based on the actual API response structure.
+        """
+        try:
+            # Log the full event for debugging
+            self.logger.debug(f"Processing event: {event}")
+            
+            event_type = event.event_type._tag
+
+            if event_type == "group_create":
+                print("!!!!!!!!!! got group create")
+                await self._handle_group_created_event(event)
+            elif event_type == "group_delete":
+                print("!!!!!!!!!!! got group delete")
+                await self._handle_group_deleted_event(event)
+            elif event_type in ["group_add_member", "group_remove_member"]:
+                print("!!!!!!!!!!! got group membership")
+                await self._handle_group_membership_event(event, event_type)
+            elif event_type in ["group_rename"]:
+                print("!!!!!!!!!!! got group rename")
+                await self._handle_group_renamed_event(event)
+            elif event_type in ["group_change_member_role"]:
+                print("!!!!!!!!!!! got group change member role")
+                await self._handle_group_change_member_role_event(event)
+                
+            else:
+                self.logger.debug(f"Ignoring event type: {event_type}")
+
+        except Exception as e:
+            self.logger.error(f"Error processing group event of type {getattr(event, 'event_type', 'unknown')}: {e}", exc_info=True)
+    
+    async def _handle_group_membership_event(self, event, event_type: str) -> None:
+        group_id, group_name = None, None
+        member_email, member_name = None, None
+
+        # 1. Extract common information (group and user details)
+        try:
+            for participant in event.participants:
+                if participant.is_group():
+                    group_info = participant.get_group()
+                    group_id = group_info.group_id
+                    group_name = group_info.display_name
+                elif participant.is_user():
+                    user_info = participant.get_user()
+                    member_email = user_info.email
+                    member_name = user_info.display_name
+        except Exception as e:
+            self.logger.error(f"Failed to parse participants for event {event_type}: {e}", exc_info=True)
+            return
+
+        # 2. Validate that we have the necessary IDs
+        if not group_id or not member_email:
+            self.logger.warning(f"Could not extract required group_id or member_email from {event_type} event. Skipping.")
+            return
+
+        # 3. Perform the appropriate action based on event_type
+        if event_type == "group_add_member":
+            self.logger.info(f"Adding member '{member_name}' ({member_email}) to group '{group_name}' ({group_id})")
+
+            # Determine permission type (specific to 'add' events)
+            permission_type = PermissionType.WRITE  # Default permission
+            if hasattr(event.details, 'is_group_owner') and event.details.is_group_owner:
+                permission_type = PermissionType.OWNER
+
+            await self.data_entities_processor.on_user_group_member_added(
+                external_group_id=group_id,
+                user_email=member_email,
+                permission_type=permission_type,
+                connector_name=self.connector_name
+            )
+        
+        elif event_type == "group_remove_member":
+            self.logger.info(f"Removing member '{member_name}' ({member_email}) from group '{group_name}' ({group_id})")
+            
+            await self.data_entities_processor.on_user_group_member_removed(
+                external_group_id=group_id,
+                user_email=member_email,
+                connector_name=self.connector_name
+            )
+
+    async def _handle_group_deleted_event(self, event) -> None:
+        """Handle group_delete events from Dropbox audit log."""
+        # Extract group_id from participants
+        group_id = None
+        group_name = None
+        
+        for participant in event.participants:
+            if participant.is_group():
+                group_info = participant.get_group()
+                group_id = group_info.group_id
+                group_name = group_info.display_name
+                print(f"Extracted deleted group: {group_name} ({group_id})")
+                break
+        
+        # Validate we have required information
+        if not group_id:
+            self.logger.warning("Could not extract group_id from group_delete event")
+            return
+        
+        self.logger.info(f"Deleting group {group_name} ({group_id})")
+        
+        await self.data_entities_processor.on_user_group_deleted(
+            external_group_id=group_id,
+            connector_name=self.connector_name
+        )
+
+    async def _handle_group_created_event(self, event) -> None:
+        """Handle group_create events from Dropbox audit log."""
+        # Extract group info from event participants
+        group_id = None
+        group_name = None
+        
+        for participant in event.participants:
+            if participant.is_group():
+                group_info = participant.get_group()
+                group_id = group_info.group_id
+                group_name = group_info.display_name
+                break
+        
+        if not group_id:
+            self.logger.warning("Could not extract group_id from group_create event")
+            return
+        
+        self.logger.info(f"Creating group {group_name} ({group_id})")
+        
+        try:
+            # Process the single newly created group
+            await self._process_single_group(group_id, group_name)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing group_create event for group {group_id}: {e}", exc_info=True)
+
+    async def _process_single_group(self, group_id: str, group_name: str) -> None:
+        """
+        Process a single group by fetching its members and creating the appropriate
+        AppUserGroup and permissions. This reuses logic from _sync_user_groups.
+        """
+        try:
+            # Get all members for this group (reused from _sync_user_groups section 3a)
+            all_members = await self._fetch_group_members(group_id, group_name)
+            
+            # Create the AppUserGroup and permissions (reused from _sync_user_groups section 3b-3c)
+            processor_group, member_permissions = self._create_user_group_with_permissions(
+                group_id, group_name, all_members
+            )
+            
+            # Send to processor (reused from _sync_user_groups section 4)
+            user_groups_batch = [(processor_group, member_permissions)]
+            
+            self.logger.info(f"Submitting newly created group {group_name} to processor...")
+            await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+            self.logger.info(f"Successfully processed group_create event for {group_name}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to process single group {group_name} ({group_id}): {e}", exc_info=True)
+
+    # Update _process_group_event method to uncomment this line:
+    # if event_type == "group_create":
+    #     await self._handle_group_created_event(event)
+
+    async def _fetch_group_members(self, group_id: str, group_name: str) -> list:
+        """
+        Fetch all members for a group with pagination.
+        Extracted from _sync_user_groups section 3a for reusability.
+        """
+        all_members = []
+
+        members_response = await self.data_source.team_groups_members_list(group=group_id)
+        if not members_response.success:
+            raise Exception(f"Error fetching members for group {group_name}: {members_response.error}")
+
+        all_members.extend(members_response.data.members)
+        member_cursor = members_response.data.cursor
+        member_has_more = members_response.data.has_more
+        
+        while member_has_more:
+            self.logger.debug(f"Fetching more members for {group_name}...")
+            members_response = await self.data_source.team_groups_members_list_continue(member_cursor)
+            
+            if not members_response.success:
+                self.logger.error(f"Error during member pagination for {group_name}: {members_response.error}")
+                break
+                
+            all_members.extend(members_response.data.members)
+            member_cursor = members_response.data.cursor
+            member_has_more = members_response.data.has_more
+        
+        return all_members
+
+    def _create_user_group_with_permissions(self, group_id: str, group_name: str, all_members: list) -> tuple:
+        """
+        Create AppUserGroup and permissions list from group members.
+        Extracted from _sync_user_groups sections 3b-3c for reusability.
+        """
+        # Permission mapping (from _sync_user_groups)
+        dropbox_group_to_permission_type = {
+            'owner': PermissionType.OWNER,
+            'member': PermissionType.WRITE,
+        }
+
+        # Create the AppUserGroup object (from _sync_user_groups section 3b)
+        processor_group = AppUserGroup(
+            app_name=self.connector_name,
+            source_user_group_id=group_id,
+            name=group_name,
+            org_id=self.data_entities_processor.org_id
+        )
+
+        # Create permissions list (from _sync_user_groups section 3c)
+        member_permissions = []
+        for member in all_members:
+            access_level_tag = member.access_type._tag
+            
+            # Map the tag to our PermissionType enum
+            permission_type = dropbox_group_to_permission_type.get(access_level_tag, PermissionType.READ)
+            
+            user_permission = Permission(
+                external_id=member.profile.team_member_id,
+                email=member.profile.email,
+                type=permission_type,
+                entity_type=EntityType.USER
+            )
+            member_permissions.append(user_permission)
+
+        return processor_group, member_permissions
+
+    async def _handle_group_renamed_event(self, event) -> None:
+        """Handle group_rename events from Dropbox audit log."""
+        # Extract group info from event participants
+        group_id = None
+        new_group_name = None
+        
+        for participant in event.participants:
+            if participant.is_group():
+                group_info = participant.get_group()
+                group_id = group_info.group_id
+                new_group_name = group_info.display_name  # This should have the updated name
+                break
+        
+        # Extract old and new names from event details
+        # old_name = None
+        # if hasattr(event.details, 'previous_value'):
+        #     old_name = event.details.previous_value
+
+        details_obj = event.details
+        
+        # Log the structure for debugging
+        self.logger.debug(f"Event details type: {type(details_obj)}")
+        self.logger.debug(f"Event details: {details_obj}")
+        
+        # Try different ways to access the GroupRenameDetails
+        if hasattr(details_obj, 'get_group_rename_details'):
+            group_rename_details = details_obj.get_group_rename_details()
+            old_name = group_rename_details.previous_value
+            new_name = group_rename_details.new_value
+            self.logger.debug("Used get_group_rename_details() method: old_name=%s, new_name=%s", old_name, new_name)
+
+        if not group_id or not new_group_name:
+            self.logger.warning(
+                f"Could not extract required info from group_rename event. "
+                f"group_id={group_id}, new_name={new_name}"
+            )
+            return
+        
+        self.logger.info(f"Renaming group {group_id} from '{old_name}' to '{new_name}'")
+        
+        try:
+            await self._update_group_name(group_id, new_name, old_name)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing group_rename event for group {group_id}: {e}", exc_info=True)
+
+    async def _update_group_name(self, group_id: str, new_name: str, old_name: str = None) -> None:
+        """
+        Update the name of an existing group in the database.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the existing group by external ID
+                existing_group = await tx_store.get_user_group_by_external_id(
+                    connector_name=self.connector_name,
+                    external_id=group_id
+                )
+                
+                if not existing_group:
+                    self.logger.warning(
+                        f"Cannot rename group: Group with external ID {group_id} not found in database"
+                    )
+                    return
+                
+                # 2. Update the group name and timestamp
+                existing_group.name = new_name
+                existing_group.updated_at = get_epoch_timestamp_in_ms()
+                
+                # 3. Upsert the updated group
+                await tx_store.batch_upsert_user_groups([existing_group])
+                
+                self.logger.info(
+                    f"Successfully renamed group {group_id} from '{old_name}' to '{new_name}' "
+                    f"(internal_id: {existing_group.id})"
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Failed to update group name for {group_id}: {e}", exc_info=True)
+            raise
+    
+    async def _handle_group_change_member_role_event(self, event) -> None:
+        """Handle group_change_member_role events from Dropbox audit log."""
+        # Extract group and user info from event participants
+        group_id = None
+        group_name = None
+        user_email = None
+        user_team_member_id = None
+        
+        for participant in event.participants:
+            if participant.is_group():
+                group_info = participant.get_group()
+                group_id = group_info.group_id
+                group_name = group_info.display_name
+            elif participant.is_user():
+                user_info = participant.get_user()
+                user_email = user_info.email
+                user_team_member_id = user_info.team_member_id
+        
+        # Extract new role from event details
+        new_is_owner = None
+        try:
+            if hasattr(event.details, 'get_group_change_member_role_details'):
+                role_details = event.details.get_group_change_member_role_details()
+                new_is_owner = role_details.is_group_owner
+            elif hasattr(event.details, 'is_group_owner'):
+                new_is_owner = event.details.is_group_owner
+            else:
+                self.logger.warning(f"Could not extract role details from event: {event.details}")
+        except Exception as e:
+            self.logger.warning(f"Error extracting role details: {e}")
+            self.logger.debug(f"Event details: {event.details}")
+        
+        # Validate we have required information
+        if not group_id or not user_email or new_is_owner is None:
+            self.logger.warning(
+                f"Missing required info from group_change_member_role event: "
+                f"group_id={group_id}, user_email={user_email}, new_is_owner={new_is_owner}"
+            )
+            return
+        
+        # Convert boolean to permission type
+        new_permission_type = PermissionType.OWNER if new_is_owner else PermissionType.WRITE
+        
+        self.logger.info(
+            f"Changing role for user {user_email} in group '{group_name}' ({group_id}) "
+            f"to {'owner' if new_is_owner else 'member'} (permission: {new_permission_type})"
+        )
+        
+        try:
+            success = await self._update_user_group_permission(
+                group_id, user_email, new_permission_type
+            )
+            
+            if success:
+                self.logger.info(
+                    f"Successfully updated role for {user_email} in group {group_name}"
+                )
+            else:
+                self.logger.warning(
+                    f"Failed to update role for {user_email} in group {group_name}"
+                )
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error processing group_change_member_role event for user {user_email} "
+                f"in group {group_id}: {e}", exc_info=True
+            )
+
+    async def _update_user_group_permission(
+        self, 
+        group_id: str, 
+        user_email: str, 
+        new_permission_type: PermissionType
+    ) -> bool:
+        """
+        Update a user's permission level within a group.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the user by email
+                user = await tx_store.get_user_by_email(user_email)
+                if not user:
+                    self.logger.warning(
+                        f"Cannot update group permission: User with email {user_email} not found"
+                    )
+                    return False
+                
+                # 2. Look up the group by external ID
+                user_group = await tx_store.get_user_group_by_external_id(
+                    connector_name=self.connector_name,
+                    external_id=group_id
+                )
+                if not user_group:
+                    self.logger.warning(
+                        f"Cannot update group permission: Group with external ID {group_id} not found"
+                    )
+                    return False
+                
+                # 3. Construct edge keys
+                from_key = f"{CollectionNames.USERS.value}/{user.id}"
+                to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                
+                # 4. Check if permission edge exists
+                existing_edge = await tx_store.get_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                if not existing_edge:
+                    self.logger.warning(
+                        f"No existing permission found between user {user_email} and group {user_group.name}. "
+                        f"Creating new permission with type {new_permission_type}"
+                    )
+                    # Create new permission edge
+                    permission = Permission(
+                        external_id=user.id,
+                        email=user_email,
+                        type=new_permission_type,
+                        entity_type=EntityType.USER
+                    )
+                    permission_edge = permission.to_arango_permission(from_key, to_key)
+                    await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
+                    return True
+                
+                # 5. Check if permission type has changed
+                current_permission_type = existing_edge.get('permissionType')
+                if current_permission_type == new_permission_type.value:
+                    self.logger.info(
+                        f"Permission type already correct for {user_email} in group {user_group.name}: {new_permission_type}"
+                    )
+                    return True
+                
+                # 6. Update the permission by deleting old edge and creating new one
+                self.logger.info(
+                    f"Updating permission for {user_email} in group {user_group.name} "
+                    f"from {current_permission_type} to {new_permission_type}"
+                )
+                
+                # Delete old edge
+                await tx_store.delete_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                
+                # Create new edge with updated permission
+                permission = Permission(
+                    external_id=user.id,
+                    email=user_email,
+                    type=new_permission_type,
+                    entity_type=EntityType.USER
+                )
+                permission_edge = permission.to_arango_permission(from_key, to_key)
+                await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
+                
+                return True
+                
+        except Exception as e:
+            self.logger.error(
+                f"Failed to update user group permission for {user_email} in group {group_id}: {e}", 
+                exc_info=True
+            )
+            return False
 
     async def sync_record_groups(self, users: List[AppUser]):
         # Find a team admin user

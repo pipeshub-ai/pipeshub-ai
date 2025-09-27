@@ -113,6 +113,7 @@ class Record(BaseModel):
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
             record_group_type=arango_base_record.get("recordGroupType", None),
+            external_revision_id=arango_base_record.get("externalRevisionId", None),
             external_record_id=arango_base_record["externalRecordId"],
             external_record_group_id=arango_base_record.get("externalGroupId", None),
             parent_external_record_id=arango_base_record.get("externalParentId", None),

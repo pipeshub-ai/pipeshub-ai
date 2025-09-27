@@ -17,6 +17,8 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.sources.external.dropbox.dropbox_ import DropboxResponse
+from dropbox.team_log import EventCategory
+
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
 
@@ -72,8 +74,13 @@ async def main() -> None:
     print("\nListing dropbox user groups:")
     dropbox_groups = await data_source.team_groups_list()
     print(dropbox_groups.data.groups)
+
+    #List dropbox logs events
+    print("\nListing dropbox logs events:")
+    dropbox_logs = await data_source.team_log_get_events_continue(cursor="AAEDfcOmtBtrP9IRur0EwN9tSMFw9sSgVc5BV8E9JL0wlrAtLvm6SNSCbDhufcJhvp7oEhalzKzT47SWwwX532QBRIZKuUUK5lCt-XZGib_95YaqcF8IpyKsX-XflyNwdriDs0PfJkNQeNFPjpvhfqruUHr2bNUybBFtCHlVf1g22Xz8GW-8VSoNs8MHtfeqw-j9VIr91xcdj80y7iACQmaV8hnXc4_MleX5ukKaCnKp45TXnN-AVC0lIV6RAWvkIL02GKhPur9T-moAeV06ePO3GiIqiuRYBoPDzQroQ7hPJOADtWN7_8OXAe-uTBposyhb2J-eSM5fvfxsKqI6FshBiiomOKhvEdxSx0kQe3Yd589Igk_b-nSm7b-Joluw3oR7w9VIK8UgMkjfxYBOdMFG0JXp9EOXWyqq4p8GJHVDwA")
+    print(dropbox_logs)
     
-    #list members of dropbox group
+    # #list members of dropbox group
     # print("\nListing dropbox groups:")
     # # --- 1. Get ALL groups, handling pagination ---
     # all_groups = []
@@ -110,7 +117,8 @@ async def main() -> None:
     #         if not members_response.success:
     #             print(f"  Error fetching members: {members_response.error}")
     #             continue  # Skip to the next group
-
+            
+    #         print(members_response.data)
     #         all_members.extend(members_response.data.members)
     #         member_cursor = members_response.data.cursor
     #         member_has_more = members_response.data.has_more
