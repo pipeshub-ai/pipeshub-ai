@@ -299,7 +299,6 @@ export const sharepointCredentialsSchema = z.object({
 export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
 
 
-
 // export const aiModelsConfigSchema = z.object({
 //   body: z
 //     .object({

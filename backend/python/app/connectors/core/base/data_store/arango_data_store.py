@@ -57,8 +57,11 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
-        return await self.arango_service.delete_record_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+        return await self.arango_service.delete_record_by_external_id(connector_name, external_id, user_id)
+
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+        return await self.arango_service.remove_user_access_to_record(connector_name, external_id, user_id)
 
     async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
         return await self.arango_service.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)

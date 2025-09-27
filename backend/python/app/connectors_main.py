@@ -25,6 +25,9 @@ from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
 )
+from app.connectors.sources.microsoft.outlook.connector import (
+    OutlookConnector,
+)
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
@@ -151,6 +154,17 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     asyncio.create_task(sharepoint_connector.run_sync())
                     logger.info("SharePoint connector initialized for org %s", org_id)
 
+                if app["name"].lower() == Connectors.OUTLOOK.value.lower():
+                    config_service = app_container.config_service()
+                    arango_service = await app_container.arango_service()
+                    data_store_provider = ArangoDataStore(logger, arango_service)
+
+                    outlook_connector = await OutlookConnector.create_connector(logger, data_store_provider, config_service)
+                    await outlook_connector.init()
+                    app_container.outlook_connector.override(providers.Object(outlook_connector))
+                    asyncio.create_task(outlook_connector.run_sync())
+                    logger.info("Outlook connector initialized for org %s", org_id)
+
             if drive_sync_service is not None:
                 try:
                     asyncio.create_task(drive_sync_service.perform_initial_sync(org_id))  # type: ignore
@@ -200,6 +214,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         registry.register_connector(GmailConnector)
         registry.register_connector(OneDriveConnector)
         registry.register_connector(SharePointConnector)
+        registry.register_connector(OutlookConnector)
 
         logger.info(f"Registered {len(registry._connectors)} connectors")
 

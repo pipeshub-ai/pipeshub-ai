@@ -836,6 +836,9 @@ class ConnectorAppContainer(BaseAppContainer):
     # SharePoint connector
     sharepoint_connector = providers.Dependency()
 
+    # Outlook connector
+    outlook_connector = providers.Dependency()
+
     # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

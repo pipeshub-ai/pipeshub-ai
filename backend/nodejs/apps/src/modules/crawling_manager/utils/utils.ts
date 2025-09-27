@@ -12,6 +12,7 @@ export const constructSyncConnectorEvent = (
     'gmail': EventType.SyncGmailEvent,
     'onedrive': EventType.SyncOneDriveEvent,
     'sharepointonline': EventType.SyncSharePointOnlineEvent,
+    'outlook': EventType.SyncOutlookEvent,
   };
 
   const eventType = eventTypeMap[connector.replace(' ', '').toLowerCase()] || EventType.ReindexAllRecordEvent;
