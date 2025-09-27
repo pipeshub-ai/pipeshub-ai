@@ -2794,6 +2794,8 @@ export class RecordRelationService {
                 return SyncEventType.SyncOneDriveEvent;
               case 'SHAREPOINT ONLINE':
                 return SyncEventType.SyncSharePointOnlineEvent;
+              case 'DROPBOX':
+                return SyncEventType.SyncDropboxEvent;  
               default:
                 return SyncEventType.SyncDriveEvent;
             }
