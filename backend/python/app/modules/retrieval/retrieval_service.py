@@ -238,6 +238,7 @@ class RetrievalService:
         org_id: str,
         filter_groups: Optional[Dict[str, List[str]]] = None,
         limit: int = 20,
+        virtual_record_ids_from_tool: Optional[List[str]] = None,
         arango_service: Optional[ArangoService] = None,
         knowledge_search:bool = False,
     ) -> Dict[str, Any]:
@@ -279,8 +280,13 @@ class RetrievalService:
                 record["virtualRecordId"] for record in accessible_records
                 if record.get("virtualRecordId") is not None
             ]
-            # build vector db filter
-            filter = await self.vector_db_service.filter_collection(
+
+            if virtual_record_ids_from_tool:
+                filter  = await self.vector_db_service.filter_collection(
+                        must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
+                    )
+            else:
+                filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id},
                         should={"virtualRecordId": accessible_virtual_record_ids}  # Pass as should condition
                     )
@@ -484,7 +490,8 @@ class RetrievalService:
             tb_str = traceback.format_exc()
             self.logger.error(f"Filtered search failed: {str(e)}")
             self.logger.error(f"Full traceback:\n{tb_str}")
-
+            if virtual_record_ids_from_tool:
+                return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service) -> List[Dict[str, Any]]:
@@ -555,7 +562,8 @@ class RetrievalService:
             query=query_embedding,
             with_payload=True,
             limit=limit,
-            using="dense"
+            using="dense",
+            filter=filter,
         ) for query_embedding in query_embeddings]
         search_results = self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,

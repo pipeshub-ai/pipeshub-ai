@@ -63,9 +63,7 @@ async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_i
 
 async def _fetch_full_record_impl(
     record_id: str,
-    blob_store: BlobStorage,
-    arango_service: ArangoService,
-    org_id: str,
+    virtual_record_id_to_result: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Fetch complete record in the structure your prompt expects:
@@ -78,9 +76,12 @@ async def _fetch_full_record_impl(
     }
     """
     print(f"record_id: {record_id}")
-    record = await arango_service.get_record_by_id(record_id)
+    # record = await arango_service.get_record_by_id(record_id)
     # 1) Try blob store (fast path in your pipeline)
-    record = await _try_blobstore_fetch(blob_store, org_id, record.virtual_record_id)
+    # record = await _try_blobstore_fetch(blob_store, org_id, record.virtual_record_id)
+    records = list(virtual_record_id_to_result.values())
+    
+    record = next((record for record in records if  record is not None and record.get("id") == record_id), None)
     if record:
         return {"ok": True, "record": record}
 
@@ -89,7 +90,7 @@ async def _fetch_full_record_impl(
 
 
 # Option 1: Create the tool without the decorator and handle runtime kwargs manually
-def create_fetch_full_record_tool(blob_store: BlobStorage, arango_service: ArangoService, org_id: str) -> Callable:
+def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
     """
@@ -99,8 +100,8 @@ def create_fetch_full_record_tool(blob_store: BlobStorage, arango_service: Arang
         Retrieve the complete content of a record (all blocks/groups) for better answering.
         Returns a JSON string: {"ok": true, "record": {...}} or {"ok": false, "error": "..."}.
         """
-
-        result = await _fetch_full_record_impl(record_id, blob_store, arango_service, org_id)
+        
+        result = await _fetch_full_record_impl(record_id, virtual_record_id_to_result)
         return result
 
     return fetch_full_record_tool

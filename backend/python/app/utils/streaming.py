@@ -3,7 +3,9 @@ import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import aiohttp
-from app.utils.chat_helpers import record_to_message_content
+from app.utils.chat_helpers import count_tokens_in_records, get_flattened_results, get_message_content, get_message_content_for_tool, record_to_message_content
+from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
 from fastapi import HTTPException
 from langchain.schema import  HumanMessage
 
@@ -12,6 +14,68 @@ from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
 from app.utils.citations import normalize_citations_and_chunks
+
+
+def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
+    """
+    Count the total number of tokens in a messages array.
+    
+    Args:
+        messages: List of message dictionaries with 'role' and 'content' keys
+        
+    Returns:
+        Total number of tokens across all messages
+    """
+    # Lazy import tiktoken; fall back to a rough heuristic if unavailable
+    enc = None
+    try:
+        import tiktoken  # type: ignore
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            enc = None
+    except Exception:
+        enc = None
+
+    def count_tokens(text: str) -> int:
+        """Count tokens in text using tiktoken or fallback heuristic"""
+        if not text:
+            return 0
+        if enc is not None:
+            try:
+                return len(enc.encode(text))
+            except Exception:
+                pass
+        # Fallback heuristic: ~4 chars per token
+        return max(1, len(text) // 4)
+
+    total_tokens = 0
+    
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+            
+        # Extract content from message
+        content = message.get("content", "")
+        
+        # Handle different content types
+        if isinstance(content, str):
+            total_tokens += count_tokens(content)
+        elif isinstance(content, list):
+            # Handle content as list of content objects (like in get_message_content)
+            for content_item in content:
+                if isinstance(content_item, dict):
+                    if content_item.get("type") == "text":
+                        text_content = content_item.get("text", "")
+                        total_tokens += count_tokens(text_content)
+                    # Skip image_url and other non-text content for token counting
+                elif isinstance(content_item, str):
+                    total_tokens += count_tokens(content_item)
+        else:
+            # Convert other types to string
+            total_tokens += count_tokens(str(content))
+    
+    return total_tokens
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
@@ -77,7 +141,15 @@ async def execute_tool_calls(
     tools: List,
     tool_runtime_kwargs: Dict[str, Any],
     final_results: List[Dict[str, Any]],
-    max_hops: int = 4
+    virtual_record_id_to_result: Dict[str, Dict[str, Any]],
+    blob_store: BlobStorage,
+    all_queries: List[str],
+    retrieval_service: RetrievalService,
+    user_id: str,
+    org_id: str,
+    is_multimodal_llm: Optional[bool] = False,
+    max_hops: int = 4,
+   
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -92,6 +164,7 @@ async def execute_tool_calls(
     tools_executed = False
     tool_args = []
     tool_results = []
+    previous_tokens = count_tokens_in_messages(messages)
     while hops < max_hops:
         # Get response from LLM
         ai: AIMessage = await llm_with_tools.ainvoke(messages)
@@ -117,19 +190,30 @@ async def execute_tool_calls(
 
         # Execute tools
         tool_msgs = []
-        
+        tool_args = []
+        tool_call_ids = {}
+        tool_call_ids_list = []
         for call in ai.tool_calls:
             name = call["name"]
             args = call.get("args", {}) or {}
             call_id = call.get("id")
-            tool_args.append(args)
+            tool_call_ids_list.append(call_id)
+            record_id = args.get("record_id")
+            if record_id:
+                tool_call_ids[record_id] = call_id
             tool = next((t for t in tools if t.name == name), None)
+            tool_args.append((args,tool))
+                
+        tool_results_inner= []
 
+        for args,tool in tool_args:
             if tool is None:
                 tool_result = json.dumps({
                     "ok": False,
                     "error": f"Unknown tool: {name}"
                 })
+                tool_results_inner.append(tool_result)
+                tool_results.append(tool_result)
                 yield {
                     "event": "tool_error",
                     "data": {
@@ -138,12 +222,15 @@ async def execute_tool_calls(
                         "call_id": call_id
                     }
                 }
-            else:
-                try:
+                continue
+            
+            try:
                     tool_result = await tool.arun(args, **tool_runtime_kwargs)
+                    tool_results_inner.append(tool_result)
+                    tool_results.append(tool_result)
                     # Parse result for user feedback
                     if tool_result.get("ok", False):
-                        tool_results.append(tool_result)
+                        
                         yield {
                             "event": "tool_success",
                             "data": {
@@ -153,9 +240,10 @@ async def execute_tool_calls(
                                 "record_info": tool_result.get("record_info", {})
                             }
                         }
-                        tool_message_content = record_to_message_content(tool_result, final_results)
-                        tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
+                        # tool_message_content = record_to_message_content(tool_result, final_results)
+                        # tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
                     else:
+                        
                         yield {
                             "event": "tool_error",
                             "data": {
@@ -164,11 +252,14 @@ async def execute_tool_calls(
                                 "call_id": call_id
                             }
                         }
-                except Exception as e:
+            except Exception as e:
+                    
                     tool_result = {
                         "ok": False,
                         "error": str(e)
                     }
+                    tool_results_inner.append(tool_result)
+                    tool_results.append(tool_result)
                     yield {
                         "event": "tool_error",
                         "data": {
@@ -177,7 +268,61 @@ async def execute_tool_calls(
                             "call_id": call_id
                         }
                     }
+        
+        records = [tool_result.get("record",{}) for tool_result in tool_results_inner if tool_result.get("ok")]
+        new_tokens = count_tokens_in_records(records)
+        
+        message_contents = []
+        record_ids = []
+        previous_tokens = 80000
+        if new_tokens+previous_tokens > 80000:
+            
+            virtual_record_ids = [tool_result.get("record",{}).get("virtual_record_id") for tool_result in tool_results_inner if tool_result.get("ok")]
+            
+            result = await retrieval_service.search_with_filters(
+            queries=[all_queries[0]],
+            org_id=org_id,
+            user_id=user_id,
+            limit=500,
+            filter_groups=None,
+            virtual_record_ids_from_tool=virtual_record_ids,
+            )
 
+            search_results = result.get("searchResults", [])
+            status_code = result.get("status_code", 500)
+
+            if status_code in [202, 500, 503]:
+                raise HTTPException(
+                    status_code=status_code,
+                    content={
+                        "status": result.get("status", "error"),
+                        "message": result.get("message", "No results found"),
+                    }
+                )
+        
+            if search_results:
+                flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
+                final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+
+                message_contents,record_ids = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
+                print("message_contents",len(message_contents))
+                print("record_ids",record_ids)
+                print("tool_call_ids",tool_call_ids)
+        else:
+            for record in records:
+                message_content = record_to_message_content(record,final_results)
+                message_contents.append(message_content)
+                record_ids.append(record.get("id"))
+
+        msg_ind=0
+        for i,tool_result in enumerate(tool_results_inner):
+            if tool_result.get("ok") and msg_ind < len(message_contents):
+                message_content = message_contents[msg_ind]
+                tool_msgs.append(ToolMessage(content=message_content, tool_call_id=tool_call_ids[record_ids[msg_ind]]))
+                msg_ind += 1
+            else:
+                message_content = tool_result.get("error", "Unknown error")
+                tool_msgs.append(ToolMessage(content=message_content, tool_call_id=tool_call_ids_list[i]))
         # Add messages for next iteration
         messages.append(ai)
         messages.extend(tool_msgs)
@@ -330,9 +475,17 @@ async def stream_llm_response_with_tools(
     llm,
     messages,
     final_results,
+    all_queries,
+    retrieval_service,
+    user_id,
+    org_id,
+    virtual_record_id_to_result,
+    blob_store,
+    is_multimodal_llm,
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 3,
+   
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -351,7 +504,7 @@ async def stream_llm_response_with_tools(
 
         # Execute tools and get updated messages
         final_messages = messages.copy()
-        async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results):
+        async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm): 
             if tool_event.get("event") == "tool_execution_complete":
                 # Extract the final messages and tools_executed status
                 final_messages = tool_event["data"]["messages"]

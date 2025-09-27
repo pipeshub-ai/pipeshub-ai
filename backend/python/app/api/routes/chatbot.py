@@ -237,7 +237,7 @@ async def process_chat_query(
         )
 
     blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
-
+    
     virtual_record_id_to_result = {}
     flattened_results = await get_flattened_results(
         search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
@@ -298,7 +298,7 @@ async def process_chat_query(
             messages.append({"role": "user", "content": content})
 
     # Prepare tools
-    fetch_tool = create_fetch_full_record_tool(blob_store, arango_service, org_id)
+    fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
     tools = [fetch_tool]
 
     tool_runtime_kwargs = {
@@ -307,7 +307,7 @@ async def process_chat_query(
         "org_id": org_id,
     }
 
-    return llm, messages, tools, tool_runtime_kwargs, final_results
+    return llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm
 
 
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
@@ -452,7 +452,7 @@ async def askAIStream(
 
             # Process query using shared logic
             try:
-                llm, messages, tools, tool_runtime_kwargs, final_results = await process_chat_query(
+                llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
                     query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
                 )
             except HTTPException as e:
@@ -466,14 +466,23 @@ async def askAIStream(
 
             # Stream response with enhanced tool support using your existing implementation
             from app.utils.streaming import stream_llm_response_with_tools
-
+            org_id = request.state.user.get('orgId')
+            user_id = request.state.user.get('userId')
             async for stream_event in stream_llm_response_with_tools(
                 llm,
                 messages,
                 final_results,
+                all_queries,
+                retrieval_service,
+                user_id,
+                org_id,
+                virtual_record_id_to_result,
+                blob_store,
+                is_multimodal_llm,
                 tools=tools,
                 tool_runtime_kwargs=tool_runtime_kwargs,
-                target_words_per_chunk=5
+                target_words_per_chunk=5,
+
             ):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]

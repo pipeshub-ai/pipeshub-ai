@@ -189,6 +189,13 @@ qna_prompt_context = """
       - Record blocks (sorted):
 """
 
+qna_prompt_context_for_tool = """
+<record>
+      - Record Id: {{ record_id }}
+      - Record Name: {{ record_name }}
+      - Record blocks (sorted):
+"""
+
 qna_prompt_instructions_2 = """
 <instructions>
   NOTE:
