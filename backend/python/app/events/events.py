@@ -154,30 +154,38 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
+            self.logger.info(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
+            record = await self.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
+
+
+
             # For both create and update events, we need to process the document
             if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
+                if virtual_record_id is None:
+                    raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
+
                 self.logger.info(
-                    f"""🔄 Updating record {record_id} - deleting existing embeddings"""
+                    f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
                 )
                 await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+
             # Update indexing status to IN_PROGRESS
-            record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return
+
             doc = dict(record)
 
             # Extract necessary data
