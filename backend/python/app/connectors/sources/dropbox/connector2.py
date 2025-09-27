@@ -922,11 +922,11 @@ class DropboxConnector(BaseConnector):
             # --- 3. Loop through all groups to build the batch (NO processor calls inside loop) ---
             for group in all_groups_list:
                 try:
+                    all_members = await self._fetch_group_members(group.group_id, group.group_name)
+    
                     processor_group, member_permissions = self._create_user_group_with_permissions(
                         group.group_id, group.group_name, all_members
                     )
-
-                    # --- 3d. Add the tuple to our batch list ---
                     user_groups_batch.append((processor_group, member_permissions))
 
                 except Exception as e:

@@ -1076,7 +1076,29 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET allRecords = APPEND(kbRecords, connectorRecords)
+            LET connectorRecordsNewPermission = {
+                f'''(
+                    FOR permissionEdge IN @@permission
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        {permission_filter}
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+                        RETURN {{
+                            record: record,
+                            permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                        }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET mergeRecords = Append(kbRecords, connectorRecords)
+            LET allRecords = APPEND(mergeRecords, connectorRecordsNewPermission)
+            
             LET sortedRecords = (
                 FOR item IN allRecords
                     LET record = item.record
@@ -1198,7 +1220,24 @@ class BaseArangoService:
                 )''' if include_connector_records else '0'
             }
 
-            RETURN kbCount + connectorCount
+            LET connectorCountNewPermission = {
+                f'''LENGTH(
+                    FOR permissionEdge IN @@permission
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        {permission_filter}
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+                        RETURN 1
+                )''' if include_connector_records else '0'
+            }
+
+            RETURN kbCount + connectorCount + connectorCountNewPermission
             """
 
             # ===== FILTERS QUERY (Fixed) =====
@@ -1247,8 +1286,27 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET allRecords = APPEND(allKbRecords, allConnectorRecords)
+            LET allConnectorRecordsNewPermission = {
+                '''(
+                    FOR permissionEdge IN @@permission
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        RETURN {
+                            record: record,
+                            permission: { role: permissionEdge.role }
+                        }
+                )''' if include_connector_records else '[]'
+            }
 
+            LET mergeRecords = Append(allKbRecords, allConnectorRecords)
+            LET allRecords = APPEND(mergeRecords, allConnectorRecordsNewPermission)
+            
             LET flatRecords = (
                 FOR item IN allRecords
                     RETURN item.record
@@ -1302,6 +1360,7 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
@@ -1314,6 +1373,7 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
@@ -1324,6 +1384,7 @@ class BaseArangoService:
                 "org_id": org_id,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
             }

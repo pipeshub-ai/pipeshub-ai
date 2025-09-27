@@ -2579,7 +2579,7 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK', 'SHAREPOINT ONLINE', 'JIRA'];
+      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK', 'SHAREPOINT ONLINE', 'JIRA', 'DROPBOX'];
       if (!allowedApps.includes(app)) {
         throw new BadRequestError('APP not allowed');
       }
@@ -2626,6 +2626,7 @@ export const resyncConnectorRecords =
         'JIRA',
         'SLACK',
         'SHAREPOINT ONLINE',
+        'DROPBOX',
       ];
       if (!allowedConnectors.includes(connectorName)) {
         throw new BadRequestError(`Connector ${connectorName} not allowed`);
