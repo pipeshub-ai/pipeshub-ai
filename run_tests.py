@@ -30,8 +30,8 @@ def check_dependencies():
     print("Checking dependencies...")
     
     # Check Python version
-    if sys.version_info < (3, 10):
-        print("Python 3.10+ is required")
+    if sys.version_info < (3, 11):
+        print("Python 3.11+ is required")
         return False
     
     # Check if pytest is installed
