@@ -9,12 +9,11 @@ import os
 from pathlib import Path
 
 
-def run_command(command, cwd=None):
+def run_command(command: list[str], cwd=None):
     """Run a command and return the result."""
     try:
         result = subprocess.run(
             command,
-            shell=True,
             cwd=cwd,
             capture_output=True,
             text=True,
