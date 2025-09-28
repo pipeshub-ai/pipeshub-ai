@@ -1,0 +1,35 @@
+PipesHub AI Integration Test Document
+
+This is a sample document used for testing the PipesHub AI platform's document indexing and search capabilities.
+
+Key Features Tested:
+- Document ingestion and processing
+- Text extraction and indexing
+- Semantic search functionality
+- Metadata handling and storage
+
+Technical Details:
+- Document Type: Plain Text
+- Content: Sample test data
+- Purpose: Integration testing
+- Author: Test Suite
+- Created: 2024-01-01
+
+This document contains various keywords that can be used to test search functionality:
+- artificial intelligence
+- machine learning
+- document processing
+- search and retrieval
+- enterprise software
+- workplace automation
+
+The document also includes some technical terms and concepts that should be searchable:
+- Natural language processing
+- Vector databases
+- Semantic search
+- Knowledge graphs
+- Microservices architecture
+- API integration
+
+This content is designed to be easily searchable and should return relevant results when queried through the PipesHub AI search interface.
+
