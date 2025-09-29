@@ -136,7 +136,7 @@ class RegistryToolWrapper(BaseTool):
             elif self.app_name == "notion":
                 return self._create_notion_tool_instance(action_class)
 
-            elif self.app_name in ["gmail", "google_calendar", "drive"]:
+            elif self.app_name in ["gmail", "google_calendar", "calendar", "drive","meet","docs","forms","sheets","slides"]:
                 # Use the proper Google client initialization from sources
                 return self._create_google_tool_instance(action_class)
 
@@ -176,7 +176,13 @@ class RegistryToolWrapper(BaseTool):
             service_mapping = {
                 "gmail": ("gmail", "v1"),
                 "google_calendar": ("calendar", "v3"),
-                "drive": ("drive", "v3")
+                "calendar": ("calendar", "v3"),
+                "drive": ("drive", "v3"),
+                "meet": ("meet", "v2"),
+                "docs": ("docs", "v1"),
+                "forms": ("forms", "v1"),
+                "sheets": ("sheets", "v4"),
+                "slides": ("slides", "v1")
             }
 
             service_name, version = service_mapping.get(self.app_name, ("drive", "v3"))

@@ -63,7 +63,37 @@ class GoogleCalendar:
                 type=ParameterType.STRING,
                 description="Upper bound for event start time (RFC3339 format)",
                 required=False
-            )
+            ),
+            ToolParameter(
+                name="order_by",
+                type=ParameterType.STRING,
+                description="Order by (e.g., 'startTime' or 'updated')",
+                required=False
+            ),
+            ToolParameter(
+                name="single_events",
+                type=ParameterType.BOOLEAN,
+                description="Whether to expand recurring events into instances",
+                required=False
+            ),
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="Free text search terms to find events",
+                required=False
+            ),
+            ToolParameter(
+                name="show_deleted",
+                type=ParameterType.BOOLEAN,
+                description="Include deleted events",
+                required=False
+            ),
+            ToolParameter(
+                name="time_zone",
+                type=ParameterType.STRING,
+                description="Time zone used in the response",
+                required=False
+            ),
         ]
     )
     def get_calendar_events(
@@ -71,7 +101,12 @@ class GoogleCalendar:
         calendar_id: Optional[str] = None,
         max_results: Optional[int] = None,
         time_min: Optional[str] = None,
-        time_max: Optional[str] = None
+        time_max: Optional[str] = None,
+        order_by: Optional[str] = None,
+        single_events: Optional[bool] = None,
+        query: Optional[str] = None,
+        show_deleted: Optional[bool] = None,
+        time_zone: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Get calendar events"""
         """
@@ -80,16 +115,25 @@ class GoogleCalendar:
             max_results: Maximum number of events to return
             time_min: Lower bound for event start time
             time_max: Upper bound for event start time
+            order_by: Order by key
+            single_events: Expand recurring events
+            query: Free text search
+            show_deleted: Include deleted events
+            time_zone: Time zone for response
         Returns:
             tuple[bool, str]: True if the events are fetched, False otherwise
         """
         try:
-            # Use GoogleCalendarDataSource method
             events = self._run_async(self.client.events_list(
                 calendarId=calendar_id or "primary",
                 maxResults=max_results,
                 timeMin=time_min,
-                timeMax=time_max
+                timeMax=time_max,
+                orderBy=order_by,
+                singleEvents=single_events,
+                q=query,
+                showDeleted=show_deleted,
+                timeZone=time_zone,
             ))
 
             return True, json.dumps(events)

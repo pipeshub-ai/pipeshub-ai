@@ -659,7 +659,8 @@ class GoogleDriveDataSource:
         supportsAllDrives: Optional[bool] = None,
         supportsTeamDrives: Optional[bool] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Google Drive API: Creates a copy of a file and applies any requested updates with patch semantics.
 
@@ -699,9 +700,8 @@ class GoogleDriveDataSource:
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
 
-        # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        # Handle request body if provided
+        if body is not None:
             request = self.client.files().copy(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().copy(**kwargs) # type: ignore

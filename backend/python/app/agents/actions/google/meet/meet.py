@@ -38,16 +38,24 @@ class GoogleMeet:
     @tool(
         app_name="meet",
         tool_name="create_meeting_space",
-        parameters=[]
+        parameters=[
+            ToolParameter(
+                name="space_config",
+                type=ParameterType.OBJECT,
+                description="Optional space configuration body to pass to Meet API",
+                required=False
+            )
+        ]
     )
-    def create_meeting_space(self) -> tuple[bool, str]:
+    def create_meeting_space(self, space_config: Optional[dict] = None) -> tuple[bool, str]:
         """Create a new Google Meet space"""
         """
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use GoogleMeetDataSource method
+            # Create a default space. The Meet API rejects unknown fields like 'title'/'description'.
+            # If needed, follow-up updates should use spaces_patch with supported fields and updateMask.
             space = self._run_async(self.client.spaces_create())
 
             return True, json.dumps({
