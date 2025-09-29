@@ -42,7 +42,7 @@ async def test_run() -> None:
         "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
     })
 
-    connnect: BaseConnector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
+    connector: BaseConnector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
     await connnect.initialize()
 
 
