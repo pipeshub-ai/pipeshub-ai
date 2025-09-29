@@ -55,6 +55,9 @@ async def test_run() -> None:
 
 
     logger = create_logger("onedrive_connector")
+    # base_dir = os.path.dirname(os.path.abspath(__file__))
+    # config_path = os.path.join(base_dir, "../../../../config/default_config.json") #changes here
+    # key_value_store = InMemoryKeyValueStore(logger, config_path)
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
@@ -71,6 +74,7 @@ async def test_run() -> None:
         "clientSecret": os.getenv("AZURE_CLIENT_SECRET"),
         "hasAdminConsent": True,
     }
+
     await key_value_store.create_key("/services/connectors/onedrive/config", config)
     connector: BaseConnector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
     await connector.init()

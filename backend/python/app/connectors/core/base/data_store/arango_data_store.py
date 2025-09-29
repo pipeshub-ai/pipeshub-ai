@@ -42,6 +42,9 @@ class ArangoTransactionStore(TransactionStore):
         self.txn = txn
         self.logger = arango_service.logger
 
+    async def get_record_by_path(self, connector_name: Connectors, path: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_path(connector_name, path, transaction=self.txn)
+
     async def get_record_by_key(self, key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_id(key, transaction=self.txn)
 
@@ -68,6 +71,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
         return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
 
+    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
+        return await self.arango_service.get_user_by_user_id(user_id, transaction=self.txn)
+    
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
 
@@ -79,9 +85,30 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
         return await self.arango_service.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    
+    async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
+        return await self.arango_service.delete_edge(from_key, to_key, collection, transaction=self.txn)
+    
+    async def delete_nodes(self, keys: List[str], collection: str) -> None:
+        return await self.arango_service.delete_nodes(keys, collection, transaction=self.txn)
+    
+    async def delete_edges_from(self, from_key: str, collection: str) -> None:
+        return await self.arango_service.delete_edges_from(from_key, collection, transaction=self.txn)
+    
+    async def delete_edges_to(self, to_key: str, collection: str) -> None:
+        return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
+    
+    async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
+        return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
+
+    async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
+        return await self.arango_service.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
+    
+    async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
+        return await self.arango_service.get_edge(from_key, to_key, collection, transaction=self.txn)
 
     async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_conversation_index(connector_name, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
@@ -89,52 +116,65 @@ class ArangoTransactionStore(TransactionStore):
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
 
-        for record in records:
-            # Define record type configurations
-            record_type_config = {
-                RecordType.FILE: {
-                    "collection": CollectionNames.FILES.value,
-                },
-                RecordType.MAIL: {
-                    "collection": CollectionNames.MAILS.value,
-                },
-                # RecordType.MESSAGE.value: {
-                #     "collection": CollectionNames.MESSAGES.value,
-                # },
-                RecordType.WEBPAGE: {
-                    "collection": CollectionNames.WEBPAGES.value,
-                },
-                RecordType.TICKET: {
-                    "collection": CollectionNames.TICKETS.value,
-                },
-            }
+        record_ids = [r.id for r in records]
+        duplicates = [x for x in record_ids if record_ids.count(x) > 1]
+        if duplicates:
+            self.logger.warning(f"DUPLICATE RECORD IDS IN BATCH: {duplicates}")
 
-            # Get the configuration for the current record type
-            record_type = record.record_type
-            if record_type not in record_type_config:
-                self.logger.error(f"❌ Unsupported record type: {record_type}")
-                return
+        self.logger.info("Upserting records in batch_record_upsert: %s", records)
 
-            config = record_type_config[record_type]
+        try:
+            for record in records:
+                # Define record type configurations
+                record_type_config = {
+                    RecordType.FILE: {
+                        "collection": CollectionNames.FILES.value,
+                    },
+                    RecordType.MAIL: {
+                        "collection": CollectionNames.MAILS.value,
+                    },
+                    # RecordType.MESSAGE.value: {
+                    #     "collection": CollectionNames.MESSAGES.value,
+                    # },
+                    RecordType.WEBPAGE: {
+                        "collection": CollectionNames.WEBPAGES.value,
+                    },
+                    RecordType.TICKET: {
+                        "collection": CollectionNames.TICKETS.value,
+                    },
+                }
 
-            # Create the IS_OF_TYPE edge
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{config['collection']}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
+                # Get the configuration for the current record type
+                record_type = record.record_type
+                if record_type not in record_type_config:
+                    self.logger.error(f"❌ Unsupported record type: {record_type}")
+                    return
 
-            # Upsert base record
-            await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
-            # Upsert specific record type if it has a specific method
-            await self.arango_service.batch_upsert_nodes([record.to_arango_record()], collection=config["collection"], transaction=self.txn)
+                config = record_type_config[record_type]
 
 
-            # Create IS_OF_TYPE edge
-            await self.arango_service.batch_create_edges([is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=self.txn)
+                # Create the IS_OF_TYPE edge
+                is_of_type_record = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
+                    "_to": f"{config['collection']}/{record.id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
 
-        return True
+                # Upsert base record
+                await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
+                # Upsert specific record type if it has a specific method
+                await self.arango_service.batch_upsert_nodes([record.to_arango_record()], collection=config["collection"], transaction=self.txn)
+
+                # Create IS_OF_TYPE edge
+                await self.arango_service.batch_create_edges([is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=self.txn)
+                
+            self.logger.info(" Successfully upserted records ")
+            return True
+        except Exception as e:
+            self.logger.error("❌ Batch upsert failed: %s", str(e))
+           
+            return False
 
     async def batch_upsert_record_groups(self, record_groups: List[RecordGroup]) -> None:
         return await self.arango_service.batch_upsert_nodes(

@@ -20,6 +20,8 @@ class SyncPoint(ISyncPoint):
     connector_name: str
     org_id: str
     data_store_provider: DataStoreProvider
+    sync_data_point_type: SyncDataPointType
+
 
 
     def _get_full_sync_point_key(self, sync_point_key: str) -> str:
