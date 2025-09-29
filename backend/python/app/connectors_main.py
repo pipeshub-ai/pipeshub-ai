@@ -22,18 +22,6 @@ from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
 from app.connectors.sources.localKB.api.kb_router import kb_router
-<<<<<<< Updated upstream
-=======
-from app.connectors.sources.microsoft.onedrive.connector import (
-    OneDriveConnector,
-)
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    SharePointConnector,
-)
-from app.connectors.sources.dropbox.connector2 import (
-    DropboxConnector
-)
->>>>>>> Stashed changes
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
