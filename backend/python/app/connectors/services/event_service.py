@@ -118,5 +118,5 @@ class EventService:
                 self.logger.error(f"Failed to get {connector_name.capitalize()} connector: {str(e)}")
                 return False
         except Exception as e:
-            self.logger.error("Failed to queue {connector_name.capitalize()} sync service start: %s", str(e))
+            self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {str(e)}")
             return False
