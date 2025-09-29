@@ -63,13 +63,15 @@ class ToolsDiscovery:
             # Handle special cases for nested structures
             if app_name == "google":
                 self._import_google_tools(app_dir)
+            elif app_name == "microsoft":
+                self._import_microsoft_tools(app_dir)
             else:
                 # Import all Python files in the app directory
                 self._import_python_files(app_dir, f"app.agents.actions.{app_name}")
 
     def _import_google_tools(self, google_dir: Path) -> None:
         """Import Google tools which have a nested structure"""
-        google_subdirs = ["gmail", "google_calendar", "google_drive", "auth", "enterprise"]
+        google_subdirs = ["gmail", "google_calendar", "drive", "auth", "enterprise", "calendar", "docs", "forms", "meet", "sheets", "slides", "youtube"]
 
         for subdir in google_subdirs:
             subdir_path = google_dir / subdir
@@ -77,6 +79,18 @@ class ToolsDiscovery:
                 main_file = subdir_path / f"{subdir}.py"
                 if main_file.exists():
                     module_path = f"app.agents.actions.google.{subdir}.{subdir}"
+                    self._import_module(module_path)
+
+    def _import_microsoft_tools(self, microsoft_dir: Path) -> None:
+        """Import Microsoft tools which have a nested structure"""
+        microsoft_subdirs = ["sharepoint", "one_drive", "outlook", "teams", "users_groups", "one_note"]
+
+        for subdir in microsoft_subdirs:
+            subdir_path = microsoft_dir / subdir
+            if subdir_path.exists():
+                main_file = subdir_path / f"{subdir}.py"
+                if main_file.exists():
+                    module_path = f"app.agents.actions.microsoft.{subdir}.{subdir}"
                     self._import_module(module_path)
 
     def _import_python_files(self, app_dir: Path, base_module_path: str) -> None:
