@@ -2411,6 +2411,7 @@ export const resyncConnectorRecords =
         'JIRA',
         'SLACK',
         'SHAREPOINT ONLINE',
+        'DROPBOX',
       ];
       if (!allowedConnectors.includes(connectorName)) {
         throw new BadRequestError(`Connector ${connectorName} not allowed`);

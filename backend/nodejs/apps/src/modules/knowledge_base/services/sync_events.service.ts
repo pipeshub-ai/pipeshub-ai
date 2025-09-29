@@ -9,6 +9,7 @@ export enum EventType {
   SyncGmailEvent = 'gmail.resync',
   SyncOneDriveEvent = 'onedrive.resync',
   SyncSharePointOnlineEvent = 'sharepointonline.resync',
+  SyncDropboxEvent = 'dropbox.resync',
 }
 
 export interface Event {

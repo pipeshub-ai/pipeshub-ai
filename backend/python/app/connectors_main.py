@@ -22,6 +22,18 @@ from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
 from app.connectors.sources.localKB.api.kb_router import kb_router
+<<<<<<< Updated upstream
+=======
+from app.connectors.sources.microsoft.onedrive.connector import (
+    OneDriveConnector,
+)
+from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    SharePointConnector,
+)
+from app.connectors.sources.dropbox.connector2 import (
+    DropboxConnector
+)
+>>>>>>> Stashed changes
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
@@ -138,6 +150,16 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                         app_container.connectors_map[app["name"]] = connector
                         app_container.connectors_map[connector_name] = connector
                         logger.info(f"{app['name']} connector initialized for org %s", org_id)
+
+                if app["name"].lower() == Connectors.DROPBOX.value.lower():
+                    config_service = app_container.config_service()
+                    arango_service = await app_container.arango_service()
+                    data_store_provider = ArangoDataStore(logger, arango_service)
+                    dropbox_connector = await DropboxConnector.create_connector(logger, data_store_provider, config_service)
+                    await dropbox_connector.init()
+                    app_container.dropbox_connector.override(providers.Object(dropbox_connector))
+                    asyncio.create_task(dropbox_connector.run_sync())
+                    logger.info("Dropbox connector initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:
