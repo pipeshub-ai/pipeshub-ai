@@ -254,11 +254,12 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
 
     for i, old_citation_num in enumerate(unique_citations):
         new_citation_num = i + 1
-        citation_mapping[old_citation_num] = new_citation_num
 
         # Get the corresponding chunk from final_results
         chunk_index = old_citation_num - 1  # Convert to 0-based index
         if 0 <= chunk_index < len(final_results):
+            citation_mapping[old_citation_num] = new_citation_num
+
             doc = final_results[chunk_index]
             new_citations.append({
                 "content": doc.get("content", ""),
@@ -268,6 +269,6 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
             })
 
     # Replace citation numbers in answer text
-    normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]", answer_text)
+    normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "", answer_text)
 
     return normalized_answer, new_citations
