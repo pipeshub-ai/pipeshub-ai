@@ -58,7 +58,6 @@ class TokenRefreshService:
             for connector in active_connectors:
                 connector_name = connector['name']
                 auth_type = connector.get('authType', '')
-                print(connector_name, "refreshing token")
                 # Only refresh OAuth tokens
                 if auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
                     await self._refresh_connector_token(connector_name)

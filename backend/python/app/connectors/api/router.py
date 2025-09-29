@@ -349,7 +349,6 @@ async def stream_record_internal(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
-        print("Record is" , record)
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
@@ -2213,7 +2212,6 @@ async def get_oauth_authorization_url(
         filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
-        print(config, "config")
         if not config or not config.get('auth'):
             raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
 
@@ -2221,7 +2219,6 @@ async def get_oauth_authorization_url(
 
         # Get OAuth configuration from connector config
         connector_auth_config = connector_config.get('config', {}).get('auth', {})
-        print(f"Connector auth config: {connector_auth_config}")
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
@@ -2261,7 +2258,6 @@ async def get_oauth_authorization_url(
             key_value_store=container.key_value_store(),
             credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
-        print(f"OAuth provider: {oauth_provider}")
         # Generate authorization URL using OAuth provider
         # Add provider-specific parameters to ensure refresh_token is issued where applicable
         extra_params = {}
