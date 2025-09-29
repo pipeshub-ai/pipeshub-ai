@@ -36,12 +36,21 @@ class QueryAppContainer(BaseAppContainer):
         container_utils.get_vector_db_service,
         config_service=config_service,
     )
+
+    blob_store = providers.Resource(
+        container_utils.create_blob_storage,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+    
     retrieval_service = providers.Resource(
         container_utils.create_retrieval_service,
         config_service=config_service,
         logger=logger,
         vector_db_service=vector_db_service,
         arango_service=arango_service,
+        blob_store=blob_store,
     )
     reranker_service = providers.Singleton(
         RerankerService,

@@ -112,9 +112,6 @@ async def search(
             updated_filters['kb'] = accessible_kbs
             logger.info(f"✅ Using accessible KBs for search: {accessible_kbs}")
 
-
-
-
         # Setup query transformation
         rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
@@ -140,6 +137,7 @@ async def search(
             limit=body.limit,
             filter_groups=updated_filters,
             arango_service=arango_service,
+            knowledge_search=True,
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")

@@ -132,7 +132,6 @@ class ConfigurationService:
             if hasattr(self.store, 'client'):
                 # Wait for client to be ready
                 while getattr(self.store, 'client', None) is None:
-                    self.logger.debug("🔄 Waiting for ETCD client to be initialized...")
                     time.sleep(3)
                 try:
                     self.store.client.add_watch_prefix_callback("/", self._watch_callback)

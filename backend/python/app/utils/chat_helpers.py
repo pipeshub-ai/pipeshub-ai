@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from jinja2 import Template
 
-from app.containers.utils.utils import ContainerUtils
 from app.models.blocks import BlockType, GroupType
 from app.modules.qna.prompt_templates import (
     qna_prompt_context,
@@ -18,19 +17,23 @@ from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
     flattened_results = []
+    image_index = 0
     seen_chunks = set()
     adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
-    for result in result_set:
-        meta = result.get("metadata")
-        is_block_group = meta.get("isBlockGroup")
-        if is_block_group is not None:
-            new_type_results.append(result)
-        else:
-            old_type_results.append(result)
+    if from_retrieval_service:
+        new_type_results = result_set
+    else:
+        for result in result_set:
+            meta = result.get("metadata")
+            is_block_group = meta.get("isBlockGroup")
+            if is_block_group is not None:
+                new_type_results.append(result)
+            else:
+                old_type_results.append(result)
 
     sorted_new_type_results = sorted(new_type_results, key=lambda x: not x.get("metadata", {}).get("isBlockGroup", False))
     rows_to_be_included = defaultdict(list)
@@ -39,9 +42,11 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         meta = result.get("metadata")
 
         if virtual_record_id not in virtual_record_id_to_result:
-            adjacent_chunks[virtual_record_id] = []
             await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
-
+        
+        if virtual_record_id not in adjacent_chunks:
+            adjacent_chunks[virtual_record_id] = []
+            
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
         if is_block_group:
@@ -74,15 +79,19 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
-                if is_multimodal_llm:
-                    image_uri = data.get("uri")
-                    if image_uri:
-                        result["content"] = image_uri
-                    else:
-                        continue
+                if from_retrieval_service:
+                    result["content"] = f"image_{image_index}"
+                    image_index += 1
+                else:
+                    if is_multimodal_llm:
+                        image_uri = data.get("uri")
+                        if image_uri:
+                            result["content"] = image_uri
+                        else:
+                            continue
 
-                adjacent_chunks[virtual_record_id].append(index-1)
-                adjacent_chunks[virtual_record_id].append(index+1)
+                    adjacent_chunks[virtual_record_id].append(index-1)
+                    adjacent_chunks[virtual_record_id].append(index+1)
             else:
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
@@ -125,6 +134,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                 "virtual_record_id": virtual_record_id,
                                 "block_index": child_block_index,
                                 "metadata": get_enhanced_metadata(record, child_block, meta),
+                                "score": float(result.get("score",0.0)),
+                                "citationType": "vectordb|document",
                             }
                             child_results.append(child_result)
 
@@ -190,31 +201,31 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         }
         flattened_results.append(table_result)
 
-
-    for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
-        for index in adjacent_chunks_list:
-            chunk_id = f"{virtual_record_id}-{index}"
-            if chunk_id in seen_chunks:
-                continue
-            seen_chunks.add(chunk_id)
-            record = virtual_record_id_to_result[virtual_record_id]
-            if record is None:
-                continue
-            blocks  = record.get("block_containers",{}).get("blocks",[])
-            if index < len(blocks) and index >= 0:
-                block = blocks[index]
-                block_type = block.get("type")
-                if block_type == BlockType.TEXT.value:
-                    block_text = block.get("data","")
-                    enhanced_metadata = get_enhanced_metadata(record,block,{})
-                    flattened_results.append({
-                        "content": block_text,
-                        "block_type": block_type,
-                        "metadata": enhanced_metadata,
-                        "virtual_record_id": virtual_record_id,
-                        "block_index": index,
-                        "citationType": "vectordb|document",
-                    })
+    if not from_retrieval_service:
+        for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
+            for index in adjacent_chunks_list:
+                chunk_id = f"{virtual_record_id}-{index}"
+                if chunk_id in seen_chunks:
+                    continue
+                seen_chunks.add(chunk_id)
+                record = virtual_record_id_to_result[virtual_record_id]
+                if record is None:
+                    continue
+                blocks  = record.get("block_containers",{}).get("blocks",[])
+                if index < len(blocks) and index >= 0:
+                    block = blocks[index]
+                    block_type = block.get("type")
+                    if block_type == BlockType.TEXT.value:
+                        block_text = block.get("data","")
+                        enhanced_metadata = get_enhanced_metadata(record,block,{})
+                        flattened_results.append({
+                            "content": block_text,
+                            "block_type": block_type,
+                            "metadata": enhanced_metadata,
+                            "virtual_record_id": virtual_record_id,
+                            "block_index": index,
+                            "citationType": "vectordb|document",
+                        })
 
     # Store point_id_to_blockIndex mappings separately for old type results
     # This mapping is used to convert point_id from search results to block index
@@ -303,7 +314,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                     block_num = [block.get("index", 0) + 1]
 
             enhanced_metadata = {
-                        "orgId": record.get("orgId", ""),
+                        "orgId": meta.get("orgId", "") if meta.get("orgId") else record.get("orgId", ""),
                         "recordId": record.get("id", ""),
                         "virtualRecordId": virtual_record_id,
                         "recordName": record.get("record_name",""),
@@ -366,6 +377,8 @@ async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_
 
 async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> Tuple[Dict[str, Any], Dict[str, int]]:
     try:
+        # Lazy import to avoid circular dependency: chat_helpers -> ContainerUtils -> RetrievalService -> chat_helpers
+        from app.containers.utils.utils import ContainerUtils
         summary = metadata.get("summary", "")
         categories = [metadata.get("categories", "")]
         topics = metadata.get("topics", "")

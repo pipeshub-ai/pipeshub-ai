@@ -212,6 +212,7 @@ class ContainerUtils:
         logger: Logger,
         vector_db_service: IVectorDBService,
         arango_service: ArangoService,
+        blob_store: BlobStorage,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
         service = RetrievalService(
@@ -220,5 +221,6 @@ class ContainerUtils:
             collection_name=VECTOR_DB_COLLECTION_NAME,
             vector_db_service=vector_db_service,
             arango_service=arango_service,
+            blob_store=blob_store,
         )
         return service
