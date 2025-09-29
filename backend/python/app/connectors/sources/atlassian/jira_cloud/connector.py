@@ -457,7 +457,7 @@ class JiraConnector(BaseConnector):
         self.provider = None
 
     async def init(self) -> None:
-        print("JiraConnector init")
+        pass
 
     async def run_sync(self) -> None:
         users = await self.data_entities_processor.get_all_active_users()
