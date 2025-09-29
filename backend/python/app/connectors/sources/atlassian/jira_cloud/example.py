@@ -9,7 +9,6 @@ from fastapi.responses import RedirectResponse, Response
 
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
-from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -42,11 +41,11 @@ async def test_run() -> None:
         "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
     })
 
-    connector: BaseConnector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
-    await connnect.initialize()
+    connector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
+    await connector.initialize()
 
 
-    app.connector = connnect
+    app.connector = connector
 
 router = APIRouter()
 
