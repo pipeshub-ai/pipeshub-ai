@@ -328,7 +328,7 @@ class RetrievalService:
             virtual_record_id_to_record = {}
             new_type_results = []
             final_search_results = []
-            for i,result in enumerate(search_results):
+            for result in search_results:
                 if not result or not isinstance(result, dict):
                     continue
 
@@ -359,7 +359,6 @@ class RetrievalService:
                         ext =  get_extension_from_mimetype(record.get("mimeType"))
                         if ext:
                             result["metadata"]["extension"] = ext
-
 
                         # Fetch additional file URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
@@ -402,7 +401,6 @@ class RetrievalService:
 
                                 record = virtual_record_id_to_record[virtual_id]
                                 if record is None:
-                                    print("record is Noneeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
                                     continue
                                 new_type_results.append(result)
                                 continue
