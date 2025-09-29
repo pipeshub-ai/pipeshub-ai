@@ -320,7 +320,7 @@ class TicketRecord(Record):
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type,
+            "mimeType": self.mime_type.value if self.mime_type else None,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,

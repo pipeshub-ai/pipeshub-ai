@@ -14,7 +14,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.atlassian.jira.jira_cloud import (
+from app.connectors.sources.atlassian.jira_cloud.connector import (
     OAUTH_CONFIG_PATH,
     JiraConnector,
 )
@@ -41,11 +41,11 @@ async def test_run() -> None:
         "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
     })
 
-    jira_connector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
-    await jira_connector.initialize()
+    connector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
+    await connector.initialize()
 
 
-    app.connector = jira_connector
+    app.connector = connector
 
 router = APIRouter()
 

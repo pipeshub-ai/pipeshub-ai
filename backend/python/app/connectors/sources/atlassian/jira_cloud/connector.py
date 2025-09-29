@@ -17,12 +17,14 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+    ConnectorBuilder,
+    DocumentationLink,
+)
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.oauth import (
-    OAUTH_CONFIG_PATH,
-    OAUTH_CREDENTIALS_PATH,
-    AtlassianOAuthProvider,
+    OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
 from app.models.entities import (
@@ -37,6 +39,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/jira"
+AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
+TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
 def adf_to_text(adf_content: Dict[str, Any]) -> str:
     """
@@ -199,10 +203,9 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class JiraClient:
-    def __init__(self, logger: Logger, org_id: str, token: OAuthToken) -> None:
+    def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
         self.logger = logger
-        self.org_id = org_id
-        self.token = token
+        self.config_service = config_service
         self.base_url = BASE_URL
         self.session = None
         self.accessible_resources = None
@@ -244,33 +247,31 @@ class JiraClient:
         **kwargs
     ) -> Dict[str, Any]:
         """Make authenticated API request and return JSON response"""
-        token = self.token
+        config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH}")
+        token = None
+        if not config:
+            self.logger.error("❌ Jira credentials not found")
+            raise ValueError("Jira credentials not found")
+
+        credentials_config = config.get("credentials", {})
+
+        if not credentials_config:
+            self.logger.error("❌ Jira credentials not found")
+            raise ValueError("Jira credentials not found")
+
+        token = {
+            "token_type": credentials_config.get("token_type"),
+            "access_token": credentials_config.get("access_token")
+        }
 
         headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"{token.token_type} {token.access_token}"
+        headers["Authorization"] = f"{token.get('token_type')} {token.get('access_token')}"
 
         session = await self._ensure_session()
         async with session.request(method, url, headers=headers, **kwargs) as response:
             response.raise_for_status()
             return await response.json()
 
-    async def make_authenticated_request(
-        self,
-        method: str,
-        url: str,
-        **kwargs
-    ) -> aiohttp.ClientResponse:
-        """Make authenticated API request"""
-        token = self.token
-
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"{token.token_type} {token.access_token}"
-
-        session = await self._ensure_session()
-
-        # For streaming responses, return the response object
-        # Caller is responsible for reading the response
-        return await session.request(method, url, headers=headers, **kwargs)
 
     async def get_accessible_resources(self) -> List[AtlassianCloudResource]:
         """
@@ -339,12 +340,11 @@ class JiraClient:
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA.value,
+                connector_name=Connectors.JIRA,
                 record_group_type=RecordGroupType.JIRA_PROJECT,
                 external_record_group_id=project_id,
                 version=0,
-                mime_type=MimeTypes.PLAIN_TEXT.value,
-                signed_url=f"http://localhost:8088/api/v1/org/{self.org_id}/jira/issues/{issue.get('id')}",
+                mime_type=MimeTypes.PLAIN_TEXT,
                 weburl=f"{atlassian_domain}/browse/{issue.get('key')}"
             )
             issue_records.append((issue_record, permissions))
@@ -401,6 +401,7 @@ class JiraClient:
     ) -> str:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/rest/api/3/issue/{issue_id}"
+        print(url, "jira request url")
         issue_details = await self.make_authenticated_json_request("GET", url)
         description = issue_details.get("fields", {}).get("description", "")
         summary = issue_details.get("fields", {}).get("summary", "")
@@ -412,7 +413,43 @@ class JiraClient:
 
         return combined_text
 
+@ConnectorBuilder("Jira")\
+    .in_group("Atlassian")\
+    .with_auth_type("OAUTH")\
+    .with_description("Sync issues from Jira Cloud")\
+    .with_categories(["Storage"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/jira.svg")
+        .add_documentation_link(DocumentationLink(
+            "Jira Cloud API Setup",
+            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/"
+        ))
+        .with_redirect_uri("connectors/oauth/callback/Jira", False)
+        .add_auth_field(AuthField(
+            name="clientId",
+            display_name="Application (Client) ID",
+            placeholder="Enter your Atlassian Cloud Application ID",
+            description="The Application (Client) ID from Azure AD App Registration"
+        ))
+        .add_auth_field(AuthField(
+            name="clientSecret",
+            display_name="Client Secret",
+            placeholder="Enter your Atlassian Cloud Client Secret",
+            description="The Client Secret from Azure AD App Registration",
+            field_type="PASSWORD",
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="domain",
+            display_name="Atlassian Domain",
+            description="https://your-domain.atlassian.net"
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
 
+    )\
+    .build_decorator()
 class JiraConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
                  data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
@@ -420,16 +457,7 @@ class JiraConnector(BaseConnector):
         self.provider = None
 
     async def init(self) -> None:
-        await self.data_entities_processor.initialize()
-        self.config = await self.config_service.get_config(f"{OAUTH_CONFIG_PATH}/{self.data_entities_processor.org_id}")
-        self.provider = AtlassianOAuthProvider(
-            client_id=self.config["client_id"],
-            client_secret=self.config["client_secret"],
-            redirect_uri=self.config["redirect_uri"],
-            scopes=AtlassianScope.get_full_access(),
-            key_value_store=self.config_service.store,
-            credentials_path=f"{OAUTH_CREDENTIALS_PATH}/{self.data_entities_processor.org_id}"
-        )
+        pass
 
     async def run_sync(self) -> None:
         users = await self.data_entities_processor.get_all_active_users()
@@ -437,8 +465,8 @@ class JiraConnector(BaseConnector):
             self.logger.info("No users found")
             return
 
+        jira_client = await self.get_jira_client()
         user = users[0]
-        jira_client = await self.get_jira_client(user.org_id)
         try:
             projects = await jira_client.fetch_projects_with_permissions()
 
@@ -452,19 +480,41 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"Error processing user {user.email}: {e}")
 
 
-    async def get_jira_client(self, org_id: str) -> JiraClient:
-        token = await self.provider.ensure_valid_token()
-        if not token:
-            raise Exception(f"Token for org {org_id} not found")
-        jira_client = JiraClient(self.logger, org_id, token)
+    async def get_jira_client(self) -> JiraClient:
+        jira_client = JiraClient(self.logger, self.config_service)
         await jira_client.initialize()
 
         return jira_client
 
+    async def get_signed_url(self, record: Record) -> str:
+        """
+        Create a signed URL for a specific record.
+        """
+        pass
+
+    async def test_connection_and_access(self) -> bool:
+        """Test connection and access to Jira."""
+        pass
+
+    async def run_incremental_sync(self) -> None:
+        pass
+
+    async def cleanup(self) -> None:
+        pass
+
+    async def handle_webhook_notification(self, notification: Dict) -> None:
+        pass
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        jira_client = await self.get_jira_client(record.org_id)
+        jira_client = await self.get_jira_client()
         issue_content = await jira_client.fetch_issue_content(record.external_record_id)
         return StreamingResponse(
             iter([issue_content]), media_type=MimeTypes.PLAIN_TEXT.value, headers={}
         )
+
+    @classmethod
+    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> "BaseConnector":
+        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+        await data_entities_processor.initialize()
+
+        return JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
