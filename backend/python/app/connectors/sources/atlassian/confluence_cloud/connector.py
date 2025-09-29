@@ -316,20 +316,20 @@ class ConfluenceClient:
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",
-            placeholder="Enter your Confluence Cloud Application ID",
+            placeholder="Enter your Atlassian Cloud Application ID",
             description="The Application (Client) ID from Azure AD App Registration"
         ))
         .add_auth_field(AuthField(
             name="clientSecret",
             display_name="Client Secret",
-            placeholder="Enter your Confluence Cloud Client Secret",
+            placeholder="Enter your Atlassian Cloud Client Secret",
             description="The Client Secret from Azure AD App Registration",
             field_type="PASSWORD",
             is_secret=True
         ))
         .add_auth_field(AuthField(
             name="domain",
-            display_name="Confluence Domain",
+            display_name="Atlassian Domain",
             description="https://your-domain.atlassian.net"
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])

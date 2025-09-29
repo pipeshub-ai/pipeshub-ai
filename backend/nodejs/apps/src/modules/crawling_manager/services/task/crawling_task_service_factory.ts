@@ -23,6 +23,7 @@ export class CrawlingTaskFactory {
       "sharepointonline",
       "confluence",
       "slack",
+      "jira",
     ];
 
     if (supportedConnectors.includes(connector.replace(' ', '').toLowerCase())) {

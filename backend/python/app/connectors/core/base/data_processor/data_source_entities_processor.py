@@ -97,7 +97,7 @@ class DataSourceEntitiesProcessor:
 
             if parent_record and isinstance(parent_record, Record):
                 # Create a edge between the record and the parent record if it doesn't exist
-                tx_store.create_record_relation(parent_record.id, record.id, "PARENT_CHILD")
+                await tx_store.create_record_relation(parent_record.id, record.id, "PARENT_CHILD")
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,

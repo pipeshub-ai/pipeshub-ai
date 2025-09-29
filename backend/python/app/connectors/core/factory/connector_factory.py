@@ -9,6 +9,7 @@ from app.connectors.core.base.data_store.arango_data_store import ArangoDataStor
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
+from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
@@ -23,6 +24,7 @@ class ConnectorFactory:
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
         "confluence": ConfluenceConnector,
+        "jira": JiraConnector,
     }
 
     @classmethod

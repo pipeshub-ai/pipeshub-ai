@@ -67,7 +67,7 @@ class EventService:
             )
 
             if not connector:
-                self.logger.error(f"Failed to create {connector_name} connector")
+                self.logger.error(f"❌ Failed to create {connector_name} connector")
                 return False
 
             await connector.init()
