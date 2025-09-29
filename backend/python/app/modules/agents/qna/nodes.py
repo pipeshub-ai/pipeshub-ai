@@ -187,6 +187,13 @@ def prepare_clean_prompt_node(
         # Build clean system message
         system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
 
+        # Include current UTC time to help the LLM reason about relative dates (e.g., last 2 days)
+        try:
+            current_time_utc = datetime.utcnow().isoformat() + "Z"
+            system_content += f"\n\nCurrent datetime (UTC): {current_time_utc}"
+        except Exception:
+            pass
+
         # Get ALL available tools from registry - no filtering
         from app.modules.agents.qna.tool_registry import (
             get_agent_tools,
@@ -483,7 +490,7 @@ async def final_response_node(
             # Process citations if available
             if state.get("final_results"):
                 # Process citations on the answer text
-                cited_answer = process_citations(final_content["answer"], state["final_results"])
+                cited_answer = process_citations(final_content["answer"], state["final_results"],from_agent=True)
 
                 # Handle citation processing result
                 if isinstance(cited_answer, str):
@@ -575,7 +582,7 @@ async def final_response_node(
 
                 # Process citations
                 if final_results:
-                    cited_fallback = process_citations(fallback_content, final_results)
+                    cited_fallback = process_citations(fallback_content, final_results,from_agent=True)
                     if isinstance(cited_fallback, str):
                         fallback_content = cited_fallback
                     elif isinstance(cited_fallback, dict):

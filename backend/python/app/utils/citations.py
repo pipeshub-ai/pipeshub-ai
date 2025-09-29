@@ -138,7 +138,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]],from_agent:bool = False) -> Dict[str, Any]:
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -199,12 +199,18 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Normalize citations in the answer if it exists
         if "answer" in result:
-            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
+            if from_agent:
+                normalized_answer, citations = normalize_citations_and_chunks_for_agent(result["answer"], documents)
+            else:
+                normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
             result["answer"] = normalized_answer
             result["citations"] = citations
         else:
             # Fallback for cases where answer is not in a structured format
-            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
+            if from_agent:
+                normalized_answer, citations = normalize_citations_and_chunks_for_agent(str(response_data), documents)
+            else:
+                normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
             result = {
                 "answer": normalized_answer,
                 "citations": citations
@@ -219,3 +225,50 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
             "traceback": traceback.format_exc(),
             "raw_response": llm_response,
         }
+
+
+def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
+    """
+    Normalize citation numbers in answer text to be sequential (1,2,3...)
+    and create corresponding citation chunks with correct mapping
+    """
+    # Extract all citation numbers from the answer text
+    citation_pattern = r'\[(\d+)\]'
+    matches = re.findall(citation_pattern, answer_text)
+
+    if not matches:
+        return answer_text, []
+
+    # Get unique citation numbers in order of appearance
+    unique_citations = []
+    seen = set()
+    for match in matches:
+        citation_num = int(match)
+        if citation_num not in seen:
+            unique_citations.append(citation_num)
+            seen.add(citation_num)
+
+    # Create mapping from old citation numbers to new sequential numbers
+    citation_mapping = {}
+    new_citations = []
+
+    for i, old_citation_num in enumerate(unique_citations):
+        new_citation_num = i + 1
+
+        # Get the corresponding chunk from final_results
+        chunk_index = old_citation_num - 1  # Convert to 0-based index
+        if 0 <= chunk_index < len(final_results):
+            citation_mapping[old_citation_num] = new_citation_num
+
+            doc = final_results[chunk_index]
+            new_citations.append({
+                "content": doc.get("content", ""),
+                "chunkIndex": new_citation_num,  # Use new sequential number
+                "metadata": doc.get("metadata", {}),
+                "citationType": "vectordb|document",
+            })
+
+    # Replace citation numbers in answer text
+    normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "", answer_text)
+
+    return normalized_answer, new_citations
