@@ -17,13 +17,11 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector import (
     CalendarConnector,
     DocsConnector,
-    FormsConnector,
     GmailConnector,
     GoogleDriveConnector,
     MeetConnector,
     NotionConnector,
     SlackConnector,
-    SlidesConnector,
 )
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,

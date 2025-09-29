@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import threading
 from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
@@ -21,19 +22,41 @@ class Confluence:
             None
         """
         self.client = ConfluenceDataSource(client)
+        # Dedicated background event loop for running coroutines from sync context
+        self._bg_loop = asyncio.new_event_loop()
+        self._bg_loop_thread = threading.Thread(target=self._start_background_loop, daemon=True)
+        self._bg_loop_thread.start()
+
+    def _start_background_loop(self) -> None:
+        asyncio.set_event_loop(self._bg_loop)
+        self._bg_loop.run_forever()
 
     def _run_async(self, coro):
-        """Helper method to run async operations in sync context"""
+        """Run a coroutine safely from sync or async contexts via a dedicated loop."""
+        # Always submit to background loop; safe in both sync and async callers
+        future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
+        return future.result()
+
+    def _resolve_space_id(self, space_identifier: str) -> str:
+        """Helper method to resolve space key to space ID if needed"""
         try:
-            asyncio.get_running_loop()
-            # We're in an async context, use asyncio.run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run
-            return asyncio.run(coro)
+            # If it's already numeric, return as is
+            int(space_identifier)
+            return space_identifier
+        except ValueError:
+            # It's a space key, try to resolve it
+            try:
+                response = self._run_async(self.client.get_spaces())
+                if response.status == 200:
+                    spaces = response.json()
+                    for space in spaces.get('results', []):
+                        if space.get('key') == space_identifier:
+                            return str(space.get('id', space_identifier))
+                # If not found, return original identifier
+                return space_identifier
+            except Exception:
+                # If resolution fails, return original identifier
+                return space_identifier
 
 
     @tool(
@@ -49,12 +72,14 @@ class Confluence:
     )
     def create_page(self, space_id: str, page_title: str, page_content: str) -> Tuple[bool, str]:
         try:
+            # Resolve space key to space ID if needed
+            resolved_space_id = self._resolve_space_id(space_id)
+
             # Use ConfluenceDataSource method (create_page)
-            page = self._run_async(self.client.create_page(
+            response = self._run_async(self.client.create_page(
                 body={
-                    "type": "page",
                     "title": page_title,
-                    "space": {"id": int(space_id)},
+                    "spaceId": resolved_space_id,
                     "body": {
                         "storage": {
                             "value": page_content,
@@ -63,7 +88,13 @@ class Confluence:
                     }
                 }
             ))
-            return True, json.dumps({"message": "Page created successfully", "page": page})
+            if response.status in [200, 201]:
+                page_data = response.json()
+                return True, json.dumps({"message": "Page created successfully", "page": page_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                logger.error(f"Error creating page: HTTP {response.status} - {error_text}")
+                return False, json.dumps({"message": f"Error creating page: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error creating page: {e}")
             return False, json.dumps({"message": f"Error creating page: {e}"})
@@ -79,11 +110,16 @@ class Confluence:
     def get_page_content(self, page_id: str) -> Tuple[bool, str]:
         try:
             # Use ConfluenceDataSource method
-            content = self._run_async(self.client.get_page_by_id(
+            response = self._run_async(self.client.get_page_by_id(
                 id=int(page_id),
                 body_format={"storage": {}}
             ))
-            return True, json.dumps({"message": "Page content fetched successfully", "content": content})
+            if response.status == 200:
+                content_data = response.json()
+                return True, json.dumps({"message": "Page content fetched successfully", "content": content_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting page content: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting page content: {e}")
             return False, json.dumps({"message": f"Error getting page content: {e}"})
@@ -98,11 +134,19 @@ class Confluence:
     )
     def get_pages(self, space_id: str) -> Tuple[bool, str]:
         try:
-            # Use ConfluenceDataSource method
-            pages = self._run_async(self.client.get_pages_in_space(
-                id=int(space_id)
+            # Resolve space key to space ID if needed
+            resolved_space_id = self._resolve_space_id(space_id)
+
+            # Use ConfluenceDataSource method - space_id should be string, not int
+            response = self._run_async(self.client.get_pages_in_space(
+                id=resolved_space_id
             ))
-            return True, json.dumps({"message": "Pages fetched successfully", "pages": pages})
+            if response.status == 200:
+                pages_data = response.json()
+                return True, json.dumps({"message": "Pages fetched successfully", "pages": pages_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting pages: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting pages: {e}")
             return False, json.dumps({"message": f"Error getting pages: {e}"})
@@ -118,10 +162,15 @@ class Confluence:
     def invite_email(self, email: str) -> Tuple[bool, str]:
         try:
             # Use ConfluenceDataSource method
-            result = self._run_async(self.client.invite_by_email(
+            response = self._run_async(self.client.invite_by_email(
                 body={"email": email}
             ))
-            return True, json.dumps({"message": "Email invited successfully", "result": result})
+            if response.status in [200, 201]:
+                result_data = response.json()
+                return True, json.dumps({"message": "Email invited successfully", "result": result_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error inviting email: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error inviting email: {e}")
             return False, json.dumps({"message": f"Error inviting email: {e}"})
@@ -135,8 +184,13 @@ class Confluence:
     def get_spaces_with_permissions(self) -> Tuple[bool, str]:
         try:
             # List spaces (basic details)
-            spaces = self._run_async(self.client.get_spaces())
-            return True, json.dumps({"message": "Spaces fetched successfully", "spaces": spaces})
+            response = self._run_async(self.client.get_spaces())
+            if response.status == 200:
+                spaces_data = response.json()
+                return True, json.dumps({"message": "Spaces fetched successfully", "spaces": spaces_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting spaces: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting spaces with permissions: {e}")
             return False, json.dumps({"message": f"Error getting spaces with permissions: {e}"})
@@ -152,11 +206,16 @@ class Confluence:
     def get_page(self, page_id: str) -> Tuple[bool, str]:
         try:
             # Use ConfluenceDataSource method
-            page = self._run_async(self.client.get_page_by_id(
+            response = self._run_async(self.client.get_page_by_id(
                 id=int(page_id),
                 body_format={"storage": {}}
             ))
-            return True, json.dumps({"message": "Page fetched successfully", "page": page})
+            if response.status == 200:
+                page_data = response.json()
+                return True, json.dumps({"message": "Page fetched successfully", "page": page_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting page: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting page: {e}")
             return False, json.dumps({"message": f"Error getting page: {e}"})
@@ -171,8 +230,13 @@ class Confluence:
     )
     def get_space(self, space_id: str) -> Tuple[bool, str]:
         try:
-            space = self._run_async(self.client.get_space_by_id(id=int(space_id)))
-            return True, json.dumps({"message": "Space fetched successfully", "space": space})
+            response = self._run_async(self.client.get_space_by_id(id=int(space_id)))
+            if response.status == 200:
+                space_data = response.json()
+                return True, json.dumps({"message": "Space fetched successfully", "space": space_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting space: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting space: {e}")
             return False, json.dumps({"message": f"Error getting space: {e}"})
@@ -187,8 +251,13 @@ class Confluence:
     )
     def get_page_versions(self, page_id: str) -> Tuple[bool, str]:
         try:
-            versions = self._run_async(self.client.get_page_versions(id=int(page_id)))
-            return True, json.dumps({"message": "Page versions fetched successfully", "versions": versions})
+            response = self._run_async(self.client.get_page_versions(id=int(page_id)))
+            if response.status == 200:
+                versions_data = response.json()
+                return True, json.dumps({"message": "Page versions fetched successfully", "versions": versions_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting page versions: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting page versions: {e}")
             return False, json.dumps({"message": f"Error getting page versions: {e}"})
@@ -204,11 +273,16 @@ class Confluence:
     )
     def update_page_title(self, page_id: str, new_title: str) -> Tuple[bool, str]:
         try:
-            result = self._run_async(self.client.update_page_title(
+            response = self._run_async(self.client.update_page_title(
                 id=int(page_id),
                 body={"title": new_title}
             ))
-            return True, json.dumps({"message": "Page title updated successfully", "result": result})
+            if response.status in [200, 204]:
+                result_data = response.json() if response.status == 200 else {}
+                return True, json.dumps({"message": "Page title updated successfully", "result": result_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error updating page title: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error updating page title: {e}")
             return False, json.dumps({"message": f"Error updating page title: {e}"})
@@ -223,8 +297,13 @@ class Confluence:
     )
     def get_child_pages(self, page_id: str) -> Tuple[bool, str]:
         try:
-            children = self._run_async(self.client.get_child_pages(id=int(page_id)))
-            return True, json.dumps({"message": "Child pages fetched successfully", "children": children})
+            response = self._run_async(self.client.get_child_pages(id=int(page_id)))
+            if response.status == 200:
+                children_data = response.json()
+                return True, json.dumps({"message": "Child pages fetched successfully", "children": children_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error getting child pages: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error getting child pages: {e}")
             return False, json.dumps({"message": f"Error getting child pages: {e}"})
@@ -242,9 +321,14 @@ class Confluence:
         try:
             kwargs = {"title": title}
             if space_id:
-                kwargs["space_id"] = [int(space_id)]
-            pages = self._run_async(self.client.get_pages(**kwargs))
-            return True, json.dumps({"message": "Pages search successful", "pages": pages})
+                kwargs["space_id"] = [space_id]
+            response = self._run_async(self.client.get_pages(**kwargs))
+            if response.status == 200:
+                pages_data = response.json()
+                return True, json.dumps({"message": "Pages search successful", "pages": pages_data})
+            else:
+                error_text = response.text() if hasattr(response, 'text') and callable(response.text) else str(response.text)
+                return False, json.dumps({"message": f"Error searching pages: HTTP {response.status} - {error_text}"})
         except Exception as e:
             logger.error(f"Error searching pages: {e}")
             return False, json.dumps({"message": f"Error searching pages: {e}"})

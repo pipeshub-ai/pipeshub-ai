@@ -593,9 +593,9 @@ def get_agent_tools(state: ChatState) -> list:
                 tools.append(wrapper_tool)
                 if logger:
                     logger.debug(f"✅ Added tool: {full_tool_name}")
-            else:
-                if logger:
-                    logger.debug(f"❌ Skipped tool: {full_tool_name}")
+            # else:
+                # if logger:
+                    # logger.debug(f"❌ Skipped tool: {full_tool_name}")
 
         except Exception as e:
             if logger:

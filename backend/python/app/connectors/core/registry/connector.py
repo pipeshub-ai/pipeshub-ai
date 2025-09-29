@@ -1,6 +1,5 @@
 from app.connectors.core.registry.connector_builder import (
     AuthField,
-    AuthField,
     CommonFields,
     ConnectorBuilder,
     DocumentationLink,

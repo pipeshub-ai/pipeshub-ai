@@ -205,7 +205,8 @@ class ConfluenceClient(IClient):
             Confluence base URL string
         """
         cloud_id = await ConfluenceClient.get_cloud_id(token)
-        return f"https://api.atlassian.com/ex/confluence/{cloud_id}"
+        # Confluence Cloud v2 endpoints live under /wiki/api/v2
+        return f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2"
 
     @classmethod
     def build_with_config(
@@ -249,44 +250,48 @@ class ConfluenceClient(IClient):
                 raise ValueError("Credentials configuration not found in Confluence connector configuration")
 
             # Extract configuration values
-            auth_type = auth_config.get("authType", "bearerToken")  # token, username_password, api_key
-            token = auth_config.get("bearerToken", "")
-
-            if not token:
-                raise ValueError("Token required for Confluence authentication")
-
-            # Get base URL using the token
-            base_url = await cls.get_confluence_base_url(token)
-
-            if not base_url:
-                raise ValueError("Confluence base_url not found in configuration")
+            auth_type = auth_config.get("authType", "BEARER_TOKEN")  # token, username_password, api_key
 
             # Create appropriate client based on auth type
             # to be implemented
-            if auth_type == "USERNAME_PASSWORD":
-                username = auth_config.get("username", "")
-                password = auth_config.get("password", "")
-                if not username or not password:
-                    raise ValueError("Username and password required for username_password auth type")
-                client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password)
+            # if auth_type == "USERNAME_PASSWORD":
+            #     username = auth_config.get("username", "")
+            #     password = auth_config.get("password", "")
+            #     if not username or not password:
+            #         raise ValueError("Username and password required for username_password auth type")
+            #     client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password)
 
             # to be implemented
-            elif auth_type == "API_KEY":
-                email = auth_config.get("email", "")
-                api_key = auth_config.get("api_key", "")
-                if not email or not api_key:
-                    raise ValueError("Email and API key required for api_key auth type")
-                client = ConfluenceRESTClientViaApiKey(base_url, email, api_key)
+            # elif auth_type == "API_KEY":
+            #     email = auth_config.get("email", "")
+            #     api_key = auth_config.get("api_key", "")
+            #     if not email or not api_key:
+            #         raise ValueError("Email and API key required for api_key auth type")
+            #     client = ConfluenceRESTClientViaApiKey(base_url, email, api_key)
 
-            elif auth_type == "BEARER_TOKEN":  # Default to token auth
+            if auth_type == "BEARER_TOKEN":  # Default to token auth
                 token = auth_config.get("bearerToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
+
+                # Get base URL using the token
+                base_url = await cls.get_confluence_base_url(token)
+
+                if not base_url:
+                    raise ValueError("Confluence base_url not found in configuration")
+
                 client = ConfluenceRESTClientViaToken(base_url, token)
             elif auth_type == "OAUTH":
-                access_token = credentials_config.get("accessToken", "")
+                access_token = credentials_config.get("access_token", "")
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
+
+                # Get base URL using the token
+                base_url = await cls.get_confluence_base_url(access_token)
+
+                if not base_url:
+                    raise ValueError("Confluence base_url not found in configuration")
+
                 client = ConfluenceRESTClientViaToken(base_url, access_token)
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")

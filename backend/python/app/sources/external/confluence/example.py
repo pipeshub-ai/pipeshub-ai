@@ -40,9 +40,10 @@ async def main():
     confluence_data_source = ConfluenceDataSource(confluence_client)
     
     # Get all spaces
-    response: HTTPResponse = await confluence_data_source.get_all_spaces()
+    response: HTTPResponse = await confluence_data_source.get_pages()
     print(f"Response status: {response.status}")
     print(f"Response headers: {response.headers}")
+
     
     if response.status == 200:
         spaces = response.json()
