@@ -483,7 +483,7 @@ async def final_response_node(
             # Process citations if available
             if state.get("final_results"):
                 # Process citations on the answer text
-                cited_answer = process_citations(final_content["answer"], state["final_results"])
+                cited_answer = process_citations(final_content["answer"], state["final_results"],from_agent=True)
 
                 # Handle citation processing result
                 if isinstance(cited_answer, str):
@@ -575,7 +575,7 @@ async def final_response_node(
 
                 # Process citations
                 if final_results:
-                    cited_fallback = process_citations(fallback_content, final_results)
+                    cited_fallback = process_citations(fallback_content, final_results,from_agent=True)
                     if isinstance(cited_fallback, str):
                         fallback_content = cited_fallback
                     elif isinstance(cited_fallback, dict):
