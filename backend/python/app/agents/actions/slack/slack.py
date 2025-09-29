@@ -1,42 +1,67 @@
 
+import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
-from app.agents.actions.slack.config import SlackResponse, SlackTokenConfig
+from app.agents.actions.slack.config import SlackResponse
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.external.slack.slack import SlackDataSource
 
 logger = logging.getLogger(__name__)
 
 class Slack:
-    """Slack tool exposed to the agents"""
+    """Slack tool exposed to the agents using SlackDataSource"""
 
-    def __init__(self, config: SlackTokenConfig) -> None:
+    def __init__(self, client: object) -> None:
         """Initialize the Slack tool"""
         """
         Args:
-            config: Slack configuration (SlackTokenConfig)
+            client: Slack client object
         Returns:
             None
         """
-        self.config = config
-        self.client = config.create_client()
+        self.client = SlackDataSource(client)
+
+    def _run_async(self, coro):
+        """Helper method to run async operations in sync context"""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're already in an async context, we need to use a thread pool
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, coro)
+                    return future.result()
+            else:
+                return loop.run_until_complete(coro)
+        except Exception as e:
+            logger.error(f"Error running async operation: {e}")
+            raise
 
     def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
-        """Handle Slack API response and convert to standardized format"""
+        """Handle Slack API response and convert to standardized format.
+        - If response already is a SlackResponse (has 'success'), pass it through
+        - If it's a dict with 'ok'==False, return error
+        - Otherwise treat as success and wrap data
+        """
         try:
-            if not response:
+            if response is None:
                 return SlackResponse(success=False, error="Empty response from Slack API")
-            # Extract data from SlackResponse object
-            if hasattr(response, 'data'):
-                data = response.data
-            elif hasattr(response, 'get'):
-                data = dict(response)
-            else:
-                data = {"raw_response": str(response)}
 
-            return SlackResponse(success=True, data=data)
+            # Pass-through if already normalized
+            if hasattr(response, 'success') and hasattr(response, 'data'):
+                return response  # type: ignore[return-value]
+
+            # Dict-like payload from WebClient
+            if isinstance(response, dict):
+                if response.get('ok') is False:
+                    return SlackResponse(success=False, error=response.get('error', 'unknown_error'))
+                return SlackResponse(success=True, data=response)
+
+            # Fallback: wrap arbitrary payload
+            return SlackResponse(success=True, data={"raw_response": str(response)})
         except Exception as e:
             logger.error(f"Error handling Slack response: {e}")
             return SlackResponse(success=False, error=str(e))
@@ -65,7 +90,7 @@ class Slack:
             )
         ]
     )
-    def send_message(self, channel: str, message: str) -> tuple[bool, str]:
+    def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
         """Send a message to a channel"""
         """
         Args:
@@ -75,10 +100,19 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the message details
         """
         try:
-            response = self.client.chat_postMessage(channel=channel, text=message)
+            # Use SlackDataSource method
+            response = self._run_async(self.client.chat_me_message(
+                channel=channel,
+                text=message
+            ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            # Explicitly surface membership errors without side-effects
+            if "not_in_channel" in str(e):
+                err = SlackResponse(success=False, error="not_in_channel")
+                return (err.success, err.to_json())
+            logger.error(f"Error in send_message: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -100,7 +134,7 @@ class Slack:
             )
         ]
     )
-    def get_channel_history(self, channel: str, limit: Optional[int] = None) -> tuple[bool, str]:
+    def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
@@ -109,10 +143,18 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the history details
         """
         try:
-            response = self.client.conversations_history(channel=channel, limit=limit) # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.conversations_history(
+                channel=channel,
+                limit=limit
+            ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            if "not_in_channel" in str(e):
+                err = SlackResponse(success=False, error="not_in_channel")
+                return (err.success, err.to_json())
+            logger.error(f"Error in get_channel_history: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -128,7 +170,7 @@ class Slack:
             )
         ]
     )
-    def get_channel_info(self, channel: str) -> tuple[bool, str]:
+    def get_channel_info(self, channel: str) -> Tuple[bool, str]:
         """Get the info of a channel"""
         """
         Args:
@@ -137,10 +179,12 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel info
         """
         try:
-            response = self.client.conversations_info(channel=channel) # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.conversations_info(channel=channel))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            logger.error(f"Error in get_channel_info: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -156,7 +200,7 @@ class Slack:
             )
         ]
     )
-    def get_user_info(self, user: str) -> tuple[bool, str]:
+    def get_user_info(self, user: str) -> Tuple[bool, str]:
         """Get the info of a user"""
         """
         Args:
@@ -165,10 +209,12 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the user info
         """
         try:
-            response = self.client.users_info(user=user) # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.users_info(user=user))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            logger.error(f"Error in get_user_info: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -176,17 +222,19 @@ class Slack:
         app_name="slack",
         tool_name="fetch_channels"
     )
-    def fetch_channels(self) -> tuple[bool, str]:
+    def fetch_channels(self) -> Tuple[bool, str]:
         """Fetch all channels"""
         """
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the channels
         """
         try:
-            response = self.client.conversations_list() # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.conversations_list())
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            logger.error(f"Error in fetch_channels: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -208,7 +256,7 @@ class Slack:
             )
         ]
     )
-    def search_all(self, query: str, limit: Optional[int] = None) -> tuple[bool, str]:
+    def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Search messages, files, and channels in Slack"""
         """
         Args:
@@ -218,10 +266,15 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            response = self.client.search_all(query=query, count=limit) # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.search_messages(
+                query=query,
+                count=limit
+            ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            logger.error(f"Error in search_all: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -237,7 +290,7 @@ class Slack:
             )
         ]
     )
-    def get_channel_members(self, channel: str) -> tuple[bool, str]:
+    def get_channel_members(self, channel: str) -> Tuple[bool, str]:
         """Get the members of a channel"""
         """
         Args:
@@ -246,10 +299,15 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel members
         """
         try:
-            response = self.client.conversations_members(channel=channel) # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.conversations_members(channel=channel))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            if "not_in_channel" in str(e):
+                err = SlackResponse(success=False, error="not_in_channel")
+                return (err.success, err.to_json())
+            logger.error(f"Error in get_channel_members: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
@@ -265,7 +323,7 @@ class Slack:
             )
         ]
     )
-    def get_channel_members_by_id(self, channel_id: str) -> tuple[bool, str]:
+    def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
         """Get the members of a channel by ID"""
         """
         Args:
@@ -274,9 +332,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel members
         """
         try:
-            response = self.client.conversations_members(channel=channel_id) # type: ignore
+            # Use SlackDataSource method
+            response = self._run_async(self.client.conversations_members(channel=channel_id))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
+            logger.error(f"Error in get_channel_members_by_id: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())

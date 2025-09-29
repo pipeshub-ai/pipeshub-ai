@@ -17,6 +17,8 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector import (
     GmailConnector,
     GoogleDriveConnector,
+    NotionConnector,
+    SlackConnector,
 )
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
@@ -189,6 +191,8 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
             registry.register_connector(connector_class)
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
+        registry.register_connector(SlackConnector)
+        registry.register_connector(NotionConnector)
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
         # Sync with database

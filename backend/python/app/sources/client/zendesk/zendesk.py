@@ -1,4 +1,5 @@
 import base64
+import logging
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
@@ -393,22 +394,71 @@ class ZendeskClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger,
+        logger: logging.Logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
+        graph_db_service: Optional[IGraphService] = None,
     ) -> "ZendeskClient":
-        """Build ZendeskClient using configuration service and graph database service
+        """Build ZendeskClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
+            graph_db_service: Graph database service instance (optional)
         Returns:
             ZendeskClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored Zendesk credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials (token vs OAuth)
+        try:
+            # Get Zendesk configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
 
-        raise NotImplementedError("build_from_services is not yet implemented")
+            if not config:
+                raise ValueError("Failed to get Zendesk connector configuration")
+
+            # Extract configuration values
+            subdomain = config.get("subdomain", "")
+            auth_type = config.get("auth_type", "token")  # token or oauth
+
+            if not subdomain:
+                raise ValueError("Zendesk subdomain is required")
+
+            # Create appropriate client based on auth type
+            if auth_type == "oauth":
+                client_id = config.get("client_id", "")
+                client_secret = config.get("client_secret", "")
+                redirect_uri = config.get("redirect_uri", "")
+                access_token = config.get("access_token", "")
+
+                if not client_id or not client_secret or not redirect_uri:
+                    raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")
+
+                client = ZendeskRESTClientViaOAuth(
+                    subdomain=subdomain,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
+                    access_token=access_token
+                )
+
+            else:  # Default to token auth
+                token = config.get("token", "")
+                email = config.get("email", "")
+
+                if not token or not email:
+                    raise ValueError("Token and email required for token auth type")
+
+                client = ZendeskRESTClientViaToken(subdomain, token, email)
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Zendesk client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Zendesk."""
+        try:
+            config = await config_service.get_config("/services/connectors/zendesk/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Zendesk connector config: {e}")
+            return {}
