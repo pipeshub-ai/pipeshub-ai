@@ -184,6 +184,7 @@ class MimeTypes(Enum):
     PLAIN_TEXT = "text/plain"
     MARKDOWN = "text/markdown"
     MDX = "text/mdx"
+    GENESIS_32X_ROM = "application/x-genesis-32x-rom"
 
 
 

@@ -43,6 +43,7 @@ from app.config.constants.http_status_code import (
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -60,10 +61,6 @@ from app.connectors.sources.google.gmail.gmail_webhook_handler import (
 )
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
-)
-from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    SharePointConnector,
 )
 from app.containers.connector import ConnectorAppContainer
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
@@ -285,26 +282,6 @@ async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesPar
         logger.warning(f"Failed to get google slides parser: {str(e)}")
         return None
 
-
-async def get_onedrive_connector(request: Request) -> Optional[OneDriveConnector]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        onedrive_connector = container.onedrive_connector()
-        return onedrive_connector
-    except Exception as e:
-        logger.warning(f"Failed to get OneDrive connector: {str(e)}")
-        return None
-
-async def get_sharepoint_connector(request: Request) -> Optional[SharePointConnector]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        sharepoint_connector = container.sharepoint_connector()
-        return sharepoint_connector
-    except Exception as e:
-        logger.warning(f"Failed to get SharePoint connector: {str(e)}")
-        return None
-
-
 @router.delete("/api/v1/delete/record/{record_id}")
 @inject
 async def handle_record_deletion(
@@ -332,41 +309,64 @@ async def handle_record_deletion(
             detail=f"Internal server error while deleting record: {str(e)}",
         )
 
-async def stream_onedrive_file_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
+@router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
+@inject
+async def stream_record_internal(
+    request: Request,
+    record_id: str,
+    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Optional[dict | StreamingResponse]:
     """
-    Helper function to stream content from OneDrive.
-    """
-    try:
-        onedrive_connector: OneDriveConnector = await get_onedrive_connector(request)
-
-        # Todo: Validate if user has access to the record
-        record = await arango_service.get_record_by_id(record_id)
-        if not record:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
-
-        return await onedrive_connector.stream_record(record)
-
-    except Exception as e:
-        logger.error(f"Error accessing OneDrive connector or streaming file: {str(e)}")
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not available or file streaming failed")
-
-async def stream_sharepoint_file_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
-    """
-    Helper function to stream content from SharePoint.
+    Stream a record to the client.
     """
     try:
-        sharepoint_connector: SharePointConnector = await get_sharepoint_connector(request)
+        logger.info(f"Stream Record Start: {time.time()}")
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="Missing or invalid Authorization header",
+            )
+        # Extract the token
+        token = auth_header.split(" ")[1]
+        secret_keys = await config_service.get_config(
+            config_node_constants.SECRET_KEYS.value
+        )
+        jwt_secret = secret_keys.get("scopedJwtSecret")
+        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        # TODO: Validate scopes ["connector:signedUrl"]
 
-        # Todo: Validate if user has access to the record
-        record = await arango_service.get_record_by_id(record_id)
+        org_id = payload.get("orgId")
+
+        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = arango_service.get_record_by_id(
+            record_id
+        )
+        org, record = await asyncio.gather(org_task, record_task)
+
+        if not org:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+        print("Record is" , record)
 
-        return await sharepoint_connector.stream_record(record)
+        connector_name = record.connector_name.value.lower().replace(" ", "")
+        container: ConnectorAppContainer = request.app.container
+        connector = container.connectors_map[connector_name]
+        buffer = await connector.stream_record(record)
+        return buffer
 
+    except JWTError as e:
+        logger.error("JWT validation error: %s", str(e))
+        raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token")
+    except ValidationError as e:
+        logger.error("Payload validation error: %s", str(e))
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
     except Exception as e:
-        logger.error(f"Error accessing SharePoint connector or streaming file: {str(e)}")
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not available or file streaming failed")
+        logger.error("Unexpected error during token validation: %s", str(e))
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
+
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -406,13 +406,13 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await arango_service.get_document(
-            record_id, CollectionNames.RECORDS.value
+        record = await arango_service.get_record_by_id(
+            record_id
         )
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        external_record_id = record.get("externalRecordId")
+        external_record_id = record.external_record_id
 
         creds = None
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -422,12 +422,6 @@ async def download_file(
             else:
                 # Individual account - use stored OAuth credentials
                 creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector=connector)
-        elif connector.lower() == Connectors.CONFLUENCE.value.lower():
-            from app.connectors.sources.atlassian.core.oauth import (
-                OAUTH_CREDENTIALS_PATH,
-            )
-            creds = await config_service.get_config(f"{OAUTH_CREDENTIALS_PATH}/{org_id}")
-
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
@@ -557,7 +551,7 @@ async def download_file(
 
                 # Return streaming response with proper headers
                 headers = {
-                    "Content-Disposition": f'attachment; filename="{record.get("recordName", "")}"'
+                    "Content-Disposition": f'attachment; filename="{record.record_name}"'
                 }
 
                 return StreamingResponse(
@@ -762,23 +756,13 @@ async def download_file(
                 return StreamingResponse(
                     attachment_stream(), media_type="application/octet-stream"
                 )
-            elif connector.lower() == Connectors.CONFLUENCE.value.lower():
-                from app.connectors.sources.atlassian.confluence.confluence_cloud import (
-                    ConfluenceClient,
-                )
-                confluence_client = ConfluenceClient(logger, org_id, creds)
-                await confluence_client.initialize()
-                html_content = await confluence_client.fetch_page_content(external_record_id)
-                return StreamingResponse(
-                    iter([html_content]), media_type=MimeTypes.HTML.value, headers={}
-                )
 
-            elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                return await stream_onedrive_file_content(request, arango_service, record_id)
-            elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
-                return await stream_sharepoint_file_content(request, arango_service, record_id)
             else:
-                raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
+                connector_name = connector.lower().replace(" ", "")
+                container: ConnectorAppContainer = request.app.container
+                connector: BaseConnector = container.connectors_map[connector_name]
+                buffer = await connector.stream_record(record)
+                return buffer
 
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
@@ -836,8 +820,8 @@ async def stream_record(
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
 
         org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_document(
-            record_id, CollectionNames.RECORDS.value
+        record_task = arango_service.get_record_by_id(
+            record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
 
@@ -846,10 +830,10 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        external_record_id = record.get("externalRecordId")
-        connector = record.get("connectorName")
-        recordType = record.get("recordType")
-
+        external_record_id = record.external_record_id
+        connector = record.connector_name.value
+        recordType = record.record_type
+        logger.info(f"Connector: {connector}")
         # Different auth handling based on account type
         creds = None
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -860,20 +844,13 @@ async def stream_record(
             else:
                 # Individual account - use stored OAuth credentials
                 creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector)
-
-        elif connector.lower() == Connectors.CONFLUENCE.value.lower():
-            from app.connectors.sources.atlassian.core.oauth import (
-                OAUTH_CREDENTIALS_PATH,
-            )
-            creds = await config_service.get_config(f"{OAUTH_CREDENTIALS_PATH}/{org_id}")
-
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
                 file_id = external_record_id
                 logger.info(f"Downloading Drive file: {file_id}")
                 drive_service = build("drive", "v3", credentials=creds)
-                file_name = record.get("recordName", "")
+                file_name = record.record_name
                 file = await arango_service.get_document(
                     record_id, CollectionNames.FILES.value
                 )
@@ -1379,26 +1356,12 @@ async def stream_record(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                             detail="Failed to download file from both Gmail and Drive",
                         )
-
-            elif connector.lower() == Connectors.CONFLUENCE.value.lower():
-                from app.connectors.sources.atlassian.confluence.confluence_cloud import (
-                    ConfluenceClient,
-                )
-                confluence_client = ConfluenceClient(logger, org_id, creds)
-                await confluence_client.initialize()
-                html_content = await confluence_client.fetch_page_content(external_record_id)
-                return StreamingResponse(
-                    iter([html_content]), media_type=MimeTypes.HTML.value, headers={}
-                )
-
-            elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                return await stream_onedrive_file_content(request, arango_service, record_id)
-
-            elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
-                return await stream_sharepoint_file_content(request, arango_service, record_id)
             else:
-                raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
-
+                connector_name = connector.lower().replace(" ", "")
+                container: ConnectorAppContainer = request.app.container
+                connector: BaseConnector = container.connectors_map[connector_name]
+                buffer = await connector.stream_record(record)
+                return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
             raise HTTPException(
@@ -2250,7 +2213,7 @@ async def get_oauth_authorization_url(
         filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
-
+        print(config, "config")
         if not config or not config.get('auth'):
             raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
 
@@ -2258,6 +2221,7 @@ async def get_oauth_authorization_url(
 
         # Get OAuth configuration from connector config
         connector_auth_config = connector_config.get('config', {}).get('auth', {})
+        print(f"Connector auth config: {connector_auth_config}")
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
@@ -2297,7 +2261,7 @@ async def get_oauth_authorization_url(
             key_value_store=container.key_value_store(),
             credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
-
+        print(f"OAuth provider: {oauth_provider}")
         # Generate authorization URL using OAuth provider
         # Add provider-specific parameters to ensure refresh_token is issued where applicable
         extra_params = {}

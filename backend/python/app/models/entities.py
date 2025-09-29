@@ -263,7 +263,6 @@ class MailRecord(Record):
         }
 
 class WebpageRecord(Record):
-
     def to_kafka_record(self) -> Dict:
         return {
             "recordId": self.id,
@@ -283,16 +282,6 @@ class WebpageRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "name": self.record_name,
-            "recordType": self.record_type.value,
-            "mimeType": self.mime_type.value,
-            "createdAtTimestamp": self.created_at,
-            "updatedAtTimestamp": self.updated_at,
-            "sourceCreatedAtTimestamp": self.source_created_at,
-            "sourceLastModifiedTimestamp": self.source_updated_at,
-            "webUrl": self.weburl,
-            "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
         }
 
 class TicketRecord(Record):

@@ -10,7 +10,10 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 
 OAUTH_CONFIG_PATH = "/services/connectors/atlassian/config"
-OAUTH_CREDENTIALS_PATH = "/services/connectors/atlassian/credentials"
+OAUTH_CONFLUENCE_CREDENTIALS_PATH = "/services/connectors/atlassian/confluence/credentials"
+OAUTH_JIRA_CREDENTIALS_PATH = "/services/connectors/jira/credentials"
+OAUTH_CONFLUENCE_CONFIG_PATH = "/services/connectors/confluence/config"
+OAUTH_JIRA_CONFIG_PATH = "/services/connectors/atlassian/jira/config"
 
 
 class AtlassianScope(Enum):

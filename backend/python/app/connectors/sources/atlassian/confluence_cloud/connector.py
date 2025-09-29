@@ -5,6 +5,7 @@ from logging import Logger
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -18,16 +19,19 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+    ConnectorBuilder,
+    DocumentationLink,
+)
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import (
-    OAUTH_CONFIG_PATH,
-    OAUTH_CREDENTIALS_PATH,
-    AtlassianOAuthProvider,
+    OAUTH_CONFLUENCE_CONFIG_PATH,
     AtlassianScope,
 )
 from app.models.entities import (
     AppUser,
+    Record,
     RecordGroupType,
     RecordType,
     WebpageRecord,
@@ -36,6 +40,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/confluence"
+AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
+TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
 @dataclass
 class AtlassianCloudResource:
@@ -47,14 +53,10 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class ConfluenceClient:
-    def __init__(self, logger: Logger, org_id: str, token: OAuthToken) -> None:
+    def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
         self.logger = logger
-        self.org_id = org_id
-        self.token = token
+        self.config_service = config_service
         self.base_url = "https://api.atlassian.com/ex/confluence"
-        self.headers = {
-            "Authorization": f"Bearer {self.token.access_token}",
-        }
         self.session = aiohttp.ClientSession()
         self.accessible_resources = None
         self.cloud_id = None
@@ -82,6 +84,7 @@ class ConfluenceClient:
 
     async def initialize(self) -> None:
         await self._ensure_session()
+
         self.accessible_resources = await self.get_accessible_resources()
         if self.accessible_resources:
             self.cloud_id = self.accessible_resources[0].id
@@ -95,33 +98,29 @@ class ConfluenceClient:
         **kwargs
     ) -> Dict[str, Any]:
         """Make authenticated API request and return JSON response"""
-        token = self.token
+        config = await self.config_service.get_config(f"{OAUTH_CONFLUENCE_CONFIG_PATH}")
+        token = None
+        if not config:
+            self.logger.error("❌ Confluence credentials not found")
+            raise ValueError("Confluence credentials not found")
+        credentials_config = config.get("credentials", {})
+
+        if not credentials_config:
+            self.logger.error("❌ Confluence credentials not found")
+            raise ValueError("Confluence credentials not found")
+
+        token = {
+            "token_type": credentials_config.get("token_type"),
+            "access_token": credentials_config.get("access_token")
+        }
 
         headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"{token.token_type} {token.access_token}"
+        headers["Authorization"] = f"{token['token_type']} {token['access_token']}"
 
         session = await self._ensure_session()
         async with session.request(method, url, headers=headers, **kwargs) as response:
             response.raise_for_status()
             return await response.json()
-
-    async def make_authenticated_request(
-        self,
-        method: str,
-        url: str,
-        **kwargs
-    ) -> aiohttp.ClientResponse:
-        """Make authenticated API request"""
-        token = self.token
-
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"{token.token_type} {token.access_token}"
-
-        session = await self._ensure_session()
-
-        # For streaming responses, return the response object
-        # Caller is responsible for reading the response
-        return await session.request(method, url, headers=headers, **kwargs)
 
     async def get_accessible_resources(self) -> List[AtlassianCloudResource]:
         """
@@ -261,9 +260,9 @@ class ConfluenceClient:
                 if page_link:
                     web_url = page_link.get("base", "") + page_link.get("webui", "")
 
-                signed_url = f"http://localhost:8088/api/v1/org/{self.org_id}/page/{page['id']}/fetch"
+                record_id=str(uuid.uuid4())
                 record = WebpageRecord(
-                    id=str(uuid.uuid4()),
+                    id=record_id,
                     external_record_id=page["id"],
                     external_revision_id=str(page_details["version"]["number"]),
                     version=0,
@@ -279,7 +278,6 @@ class ConfluenceClient:
                     mime_type=MimeTypes.HTML.value,
                     source_created_at=int(created_at.timestamp() * 1000),
                     source_modified_at=int(modified_at.timestamp() * 1000),
-                    signed_url=signed_url
                 )
                 records.append((record, permissions))
             next_url = pages_batch.get("_links", {}).get("next", None)
@@ -303,36 +301,87 @@ class ConfluenceClient:
         return [AppUser(self.connector_name, email=user["emailAddress"], org_id=self.org_id) for user in users]
 
 
+@ConnectorBuilder("Confluence")\
+    .in_group("Atlassian")\
+    .with_auth_type("OAUTH")\
+    .with_description("Sync pages, spaces from Confluence Cloud")\
+    .with_categories(["Storage"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/confluence.svg")
+        .add_documentation_link(DocumentationLink(
+            "Confluence Cloud API Setup",
+            "https://developer.atlassian.com/cloud/confluence/rest/"
+        ))
+        .with_redirect_uri("connectors/oauth/callback/Confluence", False)
+        .add_auth_field(AuthField(
+            name="clientId",
+            display_name="Application (Client) ID",
+            placeholder="Enter your Confluence Cloud Application ID",
+            description="The Application (Client) ID from Azure AD App Registration"
+        ))
+        .add_auth_field(AuthField(
+            name="clientSecret",
+            display_name="Client Secret",
+            placeholder="Enter your Confluence Cloud Client Secret",
+            description="The Client Secret from Azure AD App Registration",
+            field_type="PASSWORD",
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="domain",
+            display_name="Confluence Domain",
+            description="https://your-domain.atlassian.net"
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
 
+    )\
+    .build_decorator()
 class ConfluenceConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
                  data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
         super().__init__(ConfluenceApp(), logger, data_entities_processor, data_store_provider, config_service)
-        self.provider = None
 
     async def init(self) -> None:
         await self.data_entities_processor.initialize()
 
-        self.config = await self.config_service.get_config(f"{OAUTH_CONFIG_PATH}/{self.data_entities_processor.org_id}")
-        credentials_config = self.config
-        self.provider = AtlassianOAuthProvider(
-            client_id=credentials_config["client_id"],
-            client_secret=credentials_config["client_secret"],
-            redirect_uri=credentials_config["redirect_uri"],
-            scopes=AtlassianScope.get_full_access(),
-            key_value_store=self.config_service.store,
-            credentials_path=f"{OAUTH_CREDENTIALS_PATH}/{self.data_entities_processor.org_id}"
-        )
+        self.confluence_client = await self.get_confluence_client()
+
         return True
+
+    async def get_signed_url(self, record: Record) -> str:
+        return ""
+
+    async def stream_record(self, record: Record) -> StreamingResponse:
+        content = await self.confluence_client.fetch_page_content(record.external_record_id)
+        return StreamingResponse(
+            content,
+            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename={record.record_name}"
+            }
+        )
+
+    async def test_connection_and_access(self) -> bool:
+        return True
+
+    async def run_incremental_sync(self) -> None:
+        pass
+
+    async def cleanup(self) -> None:
+        pass
+
+    async def handle_webhook_notification(self, notification: Dict) -> None:
+        pass
 
     async def run_sync(self) -> None:
         users = await self.data_entities_processor.get_all_active_users()
         if not users:
             self.logger.info("No users found")
             return
-
+        confluence_client = await self.get_confluence_client()
         user = users[0]
-        confluence_client = await self.get_confluence_client(user.org_id)
         try:
             spaces = await confluence_client.fetch_spaces_with_permissions()
             for space in spaces:
@@ -341,12 +390,16 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing user {user.email}: {e}")
 
+    @classmethod
+    async def create_connector(cls, logger: Logger,
+                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
+        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+        await data_entities_processor.initialize()
 
-    async def get_confluence_client(self, org_id: str) -> ConfluenceClient:
-        token = await self.provider.ensure_valid_token()
-        if not token:
-            raise Exception(f"Token for org {org_id} not found")
-        confluence_client = ConfluenceClient(self.logger, org_id, token)
+        return ConfluenceConnector(logger, data_entities_processor, data_store_provider, config_service)
+
+    async def get_confluence_client(self) -> ConfluenceClient:
+        confluence_client = ConfluenceClient(self.logger, self.config_service)
         await confluence_client.initialize()
 
         return confluence_client

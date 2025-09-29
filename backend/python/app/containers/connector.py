@@ -830,12 +830,6 @@ class ConnectorAppContainer(BaseAppContainer):
     google_slides_parser = providers.Dependency()
     parser_user_service = providers.Dependency()
 
-    # OneDrive connector
-    onedrive_connector = providers.Dependency()
-
-    # SharePoint connector
-    sharepoint_connector = providers.Dependency()
-
     # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

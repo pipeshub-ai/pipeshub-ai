@@ -58,13 +58,13 @@ class TokenRefreshService:
             for connector in active_connectors:
                 connector_name = connector['name']
                 auth_type = connector.get('authType', '')
-
+                print(connector_name, "refreshing token")
                 # Only refresh OAuth tokens
                 if auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
                     await self._refresh_connector_token(connector_name)
 
         except Exception as e:
-            self.logger.error(f"Error refreshing tokens: {e}")
+            self.logger.error(f"❌ Error refreshing tokens: {e}")
 
     async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
@@ -135,7 +135,7 @@ class TokenRefreshService:
             await self.schedule_token_refresh(connector_name, new_token)
 
         except Exception as e:
-            self.logger.error(f"Error refreshing token for {connector_name}: {e}")
+            self.logger.error(f"❌ Error refreshing token for {connector_name}: {e}")
 
     async def _periodic_refresh_check(self) -> None:
         """Periodically check and refresh tokens"""
@@ -146,7 +146,7 @@ class TokenRefreshService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"Error in periodic refresh check: {e}")
+                self.logger.error(f"❌ Error in periodic refresh check: {e}")
 
     async def refresh_connector_token(self, connector_name: str) -> None:
         """Manually refresh token for a specific connector"""

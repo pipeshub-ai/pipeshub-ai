@@ -6,10 +6,11 @@ from arango import ArangoClient
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    SharePointConnector,
+from app.connectors.sources.microsoft.onedrive.connector import (
+    OneDriveConnector,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
@@ -21,7 +22,6 @@ def is_valid_email(email: str) -> bool:
 async def test_run() -> None:
     user_email = os.getenv("TEST_USER_EMAIL")
     org_id = "org_1"
-
     async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
         org = {
                 "_key": org_id,
@@ -54,7 +54,7 @@ async def test_run() -> None:
         }], CollectionNames.BELONGS_TO.value)
 
 
-    logger = create_logger("sharepoint_online_connector")
+    logger = create_logger("onedrive_connector")
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
@@ -66,18 +66,15 @@ async def test_run() -> None:
         await create_test_users(user_email, arango_service)
 
     config = {
-        "tenantId":os.getenv("AZURE_TENANT_ID"),
-        "clientId":os.getenv("AZURE_CLIENT_ID"),
+        "tenantId": os.getenv("AZURE_TENANT_ID"),
+        "clientId": os.getenv("AZURE_CLIENT_ID"),
         "clientSecret": os.getenv("AZURE_CLIENT_SECRET"),
-        "sharepointDomain": os.getenv("SHAREPOINT_DOMAIN"),
         "hasAdminConsent": True,
     }
-
-    await key_value_store.create_key("/services/connectors/sharepointonline/config", config)
-
-    sharepoint_connector = await SharePointConnector.create_connector(logger, data_store_provider, config_service)
-    await sharepoint_connector.init()
-    await sharepoint_connector.run_sync()
+    await key_value_store.create_key("/services/connectors/onedrive/config", config)
+    connector: BaseConnector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
+    await connector.init()
+    await connector.run_sync()
 
 if __name__ == "__main__":
     asyncio.run(test_run())

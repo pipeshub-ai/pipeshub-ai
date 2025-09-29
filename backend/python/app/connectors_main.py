@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
 import uvicorn
-from dependency_injector import providers
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,6 +13,7 @@ from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
+from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector import (
     GmailConnector,
     GoogleDriveConnector,
@@ -22,12 +22,6 @@ from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
 from app.connectors.sources.localKB.api.kb_router import kb_router
-from app.connectors.sources.microsoft.onedrive.connector import (
-    OneDriveConnector,
-)
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    SharePointConnector,
-)
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
@@ -113,13 +107,15 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             drive_sync_service = None
             gmail_sync_service = None
-            onedrive_connector = None
-            sharepoint_connector = None
-            for app in enabled_apps:
-                if app["name"].lower() == Connectors.GOOGLE_CALENDAR.value.lower():
-                    logger.info("Skipping calendar sync for org %s", org_id)
-                    continue
+            config_service = app_container.config_service()
+            arango_service = await app_container.arango_service()
+            data_store_provider = ArangoDataStore(logger, arango_service)
 
+            # Initialize connectors_map if not already initialized
+            if not hasattr(app_container, 'connectors_map'):
+                app_container.connectors_map = {}
+
+            for app in enabled_apps:
                 if app["name"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
                     drive_sync_service = app_container.drive_sync_service()  # type: ignore
                     await drive_sync_service.initialize(org_id)  # type: ignore
@@ -129,27 +125,19 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     gmail_sync_service = app_container.gmail_sync_service()  # type: ignore
                     await gmail_sync_service.initialize(org_id)  # type: ignore
                     logger.info("Gmail Service initialized for org %s", org_id)
-
-                if app["name"].lower() == Connectors.ONEDRIVE.value.lower():
-                    config_service = app_container.config_service()
-                    arango_service = await app_container.arango_service()
-                    data_store_provider = ArangoDataStore(logger, arango_service)
-                    onedrive_connector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
-                    await onedrive_connector.init()
-                    app_container.onedrive_connector.override(providers.Object(onedrive_connector))
-                    asyncio.create_task(onedrive_connector.run_sync())
-                    logger.info("OneDrive connector initialized for org %s", org_id)
-
-                if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
-                    config_service = app_container.config_service()
-                    arango_service = await app_container.arango_service()
-                    data_store_provider = ArangoDataStore(logger, arango_service)
-
-                    sharepoint_connector = await SharePointConnector.create_connector(logger, data_store_provider, config_service)
-                    await sharepoint_connector.init()
-                    app_container.sharepoint_connector.override(providers.Object(sharepoint_connector))
-                    asyncio.create_task(sharepoint_connector.run_sync())
-                    logger.info("SharePoint connector initialized for org %s", org_id)
+                else:
+                    connector_name = app["name"].lower().replace(" ", "")
+                    connector = await ConnectorFactory.create_and_start_sync(
+                        name=connector_name,
+                        logger=logger,
+                        data_store_provider=data_store_provider,
+                        config_service=config_service
+                    )
+                    if connector:
+                        # Store using both the original name and the processed name for compatibility
+                        app_container.connectors_map[app["name"]] = connector
+                        app_container.connectors_map[connector_name] = connector
+                        logger.info(f"{app['name']} connector initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:
@@ -195,12 +183,12 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
     try:
         registry = ConnectorRegistry(app_container)
 
-        # Register connectors (in production, use discovery from modules)
+        # Register connectors using generic factory
+        available_connectors = ConnectorFactory.list_connectors()
+        for name, connector_class in available_connectors.items():
+            registry.register_connector(connector_class)
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
-        registry.register_connector(OneDriveConnector)
-        registry.register_connector(SharePointConnector)
-
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
         # Sync with database

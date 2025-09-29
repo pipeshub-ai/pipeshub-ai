@@ -9,11 +9,12 @@ from fastapi.responses import RedirectResponse, Response
 
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.atlassian.confluence.confluence_cloud import (
+from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.core.oauth import OAUTH_CONFIG_PATH
@@ -39,11 +40,11 @@ async def test_run() -> None:
         "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
         "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
     })
-    confluence_connector = ConfluenceConnector(logger, data_entities_processor, config_service)
-    await confluence_connector.initialize()
+    connector: BaseConnector = ConfluenceConnector(logger, data_entities_processor, config_service)
+    await connector.initialize()
 
 
-    app.connector = confluence_connector
+    app.connector = connector
 
 router = APIRouter()
 

@@ -152,7 +152,6 @@ export default function RecordDetails() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [isRecordConnector, setIsRecordConnector] = useState<boolean>(false);
-  let webUrl;
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
@@ -334,9 +333,8 @@ export default function RecordDetails() {
     fileType = 'EMAIL';
     // We don't have a size for emails, so leave fileSize as N/A
   }
-  if (record.origin === 'CONNECTOR') {
-    webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
-  }
+  // Check all possible sources for webUrl
+  const webUrl = record.webUrl || record.fileRecord?.webUrl || record.mailRecord?.webUrl;
 
   const hasValidNames = (items: MetadataItem[]) => {
     if (!items || items.length === 0) return false;
@@ -547,7 +545,7 @@ export default function RecordDetails() {
                   </Button>
                 )}
 
-                {isRecordConnector && webUrl && (
+                {webUrl && (
                   <Button
                     variant="outlined"
                     startIcon={<Icon icon={linkIcon} style={{ fontSize: '1rem' }} />}
@@ -785,7 +783,7 @@ export default function RecordDetails() {
                   </Button>
                 )}
 
-                {isRecordConnector && webUrl && (
+                {webUrl && (
                   <Button
                     variant="outlined"
                     startIcon={<Icon icon={linkIcon} style={{ fontSize: '1rem' }} />}
@@ -1109,7 +1107,7 @@ export default function RecordDetails() {
                   </Tooltip>
                 )}
 
-                {isRecordConnector && webUrl && (
+                {webUrl && (
                   <Button
                     variant="outlined"
                     startIcon={<Icon icon={linkIcon} style={{ fontSize: '14px' }} />}
@@ -1350,7 +1348,7 @@ export default function RecordDetails() {
                   )}
 
                   {/* Open - NEW */}
-                  {isRecordConnector && webUrl && (
+                  {webUrl && (
                     <MenuItem
                       onClick={() => {
                         window.open(webUrl, '_blank', 'noopener,noreferrer');

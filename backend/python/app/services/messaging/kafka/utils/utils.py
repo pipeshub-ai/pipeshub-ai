@@ -2,15 +2,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Union
 
 from app.config.constants.arangodb import Connectors
 from app.config.constants.service import config_node_constants
+from app.connectors.services.event_service import EventService
 from app.connectors.sources.google.gmail.services.event_service.event_service import (
     GmailEventService,
 )
 from app.connectors.sources.google.google_drive.services.event_service.event_service import (
     GoogleDriveEventService,
-)
-from app.connectors.sources.microsoft.onedrive.event_service import OneDriveEventService
-from app.connectors.sources.microsoft.sharepoint_online.event_service import (
-    SharePointOnlineEventService,
 )
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
@@ -265,26 +262,15 @@ class KafkaUtils:
                     logger.info(f"Processing sync event: {event_type} for GOOGLE DRIVE")
                     return await google_drive_event_service.process_event(event_type, payload)
 
-                elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                    onedrive_event_service = OneDriveEventService(
-                        logger=logger,
-                        arango_service=arango_service,
-                        app_container=app_container,
-                    )
-
-                    logger.info(f"Processing sync event: {event_type} for MICROSOFT ONEDRIVE")
-                    return await onedrive_event_service.process_event(event_type, payload)
-
-                elif connector.replace(" ", "").lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
-                    sharepoint_event_service = SharePointOnlineEventService(
-                        logger=logger,
-                        arango_service=arango_service,
-                        app_container=app_container,
-                    )
-                    return await sharepoint_event_service.process_event(event_type, payload)
                 else:
-                    logger.warning(f"Unknown connector in sync message: {connector}")
-                    return False
+                    event_service = EventService(
+                        logger=logger,
+                        arango_service=arango_service,
+                        app_container=app_container,
+                    )
+
+                    logger.info(f"Processing sync event: {event_type} for {connector}")
+                    return await event_service.process_event(event_type, payload)
 
             except Exception as e:
                 logger.error(f"Error processing sync message: {str(e)}", exc_info=True)

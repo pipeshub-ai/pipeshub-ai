@@ -301,9 +301,37 @@ class RecordEventHandler(BaseEventService):
                     error_msg = f"Failed to process signed URL: {str(e)}"
                     raise
             else:
-                raise ValueError(
-                    f"No signedUrlRoute or signedUrl found in payload for message {message_id}"
-                )
+                try:
+                    jwt_payload  = {
+                        "orgId": payload["orgId"],
+                        "scopes": ["connector:signedUrl"],
+                    }
+                    token = await self.__generate_jwt(jwt_payload)
+                    self.logger.debug(f"Generated JWT token for message {message_id}")
+
+                    # Todo: Replace http://localhost:8088 with the connector endpoint
+                    response = await make_api_call(
+                        f"http://localhost:8088/api/v1/internal/stream/record/{record_id}", token
+                    )
+
+                    event_data_for_processor = {
+                        "eventType": event_type,
+                        "payload": payload
+                    }
+
+                    event_data_for_processor["payload"]["buffer"] = response["data"]
+
+                    await self.event_processor.on_event(event_data_for_processor)
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self.logger.info(
+                        f"✅ Successfully processed document for event: {event_type}. "
+                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                    )
+                    return True
+                except Exception as e:
+                    error_occurred = True
+                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    raise
         except IndexingError as e:
             error_occurred = True
             error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"

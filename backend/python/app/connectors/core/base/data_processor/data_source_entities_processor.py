@@ -212,13 +212,13 @@ class DataSourceEntitiesProcessor:
                     if processed_record:
                         records_to_publish.append(processed_record)
 
-                if records_to_publish:
-                    for record in records_to_publish:
-                        await self.messaging_producer.send_message(
-                                "record-events",
-                                {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
-                                key=record.id
-                            )
+            if records_to_publish:
+                for record in records_to_publish:
+                    await self.messaging_producer.send_message(
+                            "record-events",
+                            {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
+                            key=record.id
+                        )
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
