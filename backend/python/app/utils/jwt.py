@@ -15,8 +15,9 @@ def is_jwt_expired(token: str) -> bool:
         return True
 
     # Split the JWT token into its parts
+    TOKEN_PARTS = 3
     parts = token.split('.')
-    if len(parts) != 3:
+    if len(parts) != TOKEN_PARTS:
         return True
 
     # Decode the payload (second part)
