@@ -43,10 +43,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         if virtual_record_id not in virtual_record_id_to_result:
             await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
-        
+
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
-            
+
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
         if is_block_group:
@@ -96,7 +96,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
             block_group_index = block.get("parent_index")
-            rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append(index)
+            rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append((index,float(result.get("score",0.0))))
             continue
         elif block_type == GroupType.TABLE.value:
             table_data = block.get("data",{})
@@ -158,7 +158,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
 
-    for key,rows_to_be_included_list in rows_to_be_included.items():
+    for key,rows_tuple in rows_to_be_included.items():
+        sorted_rows_tuple = sorted(rows_tuple)
         virtual_record_id,block_group_index = key.split("_")
         block_group_index = int(block_group_index)
         record = virtual_record_id_to_result[virtual_record_id]
@@ -170,8 +171,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_group = block_groups[block_group_index]
         table_summary = block_group.get("data",{}).get("table_summary","")
         child_results = []
-        sorted_rows_to_be_included_list = sorted(rows_to_be_included_list)
-        for row_index in sorted_rows_to_be_included_list:
+        for row_index,row_score in sorted_rows_tuple:
             block = blocks[row_index]
             block_type = block.get("type")
             if block_type == BlockType.TABLE_ROW.value:
@@ -184,12 +184,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     "virtual_record_id": virtual_record_id,
                     "block_index": row_index,
                     "citationType": "vectordb|document",
+                    "score": row_score,
                 })
-        if sorted_rows_to_be_included_list:
-            first_child_block_index = sorted_rows_to_be_included_list[0]
+        if sorted_rows_tuple:
+            first_child_block_index = sorted_rows_tuple[0][0]
             adjacent_chunks[virtual_record_id].append(first_child_block_index-1)
-            if len(sorted_rows_to_be_included_list) > 1:
-                last_child_block_index = sorted_rows_to_be_included_list[-1]
+            if len(sorted_rows_tuple) > 1:
+                last_child_block_index = sorted_rows_tuple[-1][0]
                 adjacent_chunks[virtual_record_id].append(last_child_block_index+1)
 
         table_result = {
@@ -314,7 +315,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                     block_num = [block.get("index", 0) + 1]
 
             enhanced_metadata = {
-                        "orgId": meta.get("orgId", "") if meta.get("orgId") else record.get("orgId", ""),
+                        "orgId": meta.get("orgId", "") if meta.get("orgId") else record.get("org_id", ""),
                         "recordId": record.get("id", ""),
                         "virtualRecordId": virtual_record_id,
                         "recordName": record.get("record_name",""),

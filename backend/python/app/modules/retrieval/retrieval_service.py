@@ -1,9 +1,6 @@
 import asyncio
 from typing import Any, Dict, List, Optional
 
-from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import get_enhanced_metadata, get_flattened_results, get_record
-from app.models.blocks import GroupType
 from langchain.chat_models.base import BaseChatModel
 from langchain.embeddings.base import Embeddings
 from langchain.schema import Document
@@ -25,12 +22,18 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError
+from app.models.blocks import GroupType
 from app.modules.retrieval.retrieval_arango import ArangoService
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
+)
+from app.utils.chat_helpers import (
+    get_flattened_results,
+    get_record,
 )
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
@@ -293,7 +296,6 @@ class RetrievalService:
             virtual_record_ids = []
             for idx, result in enumerate(search_results):
                 try:
-                    self.logger.debug(f"Processing search result {idx}: type={type(result)}, value={result}")
                     if result and isinstance(result, dict) and result.get("metadata"):
                         virtual_id = result["metadata"].get("virtualRecordId")
                         if virtual_id is not None:
@@ -357,8 +359,8 @@ class RetrievalService:
                         ext =  get_extension_from_mimetype(record.get("mimeType"))
                         if ext:
                             result["metadata"]["extension"] = ext
-                        
-                        
+
+
                         # Fetch additional file URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
                             try:
@@ -390,7 +392,7 @@ class RetrievalService:
                                     result["metadata"]["webUrl"] = weburl
                             except Exception as e:
                                 self.logger.warning(f"Failed to fetch mail document for {record_id}: {str(e)}")
-                                
+
                         if knowledge_search:
                             meta = result.get("metadata")
                             is_block_group = meta.get("isBlockGroup")
@@ -418,8 +420,14 @@ class RetrievalService:
                             final_search_results.append(child)
                     else:
                         final_search_results.append(result)
-            
-                final_search_results = sorted(final_search_results, key=lambda x: x["score"], reverse=True)
+
+                final_search_results = sorted(
+                    final_search_results,
+                    key=lambda x: x.get("score") or 0,
+                    reverse=True,
+                )
+
+
 
             # Get full record documents from Arango
             records = []
@@ -431,18 +439,19 @@ class RetrievalService:
                         records.append(record)
 
             # Filter out incomplete results to prevent citation validation failures
-            # required_fields = ['origin', 'recordName', 'recordId', 'mimeType',"orgId",]
-            # complete_results = []
+            required_fields = ['origin', 'recordName', 'recordId', 'mimeType',"orgId"]
+            complete_results = []
 
-            # for result in search_results:
-            #     metadata = result.get('metadata', {})
-            #     if all(field in metadata and metadata[field] is not None for field in required_fields):
-            #         complete_results.append(result)
-            #     else:
-            #         self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
+            for result in final_search_results:
+                if result.get("content") is None or result.get("content") == "":
+                    continue
+                metadata = result.get('metadata', {})
+                if all(field in metadata and metadata[field] is not None for field in required_fields):
+                    complete_results.append(result)
+                else:
+                    self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
 
-            # search_results = complete_results
-            search_results = final_search_results
+            search_results = complete_results
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,

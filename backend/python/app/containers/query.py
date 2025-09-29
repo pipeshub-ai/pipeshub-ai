@@ -43,7 +43,7 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
         arango_service=arango_service,
     )
-    
+
     retrieval_service = providers.Resource(
         container_utils.create_retrieval_service,
         config_service=config_service,
