@@ -4,6 +4,7 @@ API helper utilities for integration tests.
 import asyncio
 import time
 from typing import Dict, Any, List, Optional, Tuple
+import pytest
 import httpx
 
 

@@ -5,14 +5,15 @@ import asyncio
 import os
 import subprocess
 import time
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 import pytest_asyncio
-from docker import DockerClient
-from docker.errors import ContainerError, NotFound
+
+# Docker is optional for tests; enable with TEST_USE_DOCKER=1
+USE_DOCKER = os.getenv("TEST_USE_DOCKER", "0") == "1"
 
 # Test configuration
 TEST_CONFIG = {
@@ -62,6 +63,10 @@ class DockerManager:
     """Manages Docker containers for testing."""
     
     def __init__(self):
+        if not USE_DOCKER:
+            raise RuntimeError("Docker manager initialized without TEST_USE_DOCKER=1")
+        # Lazy import to avoid requiring docker when not used
+        from docker import DockerClient  # type: ignore
         self.client = DockerClient()
         self.containers = {}
     
@@ -73,6 +78,7 @@ class DockerManager:
             try:
                 # Remove existing container if it exists
                 try:
+                    from docker.errors import NotFound  # type: ignore
                     existing = self.client.containers.get(config["name"])
                     existing.remove(force=True)
                 except NotFound:
@@ -183,6 +189,8 @@ class DockerManager:
 @pytest.fixture(scope="session")
 def docker_manager():
     """Docker manager fixture for the entire test session."""
+    if not USE_DOCKER:
+        pytest.skip("Docker-based tests disabled. Set TEST_USE_DOCKER=1 to enable.")
     manager = DockerManager()
     yield manager
     manager.stop_containers()
@@ -262,52 +270,36 @@ def mock_user_context():
         "role": "admin"
     }
 
+class HealthCheckerAdapter:
+    """Adapter over utils.ServiceHealthChecker for consistent interface."""
+    def __init__(self, timeout: float, retry_attempts: int, retry_delay: float):
+        from tests.utils.api_helpers import ServiceHealthChecker as UtilsChecker  # local import
+        self._checker = UtilsChecker(timeout=timeout, retry_attempts=retry_attempts, retry_delay=retry_delay)
 
-class ServiceHealthChecker:
-    """Utility class for checking service health."""
-    
-    def __init__(self, http_client: httpx.AsyncClient):
-        self.client = http_client
-    
-    async def check_nodejs_backend(self, base_url: str) -> Dict:
-        """Check Node.js backend health."""
-        try:
-            response = await self.client.get(f"{base_url}/api/v1/health")
-            return {
-                "status": "healthy" if response.status_code == 200 else "unhealthy",
-                "status_code": response.status_code,
-                "response": response.json() if response.status_code == 200 else None
-            }
-        except Exception as e:
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "status_code": None
-            }
-    
-    async def check_python_service(self, base_url: str, service_name: str) -> Dict:
-        """Check Python service health."""
-        try:
-            response = await self.client.get(f"{base_url}/health")
-            return {
-                "status": "healthy" if response.status_code == 200 else "unhealthy",
-                "status_code": response.status_code,
-                "service": service_name,
-                "response": response.json() if response.status_code == 200 else None
-            }
-        except Exception as e:
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "service": service_name,
-                "status_code": None
-            }
+    async def check_nodejs_backend(self, base_url: str) -> Dict[str, Any]:
+        result = await self._checker.check_service_health(base_url, endpoint="/api/v1/health")
+        return self._normalize(result)
+
+    async def check_python_service(self, base_url: str, service_name: str) -> Dict[str, Any]:
+        result = await self._checker.check_service_health(base_url, endpoint="/health")
+        result["service"] = service_name
+        return self._normalize(result)
+
+    def _normalize(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        # Ensure status_code is always present for callers asserting on it
+        if "status_code" not in result:
+            result["status_code"] = None
+        return result
 
 
 @pytest.fixture
-def health_checker(http_client):
-    """Health checker utility."""
-    return ServiceHealthChecker(http_client)
+def health_checker():
+    """Health checker utility using shared implementation."""
+    return HealthCheckerAdapter(
+        timeout=TEST_CONFIG["timeout"],
+        retry_attempts=TEST_CONFIG["retry_attempts"],
+        retry_delay=TEST_CONFIG["retry_delay"],
+    )
 
 
 # Test markers
