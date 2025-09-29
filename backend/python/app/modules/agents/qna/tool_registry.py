@@ -27,9 +27,31 @@ class RegistryToolWrapper(BaseTool):
 
     def __init__(self, app_name: str, tool_name: str, registry_tool, state: ChatState, **kwargs) -> None:
         # Prepare the initialization data
+        # Build a helpful description that includes parameters so the LLM uses correct arg names
+        base_description = getattr(registry_tool, 'description', f"Tool: {app_name}.{tool_name}")
+        try:
+            params = getattr(registry_tool, 'parameters', []) or []
+            if params:
+                formatted_params = []
+                for p in params:
+                    # p has: name, type, description, required
+                    try:
+                        type_name = getattr(p.type, 'name', str(getattr(p, 'type', 'string')))
+                    except Exception:
+                        type_name = 'string'
+                    formatted_params.append(
+                        f"{p.name}{' (required)' if getattr(p, 'required', False) else ''}: {getattr(p, 'description', '')} [{type_name}]"
+                    )
+                params_doc = "\nParameters:\n- " + "\n- ".join(formatted_params)
+                full_description = f"{base_description}{params_doc}"
+            else:
+                full_description = base_description
+        except Exception:
+            full_description = base_description
+
         init_data = {
             'name': f"{app_name}.{tool_name}",  # Use dot notation for consistency
-            'description': getattr(registry_tool, 'description', f"Tool: {app_name}.{tool_name}"),
+            'description': full_description,
             'app_name': app_name,
             'tool_name': tool_name,
             'registry_tool': registry_tool,
@@ -44,6 +66,8 @@ class RegistryToolWrapper(BaseTool):
     def state(self) -> ChatState:
         """Access the chat state"""
         return self.chat_state
+
+    # Note: We avoid providing args_schema/tool_call_schema to prevent recursion issues in LC conversion.
 
     def _run(self, **kwargs) -> str:
         """Execute the registry tool directly"""
@@ -96,93 +120,28 @@ class RegistryToolWrapper(BaseTool):
     def _create_tool_instance(self, action_class) -> object:
         """Create an instance of the tool class with appropriate configuration"""
         try:
-            # Get tool configurations from state
-            tool_configs = self.state.get("tool_configs", {})
-            app_config = tool_configs.get(self.app_name, {})
-
             # Try different initialization strategies based on the tool type
             if self.app_name == "slack":
-                from app.agents.actions.slack.config import SlackTokenConfig
-                if app_config.get("slack_bot_token"):
-                    config = SlackTokenConfig(token=app_config["slack_bot_token"])
-                    return action_class(config)
+                return self._create_slack_tool_instance(action_class)
 
             elif self.app_name == "jira":
-                from app.agents.actions.jira.config import (
-                    JiraTokenConfig,
-                    JiraUsernamePasswordConfig,
-                )
-                if app_config.get("jira_api_token"):
-                    config = JiraTokenConfig(
-                        base_url=app_config.get("jira_url", ""),
-                        token=app_config["jira_api_token"]
-                    )
-                    return action_class(config)
-                elif app_config.get("jira_username") and app_config.get("jira_password"):
-                    config = JiraUsernamePasswordConfig(
-                        base_url=app_config.get("jira_url", ""),
-                        username=app_config["jira_username"],
-                        password=app_config["jira_password"]
-                    )
-                    return action_class(config)
+                return self._create_jira_tool_instance(action_class)
 
             elif self.app_name == "confluence":
-                from app.agents.actions.confluence.config import (
-                    ConfluenceTokenConfig,
-                    ConfluenceUsernamePasswordConfig,
-                )
-                if app_config.get("confluence_api_token"):
-                    config = ConfluenceTokenConfig(
-                        base_url=app_config.get("confluence_url", ""),
-                        token=app_config["confluence_api_token"]
-                    )
-                    return action_class(config)
-                elif app_config.get("confluence_username") and app_config.get("confluence_password"):
-                    config = ConfluenceUsernamePasswordConfig(
-                        base_url=app_config.get("confluence_url", ""),
-                        username=app_config["confluence_username"],
-                        password=app_config["confluence_password"]
-                    )
-                    return action_class(config)
+                return self._create_confluence_tool_instance(action_class)
 
-            elif self.app_name == "gmail":
-                from app.agents.actions.google.gmail.config import GoogleGmailConfig
-                config = GoogleGmailConfig(
-                    credentials_path=app_config.get("google_credentials_path"),
-                    token_file_path=app_config.get("google_token_path"),
-                    scopes=app_config.get("google_scopes")
-                )
-                return action_class(config)
+            elif self.app_name in ["onedrive", "outlook", "sharepoint", "one_note", "users_groups", "teams"]:
+                return self._create_microsoft_tool_instance(action_class)
 
-            elif self.app_name == "google_calendar":
-                from app.agents.actions.google.google_calendar.config import (
-                    GoogleCalendarConfig,
-                )
-                config = GoogleCalendarConfig(
-                    credentials_path=app_config.get("google_credentials_path"),
-                    token_file_path=app_config.get("google_token_path"),
-                    scopes=app_config.get("google_scopes")
-                )
-                return action_class(config)
+            elif self.app_name == "notion":
+                return self._create_notion_tool_instance(action_class)
 
-            elif self.app_name == "google_drive":
-                from app.agents.actions.google.google_drive.config import (
-                    GoogleDriveConfig,
-                )
-                config = GoogleDriveConfig(
-                    credentials_path=app_config.get("google_credentials_path"),
-                    token_file_path=app_config.get("google_token_path"),
-                    scopes=app_config.get("google_scopes")
-                )
-                return action_class(config)
+            elif self.app_name in ["gmail", "google_calendar", "drive"]:
+                # Use the proper Google client initialization from sources
+                return self._create_google_tool_instance(action_class)
 
             elif self.app_name == "github":
-                from app.agents.actions.github.config import GithubConfig
-                config = GithubConfig(
-                    base_url=app_config.get("github_url", "https://api.github.com"),
-                    token=app_config.get("github_token", "")
-                )
-                return action_class(config)
+                return self._create_github_tool_instance(action_class)
 
             elif self.app_name == "calculator":
                 # Calculator doesn't need configuration
@@ -201,6 +160,361 @@ class RegistryToolWrapper(BaseTool):
 
         except Exception as e:
             raise RuntimeError(f"Failed to create instance for {self.app_name}: {str(e)}")
+
+    def _create_google_tool_instance(self, action_class) -> object:
+        """Create Google tool instance using proper client initialization"""
+        try:
+            # Get ConfigurationService from retrieval_service
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                raise RuntimeError("ConfigurationService not available through retrieval_service")
+
+            config_service = retrieval_service.config_service
+            logger = self.state.get("logger")
+
+            # Determine service name and version based on app_name
+            service_mapping = {
+                "gmail": ("gmail", "v1"),
+                "google_calendar": ("calendar", "v3"),
+                "drive": ("drive", "v3")
+            }
+
+            service_name, version = service_mapping.get(self.app_name, ("drive", "v3"))
+
+            # Import the Google client
+            # Create the Google client using the proper initialization pattern
+            import asyncio
+            import concurrent.futures
+
+            from app.sources.client.google.google import GoogleClient
+
+            # Check if we're already in an async context
+            try:
+                asyncio.get_running_loop()
+                # We're in an async context, use a thread pool to run the async code
+                logger.debug(f"Async context detected for {self.app_name} tool creation - using thread pool")
+
+                # Use a thread pool to run the async code
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        GoogleClient.build_from_services(
+                            service_name=service_name,
+                            logger=logger,
+                            config_service=config_service,
+                            is_individual=True,  # Default to individual, can be made configurable
+                            version=version
+                        )
+                    )
+                    google_client = future.result()
+
+            except RuntimeError:
+                # No running loop, we can use asyncio.run
+                google_client = asyncio.run(GoogleClient.build_from_services(
+                    service_name=service_name,
+                    logger=logger,
+                    config_service=config_service,
+                    is_individual=True,  # Default to individual, can be made configurable
+                    version=version
+                ))
+
+            # Get the actual client object
+            client = google_client.get_client()
+
+            # Create the tool instance with the client
+            return action_class(client)
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create Google tool instance for {self.app_name}: {str(e)}")
+            # Try to create without arguments as last resort
+            return action_class()
+
+    def _create_microsoft_tool_instance(self, action_class) -> object:
+        """Create Microsoft tool instance (OneDrive, Outlook, SharePoint, OneNote, Teams, Users/Groups) using MSGraphClient"""
+        try:
+            # Get ConfigurationService from retrieval_service
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                raise RuntimeError("ConfigurationService not available through retrieval_service")
+
+            config_service = retrieval_service.config_service
+            logger = self.state.get("logger")
+            service_name = self.app_name
+            service_name = service_name.replace(" ", "").lower()
+            # Import the Microsoft Graph client
+            # Build the client (async) similar to Google/Jira patterns
+            import asyncio
+            import concurrent.futures
+
+            from app.sources.client.microsoft.microsoft import GraphMode, MSGraphClient
+
+            try:
+                asyncio.get_running_loop()
+                if logger:
+                    logger.debug(f"Async context detected for {self.app_name} tool creation - using thread pool (MSGraph)")
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        MSGraphClient.build_from_services(
+                            service_name=service_name,
+                            logger=logger,
+                            config_service=config_service,
+                            mode=GraphMode.APP
+                        )
+                    )
+                    ms_graph_client = future.result()
+            except RuntimeError:
+                ms_graph_client = asyncio.run(MSGraphClient.build_from_services(
+                    service_name=service_name,
+                    logger=logger,
+                    config_service=config_service,
+                    mode=GraphMode.APP
+                ))
+
+            # Pass the MSGraphClient wrapper to the action class (data sources expect this wrapper)
+            return action_class(ms_graph_client)
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create Microsoft tool instance for {self.app_name}: {str(e)}")
+            # Fallback
+            try:
+                return action_class()
+            except Exception:
+                raise
+
+    def _create_notion_tool_instance(self, action_class) -> object:
+        """Create Notion tool instance using proper client initialization"""
+        try:
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                raise RuntimeError("ConfigurationService not available through retrieval_service")
+
+            config_service = retrieval_service.config_service
+            logger = self.state.get("logger")
+
+            # Import the Notion client
+            import asyncio
+            import concurrent.futures
+
+            from app.sources.client.notion.notion import NotionClient
+
+            try:
+                asyncio.get_running_loop()
+                if logger:
+                    logger.debug(f"Async context detected for {self.app_name} tool creation - using thread pool (Notion)")
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        NotionClient.build_from_services(
+                            logger=logger,
+                            config_service=config_service
+                        )
+                    )
+                    notion_client = future.result()
+            except RuntimeError:
+                notion_client = asyncio.run(NotionClient.build_from_services(
+                    logger=logger,
+                    config_service=config_service
+                ))
+
+            # Try common patterns: pass wrapper; if fails, pass inner client
+            try:
+                return action_class(notion_client)
+            except Exception:
+                try:
+                    inner = notion_client.get_client() if hasattr(notion_client, 'get_client') else notion_client
+                    return action_class(inner)
+                except Exception:
+                    # Last resort
+                    return action_class()
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create Notion tool instance for {self.app_name}: {str(e)}")
+            return action_class()
+
+    def _create_jira_tool_instance(self, action_class) -> object:
+        """Create Jira tool instance using proper client initialization"""
+        try:
+            # Get ConfigurationService from retrieval_service
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                raise RuntimeError("ConfigurationService not available through retrieval_service")
+
+            config_service = retrieval_service.config_service
+            logger = self.state.get("logger")
+
+            # Import the Jira client
+            # Create the Jira client using the proper initialization pattern
+            import asyncio
+            import concurrent.futures
+
+            from app.sources.client.jira.jira import JiraClient
+
+            # Check if we're already in an async context
+            try:
+                asyncio.get_running_loop()
+                # We're in an async context, use a thread pool to run the async code
+                logger.debug(f"Async context detected for {self.app_name} tool creation - using thread pool")
+
+                # Use a thread pool to run the async code
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        JiraClient.build_from_services(
+                            logger=logger,
+                            config_service=config_service
+                        )
+                    )
+                    jira_client = future.result()
+
+            except RuntimeError:
+                # No running loop, we can use asyncio.run
+                jira_client = asyncio.run(JiraClient.build_from_services(
+                    logger=logger,
+                    config_service=config_service
+                ))
+
+            # Create the tool instance with the client
+            return action_class(jira_client)
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create Jira tool instance for {self.app_name}: {str(e)}")
+            # Try to create without arguments as last resort
+            return action_class()
+
+    def _create_confluence_tool_instance(self, action_class) -> object:
+        """Create Confluence tool instance using proper client initialization"""
+        try:
+            # Get ConfigurationService from retrieval_service
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                raise RuntimeError("ConfigurationService not available through retrieval_service")
+
+            config_service = retrieval_service.config_service
+            logger = self.state.get("logger")
+
+            # Import the Confluence client
+            # Create the Confluence client using the proper initialization pattern
+            import asyncio
+            import concurrent.futures
+
+            from app.sources.client.confluence.confluence import ConfluenceClient
+
+            # Check if we're already in an async context
+            try:
+                asyncio.get_running_loop()
+                # We're in an async context, use a thread pool to run the async code
+                logger.debug(f"Async context detected for {self.app_name} tool creation - using thread pool")
+
+                # Use a thread pool to run the async code
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        ConfluenceClient.build_from_services(
+                            logger=logger,
+                            config_service=config_service
+                        )
+                    )
+                    confluence_client = future.result()
+
+            except RuntimeError:
+                # No running loop, we can use asyncio.run
+                confluence_client = asyncio.run(ConfluenceClient.build_from_services(
+                    logger=logger,
+                    config_service=config_service
+                ))
+
+            # Create the tool instance with the client
+            return action_class(confluence_client)
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create Confluence tool instance for {self.app_name}: {str(e)}")
+            # Try to create without arguments as last resort
+            return action_class()
+
+    def _create_slack_tool_instance(self, action_class) -> object:
+        """Create Slack tool instance using proper client initialization"""
+        try:
+            # Get ConfigurationService from retrieval_service
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                raise RuntimeError("ConfigurationService not available through retrieval_service")
+
+            config_service = retrieval_service.config_service
+            logger = self.state.get("logger")
+
+            # Import the Slack client
+            # Create the Slack client using the proper initialization pattern
+            import asyncio
+            import concurrent.futures
+
+            from app.sources.client.slack.slack import SlackClient
+
+            # Check if we're already in an async context
+            try:
+                asyncio.get_running_loop()
+                # We're in an async context, use a thread pool to run the async code
+                logger.debug(f"Async context detected for {self.app_name} tool creation - using thread pool")
+
+                # Use a thread pool to run the async code
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        SlackClient.build_from_services(
+                            logger=logger,
+                            config_service=config_service
+                        )
+                    )
+                    slack_client = future.result()
+
+            except RuntimeError:
+                # No running loop, we can use asyncio.run
+                slack_client = asyncio.run(SlackClient.build_from_services(
+                    logger=logger,
+                    config_service=config_service
+                ))
+
+            # Create the tool instance with the client
+            return action_class(slack_client)
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create Slack tool instance for {self.app_name}: {str(e)}")
+            # Try to create without arguments as last resort
+            return action_class()
+
+    def _create_github_tool_instance(self, action_class) -> object:
+        """Create GitHub tool instance using proper client initialization"""
+        try:
+            # Get tool configurations from state for GitHub
+            tool_configs = self.state.get("tool_configs", {})
+            app_config = tool_configs.get(self.app_name, {})
+
+            # Use the old pattern for GitHub since it doesn't have build_from_services yet
+            from app.agents.actions.github.config import GithubConfig
+            config = GithubConfig(
+                base_url=app_config.get("github_url", "https://api.github.com"),
+                token=app_config.get("github_token", "")
+            )
+            return action_class(config)
+
+        except Exception as e:
+            logger = self.state.get("logger")
+            if logger:
+                logger.error(f"Failed to create GitHub tool instance for {self.app_name}: {str(e)}")
+            # Try to create without arguments as last resort
+            return action_class()
 
     def _format_result(self, result) -> str:
         """Format tool result for LLM consumption"""
@@ -356,7 +670,7 @@ def _load_tool_configs(state: ChatState) -> None:
             "google_token_path": "GOOGLE_TOKEN_PATH",
             "google_scopes": "GOOGLE_SCOPES"
         },
-        "google_drive": {
+        "drive": {
             "google_credentials_path": "GOOGLE_CREDENTIALS_PATH",
             "google_token_path": "GOOGLE_TOKEN_PATH",
             "google_scopes": "GOOGLE_SCOPES"

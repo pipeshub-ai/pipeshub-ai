@@ -1,4 +1,5 @@
 from app.connectors.core.registry.connector_builder import (
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     DocumentationLink,
@@ -254,40 +255,75 @@ class GmailConnector:
         return True
 
 
-# @ConnectorBuilder("SLACK")\
-#     .in_group("Slack")\
-#     .with_auth_type("API_TOKEN")\
-#     .with_description("Sync messages and channels from Slack")\
-#     .with_categories(["Messaging"])\
-#     .configure(lambda builder: builder
-#         .with_icon("/assets/icons/connectors/slack.svg")
-#         .add_documentation_link(DocumentationLink(
-#             "Slack Bot Token Setup",
-#             "https://api.slack.com/authentication/basics"
-#         ))
-#         .with_redirect_uri("", False)
-#         .add_auth_field(AuthField(
-#             name="botToken",
-#             display_name="Bot Token",
-#             placeholder="xoxb-...",
-#             description="The Bot User OAuth Access Token from Slack App settings",
-#             field_type="PASSWORD",
-#             max_length=2000,
-#             is_secret=True
-#         ))
-#         .with_scheduled_config(True, 60)
-#         .add_filter_field(CommonFields.channels_filter(),
-#                           "https://slack.com/api/conversations.list")
-#     )\
-#     .build_decorator()
-# class SlackConnector:
-#     """Slack connector built with the builder pattern"""
+@ConnectorBuilder("SLACK")\
+    .in_group("Slack")\
+    .with_auth_type("API_TOKEN")\
+    .with_description("Sync messages and channels from Slack")\
+    .with_categories(["Messaging"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/slack.svg")
+        .add_documentation_link(DocumentationLink(
+            "Slack Bot Token Setup",
+            "https://api.slack.com/authentication/basics"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="botToken",
+            display_name="Bot Token",
+            placeholder="xoxb-...",
+            description="The Bot User OAuth Access Token from Slack App settings",
+            field_type="PASSWORD",
+            max_length=8000,
+            is_secret=True
+        ))
+        .with_scheduled_config(True, 60)
+        .add_filter_field(CommonFields.channels_filter(),
+                          "https://slack.com/api/conversations.list")
+    )\
+    .build_decorator()
+class SlackConnector:
+    """Slack connector built with the builder pattern"""
 
-#     def __init__(self) -> None:
-#         self.name = "SLACK"
+    def __init__(self) -> None:
+        self.name = "SLACK"
 
-#     def connect(self) -> bool:
-#         """Connect to Slack"""
-#         print(f"Connecting to {self.name}")
-#         return True
+    def connect(self) -> bool:
+        """Connect to Slack"""
+        print(f"Connecting to {self.name}")
+        return True
 
+
+@ConnectorBuilder("NOTION")\
+    .in_group("Notion")\
+    .with_auth_type("API_TOKEN")\
+    .with_description("Sync messages and channels from Notion")\
+    .with_categories(["Messaging"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/notion.svg")
+        .add_documentation_link(DocumentationLink(
+            "Notion Bot Token Setup",
+            "https://api.notion.com/authentication/basics"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="apiToken",
+            display_name="Api Token",
+            placeholder="ntn-...",
+            description="The Access Token from Notion App settings",
+            field_type="PASSWORD",
+            max_length=8000,
+            is_secret=True
+        ))
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class  NotionConnector:
+    """Notion connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "NOTION"
+
+    def connect(self) -> bool:
+        """Connect to Notion"""
+        print(f"Connecting to {self.name}")
+        return True
