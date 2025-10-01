@@ -8,7 +8,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.dropbox.connector2 import DropboxConnector
+from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
