@@ -224,6 +224,5 @@ class ConfigurationService:
             for evt in event.events:
                 key = evt.key.decode()
                 self.cache.pop(key, None)
-                self.logger.debug("🔄 Cache updated for key: %s", key)
         except Exception as e:
             self.logger.error("❌ Error in watch callback: %s", str(e))

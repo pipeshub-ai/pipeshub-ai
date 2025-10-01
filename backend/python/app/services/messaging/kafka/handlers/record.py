@@ -126,37 +126,32 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"Missing record_id in message {payload}")
                 return False
 
+            record = await self.event_processor.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return False
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
-                f"Virtual Record ID: {virtual_record_id}"
+                f"Virtual Record ID: {virtual_record_id} "
                 f"Extension: {extension}, Mime Type: {mime_type}"
             )
 
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
-                self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
-                await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
-                self.logger.info(f"Scheduled update for record {record_id}")
-                record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-                )
-                if record is None:
-                    self.logger.error(f"❌ Record {record_id} not found in database")
-                    return False
-                doc = dict(record)
+                # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
+                # self.logger.info(f"Scheduled update for record {record_id}")
+                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
-                doc.update({"isDirty": True})
-
-                docs = [doc]
-                await self.event_processor.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-                return True
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
@@ -165,17 +160,11 @@ class RecordEventHandler(BaseEventService):
                     if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
 
-
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-            record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return False
+
             doc = dict(record)
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
