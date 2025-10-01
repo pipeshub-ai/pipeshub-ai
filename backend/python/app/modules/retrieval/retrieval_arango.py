@@ -132,14 +132,8 @@ class ArangoService:
             result = list(cursor)
 
             # Create a mapping from key to document
-            documents_map = {}
-            for item in result:
-                documents_map[item["key"]] = item["document"]
-
-            # Ensure all requested keys are in the result (with None for missing ones)
-            for key in document_keys:
-                if key not in documents_map:
-                    documents_map[key] = None
+            found_docs = {item["key"]: item["document"] for item in result}
+            documents_map = {key: found_docs.get(key) for key in document_keys}
 
             return documents_map
         except Exception as e:

@@ -327,6 +327,7 @@ class RetrievalService:
             # Collect all FILE record IDs that need mimeType fetching
             file_record_ids_for_mimetype = []
             mail_record_ids_for_url = []
+            record_id_to_record = {r["_key"]: r for r in accessible_records if r and r.get("_key")}
 
             for result in search_results:
                 if not result or not isinstance(result, dict):
@@ -341,7 +342,7 @@ class RetrievalService:
                 # Skip results with None virtualRecordId
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id]
-                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
+                    record = record_id_to_record.get(record_id)
                     if record:
                         record_type = record.get("recordType", "")
                         mime_type = record.get("mimeType")
@@ -394,7 +395,7 @@ class RetrievalService:
                     record_id = virtual_to_record_map[virtual_id]
                     result["metadata"]["recordId"] = record_id
                     # FIX: Add null check for r before accessing r["_key"]
-                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
+                    record = record_id_to_record.get(record_id)
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
@@ -487,7 +488,7 @@ class RetrievalService:
             if unique_record_ids:
                 for record_id in unique_record_ids:
                     # FIX: Add null check for r before accessing r.get("_key")
-                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
+                    record = record_id_to_record.get(record_id)
                     if record:  # Only append non-None records
                         records.append(record)
 
