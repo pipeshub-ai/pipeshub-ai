@@ -383,7 +383,7 @@ app = FastAPI(
 )
 
 # List of paths to apply authentication to
-INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/", "/api/v1/connectors/"]
+INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/", "/api/v1/connectors/", "/api/v1/records", "/api/v1/kb"]
 
 @app.middleware("http")
 async def authenticate_requests(request: Request, call_next)-> JSONResponse:

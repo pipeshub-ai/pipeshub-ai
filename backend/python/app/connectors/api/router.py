@@ -1737,8 +1737,6 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
 @router.get("/api/v1/records")
 @inject
 async def get_records(
-    user_id: str,
-    org_id: str,
     request:Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
     page: int = 1,
@@ -1761,6 +1759,9 @@ async def get_records(
     try:
         container = request.app.container
         logger = container.logger()
+
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
 
         logger.info(f"Looking up user by user_id: {user_id}")
         user = await arango_service.get_user_by_user_id(user_id=user_id)
@@ -1845,8 +1846,6 @@ async def get_records(
 @inject
 async def get_record_by_id(
     record_id: str,
-    user_id: str,
-    org_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Optional[Dict]:
@@ -1856,6 +1855,9 @@ async def get_record_by_id(
     try:
         container = request.app.container
         logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
         has_access = await arango_service.check_record_access_with_details(
             user_id=user_id,
             org_id=org_id,
@@ -1876,7 +1878,6 @@ async def get_record_by_id(
 @inject
 async def delete_record(
     record_id: str,
-    user_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
@@ -1886,7 +1887,7 @@ async def delete_record(
     try:
         container = request.app.container
         logger = container.logger()
-
+        user_id = request.state.user.get("userId")
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
         result = await arango_service.delete_record(
@@ -1923,8 +1924,6 @@ async def delete_record(
 @inject
 async def reindex_single_record(
     record_id: str,
-    user_id: str,
-    org_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
@@ -1934,6 +1933,8 @@ async def reindex_single_record(
     try:
         container = request.app.container
         logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
 
         logger.info(f"🔄 Attempting to reindex record {record_id}")
 
@@ -1974,10 +1975,7 @@ async def reindex_single_record(
 @router.post("/api/v1/records/reindex-failed")
 @inject
 async def reindex_failed_records(
-    request_body: ReindexFailedRequest,
     request: Request,
-    user_id: str = Query(...),
-    org_id: str = Query(...),
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
@@ -1986,18 +1984,22 @@ async def reindex_failed_records(
     try:
         container = request.app.container
         logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
 
-        logger.info(f"🔄 Attempting to reindex failed {request_body.connector} records")
+        request_body = await request.json()
+
+        logger.info(f"🔄 Attempting to reindex failed {request_body.get('connector')} records")
 
         result = await arango_service.reindex_failed_connector_records(
             user_id=user_id,
             org_id=org_id,
-            connector=request_body.connector,
-            origin=request_body.origin
+            connector=request_body.get('connector'),
+            origin=request_body.get('origin')
         )
 
         if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for failed {request_body.connector} records")
+            logger.info(f"✅ Successfully initiated reindex for failed {request_body.get('connector')} records")
             return {
                 "success": True,
                 "message": result.get("message"),
