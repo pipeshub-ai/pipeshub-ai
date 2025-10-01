@@ -171,7 +171,7 @@ class FileRecord(Record):
         return FileRecord(
             id=arango_base_record["_key"],
             org_id=arango_base_record["orgId"],
-            record_name=arango_base_record["recordName"],
+            record_name=arango_base_record["name"],
             record_type=RecordType(arango_base_record["recordType"]),
             external_record_id=arango_base_record["externalRecordId"],
             version=arango_base_record["version"],

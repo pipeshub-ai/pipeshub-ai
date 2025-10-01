@@ -64,6 +64,9 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.config.constants.arangodb import MimeTypes
 from dropbox.team_log import EventCategory
+from dropbox.sharing import SharedLinkSettings, LinkAudience
+from dropbox.exceptions import ApiError
+from dropbox.team import UserSelectorArg
 # from dropbox.team import GroupSelector
 
 # Add these helper functions at the top of the file
@@ -157,6 +160,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
                 "groups.read",
                 "members.read",
                 "sharing.read",
+                "sharing.write",
                 "team_data.member",
                 "team_data.team_space",
                 "team_info.read",
@@ -340,8 +344,84 @@ class DropboxConnector(BaseConnector):
                     team_member_id=user_id,
                     team_folder_id=record_group_id if not is_person_folder else None
                 )
+                print("!!!!!!!!!!!! temp_link_result !!!!!!!!!!!!!!: ", temp_link_result)
                 if temp_link_result.success:
                     signed_url = temp_link_result.data.link
+            
+            #5.5 Get preview URL
+            self.logger.info("=" * 50)
+            self.logger.info("Processing weburl for path: %s", entry.path_lower)
+            self.logger.info("=" * 50)
+
+            preview_url = None
+            link_settings = SharedLinkSettings(
+                audience=LinkAudience('no_one'), 
+                allow_download=True
+            )
+
+            # First call - try to create link with settings
+            shared_link_result = await self.data_source.sharing_create_shared_link_with_settings(
+                path=entry.path_lower,
+                team_member_id=user_id,
+                team_folder_id=record_group_id if not is_person_folder else None,
+                settings=link_settings
+            )
+
+            self.logger.info("Result 1: %s", shared_link_result)
+
+            if shared_link_result.success:
+                # Successfully created new link
+                preview_url = shared_link_result.data.url
+                self.logger.info("Successfully created new link: %s", preview_url)
+            else:
+                # First call failed - check if link already exists
+                error_str = str(shared_link_result.error)
+                self.logger.info("First call failed with error type")
+                
+                if 'shared_link_already_exists' in error_str:
+                    self.logger.info("Link already exists, making second call to retrieve it")
+                    
+                    # Make second call with settings=None to get the existing link
+                    second_result = await self.data_source.sharing_create_shared_link_with_settings(
+                        path=entry.path_lower,
+                        team_member_id=user_id,
+                        team_folder_id=record_group_id if not is_person_folder else None,
+                        settings=None
+                    )
+                    
+                    self.logger.info("Result 2 received")
+                    
+                    if second_result.success:
+                        # Unexpectedly succeeded
+                        preview_url = second_result.data.url
+                        self.logger.info("Second call succeeded: %s", preview_url)
+                    else:
+                        # Expected to fail - extract URL from error string
+                        second_error_str = str(second_result.error)
+                        
+                        if 'shared_link_already_exists' in second_error_str:
+                            # Extract URL using regex
+                            import re
+                            # Pattern to match url='...' in the error string
+                            url_pattern = r"url='(https://[^']+)'"
+                            url_match = re.search(url_pattern, second_error_str)
+                            
+                            if url_match:
+                                preview_url = url_match.group(1)
+                                self.logger.info("Successfully extracted URL from error: %s", preview_url)
+                            else:
+                                self.logger.error("Could not extract URL from second error string")
+                                self.logger.debug("Error string: %s", second_error_str[:500])  # Log first 500 chars
+                        else:
+                            self.logger.error("Unexpected error on second call (not shared_link_already_exists)")
+                else:
+                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists)")
+
+            # Final check
+            if preview_url is None:
+                self.logger.error("Failed to retrieve preview URL for %s", entry.path_lower)
+            else:
+                self.logger.info("Final preview_url: %s", preview_url)
             
             # 6. Get parent record ID
             parent_path = None
@@ -373,7 +453,7 @@ class DropboxConnector(BaseConnector):
                 updated_at=timestamp_ms,
                 source_created_at=timestamp_ms,
                 source_updated_at=timestamp_ms,
-                weburl=f"https://www.dropbox.com/home{entry.path_display}",
+                weburl=preview_url,
                 signed_url=signed_url,
                 parent_external_record_id=parent_external_record_id,
                 size_in_bytes=entry.size if is_file else 0,
@@ -393,7 +473,7 @@ class DropboxConnector(BaseConnector):
             try:
                 # Determine if this is a shared file/folder
                 shared_folder_id = None
-                if isinstance(entry, FolderMetadata) and hasattr(entry, 'shared_folder_id'):
+                if hasattr(entry, 'shared_folder_id') and entry.shared_folder_id:
                     shared_folder_id = entry.shared_folder_id
                 
                 # Fetch permissions from Dropbox
@@ -501,16 +581,19 @@ class DropboxConnector(BaseConnector):
         try:
             # Fetch members based on type
             if is_file:
+                print("!!!!!!!!!! fetching sharing_list_file_members")
                 members_result = await self.data_source.sharing_list_file_members(
                     file=file_or_folder_id,
                     include_inherited=True,
                     team_member_id=team_member_id
                 )
             else:
+                print("!!!!!!!!!! fetching sharing_list_folder_members")
                 # For folders, only fetch if it's a shared folder
                 if not shared_folder_id:
                     # Not a shared folder, no permissions to fetch
                     return []
+                print("!!!!!!!!!!!!!!!!!!!!!! 1")
                 members_result = await self.data_source.sharing_list_folder_members(
                     shared_folder_id=shared_folder_id,
                     team_member_id=team_member_id
@@ -956,13 +1039,11 @@ class DropboxConnector(BaseConnector):
         """Runs a full synchronization from the Dropbox account root."""
         try:
             self.logger.info("Starting Dropbox full sync.")
-            # self.logger.info("Code will excecute here!")
-
-            # step 1: fetch and sync all users / use continue here
+            
+            # Step 1: fetch and sync all users
             self.logger.info("Syncing users...")
             users = await self.data_source.team_members_list()
             app_users = self.get_app_users(users)
-
             await self.data_entities_processor.on_new_app_users(app_users)
 
             # Step 2: fetch and sync all user groups
@@ -971,29 +1052,23 @@ class DropboxConnector(BaseConnector):
             
             if not group_sync_point.get('cursor'):
                 self.logger.info("Running a FULL sync for user groups...")
-                await self._sync_user_groups()
                 
-                # Initialize cursor after full sync by getting current state
-                try:
-                    response = await self.data_source.team_log_get_events(category=EventCategory.groups, limit=1)
-                    if response.success and response.data.cursor:
-                        await self.dropbox_cursor_sync_point.update_sync_point(
-                            group_sync_key, {"cursor": response.data.cursor}
-                        )
-                        self.logger.info("Initialized cursor for future incremental group syncs")
-                except Exception as e:
-                    self.logger.warning(f"Could not initialize group sync cursor: {e}")
+                # IMPORTANT: Initialize cursor BEFORE doing the full sync
+                # This creates a bookmark at the current moment
+                await self._initialize_event_cursor(group_sync_key, EventCategory.groups)
+                
+                # Now do the full sync
+                await self._sync_user_groups()
             else:
                 self.logger.info("Running an INCREMENTAL sync for user groups...")
                 await self._sync_group_changes_with_cursor()
 
-            #Step 3: List all shared folders within a team and create record groups / use continue here
+            # Step 3: List all shared folders within a team and create record groups
             self.logger.info("Syncing record groups...")
             await self.sync_record_groups(app_users)
-            #Step 3.5: Create all personal folder record groups
-            await self.sync_personal_record_groups(app_users)
-
             
+            # Step 3.5: Create all personal folder record groups
+            await self.sync_personal_record_groups(app_users)
 
             # Step 4: fetch and sync all user drives
             self.logger.info("Syncing User Drives")
@@ -1004,18 +1079,10 @@ class DropboxConnector(BaseConnector):
             sharing_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sharing_sync_key)
 
             if not sharing_sync_point.get('cursor'):
-                self.logger.info("No cursor for sharing events, will start from latest.")
-                # On the very first run, you might just want to establish a cursor
-                # without processing historical events to avoid a massive initial sync.
-                try:
-                    response = await self.data_source.team_log_get_events(category=EventCategory.sharing, limit=1)
-                    if response.success and response.data.cursor:
-                        await self.dropbox_cursor_sync_point.update_sync_point(
-                            sharing_sync_key, {"cursor": response.data.cursor}
-                        )
-                        self.logger.info("Initialized cursor for future incremental sharing syncs.")
-                except Exception as e:
-                    self.logger.warning(f"Could not initialize sharing sync cursor: {e}")
+                self.logger.info("Initializing cursor for sharing events...")
+                
+                # Initialize cursor BEFORE any potential sync work
+                await self._initialize_event_cursor(sharing_sync_key, EventCategory.sharing)
             else:
                 self.logger.info("Running an INCREMENTAL sync for sharing events...")
                 await self._sync_sharing_changes_with_cursor(sharing_sync_key, sharing_sync_point.get('cursor'))
@@ -1024,6 +1091,38 @@ class DropboxConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error in DropBox connector run: {ex}")
             raise
+
+
+    async def _initialize_event_cursor(self, sync_key: str, category) -> None:
+        """
+        Initialize a cursor that starts from the current moment.
+        """
+        try:
+            from datetime import datetime, timezone
+            from dropbox.team_common import TimeRange  # <- It's in team_common!
+            
+            # Create a time range that starts from "now"
+            current_time = datetime.now(timezone.utc)
+            
+            # TimeRange with only start_time means "from now onwards"
+            time_range = TimeRange(start_time=current_time)
+            
+            response = await self.data_source.team_log_get_events(
+                category=category,
+                time=time_range,
+                limit=1
+            )
+            
+            if response.success and hasattr(response.data, 'cursor') and response.data.cursor:
+                await self.dropbox_cursor_sync_point.update_sync_point(
+                    sync_key, {"cursor": response.data.cursor}
+                )
+                self.logger.info(f"✓ Initialized cursor for {category} from {current_time}")
+            else:
+                self.logger.warning(f"Could not initialize cursor for {category}: {response.error if not response.success else 'No cursor returned'}")
+                
+        except Exception as e:
+            self.logger.error(f"Could not initialize event cursor for {category}: {e}", exc_info=True)
     
     async def _sync_user_groups(self) -> None:
         """
@@ -1782,25 +1881,35 @@ class DropboxConnector(BaseConnector):
                                 continue
 
                             for asset in event.assets:
-                                external_id = None
-                                ns_id = None  # <-- Add a variable for the namespace ID
 
                                 if asset.is_file():
                                     file_info = asset.get_file()
-                                    external_id = file_info.file_id
-                                    
-                                    # --> Extract the ns_id if it exists
+                                    id_to_sync = file_info.file_id
+                                    ns_id_for_file = None
                                     if file_info.path and file_info.path.namespace_relative:
-                                        ns_id = file_info.path.namespace_relative.ns_id
+                                        ns_id_for_file = file_info.path.namespace_relative.ns_id
 
-                                # You can add a similar check here for folders if needed
-                                # elif asset.is_folder():
-                                #     external_id = asset.get_folder().... 
-                                if external_id:
-                                    # --> Pass the ns_id to the resync function
                                     await self._resync_record_by_external_id(
-                                        external_id, team_member_id, user_email, ns_id=ns_id
+                                        external_id=id_to_sync,
+                                        team_member_id=team_member_id,
+                                        user_email=user_email,
+                                        is_folder=False,  # <-- Set flag for file
+                                        ns_id=ns_id_for_file
                                     )
+
+                                elif asset.is_folder():
+                                    folder_info = asset.get_folder()
+                                    id_to_sync = None
+                                    if folder_info.path and folder_info.path.namespace_relative:
+                                        id_to_sync = folder_info.path.namespace_relative.ns_id
+                                    
+                                    if id_to_sync:
+                                        await self._resync_record_by_external_id(
+                                            external_id=id_to_sync,
+                                            team_member_id=team_member_id,
+                                            user_email=user_email,
+                                            is_folder=True  # <-- Set flag for folder
+                                        )
 
                     except Exception as e:
                         self.logger.error(f"Error processing a single sharing event: {e}", exc_info=True)
@@ -1822,55 +1931,94 @@ class DropboxConnector(BaseConnector):
             sync_point_data={"cursor": latest_cursor_to_save}
         )
     
-    async def _resync_record_by_external_id(self, external_id: str, team_member_id: str, user_email: str, ns_id: Optional[str] = None):
+    async def _resync_record_by_external_id(
+        self, 
+        external_id: str, 
+        team_member_id: str, 
+        user_email: str, 
+        is_folder: bool, 
+        ns_id: Optional[str] = None
+    ):
         """
-        Fetches the latest metadata for a single record from Dropbox and processes it
-        through the existing update workflow.
+        Fetches the latest metadata for a single record (file or folder) from Dropbox
+        and processes it through the existing update workflow.
         """
-        self.logger.info(f"Re-syncing record due to a permission change event: {external_id}")
+        self.logger.info(f"Re-syncing record (is_folder={is_folder}) due to a permission event: {external_id}")
         try:
-            # 1. Fetch the latest metadata for the item
-            metadata_result = await self.data_source.files_get_metadata(
-                path=external_id, # Use the ID syntax for a direct lookup
-                team_member_id=team_member_id,
-                team_folder_id=ns_id
-            )
+            metadata_result = None
+            record_group_id = None
+            file_id = None
+            is_person_folder = False
+            entry = None
 
-            if not metadata_result.success:
+            # 1. Fetch metadata based on the is_folder flag.
+            if not is_folder:  # It's a File
+                metadata_result = await self.data_source.files_get_metadata(
+                    path=external_id,
+                    team_member_id=team_member_id,
+                    team_folder_id=ns_id
+                )
+            else:  # It's a Folder
+                # For shared folders, use ns: prefix AND provide team_folder_id
+                self.logger.info(f"Fetching FolderMetadata with files/get_metadata for ns:{external_id}")
+                ns_metadata_result = await self.data_source.files_get_metadata(
+                    path=f"ns:{external_id}",
+                    team_member_id=team_member_id,
+                    team_folder_id=external_id
+                )
+                
+                if not ns_metadata_result or not ns_metadata_result.success:
+                    self.logger.error(f"Could not fetch ns: metadata for re-sync: {external_id}. Error: {ns_metadata_result.error if ns_metadata_result else 'No response'}")
+                    return
+                
+                # Second call with the file ID to get complete metadata
+                file_id = ns_metadata_result.data.id
+                self.logger.info(f"Fetching complete metadata using file ID: {file_id}")
+                metadata_result = await self.data_source.files_get_metadata(
+                    path=file_id,
+                    team_member_id=team_member_id,
+                    team_folder_id=external_id
+                )
+                print("!!!!!!!!!!!!!!! metadata result: ", to_pretty_json(metadata_result))
+                file_id = metadata_result.data.id
+
+            if not metadata_result or not metadata_result.success:
                 self.logger.error(f"Could not fetch metadata for re-sync: {external_id}. Error: {metadata_result.error}")
-                # Potentially handle deletion here if the error is 'path/not_found'
                 return
 
             entry = metadata_result.data
-            
-            # We need to figure out the record_group_id. This is the trickiest part.
-            # For simplicity, let's assume we can look up the existing record to find its parent group.
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=self.connector_name,
-                    external_id=external_id
-                )
-                if not existing_record:
-                    self.logger.warning(f"Record {external_id} not found in DB for re-sync. It might be new.")
-                    # If you can't find it, you might need more complex logic to determine its group.
-                    # For now, we'll skip if we can't find the original.
-                    return
-                
-                record_group_id = existing_record.external_record_group_id
-                is_person_folder = (record_group_id == team_member_id)
 
-            # 2. Call your EXISTING processing logic
+            # Determine record_group_id based on entry type
+            if isinstance(entry, FileMetadata):
+                async with self.data_store_provider.transaction() as tx_store:
+                    existing_record = await tx_store.get_record_by_external_id(self.connector_name, external_id)
+                    if not existing_record:
+                        self.logger.warning(f"File record {external_id} not found in DB for re-sync. Cannot determine parent group.")
+                        return
+                    record_group_id = existing_record.external_record_group_id
+                    is_person_folder = (record_group_id == team_member_id)
+            else:  # FolderMetadata (shared folder)
+                async with self.data_store_provider.transaction() as tx_store:
+                    existing_record = await tx_store.get_record_by_external_id(self.connector_name, file_id)
+                    if not existing_record:
+                        self.logger.warning(f"File record {file_id} not found in DB for re-sync. Cannot determine parent group.")
+                        return
+                    record_group_id = existing_record.external_record_group_id
+                    is_person_folder = (record_group_id == team_member_id)
+                # record_group_id = external_id
+                # is_person_folder = False
+
+            print("!!!!!!!!!!!!!!! giving to process dropbox entry")
             record_update = await self._process_dropbox_entry(
-                entry,
+                entry=entry,
                 user_id=team_member_id,
                 user_email=user_email,
                 record_group_id=record_group_id,
                 is_person_folder=is_person_folder
             )
 
-            # 3. Pass the result to your EXISTING handler
             if record_update and record_update.is_updated:
-                self.logger.info(f"Permissions changed for {record_update.record.record_name}")
+                self.logger.info(f"Permissions updated for {record_update.record.record_name}")
                 await self._handle_record_updates(record_update)
             else:
                 self.logger.info(f"Re-sync for {external_id} did not result in an update.")
@@ -1896,22 +2044,61 @@ class DropboxConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> Optional[str]:
         if not self.data_source: return None
         try:
+            user_with_permission = None
+            async with self.data_store_provider.transaction() as tx_store:
+                print("!!!!!!!!!!!!!!!!!! record: ", record.id)
+                user_with_permission = await tx_store.get_first_user_with_permission_to_node(f"{CollectionNames.RECORDS.value}/{record.id}")
+                file_record = await tx_store.get_file_record_by_id(record.id)
+                print("!!!!!!!!!!!!!!!!!!!!! file_record: ", file_record)
+            if not user_with_permission:
+                self.logger.warning(f"No user found with permission to node: {record.id}")
+                return None
+            if not file_record:
+                self.logger.warning(f"No file record found for node: {record.id}")
+                return None
+            
+            members = [UserSelectorArg("email", user_with_permission.email)]
+            team_member_info = await self.data_source.team_members_get_info_v2(members=members)
+            team_member_id = team_member_info.data.members_info[0].get_member_info().profile.team_member_id
             # Dropbox uses path or file ID for temporary links. ID is more robust.
-            response = await self.data_source.files_get_temporary_link(path=record.external_record_id)
+            team_folder_id = None
+            if record.external_record_group_id and not record.external_record_group_id.startswith("dbmid:"):
+                team_folder_id = record.external_record_group_id
+
+            response = await self.data_source.files_get_temporary_link(path=file_record["path"], team_folder_id=team_folder_id, team_member_id=team_member_id)
+            print("!!!!!!!!!!!!!!! response: ", response)
+            print("!!!!!!!!!!!!!!! signed url: ", response.data.link)
             return response.data.link
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
             return None
+    
+    # async def get_signed_url(self, record: Record) -> Optional[str]:
+    #     print("!!!!!!!!!!!!!!!!!!!! s1")
+    #     if not self.data_source: return None
+    #     try:
+    #         print("!!!!!!!!!!!!!!!!!!!! s2")
+    #         weburl = record.weburl
+    #         if not weburl: return None
+    #         direct_download_url = weburl.replace('dl=0', 'dl=1')
+    #         print("!!!!!!!!!!!!!!!!!!!! s3: ", direct_download_url)
+    #         return direct_download_url
+    #     except Exception as e:
+    #         self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
+    #         return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
+        print("!!!!!!!!!!!!!! streaming record: ", record)
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
         return StreamingResponse(
             stream_content(signed_url),
-            media_type=record.mime_type,
-            headers={"Content-Disposition": f"attachment; filename=\"{record.record_name}\""}
+            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename={record.record_name}"
+            }
         )
 
     async def test_connection_and_access(self) -> bool:
@@ -1933,14 +2120,26 @@ class DropboxConnector(BaseConnector):
         self.logger.info("Cleaning up Dropbox connector resources.")
         self.data_source = None
 
+    # @classmethod
+    # async def create_connector(
+    #     cls, logger, arango_service: BaseArangoService, config_service: ConfigurationService
+    # ) -> "BaseConnector":
+    #     data_entities_processor = DataSourceEntitiesProcessor(
+    #         logger, arango_service, config_service
+    #     )
+    #     await data_entities_processor.initialize()
+    #     return DropboxConnector(
+    #         logger, data_entities_processor, arango_service, config_service
+    #     )
+    
     @classmethod
     async def create_connector(
-        cls, logger, arango_service: BaseArangoService, config_service: ConfigurationService
+        cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
-            logger, arango_service, config_service
+            logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
         return DropboxConnector(
-            logger, data_entities_processor, arango_service, config_service
+            logger, data_entities_processor, data_store_provider, config_service
         )

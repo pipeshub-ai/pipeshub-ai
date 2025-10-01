@@ -7,6 +7,8 @@ import dropbox
 from dropbox import Dropbox, DropboxTeam
 from dropbox.file_properties import TemplateFilter  # type: ignore
 from dropbox.file_requests import UpdateFileRequestDeadline  # type: ignore
+from dropbox.team import UserSelectorArg
+
 from dropbox.files import (  # type: ignore
     ListRevisionsMode,
     SearchMode,
@@ -5542,7 +5544,9 @@ class DropboxDataSource:
     async def sharing_create_shared_link_with_settings(
         self,
         path: str,
-        settings: Optional[str] = None
+        settings: Optional[str] = None,
+        team_folder_id: Optional[str] = None,
+        team_member_id: Optional[str] = None,
     ) -> DropboxResponse:
         """Create a shared link with custom settings. If no settings are given then
 
@@ -5571,10 +5575,16 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.CreateSharedLinkWithSettingsError`
         """
-        client = await self._get_user_client()
+        
         try:
+            client = await self._get_user_client(team_member_id)
+            client_to_use = client
+            if team_folder_id:
+                client_to_use = client.with_path_root(
+                    dropbox.common.PathRoot.namespace_id(team_folder_id)
+                )
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.sharing_create_shared_link_with_settings(path, settings=settings))
+            response = await loop.run_in_executor(None, lambda: client_to_use.sharing_create_shared_link_with_settings(path, settings=settings))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5662,7 +5672,8 @@ class DropboxDataSource:
     async def sharing_get_folder_metadata(
         self,
         shared_folder_id: str,
-        actions: Optional[str] = None
+        actions: Optional[str] = None,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Returns shared folder metadata by its folder ID.
 
@@ -5691,8 +5702,9 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.SharedFolderAccessError`
         """
-        client = await self._get_user_client()
+        
         try:
+            client = await self._get_user_client(team_member_id=team_member_id)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_get_folder_metadata(shared_folder_id, actions=actions))
             return DropboxResponse(success=True, data=response)
@@ -6859,7 +6871,9 @@ class DropboxDataSource:
 
     async def sharing_unshare_file(
         self,
-        file: str
+        file: str,
+        team_folder_id: Optional[str] = None,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Remove all members from this file. Does not remove inherited members.
 
@@ -6882,8 +6896,8 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.UnshareFileError`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_unshare_file(file))
             return DropboxResponse(success=True, data=response)
@@ -9245,7 +9259,7 @@ class DropboxDataSource:
 
     async def team_members_get_info_v2(
         self,
-        members: str
+        members: List[UserSelectorArg]
     ) -> DropboxResponse:
         """Returns information about multiple team members. Permission : Team
 

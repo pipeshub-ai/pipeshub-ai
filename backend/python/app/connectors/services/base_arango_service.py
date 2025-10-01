@@ -661,6 +661,15 @@ class BaseArangoService:
                     role: edge.role
                 }}
             )
+            LET directAccessPermissionEdge = (
+                FOR records, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'DIRECT',
+                    source: userDoc,
+                    role: edge.role
+                }}
+            )
             LET groupAccess = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER belongsEdge.entityType == 'GROUP'
@@ -672,10 +681,32 @@ class BaseArangoService:
                     role: permEdge.role
                 }}
             )
+            LET groupAccessPermissionEdge = (
+                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER belongsEdge.entityType == 'GROUP'
+                FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'GROUP',
+                    source: group,
+                    role: permEdge.role
+                }}
+            )
             LET orgAccess = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER belongsEdge.entityType == 'ORGANIZATION'
                 FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'ORGANIZATION',
+                    source: org,
+                    role: permEdge.role
+                }}
+            )
+            LET orgAccessPermissionEdge = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER belongsEdge.entityType == 'ORGANIZATION'
+                FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
                     type: 'ORGANIZATION',
@@ -712,8 +743,11 @@ class BaseArangoService:
             )
             LET allAccess = UNION_DISTINCT(
                 directAccess,
+                directAccessPermissionEdge,
                 groupAccess,
+                groupAccessPermissionEdge,
                 orgAccess,
+                orgAccessPermissionEdge,
                 kbAccess,
                 anyoneAccess
             )
@@ -11871,4 +11905,140 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(f"Failed to get agent permissions: {str(e)}")
+            return None
+    
+
+    async def get_users_with_permission_to_node(
+        self, 
+        node_key: str, 
+        collection: str =  CollectionNames.PERMISSION.value,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[str]:
+        """
+        Get all users that have permission edges to a specific node/record
+        
+        Args:
+            node_key: The record/node key (e.g., "records/12345")
+            collection: The edge collection name (defaults to "permission")
+            transaction: Optional transaction database
+        
+        Returns:
+            List[str]: List of user keys that have permissions to the node
+        """
+        try:
+            self.logger.info("🚀 Getting users with permissions to node: %s from collection: %s", node_key, collection)
+            
+            query = f"""
+            FOR edge IN @@collection
+                FILTER edge._to == @node_key
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user._id == edge._from
+                    RETURN user
+            """
+            
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
+            users = [User.from_arango_user(user_data) for user_data in cursor]
+            
+            if users:
+                self.logger.info("✅ Found %d user(s) with permissions to node: %s", len(users), node_key)
+            else:
+                self.logger.warning("⚠️ No users found with permissions to node: %s in collection: %s", node_key, collection)
+            
+            return users
+            
+        except Exception as e:
+            self.logger.error("❌ Failed to get users with permissions to node: %s in collection: %s: %s", 
+                            node_key, collection, str(e))
+            return []
+
+
+    async def get_first_user_with_permission_to_node(
+        self, 
+        node_key: str, 
+        collection: str = CollectionNames.PERMISSION.value,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
+        """
+        Get the first user that has a permission edge to a specific node/record
+        
+        Args:
+            node_key: The record/node key (e.g., "records/12345")
+            collection: The edge collection name (defaults to "permission")
+            transaction: Optional transaction database
+        
+        Returns:
+            Optional[str]: User key with permission to the node, or None if not found
+        """
+        try:
+            self.logger.info("🚀 Getting first user with permission to node: %s from collection: %s", node_key, collection)
+            
+            query = f"""
+            FOR edge IN @@collection
+                FILTER edge._to == @node_key
+                LIMIT 1
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user._id == edge._from
+                    RETURN user
+            """
+            
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
+            result = next(cursor, None)
+            
+            if result:
+                user = User.from_arango_user(result)
+                self.logger.info("✅ Found user with permission to node: %s -> %s", node_key, user.email)
+                return user
+            else:
+                self.logger.warning("⚠️ No user found with permission to node: %s in collection: %s", node_key, collection)
+                return None
+            
+        except Exception as e:
+            self.logger.error("❌ Failed to get user with permission to node: %s in collection: %s: %s", 
+                            node_key, collection, str(e))
+            return None
+
+    async def get_file_record_by_id(
+        self, id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[FileRecord]:
+        """
+        Get file record using the id
+
+        Args:
+            id (str): The internal record ID (_key) to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[FileRecord]: FileRecord object if found, None otherwise
+        """
+        try:
+            self.logger.info("🚀 Retrieving file record for id %s", id)
+
+            query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file._key == @id
+                RETURN file
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"id": id})
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info("✅ Successfully retrieved file record for id %s", id)
+                print("!!!!!!!!!!!!!!!!!!!!!!! result: ", result)
+                return result
+                # return FileRecord.from_arango_base_file_record(
+                #     arango_base_file_record=result,
+                #     arango_base_record=result
+                # )
+            else:
+                self.logger.warning("⚠️ No file record found for id %s", id)
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve file record for id %s: %s", id, str(e)
+            )
             return None

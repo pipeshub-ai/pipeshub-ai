@@ -19,6 +19,7 @@ from app.models.entities import (
     Domain,
     Org,
     Record,
+    FileRecord,
     RecordGroup,
     RecordType,
     User,
@@ -53,6 +54,9 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    
+    async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
+        return await self.arango_service.get_file_record_by_id(id, transaction=self.txn)
 
     async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_id(id, transaction=self.txn)
@@ -106,6 +110,12 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
+    
+    async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[str]:
+        return await self.arango_service.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
+    
+    async def get_users_with_permission_to_node(self, node_key: str) -> List[str]:
+        return await self.arango_service.get_users_with_permission_to_node(node_key, transaction=self.txn)
     
     async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
         return await self.arango_service.get_edge(from_key, to_key, collection, transaction=self.txn)

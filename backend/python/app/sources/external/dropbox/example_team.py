@@ -18,6 +18,9 @@ from app.config.constants.arangodb import Connectors
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.sources.external.dropbox.dropbox_ import DropboxResponse
 from dropbox.team_log import EventCategory
+from dropbox.sharing import SharedLinkSettings, LinkAudience
+from dropbox.team import UserSelectorArg
+
 
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
@@ -77,7 +80,7 @@ async def main() -> None:
 
     #List dropbox logs events
     print("\nListing dropbox logs events:")
-    dropbox_logs = await data_source.team_log_get_events_continue(cursor="AAHUbyqbAtZDtmERCX2iKTtDiDbRsAoV8ks8PqED0qyYOvylM7zDT4cd7Z-4ndpdpIQrLU-IuqblMKJpA4uquSK_vo_h1HyVis_VGfpNMOS3YVEHvSA6H_Nt6iouB5V39ZQ_cI_-uPgbw6HcVL3sqSB15qINJBAE670sdlxCvZOG7RnZtgtD3Fi0V_bcBkIHiLAxBo-odgUUDhItgeBiDlozlXNpd_0hqsX8f7ea9sVeARxyCKu5bogATZn7Ws0gVKO-O0LTYG3dvO0Fm3p0srJwsAVGk4PogCL6nTPXyh9NVzwfzxKFuN_NFCnM1TBJx5PTzuXgScQQTOhubDXUOcOYdQOcO-gpiO82QpEpOIf9F4VeCPAyyLiEpjy1NN42cjg6m4s0uKbtFU40SVd0yQsL4GHLB4QskUw-onkm5YTq3A")
+    dropbox_logs = await data_source.team_log_get_events_continue(cursor="AAGrq_veuQEt1o-G2PUENIKAG3cf0KhacqGEVTpIyuXkLD95osu6mJgisn2cv3Zw_v55jPLPCITK5TMF-Zd59qtl6tmoxbI5Zc-cf6oBkqNX_Ysn9F1iV-oMIUKpi3T1czrXEMlCeNfzObg85Ds95q2ovLyoJzS9z_wkWnmxln7VeptjYG7y9ms0HObhnSaur8oCBravCVVW_016nVVgy80_X03RI8syyJ0k_Hj4zw_foHw4_AwAuAq1uV_IgDcymZVdm89Oi5bDj8sUsT8BDT-Pf6LNaRg60LDXt4umcUuS011LrvwKDiLiur3Z646Vy8sY6H7tfJNXnRInDjhawSrE8hfjPHDW4wF12dDx00_rog04urJfPnIMS0BBzpbzQQa_HMu3hudBDSfbKnscyboNQ54Mnv98wNqXsCpoiMFyrQ")
     print(dropbox_logs)
     
     # def get_parent_path_from_path(path: str):
@@ -93,12 +96,42 @@ async def main() -> None:
     # print(parent_metadata)
 
     #file metadata
-    # file_metadata = await data_source.files_get_metadata(path="/hi/test1", team_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id)
-    # print(file_metadata)
+    print("\nListing folder metadata:")
+    file_metadata = await data_source.files_get_metadata(path="ns:12814702001", team_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
+    print(file_metadata)
+
+    file_metadata = await data_source.files_get_metadata(path="id:ao7lcW3O2rQAAAAAAAAAXg", team_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
+    print(file_metadata)
+
+    #sahred folder metadata
+    # print("\nListing shared folder metadata:")
+    # shared_folder_metadata = await data_source.sharing_get_folder_metadata(shared_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
+    # print((shared_folder_metadata))
+
+    #generate link
+    print("\nGenerating link:")
+    link = await data_source.sharing_create_shared_link_with_settings(path="id:7ycJU6IBbZkAAAAAAAAACw", team_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id)
+    print(link)
+
+    link_settings = SharedLinkSettings(
+        audience=LinkAudience('no_one'), 
+        allow_download=True
+    )
+    print("\nGenerating link2:")
+    link = await data_source.sharing_create_shared_link_with_settings(path="id:7ycJU6IBbZkAAAAAAAAABw", team_folder_id="13131350499", settings=link_settings, team_member_id=team_members.data.members[2].profile.team_member_id)
+    print(link)
+
+    #get team member info
+    memebers = [UserSelectorArg("email","harshit@pipeshub.app")]
+    print("\nGetting team member info:")
+    team_member_info = await data_source.team_members_get_info_v2(memebers)
+    print(team_member_info)
+    print(team_member_info.data.members_info[0].get_member_info().profile.team_member_id)
+
 
     # #list all the folders I have access to 
     # shared_folders = await data_source.sharing_list_folders(team_member_id=team_members.data.members[2].profile.team_member_id)
-    # # print(to_pretty_json(shared_folders))
+    # # print(to_pretty_json(shared_folders))   
     # for folder in shared_folders.data.entries:
     #     print("name: ", folder.name)
     #     print("id: ", folder.shared_folder_id)
@@ -149,9 +182,10 @@ async def main() -> None:
     # #list using cursor
     # print("\nListing using cursor:")
     # # cursor = my_personal_folder.data["cursor"]
-    # cursor = "AATxehrQlH_dGIO0PA18ltaaSsXPk4OfZqCxddl4xiyAxVzCWLOlawaNTs7xf7jgXQPOCbCo-e9deSolU1EZWfwmwxVUHcr22S_HsAUJTWEdlggUXK5-uH1icd8fV4aeNsSx7v9dNFgvPJDhZx6WS0oMWn6dn1hNLld2d3N0yFWb1C0nNZQW4F8iVAgX4dKgmTE"
+    # cursor = "AAQ_D2q1fkCpj__eB3aTmdEHXLDwCx_qTTPSIPflwZdGNwjQ_DgpRMPj0HqVucDxI-SLRGnCud7K0h4NoZ_h12rBE-9nCo-z-IGcbTz5pHDpC_cx3MB6ver_gKExeLUm8S1NnqiRHbrKbIQPWNWxuEmJ2AA3fKusvqvsIotok5pYOgKcTUjXiYG0jW288rABP3VVNPln_UypnfSFbDWzVBBm3U1fvZk1smOYJWhPqv7tJ0YhiFjpEGB30NlS1_U-f0IvzWCPPbn4PuVR6XA5RkcilAo9rSqt-gbKFUPD3ShQ5Q"
     # cursor_result = await data_source.files_list_folder_continue(cursor, 
-    # team_member_id=members[2].source_user_id)
+    # team_member_id=team_members.data.members[2].profile.team_member_id,
+    # team_folder_id="13160107251")
     # print(cursor_result)
 
     # print("\nget tempory link:")
