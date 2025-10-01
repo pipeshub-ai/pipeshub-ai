@@ -151,7 +151,6 @@ class RecordEventHandler(BaseEventService):
                 # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
                 # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-                event_type = EventTypes.NEW_RECORD.value
 
 
             if extension is None and mime_type != "text/gmail_content":
