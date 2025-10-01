@@ -63,7 +63,11 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Constants for SharePoint site ID composite format
+# A composite site ID has the format: "hostname,site-id,web-id"
+COMPOSITE_SITE_ID_COMMA_COUNT = 2
+COMPOSITE_SITE_ID_PARTS_COUNT = 3
 
 
 class SharePointRecordType(Enum):
@@ -186,7 +190,6 @@ class SharePointConnector(BaseConnector):
             )
 
         # Initialize sync points
-        self.site_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.drive_delta_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.list_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.page_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
@@ -196,7 +199,7 @@ class SharePointConnector(BaseConnector):
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": True}
         # Batch processing configuration
         self.batch_size = 50  # Reduced for better memory management
-        self.max_concurrent_batches = 2  # Reduced to avoid rate limiting
+        self.max_concurrent_batches = 1  # Reduced to avoid rate limiting
         self.rate_limiter = AsyncLimiter(30, 1)  # 30 requests per second (conservative)
 
         # Cache for site metadata
@@ -260,13 +263,9 @@ class SharePointConnector(BaseConnector):
         These need to be properly URL encoded for Graph API calls.
         """
         if not site_id:
-            raise ValueError("❌ Site ID cannot be empty")
+            self.logger.error("❌ Site ID cannot be empty")
+            return ""
 
-        if ',' in site_id:
-            # URL encode commas and other special characters
-            encoded = urllib.parse.quote(site_id, safe='')
-            self.logger.debug(f"Encoded site ID '{site_id}' to '{encoded}'")
-            return encoded
         return site_id
 
     def _validate_site_id(self, site_id: str) -> bool:
@@ -299,6 +298,28 @@ class SharePointConnector(BaseConnector):
 
         self.logger.warning(f"❌ Site ID format not recognized: {site_id}")
         return False
+
+    def _normalize_site_id(self, site_id: str) -> str:
+        if not site_id:
+            return site_id
+
+        # Already composite?
+        if site_id.count(',') == COMPOSITE_SITE_ID_COMMA_COUNT:
+            return site_id
+
+        # Try to infer from cache (keys are composite IDs)
+        for composite_id in self.site_cache:
+            parts = composite_id.split(',')
+            if len(parts) == COMPOSITE_SITE_ID_PARTS_COUNT and site_id == f"{parts[1]},{parts[2]}":
+                return composite_id
+
+        # Fallback: prepend tenant hostname if available
+        if site_id.count(',') == 1 and getattr(self, 'sharepoint_domain', None):
+            host = urllib.parse.urlparse(self.sharepoint_domain).hostname or self.sharepoint_domain
+            if host and '.' in host:
+                return f"{host},{site_id}"
+
+        return site_id
 
     async def _safe_api_call(self, api_call, max_retries: int = 3, retry_delay: float = 1.0) -> None:
         """
@@ -487,44 +508,15 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"⚠️ Subsite discovery failed for site {site_id}: {e}")
             return []
 
-    async def _sync_site_content(self, site: Site) -> None:
+    async def _sync_site_content(self, site_record_group: RecordGroup) -> None:
         """
         Sync all content from a SharePoint site with comprehensive error tracking.
         """
         try:
-            site_id = site.id
-            site_name = site.display_name or site.name
+            site_id = site_record_group.external_group_id
+            site_name = site_record_group.name
             self.logger.info(f"Starting sync for site: '{site_name}' (ID: {site_id})")
 
-            # Validate site before processing
-            if not self._validate_site_id(site_id):
-                raise ValueError(f"Invalid site ID format: '{site_id}'")
-
-            get_epoch_timestamp_in_ms()
-            source_created_at = int(site.created_date_time.timestamp() * 1000) if site.created_date_time else None
-            int(site.last_modified_date_time.timestamp() * 1000) if site.last_modified_date_time else source_created_at
-            # Create site record group
-            # site_record_group = RecordGroup(
-            #     id=str(uuid.uuid4()),
-            #     org_id=self.data_entities_processor.org_id,
-            #     name=site_name,
-            #     short_name=site.name if site.name != site_name else None,
-            #     description=getattr(site, 'description', None),
-            #     external_group_id=site_id,
-            #     connector_name=self.connector_name,
-            #     web_url=site.web_url,
-            #     group_type=RecordGroupType.SHAREPOINT_SITE,
-            #     created_at=current_time,
-            #     updated_at=current_time,
-            #     source_created_at=source_created_at,
-            #     source_updated_at=source_updated_at
-            # )
-
-            # # Get site permissions
-            # site_permissions = await self._get_site_permissions(site_id)
-            # print(f"Site permissions: '{site_permissions}'")
-            # # Process site record group
-            # await self.data_entities_processor.on_new_record_groups([(site_record_group, site_permissions)])
 
             # Process all content types
             batch_records = []
@@ -532,7 +524,7 @@ class SharePointConnector(BaseConnector):
 
             # Process drives (document libraries)
             self.logger.info(f"Processing drives for site: {site_name}")
-            async for record, permissions, record_update in self._process_site_drives(site_id):
+            async for record, permissions, record_update in self._process_site_drives(site_id, internal_site_record_group_id=site_record_group.id):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                 elif record:
@@ -576,24 +568,24 @@ class SharePointConnector(BaseConnector):
             # # Process remaining records
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
+                pass
 
             self.logger.info(f"Completed sync for site '{site_name}' - processed {total_processed} items")
             self.stats['sites_processed'] += 1
 
         except Exception as e:
-            site_name = getattr(site, 'display_name', None) or getattr(site, 'name', 'Unknown')
-            self.logger.error(f"Failed to sync site '{site_name}': {e}")
+            site_name = site_record_group.name
+            self.logger.error(f"❌ Failed to sync site '{site_name}': {e}")
             self.stats['sites_failed'] += 1
             raise
 
-    async def _process_site_drives(self, site_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
+    async def _process_site_drives(self, site_id: str, internal_site_record_group_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
         """
         Process all document libraries (drives) in a SharePoint site.
         """
         try:
-            encoded_site_id = self._construct_site_url(site_id)
-
             async with self.rate_limiter:
+                encoded_site_id = self._normalize_site_id(site_id)
                 drives_response = await self._safe_api_call(
                     self.client.sites.by_site_id(encoded_site_id).drives.get()
                 )
@@ -603,47 +595,35 @@ class SharePointConnector(BaseConnector):
                 return
 
             drives = drives_response.value
-            self.logger.debug(f"Found {len(drives)} drives in site")
 
+            drive_record_groups_with_permissions = []
             for drive in drives:
-                try:
                     drive_name = getattr(drive, 'name', 'Unknown Drive')
                     drive_id = getattr(drive, 'id', None)
 
                     if not drive_id:
+                        self.logger.warning(f"⚠️ No drive ID found for drive {drive_name}")
                         continue
 
                     # Create document library record
-                    drive_record_group = await self._create_document_library_record(drive, site_id)
+                    drive_record_group = self._create_document_library_record_group(drive, site_id, internal_site_record_group_id)
                     if drive_record_group:
+                        drive_record_groups_with_permissions.append((drive_record_group, []))
                         # permissions = await self._get_drive_permissions(site_id, drive_id)
-                        # yield (drive_record_group, permissions, RecordUpdate(
-                        #     record=drive_record_group,
-                        #     is_new=True,
-                        #     is_updated=False,
-                        #     is_deleted=False,
-                        #     metadata_changed=False,
-                        #     content_changed=False,
-                        #     permissions_changed=False,
-                        #     new_permissions=permissions
-                        # ))
 
-                        # Process items in the drive using delta
-                        item_count = 0
-                        async for item_tuple in self._process_drive_delta(site_id, drive_id):
-                            yield item_tuple
-                            item_count += 1
+            self.logger.info(f"Found {len(drive_record_groups_with_permissions)} drive record groups to process.")
+            await self.data_entities_processor.on_new_record_groups(drive_record_groups_with_permissions)
 
-                        self.logger.debug(f"Processed {item_count} items from drive '{drive_name}'")
-                        self.stats['drives_processed'] += 1
+            for drive_record_group, _permissions in drive_record_groups_with_permissions:
+                # Process items in the drive using delta
+                item_count = 0
+                self.logger.info(f"Drive record group: {drive_record_group}")
+                async for item_tuple in self._process_drive_delta(site_id, drive_record_group.external_group_id):
+                    yield item_tuple
+                    item_count += 1
 
-                except Exception as drive_error:
-                    drive_name = getattr(drive, 'name', 'unknown')
-                    self.logger.warning(f"⚠️ Error processing drive '{drive_name}': {drive_error}")
-                    continue
-
-        except Exception as e:
-            self.logger.error(f"Error processing drives for site {site_id}: {e}")
+        except Exception:
+            self.logger.exception(f"❌ Error processing drives for site {site_id}")
 
     async def _process_drive_delta(self, site_id: str, drive_id: str) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
@@ -668,12 +648,14 @@ class SharePointConnector(BaseConnector):
                 # Continue from previous sync point - use the URL as-is
 
                 # Ensure we're not accidentally processing this URL
+                self.logger.debug(f"Delta URL for drive_id: {drive_id} is {delta_url}")
                 parsed_url = urllib.parse.urlparse(delta_url)
+                self.logger.debug(f"Parsed URL for drive_id: {drive_id} is {parsed_url}")
                 if not (
                     parsed_url.scheme == 'https' and
                     parsed_url.hostname == 'graph.microsoft.com'
                 ):
-                    self.logger.error(f"Invalid delta URL format: {delta_url}")
+                    self.logger.error(f"❌ Invalid delta URL format: {delta_url}")
                     # Clear the sync point and start fresh
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key,
@@ -681,14 +663,14 @@ class SharePointConnector(BaseConnector):
                     )
                     delta_url = None
                 else:
-                    result = await self.msgraph_client.get_delta_response(delta_url)
+                    result = await self.msgraph_client.get_delta_response_sharepoint(delta_url)
 
             if not delta_url:
+                self.logger.info(f"No delta URL found for drive_id: {drive_id}, starting fresh delta sync")
                 # Start fresh delta sync
                 encoded_site_id = self._construct_site_url(site_id)
                 root_url = f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}/drives/{drive_id}/root/delta"
-                self.logger.debug(f"Starting fresh delta sync with URL: {root_url}")
-                result = await self.msgraph_client.get_delta_response(root_url)
+                result = await self.msgraph_client.get_delta_response_sharepoint(root_url)
 
                 if not result:
                     return
@@ -709,7 +691,7 @@ class SharePointConnector(BaseConnector):
                                 yield (record_update.record, record_update.new_permissions or [], record_update)
                                 self.stats['items_processed'] += 1
                     except Exception as item_error:
-                        self.logger.debug(f"Error processing drive item: {item_error}")
+                        self.logger.error(f"❌ Error processing drive item: {item_error}")
                         continue
 
                     await asyncio.sleep(0)
@@ -717,15 +699,13 @@ class SharePointConnector(BaseConnector):
                 # Handle pagination
                 next_link = result.get('next_link')
                 if next_link:
-                    self.logger.debug(f"Storing next_link: {next_link}")
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key,
                         sync_point_data={"nextLink": next_link}
                     )
-                    result = await self.msgraph_client.get_delta_response(next_link)
+                    result = await self.msgraph_client.get_delta_response_sharepoint(next_link)
                 else:
                     delta_link = result.get('delta_link')
-                    self.logger.debug(f"Storing delta_link: {delta_link}")
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key,
                         sync_point_data={
@@ -736,14 +716,14 @@ class SharePointConnector(BaseConnector):
                     break
 
         except Exception as e:
-            self.logger.error(f"Error processing drive delta for drive {drive_id}: {e}")
+            self.logger.error(f"❌ Error processing drive delta for drive {drive_id}: {e}")
             # Clear the sync point to force a fresh start on next attempt
             try:
                 await self.drive_delta_sync_point.update_sync_point(
                     sync_point_key,
                     sync_point_data={"nextLink": None, "deltaLink": None}
                 )
-                self.logger.info(f"Cleared sync point for drive {drive_id} due to error")
+                self.logger.info(f"✅ Cleared sync point for drive {drive_id} due to error")
             except Exception as clear_error:
                 self.logger.error(f"Failed to clear sync point: {clear_error}")
 
@@ -798,13 +778,14 @@ class SharePointConnector(BaseConnector):
                         is_updated = True
 
             # Create file record
-            file_record = await self._create_file_record(item, site_id, drive_id, existing_record)
+            file_record = await self._create_file_record(item, drive_id, existing_record)
             if not file_record:
                 return None
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
 
+            # Todo: Get permissions for the record
             for user in users:
                 permissions.append(Permission(
                     email=user.email,
@@ -825,10 +806,10 @@ class SharePointConnector(BaseConnector):
 
         except Exception as e:
             item_name = getattr(item, 'name', 'unknown')
-            self.logger.debug(f"Error processing drive item '{item_name}': {e}")
+            self.logger.error(f"❌ Error processing drive item '{item_name}': {e}")
             return None
 
-    async def _create_file_record(self, item: DriveItem, site_id: str, drive_id: str, existing_record: Optional[Record]) -> Optional[FileRecord]:
+    async def _create_file_record(self, item: DriveItem, drive_id: str, existing_record: Optional[Record]) -> Optional[FileRecord]:
         """
         Create a FileRecord from a DriveItem with comprehensive data extraction.
         """
@@ -886,7 +867,6 @@ class SharePointConnector(BaseConnector):
             path = None
             if hasattr(item, 'parent_reference') and item.parent_reference:
                 parent_id = getattr(item.parent_reference, 'id', None)
-                drive_id = getattr(item.parent_reference, 'drive_id', None)
                 path = getattr(item.parent_reference, 'path', None)
 
             return FileRecord(
@@ -923,7 +903,7 @@ class SharePointConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.debug(f"Error creating file record: {e}")
+            self.logger.error(f"❌ Error creating file record: {e}")
             return None
 
     async def _process_site_lists(self, site_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
@@ -943,7 +923,7 @@ class SharePointConnector(BaseConnector):
                 return
 
             lists = lists_response.value
-            self.logger.debug(f"Found {len(lists)} lists in site")
+            self.logger.info(f"Found {len(lists)} lists in site")
 
             for list_obj in lists:
                 try:
@@ -1335,9 +1315,9 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"❌ Error creating page record: {e}")
             return None
 
-    async def _create_document_library_record(self, drive: dict, site_id: str) -> Optional[RecordGroup]:
+    def _create_document_library_record_group(self, drive: dict, site_id: str, internal_site_record_group_id: str) -> Optional[RecordGroup]:
         """
-        Create a record for a document library.
+        Create a record group for a document library.
         """
         try:
             drive_id = getattr(drive, 'id', None)
@@ -1354,34 +1334,21 @@ class SharePointConnector(BaseConnector):
             if hasattr(drive, 'last_modified_date_time') and drive.last_modified_date_time:
                 source_updated_at = int(drive.last_modified_date_time.timestamp() * 1000)
 
-            # Build metadata
-            metadata = {
-                "drive_type": getattr(drive, 'drive_type', 'documentLibrary'),
-                "site_id": site_id
-            }
-
-            # Add quota info if available
-            if hasattr(drive, 'quota') and drive.quota:
-                metadata["quota_total"] = getattr(drive.quota, 'total', None)
-                metadata["quota_used"] = getattr(drive.quota, 'used', None)
-
-            created_at = get_epoch_timestamp_in_ms()
 
             return RecordGroup(
                 external_group_id=drive_id,
                 name=drive_name,
                 group_type=RecordGroupType.DRIVE.value,
+                parent_external_group_id=site_id,
+                parent_record_group_id=internal_site_record_group_id,
                 connector_name=self.connector_name,
                 web_url=getattr(drive, 'web_url', None),
-                created_at=created_at,
-                updated_at=created_at,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
-                metadata=metadata
             )
 
         except Exception as e:
-            self.logger.debug(f"❌ Error creating document library record: {e}")
+            self.logger.debug(f"❌ Error creating document library record group: {e}")
             return None
 
     # Permission methods
@@ -2066,27 +2033,61 @@ class SharePointConnector(BaseConnector):
 
             self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
 
-            # Step 4: Process sites in batches
-            for i in range(0, len(sites), self.max_concurrent_batches):
-                batch = sites[i:i + self.max_concurrent_batches]
-                batch_start = i + 1
-                batch_end = min(i + len(batch), len(sites))
+            # Create site record groups
+            site_record_groups_with_permissions = []
+            for site in sites:
+                if not self._validate_site_id(site.id):
+                    self.logger.warning(f"Invalid site ID format: '{site.id}'")
+                    continue
+                if not site.name and not site.display_name:
+                    self.logger.warning(f"Site name is empty: '{site.id}'")
+                    continue
 
-                self.logger.info(f"📊 Processing site batch {batch_start}-{batch_end} of {len(sites)}")
+                site_name = site.display_name or site.name
+                site_id = site.id
+                source_created_at = int(site.created_date_time.timestamp() * 1000) if site.created_date_time else None
+                source_updated_at = int(site.last_modified_date_time.timestamp() * 1000) if site.last_modified_date_time else source_created_at
+                # Create site record group
+                site_record_group = RecordGroup(
+                    name=site_name,
+                    short_name=site.name,
+                    description=getattr(site, 'description', None),
+                    external_group_id=site_id,
+                    connector_name=self.connector_name,
+                    web_url=site.web_url,
+                    group_type=RecordGroupType.SHAREPOINT_SITE,
+                    source_created_at=source_created_at,
+                    source_updated_at=source_updated_at
+                )
+                site_record_groups_with_permissions.append((site_record_group, []))
+                # # Get site permissions
+                # site_permissions = await self._get_site_permissions(site_id)
+                # print(f"Site permissions: '{site_permissions}'")
+                # # Process site record group
+
+            await self.data_entities_processor.on_new_record_groups(site_record_groups_with_permissions)
+
+            # Step 4: Process sites in batches
+            for i in range(0, len(site_record_groups_with_permissions), self.max_concurrent_batches):
+                batch = site_record_groups_with_permissions[i:i + self.max_concurrent_batches]
+                batch_start = i + 1
+                batch_end = min(i + len(batch), len(site_record_groups_with_permissions))
+
+                self.logger.info(f"📊 Processing site batch {batch_start}-{batch_end} of {len(site_record_groups_with_permissions)}")
 
                 # Process batch
-                tasks = [self._sync_site_content(site) for site in batch]
+                tasks = [self._sync_site_content(site_record_group) for site_record_group, _permissions in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Count results
                 for idx, result in enumerate(results):
                     if isinstance(result, Exception):
-                        self.logger.error(f"❌ Site sync failed: {batch[idx].display_name or batch[idx].name}")
+                        self.logger.error(f"❌ Site sync failed: {batch[idx][0].name}")
                     else:
-                        self.logger.info(f"✅ Site sync completed: {batch[idx].display_name or batch[idx].name}")
+                        self.logger.info(f"✅ Site sync completed: {batch[idx][0].name}")
 
                 # Brief pause between batches
-                if batch_end < len(sites):
+                if batch_end < len(site_record_groups_with_permissions):
                     await asyncio.sleep(2)
 
             # Final statistics

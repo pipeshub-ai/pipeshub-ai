@@ -70,6 +70,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
+        pass
+
+    @abstractmethod
     async def get_user_by_email(self, email: str) -> Optional[User]:
         pass
 

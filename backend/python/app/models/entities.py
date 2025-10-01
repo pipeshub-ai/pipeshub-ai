@@ -435,6 +435,7 @@ class RecordGroup(BaseModel):
     description: Optional[str] = Field(default=None, description="Description of the record group")
     external_group_id: Optional[str] = Field(description="External identifier for the record group")
     parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
+    parent_record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the parent record group")
     connector_name: Connectors = Field(description="Name of the connector used to create the record group")
     web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
     group_type: Optional[RecordGroupType] = Field(description="Type of the record group")

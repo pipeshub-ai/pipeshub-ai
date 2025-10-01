@@ -259,6 +259,8 @@ class DataSourceEntitiesProcessor:
                         record_group.id = existing_record_group.id
 
                     await tx_store.batch_upsert_record_groups([record_group])
+                    if record_group.parent_record_group_id:
+                        await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
         except Exception as e:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e

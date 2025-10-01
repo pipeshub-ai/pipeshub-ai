@@ -51,6 +51,17 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
 
+    async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
+        return await self.arango_service.get_record_group_by_id(id, transaction=self.txn)
+
+    async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
+        await self.arango_service.batch_create_edges([{
+            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{child_id}",
+            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn)
+
     async def get_user_by_email(self, email: str) -> Optional[User]:
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
