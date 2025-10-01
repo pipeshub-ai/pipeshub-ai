@@ -1,4 +1,3 @@
-import re
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
@@ -20,6 +19,7 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 from app.models.entities import AppUser, AppUserGroup, FileRecord
 from app.models.permission import Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
 
 # Map Microsoft Graph roles to permission type
 def map_msgraph_role_to_permission_type(role: str) -> PermissionType:

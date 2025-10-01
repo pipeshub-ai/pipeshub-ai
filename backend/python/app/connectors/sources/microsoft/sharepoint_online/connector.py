@@ -63,7 +63,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class SharePointRecordType(Enum):
@@ -607,9 +606,9 @@ class SharePointConnector(BaseConnector):
                         drive_record_groups_with_permissions.append((drive_record_group, []))
                         # permissions = await self._get_drive_permissions(site_id, drive_id)
 
-            self.logger.info(f"Drive record groups: {drive_record_groups_with_permissions}")       
+            self.logger.info(f"Drive record groups: {drive_record_groups_with_permissions}")
             await self.data_entities_processor.on_new_record_groups(drive_record_groups_with_permissions)
-            
+
             for drive_record_group, _permissions in drive_record_groups_with_permissions:
                 # Process items in the drive using delta
                 item_count = 0
@@ -780,7 +779,7 @@ class SharePointConnector(BaseConnector):
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-            
+
             # Todo: Get permissions for the record
             for user in users:
                 permissions.append(Permission(

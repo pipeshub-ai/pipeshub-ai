@@ -68,9 +68,9 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         pass
-    
+
     @abstractmethod
-    async def create_record_group_relation(self, id: str, parent_id: str) -> None:
+    async def create_record_groups_relation(self, id: str, parent_id: str) -> None:
         pass
 
     @abstractmethod
