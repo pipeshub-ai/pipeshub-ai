@@ -60,7 +60,7 @@ class Record(BaseModel):
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
-    mime_type: Optional[MimeTypes] = Field(default=None, description="MIME type of the record")
+    mime_type: Optional[MimeTypes] = Field(default=MimeTypes.UNKNOWN, description="MIME type of the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -119,7 +119,7 @@ class Record(BaseModel):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record["connectorName"]),
-            mime_type=arango_base_record.get("mimeType", None),
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
             updated_at=arango_base_record.get("updatedAtTimestamp", None),
@@ -173,7 +173,7 @@ class FileRecord(Record):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record["connectorName"]),
-            mime_type=arango_base_record["mimeType"],
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN),
             weburl=arango_base_record["webUrl"],
             external_record_group_id=arango_base_file_record["externalGroupId"],
             parent_external_record_id=arango_base_file_record["externalParentId"],
@@ -320,7 +320,7 @@ class TicketRecord(Record):
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value if self.mime_type else None,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,
@@ -344,7 +344,7 @@ class SharePointListRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,

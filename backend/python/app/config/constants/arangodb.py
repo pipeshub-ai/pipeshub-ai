@@ -185,6 +185,16 @@ class MimeTypes(Enum):
     MARKDOWN = "text/markdown"
     MDX = "text/mdx"
     GENESIS_32X_ROM = "application/x-genesis-32x-rom"
+    JSON = "application/json"
+    BLOCKS = "application/blocks"
+    XML = "application/xml"
+    YAML = "application/yaml"
+    BASE64 = "application/base64"
+    UTF8 = "application/utf8"
+    BINARY = "application/binary"
+    IMAGE = "image/image"
+    VIDEO = "video/video"
+    UNKNOWN = "application/unknown"
 
 
 
