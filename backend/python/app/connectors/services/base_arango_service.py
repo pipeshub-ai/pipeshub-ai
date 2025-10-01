@@ -147,6 +147,20 @@ class BaseArangoService:
                     CollectionNames.FILES.value,  # For attachments
                 ]
             },
+            Connectors.OUTLOOK.value: {
+                "allowed_roles": ["OWNER", "WRITER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.FILES.value,
+                ]
+            },
             Connectors.KNOWLEDGE_BASE.value: {
                 "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
                 "edge_collections": [
@@ -1657,7 +1671,7 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
         """
@@ -1665,18 +1679,87 @@ class BaseArangoService:
             self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id)
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
                 return
 
-            # Delete record
-            await self.delete_record(record["key"])
+            # Delete record using the record's internal ID and user_id
+            deletion_result = await self.delete_record(record.id, user_id)
 
-            self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            # Check if deletion was successful
+            if deletion_result.get("success"):
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            else:
+                error_reason = deletion_result.get("reason", "Unknown error")
+                self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
+                raise Exception(f"Deletion failed: {error_reason}")
+
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
             raise
+
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions)
+        This removes the user's permissions and belongsTo edges without deleting the record itself
+        """
+        try:
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+
+            # Get record
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Remove user's access instead of deleting the entire record
+            result = await self._remove_user_access_from_record(record.id, user_id)
+
+            if result.get("success"):
+                self.logger.info(f"✅ User access removed: {external_id} from {connector_name}")
+            else:
+                self.logger.error(f"❌ Failed to remove user access: {result.get('reason', 'Unknown error')}")
+                raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            raise
+
+    async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
+        """Remove a specific user's access to a record"""
+        try:
+            self.logger.info(f"🚀 Removing user {user_id} access to record {record_id}")
+
+            # Remove user's permission edges
+            user_removal_query = """
+            FOR perm IN permissions
+                FILTER perm._from == @record_from
+                FILTER perm._to == @user_to
+                REMOVE perm IN permissions
+                RETURN OLD
+            """
+
+            cursor = self.db.aql.execute(user_removal_query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "user_to": f"users/{user_id}"
+            })
+
+            removed_permissions = list(cursor)
+
+            if removed_permissions:
+                self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": len(removed_permissions)}
+            else:
+                self.logger.warning(f"⚠️ No permissions found for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": 0}
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Access removal failed: {str(e)}"
+            }
 
     async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
         """
@@ -2991,6 +3074,72 @@ class BaseArangoService:
             if transaction:
                 raise
             return False
+
+    async def get_mail_record_by_conversation_index(
+        self,
+        connector_name: Connectors,
+        conversation_index: str,
+        thread_id: str,
+        org_id: str,
+        user_email: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[Record]:
+        """
+        Get mail record by conversation_index and thread_id for a specific user
+
+        Args:
+            connector_name: Connector name
+            conversation_index: The conversation index to look up
+            thread_id: The thread ID to match
+            org_id: The organization ID
+            user_email: User's email address to filter results
+            transaction: Optional database transaction
+
+        Returns:
+            Optional[Record]: Mail record if found, None otherwise
+        """
+        try:
+
+            # query that joins both records and mails collections to get the mail record
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorName == @connector_name
+                    AND record.orgId == @org_id
+                    AND LIKE(record.externalGroupId, CONCAT('%_', @user_email))
+                FOR mail IN {CollectionNames.MAILS.value}
+                    FILTER mail._key == record._key
+                        AND mail.conversationIndex == @conversation_index
+                        AND mail.threadId == @thread_id
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "conversation_index": conversation_index,
+                    "thread_id": thread_id,
+                    "connector_name": connector_name.value,
+                    "org_id": org_id,
+                    "user_email": user_email,
+                },
+            )
+            result = next(cursor, None)
+
+            if result:
+                return Record.from_arango_base_record(result)
+            else:
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve mail record for conversation_index %s in thread %s for user %s: %s",
+                conversation_index,
+                thread_id,
+                user_email,
+                str(e),
+            )
+            return None
 
     async def get_record_by_external_id(
         self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
