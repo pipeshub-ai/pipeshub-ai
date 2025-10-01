@@ -150,6 +150,29 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Audio
 - Video
 
+## Tech Stack
+### Frontend
+- **React** - Component-based UI library
+- **TypeScript** - Strongly typed JavaScript superset
+- **Material UI** - Prebuilt React UI components
+- **Zod** – Schema validation and parsing
+- **React Hook Form** – Flexible form state management
+
+### Backend
+- **FastAPI** - High-performance Python web framework
+- **LangChain** - Framework for LLM pipelines
+- **LangGraph** – State graph for LLM workflows
+- **Qdrant** - Vector similarity search engine
+- **ArangoDB** - Multi-model graph/document database
+- **Kafka** - Distributed event streaming platform
+- **Redis** - In-memory caching and messaging
+- **Celery** - Distributed task queue system
+- **Docling** - Document parsing and extraction toolkit
+- **PyMuPDF** - PDF processing library
+- **OCRmyPDF** - OCR text layer for PDFs
+- **pandas** - Data analysis and manipulation
+- **etcd3** - Distributed key-value configuration store
+
 ## RoadMap
 
 - Code Search
