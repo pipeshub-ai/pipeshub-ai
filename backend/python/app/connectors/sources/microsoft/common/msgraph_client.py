@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
@@ -19,7 +20,6 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 from app.models.entities import AppUser, AppUserGroup, FileRecord
 from app.models.permission import Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
 
 # Map Microsoft Graph roles to permission type
 def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
@@ -234,6 +234,42 @@ class MSGraphClient:
         except Exception as ex:
             self.logger.error(f"Unexpected error fetching users: {ex}")
             raise ex
+
+    async def get_delta_response_sharepoint(self, url: str) -> dict:
+        response = {'delta_link': None, 'next_link': None, 'drive_items': []}
+
+        try:
+            async with self.rate_limiter:
+                ri = RequestInformation()
+                ri.http_method = Method.GET
+                ri.url = url  # absolute URL
+                ri.headers.add("Accept", "application/json")
+
+                error_mapping: Dict[str, type[ParsableFactory]] = {
+                    "4XX": ODataError,
+                    "5XX": ODataError,
+                }
+
+                result = await self.client.request_adapter.send_async(
+                    request_info=ri,
+                    parsable_factory=DeltaGetResponse,  # or DriveItemCollectionResponse
+                    error_map=error_mapping
+                )
+
+            if hasattr(result, 'value') and result.value:
+                response['drive_items'] = result.value
+            if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                response['next_link'] = result.odata_next_link
+            if hasattr(result, 'odata_delta_link') and result.odata_delta_link:
+                response['delta_link'] = result.odata_delta_link
+
+            self.logger.info(f"Retrieved delta response with {len(response['drive_items'])} items")
+            return response
+
+        except Exception as ex:
+            self.logger.error(f"Error fetching delta response for URL {url}: {ex}")
+            raise
+
 
     async def get_delta_response(self, url: str) -> dict:
         """
