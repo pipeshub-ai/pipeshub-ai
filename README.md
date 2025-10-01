@@ -159,16 +159,16 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **React Hook Form**
 
 ### Backend
-- **Fast API**
-- **langchain**
-- **langgraph**
-- **qdrant**
-- **arangoDB**
-- **kafka**
-- **redis**
-- **docling**
-- **pymupdf**
-- **ocrmypdf**
+- **FastAPI**
+- **LangChain**
+- **LangGraph**
+- **Qdrant**
+- **ArangoDB**
+- **Kafka**
+- **Redis**
+- **Docling**
+- **PyMuPDF**
+- **OCRmyPDF**
 - **pandas**
 - **etcd3**
 
