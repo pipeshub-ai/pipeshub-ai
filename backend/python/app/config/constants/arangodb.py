@@ -189,11 +189,6 @@ class MimeTypes(Enum):
     BLOCKS = "application/blocks"
     XML = "application/xml"
     YAML = "application/yaml"
-    BASE64 = "application/base64"
-    UTF8 = "application/utf8"
-    BINARY = "application/binary"
-    IMAGE = "image/image"
-    VIDEO = "video/video"
     UNKNOWN = "application/unknown"
 
 

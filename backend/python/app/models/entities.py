@@ -60,7 +60,7 @@ class Record(BaseModel):
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
-    mime_type: Optional[MimeTypes] = Field(default=MimeTypes.UNKNOWN, description="MIME type of the record")
+    mime_type: MimeTypes = Field(default=MimeTypes.UNKNOWN, description="MIME type of the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -92,7 +92,7 @@ class Record(BaseModel):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -149,7 +149,7 @@ class FileRecord(Record):
             "name": self.record_name,
             "isFile": self.is_file,
             "extension": self.extension,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "sizeInBytes": self.size_in_bytes,
             "webUrl": self.weburl,
             "etag": self.etag,
@@ -202,7 +202,7 @@ class FileRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -269,7 +269,7 @@ class WebpageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -368,7 +368,7 @@ class SharePointListItemRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -392,7 +392,7 @@ class SharePointDocumentLibraryRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -416,7 +416,7 @@ class SharePointPageRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -453,6 +453,7 @@ class RecordGroup(BaseModel):
             "externalGroupId": self.external_group_id,
             "parentExternalGroupId": self.parent_external_group_id,
             "connectorName": self.connector_name.value,
+            "mimeType": self.mime_type.value if self.mime_type else MimeTypes.UNKNOWN.value,
             "groupType": self.group_type.value,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
@@ -472,6 +473,7 @@ class RecordGroup(BaseModel):
             external_group_id=arango_base_record_group["externalGroupId"],
             parent_external_group_id=arango_base_record_group.get("parentExternalGroupId", None),
             connector_name=arango_base_record_group["connectorName"],
+            mime_type=arango_base_record_group.get("mimeType", MimeTypes.UNKNOWN),
             group_type=arango_base_record_group["groupType"],
             web_url=arango_base_record_group.get("webUrl", None),
             created_at=arango_base_record_group["createdAtTimestamp"],
