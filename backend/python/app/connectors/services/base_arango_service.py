@@ -4,7 +4,7 @@
 import asyncio
 import uuid
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp # type: ignore
 from arango import ArangoClient# type: ignore
@@ -419,21 +419,6 @@ class BaseArangoService:
             except Exception as e:
                 self.logger.error("❌ Error getting document: %s", str(e))
                 return None
-
-    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user ID"""
-        try:
-            query = f"""
-                FOR user IN {CollectionNames.USERS.value}
-                    FILTER user.userId == @user_id
-                    RETURN user
-            """
-            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
-            result = next(cursor, None)
-            return result
-        except Exception as e:
-            self.logger.error(f"Error getting user by user ID: {str(e)}")
-            return None
 
     async def get_connector_stats(
         self,
@@ -2841,23 +2826,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
 
-    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
-        """Publish record event to Kafka"""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
-
-            event = {
-                "eventType": event_type,
-                "timestamp": timestamp,
-                "payload": payload
-            }
-
-            await self.kafka_service.publish_event("record-events", event)
-            self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
-
     async def _publish_kb_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
         """Publish KB-specific deletion event"""
         try:
@@ -4653,21 +4621,6 @@ class BaseArangoService:
             )
             return None
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user ID"""
-        try:
-            query = f"""
-                FOR user IN {CollectionNames.USERS.value}
-                    FILTER user.userId == @user_id
-                    RETURN user
-            """
-            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
-            result = next(cursor, None)
-            return result
-        except Exception as e:
-            self.logger.error(f"Error getting user by user ID: {str(e)}")
-            return None
-
     async def get_account_type(self, org_id: str) -> str:
         """Get account type for an organization
 
@@ -5813,39 +5766,6 @@ class BaseArangoService:
 
         except Exception as e:
             return self._validation_error(500, f"Validation failed: {str(e)}")
-
-    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user ID"""
-        try:
-            query = f"""
-                FOR user IN {CollectionNames.USERS.value}
-                    FILTER user.userId == @user_id
-                    RETURN user
-            """
-            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
-            result = next(cursor, None)
-            return result
-        except Exception as e:
-            self.logger.error(f"Error getting user by user ID: {str(e)}")
-            return None
-
-    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
-        """Get a document by its key"""
-        try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key == @document_key
-                RETURN doc
-            """
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={"document_key": document_key, "@collection": collection},
-            )
-            result = list(cursor)
-            return result[0] if result else None
-        except Exception as e:
-            self.logger.error("❌ Error getting document: %s", str(e))
-            return None
 
     async def batch_upsert_nodes(
         self,
@@ -10041,24 +9961,6 @@ class BaseArangoService:
             )
             return None
 
-    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
-        """Get a document by its key"""
-        try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key == @document_key
-                RETURN doc
-            """
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={"document_key": document_key, "@collection": collection},
-            )
-            result = list(cursor)
-            return result[0] if result else None
-        except Exception as e:
-            self.logger.error("❌ Error getting document: %s", str(e))
-            return None
-
     async def batch_upsert_nodes(
         self,
         nodes: List[Dict],
@@ -10145,24 +10047,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"Error getting user by user ID: {str(e)}")
             return None
-
-    async def get_departments(self, org_id: Optional[str] = None) -> List[str]:
-        """
-        Get all departments that either have no org_id or match the given org_id
-
-        Args:
-            org_id (Optional[str]): Organization ID to filter departments
-
-        Returns:
-            List[str]: List of department names
-        """
-        query = f"""
-            FOR department IN {CollectionNames.DEPARTMENTS.value}
-                FILTER department.orgId == null OR department.orgId == '{org_id}'
-                RETURN department.departmentName
-        """
-        cursor = self.db.aql.execute(query)
-        return list(cursor)
 
     async def find_duplicate_files(
         self,
@@ -10358,31 +10242,6 @@ class BaseArangoService:
                 str(e)
             )
             return []
-
-    async def get_documents_by_status(self, collection: str, status: str) -> List[Dict]:
-        """
-        Get all documents with a specific indexing status
-
-        Args:
-            collection (str): Collection name
-            status (str): Status to filter by
-
-        Returns:
-            List[Dict]: List of matching documents
-        """
-        query = """
-        FOR doc IN @@collection
-            FILTER doc.indexingStatus == @status
-            RETURN doc
-        """
-
-        bind_vars = {
-            "@collection": collection,
-            "status": status
-        }
-
-        cursor = self.db.aql.execute(query, bind_vars=bind_vars)
-        return list(cursor)
 
     async def get_key_by_external_file_id(
         self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
@@ -10539,24 +10398,6 @@ class BaseArangoService:
             )
             return None
 
-    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
-        """Get a document by its key"""
-        try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key == @document_key
-                RETURN doc
-            """
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={"document_key": document_key, "@collection": collection},
-            )
-            result = list(cursor)
-            return result[0] if result else None
-        except Exception as e:
-            self.logger.error("❌ Error getting document: %s", str(e))
-            return None
-
     async def batch_upsert_nodes(
         self,
         nodes: List[Dict],
@@ -10628,21 +10469,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Batch edge creation failed: %s", str(e))
             return False
-
-    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user ID"""
-        try:
-            query = f"""
-                FOR user IN {CollectionNames.USERS.value}
-                    FILTER user.userId == @user_id
-                    RETURN user
-            """
-            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
-            result = next(cursor, None)
-            return result
-        except Exception as e:
-            self.logger.error(f"Error getting user by user ID: {str(e)}")
-            return None
 
     async def get_departments(self, org_id: Optional[str] = None) -> List[str]:
         """
@@ -10732,72 +10558,6 @@ class BaseArangoService:
                 raise
             return []
 
-    async def copy_document_relationships(self, source_key: str, target_key: str) -> None:
-        """
-        Copy all relationships (edges) from source document to target document.
-        This includes departments, categories, subcategories, languages, and topics.
-
-        Args:
-            source_key (str): Key of the source document
-            target_key (str): Key of the target document
-        """
-        try:
-            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
-
-            # Define collections to copy relationships from
-            edge_collections = [
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
-                CollectionNames.BELONGS_TO_TOPIC.value
-            ]
-
-            for collection in edge_collections:
-                # Find all edges from source document
-                query = f"""
-                FOR edge IN {collection}
-                    FILTER edge._from == @source_doc
-                    RETURN {{
-                        from: edge._from,
-                        to: edge._to,
-                        timestamp: edge.createdAtTimestamp
-                    }}
-                """
-
-                cursor = self.db.aql.execute(
-                    query,
-                    bind_vars={
-                        "source_doc": f"{CollectionNames.RECORDS.value}/{source_key}"
-                    }
-                )
-
-                edges = list(cursor)
-
-                if edges:
-                    # Create new edges for target document
-                    new_edges = []
-                    for edge in edges:
-                        new_edge = {
-                            "_from": f"{CollectionNames.RECORDS.value}/{target_key}",
-                            "_to": edge["to"],
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms()
-                        }
-                        new_edges.append(new_edge)
-
-                    # Batch create the new edges
-                    await self.batch_create_edges(new_edges, collection)
-                    self.logger.info(
-                        f"✅ Copied {len(new_edges)} relationships from collection {collection}"
-                    )
-
-            self.logger.info(f"✅ Successfully copied all relationships to {target_key}")
-
-        except Exception as e:
-            self.logger.error(
-                f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
-            )
-            raise
-
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,
@@ -10881,3 +10641,336 @@ class BaseArangoService:
 
         cursor = self.db.aql.execute(query, bind_vars=bind_vars)
         return list(cursor)
+
+    async def get_accessible_records(
+        self, user_id: str, org_id: str, filters: dict = None
+    ) -> list:
+        """
+        Get all records accessible to a user based on their permissions and apply filters
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (dict): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [app_names]
+                }
+        """
+        self.logger.info(
+            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
+        )
+
+        try:
+            # Extract filters
+            kb_ids = filters.get("kb") if filters else None
+            app_names = filters.get("apps") if filters else None
+
+            # Process app names
+            has_local = False
+            non_local_apps = []
+            if app_names:
+                apps_lower = [app.lower() for app in app_names]
+                has_local = "local" in apps_lower
+                non_local_apps = [app for app in apps_lower if app != "local"]
+
+            self.logger.info(f":mag: Filter analysis - KB IDs: {kb_ids}, Apps: {app_names}, Has local: {has_local}, Non-local apps: {non_local_apps}")
+
+            # Build base query
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            LET directRecords = (
+                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET groupRecords = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER edge.entityType == 'GROUP'
+                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET orgRecords = (
+                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER edge.entityType == 'ORGANIZATION'
+                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords)
+
+            LET anyoneRecords = (
+                FOR records IN @@anyone
+                    FILTER records.organization == @orgId
+                    FOR record IN @@records
+                        FILTER record != null AND record._key == records.file_key
+                        RETURN record
+            )
+            """
+
+            unions = []
+            if has_local:
+                self.logger.info(":mag: Getting all KB records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+                """
+                unions.append("kbRecords")
+                if non_local_apps:
+                    self.logger.info(":mag: Getting app filtered records, filter applied : local + apps")
+                    query += """
+                    LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                    LET appFilteredRecords = (
+                        FOR record IN baseAccessible
+                            FILTER LOWER(record.connectorName) IN @non_local_apps
+                            RETURN DISTINCT record
+                    )
+                    """
+                    unions.append("appFilteredRecords")
+
+            elif kb_ids or non_local_apps:
+
+                # KB records - conditional based on whether KB filtering is applied
+                if kb_ids:
+                    self.logger.info(f":mag: Applying KB filtering for specific KBs: {kb_ids}")
+                    query += f"""
+                    LET kbRecords = (
+                        FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                        FILTER kb._key IN @kb_ids
+                        FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                        RETURN DISTINCT records
+                    )
+                    """
+                    unions.append("kbRecords")
+                if non_local_apps:
+                    self.logger.info(":mag: Getting app filtered records, filter applied : kb + apps")
+                    query += """
+                        LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                        LET appFilteredRecords = (
+                            FOR record IN baseAccessible
+                                FILTER LOWER(record.connectorName) IN @non_local_apps
+                                RETURN DISTINCT record
+                        )
+                    """
+                    unions.append("appFilteredRecords")
+            else:
+                self.logger.info(":mag: Getting all accessible records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
+                """
+
+                unions.append("baseAccessible")
+
+
+            if unions and len(unions) > 0:
+                if len(unions) == 1 :
+                    query += f"""
+                    LET allAccessibleRecords = {unions[0]}
+                    """
+                else:
+                    query += f"""
+                    LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
+                    """
+            else:
+                self.logger.info(":mag: Fallback logic to all accessible records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+                LET allAccessibleRecords = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
+                """
+
+            # Add additional filter conditions (departments, categories, etc.)
+            filter_conditions = []
+            if filters:
+                if filters.get("departments"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                        FILTER dept.departmentName IN @departmentNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("categories"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER cat.name IN @categoryNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories1"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat1Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories2"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat2Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories3"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat3Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("languages"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                        FILTER lang.name IN @languageNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("topics"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                        FILTER topic.name IN @topicNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+            # Apply additional filters if any
+            if filter_conditions:
+                query += (
+                    """
+                FOR record IN allAccessibleRecords
+                    FILTER """
+                    + " AND ".join(filter_conditions)
+                    + """
+                    RETURN DISTINCT record
+                """
+                )
+            else:
+                query += """
+                RETURN allAccessibleRecords
+                """
+
+            # Prepare bind variables
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            # Add conditional bind variables
+            if kb_ids and not has_local:
+                bind_vars["kb_ids"] = kb_ids
+
+            if non_local_apps:
+                bind_vars["non_local_apps"] = non_local_apps
+
+            # Add filter bind variables
+            if filters:
+                if filters.get("departments"):
+                    bind_vars["departmentNames"] = filters["departments"]
+                if filters.get("categories"):
+                    bind_vars["categoryNames"] = filters["categories"]
+                if filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = filters["subcategories1"]
+                if filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = filters["subcategories2"]
+                if filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = filters["subcategories3"]
+                if filters.get("languages"):
+                    bind_vars["languageNames"] = filters["languages"]
+                if filters.get("topics"):
+                    bind_vars["topicNames"] = filters["topics"]
+
+            # Execute query
+            self.logger.debug(f":mag: Executing query with bind_vars keys: {list(bind_vars.keys())}")
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars=bind_vars,
+                profile=2,
+                fail_on_warning=False,
+                stream=True
+            )
+            result = list(cursor)
+
+            # Log results
+            record_count = 0
+            if result:
+                if isinstance(result[0], list):
+                    record_count = len(result[0])
+                    result = result[0]
+                else:
+                    record_count = len(result)
+
+            self.logger.info(f":white_check_mark: Query completed - found {record_count} accessible records")
+
+            if kb_ids:
+                self.logger.info(f":white_check_mark: KB filtering applied for {len(kb_ids)} KBs")
+            if non_local_apps:
+                self.logger.info(f":white_check_mark: App filtering applied for apps: {non_local_apps}")
+            if has_local:
+                self.logger.info(":white_check_mark: 'local' app included - returning broader record set")
+
+            return result if result else []
+
+        except Exception as e:
+            self.logger.error(f":x: Failed to get accessible records: {str(e)}")
+            raise

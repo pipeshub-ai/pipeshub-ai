@@ -18,7 +18,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
-from app.connectors.sources.google.common.arango_service import ArangoService
+from app.connectors.services.base_arango_service import BaseArangoService as ArangoService
 from app.connectors.sources.google.google_drive.drive_user_service import (
     DriveUserService,
 )
