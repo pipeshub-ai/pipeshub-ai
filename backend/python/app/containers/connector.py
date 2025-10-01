@@ -8,12 +8,12 @@ from google.oauth2 import service_account
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.common.google_token_handler import GoogleTokenHandler
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,

@@ -5,8 +5,8 @@ from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
-from app.modules.reranker.reranker import RerankerService
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 
 

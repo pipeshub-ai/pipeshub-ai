@@ -9,10 +9,10 @@ from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import qna_graph
 from app.modules.reranker.reranker import RerankerService
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 

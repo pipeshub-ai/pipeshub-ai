@@ -6,8 +6,8 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
-from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.services.kafka_service import KafkaService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 

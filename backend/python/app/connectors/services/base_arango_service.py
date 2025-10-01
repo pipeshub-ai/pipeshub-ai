@@ -2,14 +2,16 @@
 
 # pylint: disable=E1101, W0718
 import asyncio
+import datetime
+import json
 import uuid
 from io import BytesIO
 from typing import Dict, List, Optional, Set, Tuple
 
-import aiohttp # type: ignore
-from arango import ArangoClient# type: ignore
-from arango.database import TransactionDatabase # type: ignore
-from fastapi import Request # type: ignore
+import aiohttp  # type: ignore
+from arango import ArangoClient  # type: ignore
+from arango.database import TransactionDatabase  # type: ignore
+from fastapi import Request  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -403,22 +405,22 @@ class BaseArangoService:
             raise
 
     async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
-            """Get a document by its key"""
-            try:
-                query = """
-                FOR doc IN @@collection
-                    FILTER doc._key == @document_key
-                    RETURN doc
-                """
-                cursor = self.db.aql.execute(
-                    query,
-                    bind_vars={"document_key": document_key, "@collection": collection},
-                )
-                result = list(cursor)
-                return result[0] if result else None
-            except Exception as e:
-                self.logger.error("❌ Error getting document: %s", str(e))
-                return None
+        """Get a document by its key"""
+        try:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key == @document_key
+                RETURN doc
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"document_key": document_key, "@collection": collection},
+            )
+            result = list(cursor)
+            return result[0] if result else None
+        except Exception as e:
+            self.logger.error("❌ Error getting document: %s", str(e))
+            return None
 
     async def get_connector_stats(
         self,
@@ -881,65 +883,6 @@ class BaseArangoService:
             )
             raise
 
-    async def get_records_by_virtual_record_id(
-        self,
-        virtual_record_id: str,
-        accessible_record_ids: Optional[List[str]] = None
-    ) -> List[str]:
-        """
-        Get all record keys that have the given virtualRecordId.
-        Optionally filter by a list of record IDs.
-
-        Args:
-            virtual_record_id (str): Virtual record ID to look up
-            record_ids (Optional[List[str]]): Optional list of record IDs to filter by
-
-        Returns:
-            List[str]: List of record keys that match the criteria
-        """
-        try:
-            self.logger.info(
-                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
-            )
-
-            # Base query
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.virtualRecordId == @virtual_record_id
-            """
-
-            # Add optional filter for record IDs
-            if accessible_record_ids:
-                query += """
-                AND record._key IN @accessible_record_ids
-                """
-
-            query += """
-                RETURN record._key
-            """
-
-            bind_vars = {"virtual_record_id": virtual_record_id}
-            if accessible_record_ids:
-                bind_vars["accessible_record_ids"] = accessible_record_ids
-
-            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
-            results = list(cursor)
-
-            self.logger.info(
-                "✅ Found %d records with virtualRecordId %s",
-                len(results),
-                virtual_record_id
-            )
-            return results
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Error finding records with virtualRecordId %s: %s",
-                virtual_record_id,
-                str(e)
-            )
-            return []
-
     async def get_records(
         self,
         user_id: str,
@@ -1340,66 +1283,6 @@ class BaseArangoService:
                 "indexingStatus": [],
                 "permissions": []
             }
-
-    async def get_user_kb_permission(
-        self,
-        kb_id: str,
-        user_id: str,
-    ) -> Optional[str]:
-        """Validate user knowledge permission"""
-        try:
-            self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
-
-            query = """
-            FOR perm IN @@permissions_collection
-                FILTER perm._from == CONCAT('users/', @user_id)
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                RETURN perm
-            """
-
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={
-                    "kb_id": kb_id,
-                    "user_id": user_id,
-                    "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                },
-            )
-
-            permission = next(cursor, None)
-
-            if permission:
-                role = permission.get("role")
-                self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
-                return role
-            else:
-                self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
-
-                # Debug: Let's see what permissions exist for this KB
-                debug_query = """
-                FOR perm IN @@permissions_collection
-                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                    RETURN {
-                        from: perm._from,
-                        role: perm.role,
-                        type: perm.type
-                    }
-                """
-                debug_cursor = self.db.aql.execute(
-                    debug_query,
-                    bind_vars={
-                        "kb_id": kb_id,
-                        "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                    },
-                )
-                existing_perms = list(debug_cursor)
-                self.logger.info(f"🔍 Debug - All permissions for KB {kb_id}: {existing_perms}")
-
-                return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
-            raise
 
     async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> Dict:
         """
@@ -3670,7 +3553,7 @@ class BaseArangoService:
     async def cleanup_expired_tokens(self, expiry_hours: int = 24) -> int:
         """Clean up tokens that haven't been updated recently"""
         try:
-            expiry_time = datetime.now(timezone.utc) - timedelta(hours=expiry_hours)
+            expiry_time = datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=expiry_hours)
 
             query = """
             FOR token IN pageTokens
@@ -3689,47 +3572,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Error cleaning up tokens: %s", str(e))
             return 0
-
-    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
-        """Get a document by its key"""
-        try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key == @document_key
-                RETURN doc
-            """
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={"document_key": document_key, "@collection": collection},
-            )
-            result = list(cursor)
-            return result[0] if result else None
-        except Exception as e:
-            self.logger.error("❌ Error getting document: %s", str(e))
-            return None
-
-
-    # async def remove_existing_edges(self, file_id: str) -> bool:
-    #     """Remove all existing edges for a record"""
-    #     try:
-    #         self.logger.info("🚀 Removing all existing edges for file %s", file_id)
-    #         query = """
-    #         FOR edge in @@recordRelations
-    #             FILTER edge._from == @@records/@file_id OR edge._to == @@records/@file_id
-    #             REMOVE edge._key IN @@recordRelations
-    #         """
-    #         self.db.aql.execute(
-    #             query,
-    #             bind_vars={'file_id': file_id, '@records': CollectionNames.RECORDS.value, '@recordRelations': CollectionNames.RECORD_RELATIONS.value}
-    #         )
-    #         self.logger.info("✅ Removed all existing edges for file %s", file_id)
-    #         return True
-    #     except Exception as e:
-    #         self.logger.error(
-    #             "❌ Failed to remove existing edges: %s",
-    #             str(e)
-    #         )
-    #         return False
 
     async def get_file_parents(self, file_key: str, transaction) -> List[Dict]:
         try:
@@ -4511,59 +4353,6 @@ class BaseArangoService:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external file ID %s: %s",
                 external_file_id,
-                str(e),
-            )
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal message key using the external message ID
-
-        Args:
-            external_message_id (str): External message ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal message key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external message ID %s",
-                external_message_id,
-            )
-
-            query = f"""
-            FOR doc IN {CollectionNames.RECORDS.value}
-                FILTER doc.externalRecordId == @external_message_id
-                RETURN doc._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_message_id": external_message_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external message ID %s",
-                    external_message_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external message ID %s",
-                    external_message_id,
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external message ID %s: %s",
-                external_message_id,
                 str(e),
             )
             return None
@@ -5767,78 +5556,6 @@ class BaseArangoService:
         except Exception as e:
             return self._validation_error(500, f"Validation failed: {str(e)}")
 
-    async def batch_upsert_nodes(
-        self,
-        nodes: List[Dict],
-        collection: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> bool | None:
-        """Batch upsert multiple nodes using Python-Arango SDK methods"""
-        try:
-            self.logger.info("🚀 Batch upserting nodes: %s", collection)
-
-            batch_query = """
-            FOR node IN @nodes
-                UPSERT { _key: node._key }
-                INSERT node
-                UPDATE node
-                IN @@collection
-                RETURN NEW
-            """
-
-            bind_vars = {"nodes": nodes, "@collection": collection}
-
-            db = transaction if transaction else self.db
-
-            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
-            results = list(cursor)
-            self.logger.info(
-                "✅ Successfully upserted %d nodes in collection '%s'.",
-                len(results),
-                collection,
-            )
-            return True
-
-        except Exception as e:
-            self.logger.error("❌ Batch upsert failed: %s", str(e))
-            if transaction:
-                raise
-            return False
-
-    async def batch_create_edges(
-        self,
-        edges: List[Dict],
-        collection: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> bool | None:
-        """Batch create PARENT_CHILD relationships"""
-        try:
-            self.logger.info("🚀 Batch creating edges: %s", collection)
-
-            batch_query = """
-            FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to }
-                INSERT edge
-                UPDATE edge
-                IN @@collection
-                RETURN NEW
-            """
-            bind_vars = {"edges": edges, "@collection": collection}
-
-            db = transaction if transaction else self.db
-
-            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
-            results = list(cursor)
-            self.logger.info(
-                "✅ Successfully created %d edges in collection '%s'.",
-                len(results),
-                collection,
-            )
-            return True
-        except Exception as e:
-            self.logger.error("❌ Batch edge creation failed: %s", str(e))
-            return False
-
     async def create_knowledge_base(
         self,
         kb_data:Dict,
@@ -6545,66 +6262,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to update Folder : {str(e)}")
             raise
-
-    async def get_record_by_id(
-        self,
-        record_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
-        """Get a record by ID with permission validation"""
-        try:
-            db = transaction if transaction else self.db
-
-            query = """
-            FOR record IN @@records_collection
-                FILTER record._key == @record_id
-                FILTER record.isDeleted != true
-                // Get associated file record
-                LET fileEdge = FIRST(
-                    FOR isEdge IN @@is_of_type
-                        FILTER isEdge._from == record._id
-                        RETURN isEdge
-                )
-                LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                RETURN {
-                    _key: record._key,
-                    _id: record._id,
-                    orgId: record.orgId,
-                    recordName: record.recordName,
-                    externalRecordId: record.externalRecordId,
-                    recordType: record.recordType,
-                    origin: record.origin,
-                    version: record.version,
-                    indexingStatus: record.indexingStatus,
-                    createdAtTimestamp: record.createdAtTimestamp,
-                    updatedAtTimestamp: record.updatedAtTimestamp,
-                    sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
-                    sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
-                    isDeleted: record.isDeleted,
-                    isLatestVersion: record.isLatestVersion,
-                    webUrl: record.webUrl,
-                    fileRecord: fileRecord ? {
-                        _key: fileRecord._key,
-                        name: fileRecord.name,
-                        extension: fileRecord.extension,
-                        mimeType: fileRecord.mimeType,
-                        sizeInBytes: fileRecord.sizeInBytes,
-                        webUrl: fileRecord.webUrl
-                    } : null
-                }
-            """
-
-            cursor = db.aql.execute(query, bind_vars={
-                "record_id": record_id,
-                "@records_collection": CollectionNames.RECORDS.value,
-                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-            })
-
-            return next(cursor, None)
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get record by ID: {str(e)}")
-            return None
 
     async def validate_folder_in_kb(
         self,
@@ -9806,233 +9463,6 @@ class BaseArangoService:
             self.logger.error(f"❌ Unified upload failed: {str(e)}")
             return {"success": False, "reason": f"Upload failed: {str(e)}", "code": 500}
 
-    async def get_key_by_external_file_id(
-        self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
-        """
-        Get internal file key using the external file ID
-
-        Args:
-            external_file_id (str): External file ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal file key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s", external_file_id
-            )
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_file_id
-                RETURN record._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_file_id": external_file_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s",
-                    external_file_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s", external_file_id
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external file ID %s: %s",
-                external_file_id,
-                str(e),
-            )
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal message key using the external message ID
-
-        Args:
-            external_message_id (str): External message ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal message key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external message ID %s",
-                external_message_id,
-            )
-
-            query = f"""
-            FOR doc IN {CollectionNames.RECORDS.value}
-                FILTER doc.externalRecordId == @external_message_id
-                RETURN doc._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_message_id": external_message_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external message ID %s",
-                    external_message_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external message ID %s",
-                    external_message_id,
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external message ID %s: %s",
-                external_message_id,
-                str(e),
-            )
-            return None
-
-    async def get_key_by_attachment_id(
-        self,
-        external_attachment_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal attachment key using the external attachment ID
-
-        Args:
-            external_attachment_id (str): External attachment ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal attachment key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external attachment ID %s",
-                external_attachment_id,
-            )
-
-            query = """
-            FOR attachment IN attachments
-                FILTER attachment.externalAttachmentId == @external_attachment_id
-                RETURN attachment._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_attachment_id": external_attachment_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external attachment ID %s: %s",
-                external_attachment_id,
-                str(e),
-            )
-            return None
-
-    async def batch_upsert_nodes(
-        self,
-        nodes: List[Dict],
-        collection: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> bool | None:
-        """Batch upsert multiple nodes using Python-Arango SDK methods"""
-        try:
-            self.logger.info("🚀 Batch upserting nodes: %s", collection)
-
-            batch_query = """
-            FOR node IN @nodes
-                UPSERT { _key: node._key }
-                INSERT node
-                UPDATE node
-                IN @@collection
-                RETURN NEW
-            """
-
-            bind_vars = {"nodes": nodes, "@collection": collection}
-
-            db = transaction if transaction else self.db
-
-            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
-            results = list(cursor)
-            self.logger.info(
-                "✅ Successfully upserted %d nodes in collection '%s'.",
-                len(results),
-                collection,
-            )
-            return True
-
-        except Exception as e:
-            self.logger.error("❌ Batch upsert failed: %s", str(e))
-            if transaction:
-                raise
-            return False
-
-    async def batch_create_edges(
-        self,
-        edges: List[Dict],
-        collection: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> bool | None:
-        """Batch create PARENT_CHILD relationships"""
-        try:
-            self.logger.info("🚀 Batch creating edges: %s", collection)
-
-            batch_query = """
-            FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to }
-                INSERT edge
-                UPDATE edge
-                IN @@collection
-                RETURN NEW
-            """
-            bind_vars = {"edges": edges, "@collection": collection}
-
-            db = transaction if transaction else self.db
-
-            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
-            results = list(cursor)
-            self.logger.info(
-                "✅ Successfully created %d edges in collection '%s'.",
-                len(results),
-                collection,
-            )
-            return True
-        except Exception as e:
-            self.logger.error("❌ Batch edge creation failed: %s", str(e))
-            return False
-
     async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
         """Get user by user ID"""
         try:
@@ -10047,76 +9477,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"Error getting user by user ID: {str(e)}")
             return None
-
-    async def find_duplicate_files(
-        self,
-        file_key: str,
-        md5_checksum: str,
-        size_in_bytes: int,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> List[str]:
-        """
-        Find duplicate files based on MD5 checksum and file size
-
-        Args:
-            md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            List[str]: List of file keys that match both criteria
-        """
-        try:
-            self.logger.info(
-                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
-                md5_checksum,
-                size_in_bytes,
-            )
-
-            query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @file_key
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        RETURN r
-                )[0]
-                RETURN record
-            """
-
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "file_key": file_key
-                }
-            )
-
-            duplicate_records = list(cursor)
-
-            if duplicate_records:
-                self.logger.info(
-                    "✅ Found %d duplicate record(s) matching criteria",
-                    len(duplicate_records)
-                )
-                self.logger.info(f"Duplicate records: {[record['_key'] for record in duplicate_records]}")
-            else:
-                self.logger.info("✅ No duplicate records found")
-
-            return duplicate_records
-
-        except Exception as e:
-            self.logger.error(
-                "Failed to find duplicate files: %s",
-                str(e)
-            )
-            if transaction:
-                raise
-            return []
 
     async def copy_document_relationships(self, source_key: str, target_key: str) -> None:
         """
@@ -10184,113 +9544,6 @@ class BaseArangoService:
             )
             raise
 
-    async def get_records_by_virtual_record_id(
-        self,
-        virtual_record_id: str,
-        accessible_record_ids: Optional[List[str]] = None
-    ) -> List[str]:
-        """
-        Get all record keys that have the given virtualRecordId.
-        Optionally filter by a list of record IDs.
-
-        Args:
-            virtual_record_id (str): Virtual record ID to look up
-            record_ids (Optional[List[str]]): Optional list of record IDs to filter by
-
-        Returns:
-            List[str]: List of record keys that match the criteria
-        """
-        try:
-            self.logger.info(
-                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
-            )
-
-            # Base query
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.virtualRecordId == @virtual_record_id
-            """
-
-            # Add optional filter for record IDs
-            if accessible_record_ids:
-                query += """
-                AND record._key IN @accessible_record_ids
-                """
-
-            query += """
-                RETURN record._key
-            """
-
-            bind_vars = {"virtual_record_id": virtual_record_id}
-            if accessible_record_ids:
-                bind_vars["accessible_record_ids"] = accessible_record_ids
-
-            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
-            results = list(cursor)
-
-            self.logger.info(
-                "✅ Found %d records with virtualRecordId %s",
-                len(results),
-                virtual_record_id
-            )
-            return results
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Error finding records with virtualRecordId %s: %s",
-                virtual_record_id,
-                str(e)
-            )
-            return []
-
-    async def get_key_by_external_file_id(
-        self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
-        """
-        Get internal file key using the external file ID
-
-        Args:
-            external_file_id (str): External file ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal file key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s", external_file_id
-            )
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_file_id
-                RETURN record._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_file_id": external_file_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s",
-                    external_file_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s", external_file_id
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external file ID %s: %s",
-                external_file_id,
-                str(e),
-            )
-            return None
 
     async def get_key_by_external_message_id(
         self,
@@ -10344,131 +9597,6 @@ class BaseArangoService:
                 str(e),
             )
             return None
-
-    async def get_key_by_attachment_id(
-        self,
-        external_attachment_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal attachment key using the external attachment ID
-
-        Args:
-            external_attachment_id (str): External attachment ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal attachment key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external attachment ID %s",
-                external_attachment_id,
-            )
-
-            query = """
-            FOR attachment IN attachments
-                FILTER attachment.externalAttachmentId == @external_attachment_id
-                RETURN attachment._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_attachment_id": external_attachment_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external attachment ID %s: %s",
-                external_attachment_id,
-                str(e),
-            )
-            return None
-
-    async def batch_upsert_nodes(
-        self,
-        nodes: List[Dict],
-        collection: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> bool | None:
-        """Batch upsert multiple nodes using Python-Arango SDK methods"""
-        try:
-            self.logger.info("🚀 Batch upserting nodes: %s", collection)
-
-            batch_query = """
-            FOR node IN @nodes
-                UPSERT { _key: node._key }
-                INSERT node
-                UPDATE node
-                IN @@collection
-                RETURN NEW
-            """
-
-            bind_vars = {"nodes": nodes, "@collection": collection}
-
-            db = transaction if transaction else self.db
-
-            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
-            results = list(cursor)
-            self.logger.info(
-                "✅ Successfully upserted %d nodes in collection '%s'.",
-                len(results),
-                collection,
-            )
-            return True
-
-        except Exception as e:
-            self.logger.error("❌ Batch upsert failed: %s", str(e))
-            if transaction:
-                raise
-            return False
-
-    async def batch_create_edges(
-        self,
-        edges: List[Dict],
-        collection: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> bool | None:
-        """Batch create PARENT_CHILD relationships"""
-        try:
-            self.logger.info("🚀 Batch creating edges: %s", collection)
-
-            batch_query = """
-            FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to }
-                INSERT edge
-                UPDATE edge
-                IN @@collection
-                RETURN NEW
-            """
-            bind_vars = {"edges": edges, "@collection": collection}
-
-            db = transaction if transaction else self.db
-
-            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
-            results = list(cursor)
-            self.logger.info(
-                "✅ Successfully created %d edges in collection '%s'.",
-                len(results),
-                collection,
-            )
-            return True
-        except Exception as e:
-            self.logger.error("❌ Batch edge creation failed: %s", str(e))
-            return False
 
     async def get_departments(self, org_id: Optional[str] = None) -> List[str]:
         """

@@ -7,8 +7,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.containers.query import QueryAppContainer
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.query_transform import setup_query_transformation
 
