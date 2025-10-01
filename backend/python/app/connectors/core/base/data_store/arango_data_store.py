@@ -54,9 +54,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_id(id, transaction=self.txn)
 
-    async def create_record_groups_relation(self, id: str, parent_id: str) -> None:
+    async def create_record_group_relation(self, child_id: str, parent_id: str) -> None:
         return await self.arango_service.batch_create_edges([{
-            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{id}",
+            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{child_id}",
             "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_id}",
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
