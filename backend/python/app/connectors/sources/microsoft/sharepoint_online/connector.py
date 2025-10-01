@@ -606,7 +606,7 @@ class SharePointConnector(BaseConnector):
                         drive_record_groups_with_permissions.append((drive_record_group, []))
                         # permissions = await self._get_drive_permissions(site_id, drive_id)
 
-            self.logger.info(f"Drive record groups: {drive_record_groups_with_permissions}")
+            self.logger.info(f"Found {len(drive_record_groups_with_permissions)} drive record groups to process.")
             await self.data_entities_processor.on_new_record_groups(drive_record_groups_with_permissions)
 
             for drive_record_group, _permissions in drive_record_groups_with_permissions:
@@ -643,10 +643,10 @@ class SharePointConnector(BaseConnector):
                 # Continue from previous sync point - use the URL as-is
 
                 # Ensure we're not accidentally processing this URL
-                self.logger.info(f"Delta URL for drive_id: {drive_id} is {delta_url}")
                 self.logger.debug(f"Delta URL for drive_id: {drive_id} is {delta_url}")
                 parsed_url = urllib.parse.urlparse(delta_url)
                 self.logger.debug(f"Parsed URL for drive_id: {drive_id} is {parsed_url}")
+                if not (
                     parsed_url.scheme == 'https' and
                     parsed_url.hostname == 'graph.microsoft.com'
                 ):

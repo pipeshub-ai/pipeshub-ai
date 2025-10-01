@@ -70,7 +70,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def create_record_groups_relation(self, id: str, parent_id: str) -> None:
+    async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
         pass
 
     @abstractmethod
