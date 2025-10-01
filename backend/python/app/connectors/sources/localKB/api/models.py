@@ -54,8 +54,6 @@ class SourceType(str, Enum):
 # Request Models
 class CreateKnowledgeBaseRequest(BaseModel):
     """Request model for creating a knowledge base"""
-    userId: str = Field(..., description ="User id", min_length=1)
-    orgId: str = Field(..., description ="Org id", min_length=1)
     name: str = Field(..., description="Name of the knowledge base", min_length=1, max_length=255)
 
 
