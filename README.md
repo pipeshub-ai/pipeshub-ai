@@ -158,7 +158,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **Zod**
 - **React Hook Form**
 
- ### **Backend**
+### Backend
 - **Fast API**
 - **langchain**
 - **langgraph**
