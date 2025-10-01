@@ -324,6 +324,57 @@ class RetrievalService:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
+            # Collect all FILE record IDs that need mimeType fetching
+            file_record_ids_for_mimetype = []
+            mail_record_ids_for_url = []
+
+            for result in search_results:
+                if not result or not isinstance(result, dict):
+                    continue
+
+                # Check if metadata exists before accessing it
+                if not result.get("metadata"):
+                    self.logger.warning(f"Result has no metadata: {result}")
+                    continue
+
+                virtual_id = result["metadata"].get("virtualRecordId")
+                # Skip results with None virtualRecordId
+                if virtual_id is not None and virtual_id in virtual_to_record_map:
+                    record_id = virtual_to_record_map[virtual_id]
+                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
+                    if record:
+                        record_type = record.get("recordType", "")
+                        mime_type = record.get("mimeType")
+
+                        # Collect FILE records that need mimeType fetching
+                        if not mime_type and record_type == RecordTypes.FILE.value:
+                            file_record_ids_for_mimetype.append(record_id)
+
+                        # Collect MAIL records that might need URL fetching
+                        if record_type == RecordTypes.MAIL.value:
+                            mail_record_ids_for_url.append(record_id)
+
+            # Batch fetch mimeTypes for FILE records
+            file_documents_map = {}
+            if file_record_ids_for_mimetype:
+                try:
+                    file_documents_map = await self.arango_service.get_documents_batch(
+                        file_record_ids_for_mimetype, CollectionNames.FILES.value
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to batch fetch file documents: {str(e)}")
+
+            # Batch fetch URLs for MAIL records
+            mail_documents_map = {}
+            if mail_record_ids_for_url:
+                try:
+                    mail_documents_map = await self.arango_service.get_documents_batch(
+                        mail_record_ids_for_url, CollectionNames.MAILS.value
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to batch fetch mail documents: {str(e)}")
+
+
             # Replace virtualRecordId with first accessible record ID in search results
             virtual_record_id_to_record = {}
             new_type_results = []
@@ -354,43 +405,47 @@ class RetrievalService:
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
-                        result["metadata"]["mimeType"] = record.get("mimeType")
+
+                        # Determine mimeType with fallbacks
+                        mime_type = record.get("mimeType")
+                        record_type = record.get("recordType", "")
+
+                        if not mime_type:
+                            if record_type == RecordTypes.FILE.value:
+                                file_doc = file_documents_map.get(record_id)
+                                if file_doc:
+                                    mime_type = file_doc.get("mimeType")
+                            elif record_type == RecordTypes.MAIL.value:
+                                mime_type = "text/html"
+
+                        result["metadata"]["mimeType"] = mime_type
                         result["metadata"]["recordName"] = record.get("recordName")
-                        ext =  get_extension_from_mimetype(record.get("mimeType"))
+
+                        ext = get_extension_from_mimetype(mime_type)
                         if ext:
                             result["metadata"]["extension"] = ext
 
                         # Fetch additional file URL if needed
-                        if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
-                            try:
-                                files = await self.arango_service.get_document(
-                                    record_id, CollectionNames.FILES.value
-                                )
-                                if files:  # Check if files is not None
-                                    weburl = files.get("webUrl")
-                                    if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
-                                        user_email = user.get("email") if user else None
-                                        if user_email:
-                                            weburl = weburl.replace("{user.email}", user_email)
-                                    result["metadata"]["webUrl"] = weburl
-                            except Exception as e:
-                                self.logger.warning(f"Failed to fetch file document for {record_id}: {str(e)}")
+                        if not weburl and record_type == RecordTypes.FILE.value:
+                            file_doc = file_documents_map.get(record_id)
+                            if file_doc:
+                                weburl = file_doc.get("webUrl")
+                                if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
+                                    user_email = user.get("email") if user else None
+                                    if user_email:
+                                        weburl = weburl.replace("{user.email}", user_email)
+                                result["metadata"]["webUrl"] = weburl
 
-                        # Fetch additional mail URL if needed
-                        if not weburl and record.get("recordType", "") == RecordTypes.MAIL.value:
-                            try:
-                                mail = await self.arango_service.get_document(
-                                    record_id, CollectionNames.MAILS.value
-                                )
-                                if mail:  # Check if mail is not None
-                                    weburl = mail.get("webUrl")
-                                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                                        user_email = user.get("email") if user else None
-                                        if user_email:
-                                            weburl = weburl.replace("{user.email}", user_email)
-                                    result["metadata"]["webUrl"] = weburl
-                            except Exception as e:
-                                self.logger.warning(f"Failed to fetch mail document for {record_id}: {str(e)}")
+                        if not weburl and record_type == RecordTypes.MAIL.value:
+                            mail_doc = mail_documents_map.get(record_id)
+                            if mail_doc:
+                                weburl = mail_doc.get("webUrl")
+                                if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
+                                    user_email = user.get("email") if user else None
+                                    if user_email:
+                                        weburl = weburl.replace("{user.email}", user_email)
+                                result["metadata"]["webUrl"] = weburl
+
 
                         if knowledge_search:
                             meta = result.get("metadata")
