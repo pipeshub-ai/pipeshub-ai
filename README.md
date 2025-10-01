@@ -152,8 +152,8 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 ## Tech Stack
 ### Frontend
-- **React JS**
-- **Typescript**
+- **React**
+- **TypeScript**
 - **Material UI**
 - **Zod**
 - **React Hook Form**
