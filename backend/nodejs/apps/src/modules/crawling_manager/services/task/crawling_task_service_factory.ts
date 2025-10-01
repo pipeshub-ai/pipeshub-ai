@@ -21,6 +21,7 @@ export class CrawlingTaskFactory {
       "drive",
       "onedrive",
       "sharepointonline",
+      "outlook",
       "confluence",
       "slack",
       "jira",

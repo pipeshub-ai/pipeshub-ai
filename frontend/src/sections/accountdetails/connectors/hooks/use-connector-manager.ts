@@ -57,9 +57,26 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     }
     if (authType === 'OAUTH_ADMIN_CONSENT') {
       const authConfig = config?.config?.auth;
+      
+      // Check if this is a Google Workspace connector (has adminEmail)
       const hasAdminEmail = authConfig?.adminEmail;
       const hasServiceAccountCredentials = authConfig?.client_id && authConfig?.project_id && authConfig?.type === 'service_account';
-      return !!(hasAdminEmail && hasServiceAccountCredentials);
+      
+      // Check if this is a Microsoft connector (has clientId, clientSecret, tenantId)
+      const hasMicrosoftCredentials = authConfig?.clientId && authConfig?.clientSecret && authConfig?.tenantId;
+      
+      // For Google Workspace connectors
+      if (hasAdminEmail) {
+        return !!(hasAdminEmail && hasServiceAccountCredentials);
+      }
+      
+      // For Microsoft connectors
+      if (hasMicrosoftCredentials) {
+        return !!(authConfig?.clientId && authConfig?.clientSecret && authConfig?.tenantId);
+      }
+      
+      // Fallback for other OAUTH_ADMIN_CONSENT connectors
+      return false;
     }
     return !!connectorParam.isConfigured;
   }, []);

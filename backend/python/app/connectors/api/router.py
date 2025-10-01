@@ -366,7 +366,6 @@ async def stream_record_internal(
         logger.error("Unexpected error during token validation: %s", str(e))
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
 
-
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
 async def download_file(

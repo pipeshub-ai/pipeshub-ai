@@ -26,6 +26,7 @@ export enum ConnectorType {
     JIRA = 'jira',
     ONE_DRIVE = 'onedrive',
     SHAREPOINT_ONLINE = 'sharepointOnline',
+    OUTLOOK = 'outlook',
     S3 = 's3',
     AZURE_BLOB_STORAGE = 'azureBlobStorage',
 }
