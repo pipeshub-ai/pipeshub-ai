@@ -150,6 +150,28 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Audio
 - Video
 
+## Tech Stack
+ ### **Frontend**
+- **React JS**
+- **Typescript**
+- **Material UI**
+- **Zod**
+- **React Hook Form**
+
+ ### **Backend**
+- **Fast API**
+- **langchain**
+- **langgraph**
+- **qdrant**
+- **arangoDB**
+- **kafka**
+- **redis**
+- **docling**
+- **pymupdf**
+- **ocrmypdf**
+- **pandas**
+
+
 ## RoadMap
 
 - Code Search
