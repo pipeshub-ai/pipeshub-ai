@@ -644,9 +644,9 @@ class SharePointConnector(BaseConnector):
 
                 # Ensure we're not accidentally processing this URL
                 self.logger.info(f"Delta URL for drive_id: {drive_id} is {delta_url}")
+                self.logger.debug(f"Delta URL for drive_id: {drive_id} is {delta_url}")
                 parsed_url = urllib.parse.urlparse(delta_url)
-                self.logger.info(f"Parsed URL for drive_id: {drive_id} is {parsed_url}")
-                if not (
+                self.logger.debug(f"Parsed URL for drive_id: {drive_id} is {parsed_url}")
                     parsed_url.scheme == 'https' and
                     parsed_url.hostname == 'graph.microsoft.com'
                 ):
