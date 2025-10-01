@@ -2068,7 +2068,8 @@ async def get_connector_config(
 
         if not config:
             config = {"auth": {}, "sync": {}, "filters": {}}
-
+        config["credentials"] = None
+        config["oauth"] = None
         response_dict: Dict[str, Any] = {
             "name": registry_entry["name"],
             "appGroupId": registry_entry.get("appGroupId"),
