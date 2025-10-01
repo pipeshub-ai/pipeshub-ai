@@ -111,7 +111,7 @@ class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: KafkaService,
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: Optional[KafkaService] = None,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
@@ -2703,8 +2703,11 @@ class BaseArangoService:
                 "payload": payload
             }
 
-            await self.kafka_service.publish_event("sync-events", event)
-            self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            if self.kafka_service:
+                await self.kafka_service.publish_event("sync-events", event)
+                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            else:
+                self.logger.debug("Skipping Kafka publish for sync-events: kafka_service is not configured")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
@@ -4878,8 +4881,11 @@ class BaseArangoService:
                 "payload": payload
             }
 
-            await self.kafka_service.publish_event("record-events", event)
-            self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            if self.kafka_service:
+                await self.kafka_service.publish_event("record-events", event)
+                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            else:
+                self.logger.debug("Skipping Kafka publish for record-events: kafka_service is not configured")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
