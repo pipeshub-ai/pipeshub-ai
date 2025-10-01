@@ -151,7 +151,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Video
 
 ## Tech Stack
- ### **Frontend**
+### Frontend
 - **React JS**
 - **Typescript**
 - **Material UI**
