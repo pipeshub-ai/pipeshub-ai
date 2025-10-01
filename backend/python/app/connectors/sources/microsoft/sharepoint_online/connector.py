@@ -64,6 +64,11 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
 
+# Constants for SharePoint site ID composite format
+# A composite site ID has the format: "hostname,site-id,web-id"
+COMPOSITE_SITE_ID_COMMA_COUNT = 2
+COMPOSITE_SITE_ID_PARTS_COUNT = 3
+
 
 class SharePointRecordType(Enum):
     """Extended record types for SharePoint"""
@@ -299,13 +304,13 @@ class SharePointConnector(BaseConnector):
             return site_id
 
         # Already composite?
-        if site_id.count(',') == 2:
+        if site_id.count(',') == COMPOSITE_SITE_ID_COMMA_COUNT:
             return site_id
 
         # Try to infer from cache (keys are composite IDs)
-        for composite_id in self.site_cache.keys():
+        for composite_id in self.site_cache:
             parts = composite_id.split(',')
-            if len(parts) == 3 and site_id == f"{parts[1]},{parts[2]}":
+            if len(parts) == COMPOSITE_SITE_ID_PARTS_COUNT and site_id == f"{parts[1]},{parts[2]}":
                 return composite_id
 
         # Fallback: prepend tenant hostname if available
