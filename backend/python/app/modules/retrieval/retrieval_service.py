@@ -363,9 +363,23 @@ class RetrievalService:
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
-                        result["metadata"]["mimeType"] = record.get("mimeType")
+
+                        # Determine mimeType with fallbacks
+                        mime_type = record.get("mimeType")
+                        record_type = record.get("recordType", "")
+
+                        if not mime_type:
+                            if record_type == RecordTypes.FILE.value:
+                                file_doc = file_documents_map.get(record_id)
+                                if file_doc:
+                                    mime_type = file_doc.get("mimeType")
+                            elif record_type == RecordTypes.MAIL.value:
+                                mime_type = "text/html"
+
+                        result["metadata"]["mimeType"] = mime_type
                         result["metadata"]["recordName"] = record.get("recordName")
-                        ext =  get_extension_from_mimetype(record.get("mimeType"))
+
+                        ext = get_extension_from_mimetype(mime_type)
                         if ext:
                             result["metadata"]["extension"] = ext
 
