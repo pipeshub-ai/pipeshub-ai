@@ -622,7 +622,7 @@ class SharePointConnector(BaseConnector):
                     yield item_tuple
                     item_count += 1
 
-        except Exception as e:
+        except Exception:
             self.logger.exception(f"❌ Error processing drives for site {site_id}")
 
     async def _process_drive_delta(self, site_id: str, drive_id: str) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
