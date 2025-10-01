@@ -2069,10 +2069,8 @@ export const removeKBPermission =
           HttpMethod.DELETE,
           req.headers as Record<string, string>,
           {
-            data: {
-              userIds: userIds,
-              teamIds: teamIds,
-            },
+            userIds: userIds,
+            teamIds: teamIds,
           },
         );
 
