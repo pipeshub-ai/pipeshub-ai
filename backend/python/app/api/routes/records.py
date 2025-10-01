@@ -4,8 +4,8 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
-from app.modules.retrieval.retrieval_arango import ArangoService
 
 router = APIRouter()
 
@@ -14,7 +14,7 @@ class ReindexFailedRequest(BaseModel):
     origin: str     # CONNECTOR, UPLOAD
 
 
-async def get_arango_service(request: Request) -> ArangoService:
+async def get_arango_service(request: Request) -> BaseArangoService:
     container: QueryAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
@@ -31,7 +31,7 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
 @inject
 async def get_records(
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
     page: int = 1,
     limit: int = 20,
     search: Optional[str] = None,
@@ -140,7 +140,7 @@ async def get_records(
 async def get_record_by_id(
     record_id: str,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Optional[Dict]:
     """
     Check if the current user has access to a specific record
@@ -169,7 +169,7 @@ async def get_record_by_id(
 async def delete_record(
     record_id: str,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
     Delete a specific record with permission validation
@@ -215,7 +215,7 @@ async def delete_record(
 async def reindex_single_record(
     record_id: str,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
     Reindex a single record with permission validation
@@ -264,7 +264,7 @@ async def reindex_single_record(
 async def reindex_failed_records(
     request_body: ReindexFailedRequest,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
     Reindex all failed records for a specific connector with permission validation

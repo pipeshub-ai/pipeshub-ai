@@ -8,7 +8,9 @@ from inspect import isclass
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.sources.google.common.arango_service import ArangoService
+from app.connectors.services.base_arango_service import (
+    BaseArangoService as ArangoService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
