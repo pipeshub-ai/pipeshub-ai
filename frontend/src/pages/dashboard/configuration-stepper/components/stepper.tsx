@@ -439,20 +439,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       const nextIndex = activeStep + 1;
       setActiveStep(nextIndex);
 
-      // Rehydrate the next step with its stored data (if any)
-      setTimeout(async () => {
-        const nextStep = CONFIGURATION_STEPS[nextIndex];
-        const nextState = stepStates[nextStep.id];
-        const nextFormRef = formRefs[nextStep.id as keyof typeof formRefs];
-
-        if (nextFormRef?.current && nextState?.formData) {
-          try {
-            await nextFormRef.current.rehydrateForm?.(nextState.formData);
-          } catch (e) {
-            // no-op
-          }
-        }
-      }, 50);
     } else {
       // This is the last step, complete configuration with current data
       await completeConfiguration();
@@ -480,20 +466,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       const nextIndex = activeStep + 1;
       setActiveStep(nextIndex);
 
-      // Rehydrate the next step with its stored data (if any)
-      setTimeout(async () => {
-        const nextStep = CONFIGURATION_STEPS[nextIndex];
-        const nextState = stepStates[nextStep.id];
-        const nextFormRef = formRefs[nextStep.id as keyof typeof formRefs];
-
-        if (nextFormRef?.current && nextState?.formData) {
-          try {
-            await nextFormRef.current.rehydrateForm?.(nextState.formData);
-          } catch (e) {
-            // no-op
-          }
-        }
-      }, 50);
     } else {
       completeConfiguration();
     }
