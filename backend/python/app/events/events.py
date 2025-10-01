@@ -180,7 +180,7 @@ class EventProcessor:
                 )
                 await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
-            
+
 
 
             # Update indexing status to IN_PROGRESS
@@ -199,7 +199,7 @@ class EventProcessor:
 
             if mime_type == "text/gmail_content":
                 if virtual_record_id is None:
-                    virtual_record_id = str(uuid4())                
+                    virtual_record_id = str(uuid4())
                 self.logger.info("🚀 Processing Gmail Message")
                 result = await self.processor.process_gmail_message(
                     recordName=record_name,
@@ -296,7 +296,7 @@ class EventProcessor:
                 except Exception as e:
                     self.logger.error(f"❌ Error in file processing: {repr(e)}")
                     raise
-            
+
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
