@@ -170,6 +170,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **pymupdf**
 - **ocrmypdf**
 - **pandas**
+- **etcd3**
 
 
 ## RoadMap
