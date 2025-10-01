@@ -30,7 +30,6 @@ class IndexingAppContainer(BaseAppContainer):
         BaseAppContainer._create_redis_client, config_service=config_service
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in indexing service
-    
     arango_service = providers.Resource(
         container_utils.create_arango_service,
         logger=logger,

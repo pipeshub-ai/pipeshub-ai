@@ -19,11 +19,11 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError
 from app.models.blocks import GroupType
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import (

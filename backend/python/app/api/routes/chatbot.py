@@ -9,9 +9,9 @@ from pydantic import BaseModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import get_generator_model
