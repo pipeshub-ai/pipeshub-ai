@@ -52,6 +52,26 @@ class OutlookCalendarContactsResponse:
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
+# Outlook-specific response wrapper for mail folders
+class OutlookMailFoldersResponse:
+    """Standardized Outlook Mail Folders API response wrapper."""
+    success: bool
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
+        self.success = success
+        self.data = data
+        self.error = error
+        self.message = message
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
 # Set up logger
 logger = logging.getLogger(__name__)
 
@@ -144,6 +164,71 @@ class OutlookCalendarContactsDataSource:
         except Exception as e:
             logger.error(f"Error handling Outlook response: {e}")
             return OutlookCalendarContactsResponse(success=False, error=str(e))
+
+    def _handle_mail_folders_response(self, response: object) -> OutlookMailFoldersResponse:
+        """Handle mail folders API response specifically."""
+        try:
+            if response is None:
+                return OutlookMailFoldersResponse(success=False, error="Empty response from Outlook API")
+
+            success = True
+            error_msg = None
+
+            # Handle error responses
+            if hasattr(response, 'error'):
+                success = False
+                error_msg = str(response.error)
+
+            # Extract folders data from MailFolderCollectionResponse
+            folders_data = None
+            if success and hasattr(response, 'value') and response.value:
+                folders_data = {
+                    "value": [],
+                    "count": len(response.value)
+                }
+
+                # Add OData metadata if present
+                if hasattr(response, 'additional_data') and response.additional_data:
+                    if '@odata.context' in response.additional_data:
+                        folders_data["@odata.context"] = response.additional_data['@odata.context']
+
+                if hasattr(response, 'odata_next_link') and response.odata_next_link:
+                    folders_data["@odata.nextLink"] = response.odata_next_link
+
+                if hasattr(response, 'odata_count') and response.odata_count:
+                    folders_data["@odata.count"] = response.odata_count
+
+                # Process each MailFolder object
+                for folder in response.value:
+                    folder_dict = {
+                        "id": getattr(folder, 'id', None),
+                        "display_name": getattr(folder, 'display_name', None),
+                        "parent_folder_id": getattr(folder, 'parent_folder_id', None),
+                        "child_folder_count": getattr(folder, 'child_folder_count', 0),
+                        "unread_item_count": getattr(folder, 'unread_item_count', 0),
+                        "total_item_count": getattr(folder, 'total_item_count', 0),
+                        "is_hidden": getattr(folder, 'is_hidden', False)
+                    }
+
+                    # Add additional properties if they exist
+                    if hasattr(folder, 'additional_data') and folder.additional_data:
+                        if 'sizeInBytes' in folder.additional_data:
+                            folder_dict["sizeInBytes"] = folder.additional_data['sizeInBytes']
+
+                    folders_data["value"].append(folder_dict)
+
+            print(f"Folders data {folders_data}")
+
+            return OutlookMailFoldersResponse(
+                success=success,
+                data=folders_data,
+                error=error_msg,
+                message=f"Successfully retrieved {len(response.value) if response.value else 0} mail folders" if success else None
+            )
+
+        except Exception as e:
+            logger.error(f"Error handling mail folders response: {e}")
+            return OutlookMailFoldersResponse(success=False, error=str(e))
 
     def get_data_source(self) -> 'OutlookCalendarContactsDataSource':
         """Get the underlying Outlook client."""
@@ -8939,7 +9024,7 @@ class OutlookCalendarContactsDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookCalendarContactsResponse:
+    ) -> OutlookMailFoldersResponse:
         """Get mailFolders from users.
         Outlook operation: GET /users/{user-id}/mailFolders
         Operation type: mail
@@ -8996,7 +9081,7 @@ class OutlookCalendarContactsDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.users.by_user_id(user_id).mail_folders.get(request_configuration=config)
-            return self._handle_outlook_response(response)
+            return self._handle_mail_folders_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
                 success=False,
@@ -12981,6 +13066,7 @@ class OutlookCalendarContactsDataSource:
         self,
         user_id: str,
         mailFolder_id: str,
+        delta_link: Optional[str] = None,
         changeType: Optional[str] = None,
         dollar_select: Optional[List[str]] = None,
         dollar_orderby: Optional[List[str]] = None,
@@ -13001,6 +13087,7 @@ class OutlookCalendarContactsDataSource:
         Args:
             user_id (str, required): Outlook user id identifier
             mailFolder_id (str, required): Outlook mailFolder id identifier
+            delta_link (str, optional): Complete deltaLink URL from previous response for incremental sync
             changeType (str, optional): A custom query option to filter the delta response based on the type of change. Supported values are created, updated or deleted.
             dollar_select (List[str], optional): Select properties to be returned
             dollar_orderby (List[str], optional): Order items by property values
@@ -13019,39 +13106,43 @@ class OutlookCalendarContactsDataSource:
         """
         # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
+            if delta_link:
+                # Use the complete deltaLink URL for subsequent requests
+                response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta.with_url(delta_link).get()
+            else:
+                # Use typed query parameters
+                query_params = RequestConfiguration()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                # Set query parameters using typed object properties
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = RequestConfiguration()
-            config.query_parameters = query_params
+                # Create proper typed request configuration
+                config = RequestConfiguration()
+                config.query_parameters = query_params
 
-            if headers:
-                config.headers = headers
+                if headers:
+                    config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                # Add consistency level for search operations in Outlook
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta().get(request_configuration=config)
+                response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(

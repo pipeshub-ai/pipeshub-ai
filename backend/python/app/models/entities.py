@@ -18,6 +18,7 @@ class RecordGroupType(str, Enum):
     JIRA_PROJECT = "JIRA_PROJECT"
     SHAREPOINT_SITE = "SHAREPOINT_SITE"
     SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
+    MAILBOX = "MAILBOX"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -147,6 +148,7 @@ class FileRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
+            "recordGroupId": self.external_record_group_id,
             "name": self.record_name,
             "isFile": self.is_file,
             "extension": self.extension,
@@ -240,18 +242,33 @@ class MailRecord(Record):
     to_emails: Optional[List[str]] = None
     cc_emails: Optional[List[str]] = None
     bcc_emails: Optional[List[str]] = None
+    thread_id: Optional[str] = None
+    is_parent: bool = False
+    internal_date: Optional[str] = None
+    date: Optional[str] = None
+    message_id_header: Optional[str] = None
+    history_id: Optional[str] = None
+    label_ids: Optional[List[str]] = None
+    conversation_index: Optional[str] = None
 
 
     def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
-            "orgId": self.org_id,
-            "name": self.record_name,
-            "subject": self.subject,
-            "from": self.from_email,
-            "to": self.to_emails,
-            "cc": self.cc_emails,
-            "bcc": self.bcc_emails,
+            "threadId": self.thread_id or "",
+            "isParent": self.is_parent,
+            "internalDate": self.internal_date or "",
+            "subject": self.subject or "",
+            "date": self.date or "",
+            "from": self.from_email or "",
+            "to": self.to_emails or [],
+            "cc": self.cc_emails or [],
+            "bcc": self.bcc_emails or [],
+            "messageIdHeader": self.message_id_header,
+            "historyId": self.history_id or "",
+            "webUrl": self.weburl or "",
+            "labelIds": self.label_ids or [],
+            "conversationIndex": self.conversation_index,
         }
 
 
@@ -261,6 +278,8 @@ class MailRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "mimeType": self.mime_type.value if self.mime_type else None,
+            "subject": self.subject,
         }
 
 class WebpageRecord(Record):
@@ -448,6 +467,7 @@ class RecordGroup(BaseModel):
     def to_arango_base_record_group(self) -> Dict:
         return {
             "_key": self.id,
+            "orgId": self.org_id,
             "groupName": self.name,
             "shortName": self.short_name,
             "description": self.description,

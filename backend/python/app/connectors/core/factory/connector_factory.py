@@ -11,6 +11,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
+from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
@@ -23,6 +24,7 @@ class ConnectorFactory:
     _connector_registry: Dict[str, Type[BaseConnector]] = {
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
+        "outlook": OutlookConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
     }

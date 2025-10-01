@@ -613,6 +613,7 @@ mail_record_schema = {
             "historyId": {"type": "string"},
             "webUrl": {"type": "string"},
             "labelIds": {"type": "array", "items": {"type": "string"}},
+            "conversationIndex": {"type": ["string", "null"]},
         },
         "required": ["threadId", "isParent"],
         "additionalProperties": False,
