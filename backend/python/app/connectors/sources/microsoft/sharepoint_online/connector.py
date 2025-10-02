@@ -887,7 +887,7 @@ class SharePointConnector(BaseConnector):
                 source_updated_at=updated_at,
                 weburl=getattr(item, 'web_url', None),
                 signed_url=signed_url,
-                mime_type=MimeTypes(item.file.mime_type) if hasattr(item, 'file') and item.file else MimeTypes.FOLDER,
+                mime_type=MimeTypes(item.file.mime_type) if hasattr(item, 'file') and item.file else MimeTypes.FOLDER.value,
                 parent_external_record_id=parent_id,
                 external_record_group_id=drive_id,
                 size_in_bytes=getattr(item, 'size', 0),
@@ -2141,7 +2141,7 @@ class SharePointConnector(BaseConnector):
 
         return StreamingResponse(
             stream_content(signed_url),
-            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
+            media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }

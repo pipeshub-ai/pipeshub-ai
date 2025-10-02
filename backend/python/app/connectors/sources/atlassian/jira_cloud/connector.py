@@ -344,7 +344,7 @@ class JiraClient:
                 record_group_type=RecordGroupType.JIRA_PROJECT,
                 external_record_group_id=project_id,
                 version=0,
-                mime_type=MimeTypes.PLAIN_TEXT,
+                mime_type=MimeTypes.PLAIN_TEXT.value,
                 weburl=f"{atlassian_domain}/browse/{issue.get('key')}"
             )
             issue_records.append((issue_record, permissions))
