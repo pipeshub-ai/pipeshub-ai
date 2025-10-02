@@ -20,6 +20,28 @@ const gracefulShutdown = async (signal: string) => {
   }
 };
 
+// Global error handlers to prevent app crashes
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', {
+    error: {
+      name: error.name,
+      message: error.message,
+    }
+  });
+  // let the app try to recover
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection:', {
+    reason: reason instanceof Error ? {
+      name: reason.name,
+      message: reason.message,
+    } : String(reason),
+    promise: promise.toString()
+  });
+  // let the app try to recover
+});
+
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
