@@ -30,11 +30,11 @@ class DiscordDataSource:
                 # Convert Discord object to dict
                 data_dict = self._discord_object_to_dict(data)
                 return DiscordResponse(success=True, data=data_dict)
-            if isinstance(data, list):
-                # Convert list of Discord objects
+            elif isinstance(data, (list, tuple)) or hasattr(data, '__iter__') and not isinstance(data, (str, dict)):
+                # Convert list/iterable of Discord objects
                 data_list = [self._discord_object_to_dict(item) if hasattr(item, "id") else item for item in data]
                 return DiscordResponse(success=True, data={"items": data_list, "count": len(data_list)})
-            if isinstance(data, dict):
+            elif isinstance(data, dict):
                 return DiscordResponse(success=True, data=data)
             return DiscordResponse(success=True, data={"result": str(data)})
 
@@ -120,9 +120,11 @@ class DiscordDataSource:
 
         """
         try:
-            await self.client.wait_until_ready()
+            # Client is already ready when using async context manager
             guilds = self.client.guilds
-            return await self._handle_discord_response(guilds)
+            # Convert to list explicitly (client.guilds returns a sequence-like object)
+            guilds_list = list(guilds)
+            return await self._handle_discord_response(guilds_list)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -226,7 +228,6 @@ class DiscordDataSource:
 
         """
         try:
-            await self.client.wait_until_ready()
             channel = self.client.get_channel(channel_id)
             if channel is None:
                 return DiscordResponse(success=False, error=f"Channel with ID {channel_id} not found")
@@ -264,7 +265,6 @@ class DiscordDataSource:
 
         """
         try:
-            await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
                 return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
@@ -293,7 +293,6 @@ class DiscordDataSource:
 
         """
         try:
-            await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
                 return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
@@ -320,7 +319,6 @@ class DiscordDataSource:
 
         """
         try:
-            await self.client.wait_until_ready()
             user = await self.client.fetch_user(user_id)
             if user is None:
                 return DiscordResponse(success=False, error=f"User with ID {user_id} not found")
@@ -396,7 +394,6 @@ class DiscordDataSource:
 
         """
         try:
-            await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
                 return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")

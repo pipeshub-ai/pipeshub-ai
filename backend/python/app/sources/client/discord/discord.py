@@ -69,7 +69,8 @@ class DiscordRESTClientViaToken:
         intents.message_content = True
         intents.members = True
         intents.guilds = True
-        self.client = discord.Client(intents=intents, token=token)
+        self.client = discord.Client(intents=intents)
+        self.token = token
 
     def get_client(self) -> discord.Client:
         return self.client
