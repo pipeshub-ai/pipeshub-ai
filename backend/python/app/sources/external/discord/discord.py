@@ -23,17 +23,37 @@ class DiscordDataSource:
         """Handle Discord API response and convert to standardized format"""
         try:
             if data is None:
-                return DiscordResponse(success=False, error="Empty response from Discord API")
+                return DiscordResponse(
+                    success=False, error="Empty response from Discord API"
+                )
 
             # Convert Discord objects to dict for serialization
-            if isinstance(data, (discord.Guild, discord.TextChannel, discord.Member, discord.User, discord.Message)):
+            if isinstance(
+                data,
+                (
+                    discord.Guild,
+                    discord.TextChannel,
+                    discord.Member,
+                    discord.User,
+                    discord.Message,
+                ),
+            ):
                 # Convert Discord object to dict
                 data_dict = self._discord_object_to_dict(data)
                 return DiscordResponse(success=True, data=data_dict)
-            elif isinstance(data, (list, tuple)) or hasattr(data, '__iter__') and not isinstance(data, (str, dict)):
+            elif (
+                isinstance(data, (list, tuple))
+                or hasattr(data, "__iter__")
+                and not isinstance(data, (str, dict))
+            ):
                 # Convert list/iterable of Discord objects
-                data_list = [self._discord_object_to_dict(item) if hasattr(item, "id") else item for item in data]
-                return DiscordResponse(success=True, data={"items": data_list, "count": len(data_list)})
+                data_list = [
+                    self._discord_object_to_dict(item) if hasattr(item, "id") else item
+                    for item in data
+                ]
+                return DiscordResponse(
+                    success=True, data={"items": data_list, "count": len(data_list)}
+                )
             elif isinstance(data, dict):
                 return DiscordResponse(success=True, data=data)
             return DiscordResponse(success=True, data={"result": str(data)})
@@ -92,16 +112,32 @@ class DiscordDataSource:
                     "id": str(obj.author.id),
                     "name": obj.author.name,
                     "discriminator": obj.author.discriminator,
-                } if obj.author else None,
+                }
+                if obj.author
+                else None,
                 "channel_id": str(obj.channel.id) if obj.channel else None,
                 "guild_id": str(obj.guild.id) if obj.guild else None,
                 "created_at": obj.created_at.isoformat() if obj.created_at else None,
                 "edited_at": obj.edited_at.isoformat() if obj.edited_at else None,
-                "attachments": [{"url": att.url, "filename": att.filename} for att in obj.attachments] if obj.attachments else [],
-                "embeds": [{"title": emb.title, "description": emb.description} for emb in obj.embeds] if obj.embeds else [],
+                "attachments": [
+                    {"url": att.url, "filename": att.filename}
+                    for att in obj.attachments
+                ]
+                if obj.attachments
+                else [],
+                "embeds": [
+                    {"title": emb.title, "description": emb.description}
+                    for emb in obj.embeds
+                ]
+                if obj.embeds
+                else [],
             }
         # Fallback for unknown types
-        return {"id": str(obj.id), "type": type(obj).__name__} if hasattr(obj, "id") else {"data": str(obj)}
+        return (
+            {"id": str(obj.id), "type": type(obj).__name__}
+            if hasattr(obj, "id")
+            else {"data": str(obj)}
+        )
 
     async def _handle_discord_error(self, error: Exception) -> DiscordResponse:
         """Handle Discord API errors and convert to standardized format"""
@@ -145,12 +181,16 @@ class DiscordDataSource:
             await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
-                return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Guild with ID {guild_id} not found"
+                )
             return await self._handle_discord_response(guild)
         except Exception as e:
             return await self._handle_discord_error(e)
 
-    async def get_channels(self, guild_id: int, channel_type: str | None = None) -> DiscordResponse:
+    async def get_channels(
+        self, guild_id: int, channel_type: str | None = None
+    ) -> DiscordResponse:
         """Get all channels in a guild
 
         Args:
@@ -168,16 +208,24 @@ class DiscordDataSource:
             await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
-                return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Guild with ID {guild_id} not found"
+                )
 
             channels = guild.channels
             if channel_type:
                 if channel_type == "text":
-                    channels = [ch for ch in channels if isinstance(ch, discord.TextChannel)]
+                    channels = [
+                        ch for ch in channels if isinstance(ch, discord.TextChannel)
+                    ]
                 elif channel_type == "voice":
-                    channels = [ch for ch in channels if isinstance(ch, discord.VoiceChannel)]
+                    channels = [
+                        ch for ch in channels if isinstance(ch, discord.VoiceChannel)
+                    ]
                 elif channel_type == "category":
-                    channels = [ch for ch in channels if isinstance(ch, discord.CategoryChannel)]
+                    channels = [
+                        ch for ch in channels if isinstance(ch, discord.CategoryChannel)
+                    ]
 
             return await self._handle_discord_response(channels)
         except Exception as e:
@@ -200,7 +248,9 @@ class DiscordDataSource:
             await self.client.wait_until_ready()
             channel = self.client.get_channel(channel_id)
             if channel is None:
-                return DiscordResponse(success=False, error=f"Channel with ID {channel_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Channel with ID {channel_id} not found"
+                )
             return await self._handle_discord_response(channel)
         except Exception as e:
             return await self._handle_discord_error(e)
@@ -230,10 +280,14 @@ class DiscordDataSource:
         try:
             channel = self.client.get_channel(channel_id)
             if channel is None:
-                return DiscordResponse(success=False, error=f"Channel with ID {channel_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Channel with ID {channel_id} not found"
+                )
 
             if not isinstance(channel, discord.TextChannel):
-                return DiscordResponse(success=False, error="Channel is not a text channel")
+                return DiscordResponse(
+                    success=False, error="Channel is not a text channel"
+                )
 
             # Prepare parameters for history
             history_kwargs: dict[str, Any] = {"limit": min(limit, 100)}
@@ -267,7 +321,9 @@ class DiscordDataSource:
         try:
             guild = self.client.get_guild(guild_id)
             if guild is None:
-                return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Guild with ID {guild_id} not found"
+                )
 
             # Fetch members (limited by the limit parameter)
             members = []
@@ -295,11 +351,15 @@ class DiscordDataSource:
         try:
             guild = self.client.get_guild(guild_id)
             if guild is None:
-                return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Guild with ID {guild_id} not found"
+                )
 
             member = await guild.fetch_member(user_id)
             if member is None:
-                return DiscordResponse(success=False, error=f"Member with ID {user_id} not found in guild")
+                return DiscordResponse(
+                    success=False, error=f"Member with ID {user_id} not found in guild"
+                )
 
             return await self._handle_discord_response(member)
         except Exception as e:
@@ -321,7 +381,9 @@ class DiscordDataSource:
         try:
             user = await self.client.fetch_user(user_id)
             if user is None:
-                return DiscordResponse(success=False, error=f"User with ID {user_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"User with ID {user_id} not found"
+                )
             return await self._handle_discord_response(user)
         except Exception as e:
             return await self._handle_discord_error(e)
@@ -353,7 +415,9 @@ class DiscordDataSource:
             await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
-                return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Guild with ID {guild_id} not found"
+                )
 
             matching_messages: list[discord.Message] = []
             query_lower = query.lower()
@@ -369,7 +433,9 @@ class DiscordDataSource:
                 # Search all text channels in guild
                 for channel in guild.text_channels:
                     try:
-                        async for message in channel.history(limit=limit // len(guild.text_channels) or 10):
+                        async for message in channel.history(
+                            limit=limit // len(guild.text_channels) or 10
+                        ):
                             if query_lower in message.content.lower():
                                 matching_messages.append(message)
                     except discord.Forbidden:
@@ -396,7 +462,9 @@ class DiscordDataSource:
         try:
             guild = self.client.get_guild(guild_id)
             if guild is None:
-                return DiscordResponse(success=False, error=f"Guild with ID {guild_id} not found")
+                return DiscordResponse(
+                    success=False, error=f"Guild with ID {guild_id} not found"
+                )
 
             roles = guild.roles
             roles_data = [
@@ -411,6 +479,8 @@ class DiscordDataSource:
                 for role in roles
             ]
 
-            return DiscordResponse(success=True, data={"items": roles_data, "count": len(roles_data)})
+            return DiscordResponse(
+                success=True, data={"items": roles_data, "count": len(roles_data)}
+            )
         except Exception as e:
             return await self._handle_discord_error(e)

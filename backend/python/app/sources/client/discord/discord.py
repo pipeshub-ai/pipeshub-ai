@@ -39,7 +39,9 @@ class DiscordRESTClientViaUsernamePassword:
         raise NotImplementedError
 
     def get_client(self) -> discord.Client:
-        raise NotImplementedError("Username/Password authentication is not yet implemented.")
+        raise NotImplementedError(
+            "Username/Password authentication is not yet implemented."
+        )
 
 
 class DiscordRESTClientViaApiKey:
@@ -90,7 +92,9 @@ class DiscordUsernamePasswordConfig:
     ssl: bool = False
 
     def create_client(self) -> DiscordRESTClientViaUsernamePassword:
-        return DiscordRESTClientViaUsernamePassword(self.username, self.password, "Basic")
+        return DiscordRESTClientViaUsernamePassword(
+            self.username, self.password, "Basic"
+        )
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -143,11 +147,22 @@ class DiscordApiKeyConfig:
 class DiscordClient(IClient):
     """Builder class for Discord clients with different construction methods"""
 
-    def __init__(self, client: DiscordRESTClientViaUsernamePassword | DiscordRESTClientViaApiKey | DiscordRESTClientViaToken) -> None:
+    def __init__(
+        self,
+        client: DiscordRESTClientViaUsernamePassword
+        | DiscordRESTClientViaApiKey
+        | DiscordRESTClientViaToken,
+    ) -> None:
         """Initialize with a Discord client object"""
         self.client = client
 
-    def get_client(self) -> DiscordRESTClientViaUsernamePassword | DiscordRESTClientViaApiKey | DiscordRESTClientViaToken:
+    def get_client(
+        self,
+    ) -> (
+        DiscordRESTClientViaUsernamePassword
+        | DiscordRESTClientViaApiKey
+        | DiscordRESTClientViaToken
+    ):
         """Return the Discord client object"""
         return self.client
 
@@ -156,7 +171,12 @@ class DiscordClient(IClient):
         return self.client.get_client()
 
     @classmethod
-    def build_with_config(cls, config: DiscordUsernamePasswordConfig | DiscordTokenConfig | DiscordApiKeyConfig) -> "DiscordClient":
+    def build_with_config(
+        cls,
+        config: DiscordUsernamePasswordConfig
+        | DiscordTokenConfig
+        | DiscordApiKeyConfig,
+    ) -> "DiscordClient":
         """Build DiscordClient with configuration
         Args:
             config: DiscordConfigBase instance
