@@ -45,7 +45,7 @@ async def make_signed_url_api_call(signed_url: str) -> dict:
                 data = await response.read()
                 return data
     except Exception:
-        raise
+        raise Exception("Failed to make signed URL API call")
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
@@ -81,7 +81,7 @@ async def make_api_call(signed_url_route: str, token: str) -> dict:
                     data = await response.read()
                     return {"is_json": False, "data": data}
     except Exception:
-        raise
+        raise Exception("Failed to make API call")
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -267,7 +267,7 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise
+                    raise Exception(error_msg)
 
             elif payload and payload.get("signedUrl"):
                 try:
@@ -288,7 +288,7 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise
+                    raise Exception(error_msg)
             else:
                 try:
                     jwt_payload  = {
@@ -320,17 +320,17 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise
+                    raise Exception(error_msg)
         except IndexingError as e:
             error_occurred = True
             error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            raise
+            raise Exception(error_msg)
         except Exception as e:
             error_occurred = True
             error_msg = f"Error processing message {message_id}: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            raise
+            raise Exception(error_msg)
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(

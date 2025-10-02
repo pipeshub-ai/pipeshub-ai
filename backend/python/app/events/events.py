@@ -377,7 +377,7 @@ class EventProcessor:
                 )
                 return result
 
-            if extension == ExtensionTypes.PDF.value:
+            if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
                 result = await self.processor.process_pdf_with_docling(
                     recordName=record_name,
                     recordId=record_id,
@@ -395,7 +395,7 @@ class EventProcessor:
                         virtual_record_id = virtual_record_id
                     )
 
-            elif extension == ExtensionTypes.DOCX.value:
+            elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 result = await self.processor.process_docx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -406,7 +406,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.DOC.value:
+            elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
                 result = await self.processor.process_doc_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -416,7 +416,7 @@ class EventProcessor:
                     doc_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-            elif extension == ExtensionTypes.XLSX.value:
+            elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
                 result = await self.processor.process_excel_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -426,7 +426,7 @@ class EventProcessor:
                     excel_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-            elif extension == ExtensionTypes.XLS.value:
+            elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
                 result = await self.processor.process_xls_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -436,7 +436,7 @@ class EventProcessor:
                     xls_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-            elif extension == ExtensionTypes.CSV.value:
+            elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
                 result = await self.processor.process_csv_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -448,7 +448,7 @@ class EventProcessor:
                     origin=origin,
                 )
 
-            elif extension == ExtensionTypes.HTML.value:
+            elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
                 result = await self.processor.process_html_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -461,7 +461,7 @@ class EventProcessor:
                     recordType=record_type
                 )
 
-            elif extension == ExtensionTypes.PPTX.value:
+            elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
                 result = await self.processor.process_pptx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -472,7 +472,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.PPT.value:
+            elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
                 result = await self.processor.process_ppt_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -483,7 +483,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.MD.value:
+            elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
                 result = await self.processor.process_md_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -494,7 +494,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.MDX.value:
+            elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
                 result = await self.processor.process_mdx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -505,7 +505,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.TXT.value:
+            elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
                 result = await self.processor.process_txt_document(
                     recordName=record_name,
                     recordId=record_id,
