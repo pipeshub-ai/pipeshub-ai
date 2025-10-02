@@ -357,7 +357,7 @@ class ConfluenceConnector(BaseConnector):
         content = await self.confluence_client.fetch_page_content(record.external_record_id)
         return StreamingResponse(
             content,
-            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
+            media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }

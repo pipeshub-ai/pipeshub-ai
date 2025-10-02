@@ -792,7 +792,7 @@ class OneDriveConnector(BaseConnector):
 
         return StreamingResponse(
             stream_content(signed_url),
-            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
+            media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }
