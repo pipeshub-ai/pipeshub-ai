@@ -1,9 +1,12 @@
+import logging
 from typing import Any, Optional
 
 import gitlab
 from gitlab import Gitlab, GitlabAuthenticationError
 from pydantic import BaseModel, Field  # type: ignore
 
+from app.config.configuration_service import ConfigurationService
+from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.iclient import IClient
 
 
@@ -76,7 +79,9 @@ class GitLabClientViaToken:
 
 class GitLabConfig(BaseModel):
     token: str = Field(..., description="GitLab private token")
-    url: Optional[str] = Field(default="https://gitlab.com", description="GitLab instance URL")
+    url: Optional[str] = Field(
+        default="https://gitlab.com", description="GitLab instance URL"
+    )
     timeout: Optional[float] = None
     api_version: Optional[str] = Field(default="4", description="GitLab API version")
     retry_transient_errors: Optional[bool] = None
@@ -113,3 +118,26 @@ class GitLabClient(IClient):
         client = config.create_client()
         client.get_sdk()
         return cls(client)
+
+    @classmethod
+    async def build_from_services(
+        cls,
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+        graph_db_service: IGraphService,
+    ) -> "GitLabClient":
+        """Build GitLabClient using configuration service and graph database service
+        Args:
+            logger: Logger instance
+            config_service: Configuration service instance
+            graph_db_service: Graph database service instance
+        Returns:
+            GitLabClient instance
+        """
+        # TODO: Implement - fetch config from services
+        # This would typically:
+        # 1. Query graph_db_service for stored GitLab credentials
+        # 2. Use config_service to get environment-specific settings
+        # 3. Return appropriate client based on available credentials (token)
+
+        return cls(client=None)  # type: ignore
