@@ -790,8 +790,6 @@ async def stream_record(
     """
     Stream a record to the client.
     """
-    logger.info("Stream /api/v1/stream/record/{record_id}");
-    raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Not implemented")
     try:
         try:
             logger.info(f"Stream Record Start: {time.time()}")
