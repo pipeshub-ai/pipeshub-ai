@@ -1,0 +1,143 @@
+# ruff: noqa
+import asyncio
+import os
+
+from app.sources.client.discord.discord import DiscordClient, DiscordTokenConfig
+from app.sources.external.discord.discord import DiscordDataSource
+
+
+async def main():
+    """Example usage of Discord client and data source"""
+    
+    # Get Discord bot token from environment variable
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        raise Exception("DISCORD_BOT_TOKEN environment variable is not set")
+    
+    print("=" * 80)
+    print("Discord Data Source Example")
+    print("=" * 80)
+    print()
+    
+    # Step 1: Create Discord client with token configuration
+    print("Step 1: Creating Discord client with bot token...")
+    discord_client = DiscordClient.build_with_config(
+        DiscordTokenConfig(token=token)
+    )
+    print("✓ Discord client created successfully")
+    print()
+    
+    # Step 2: Initialize Discord data source
+    print("Step 2: Initializing Discord data source...")
+    discord_data_source = DiscordDataSource(discord_client)
+    print("✓ Discord data source initialized")
+    print()
+    
+    # Start the Discord client
+    print("Step 3: Starting Discord client (this may take a moment)...")
+    client = discord_client.get_discord_client()
+    
+    # Run bot in background
+    async def bot_ready():
+        await client.wait_until_ready()
+        print("✓ Discord bot is ready!")
+        print()
+        
+        # Step 4: Get all guilds (servers)
+        print("Step 4: Fetching all guilds (servers)...")
+        print("-" * 80)
+        guilds_response = await discord_data_source.get_guilds()
+        if guilds_response.success:
+            print(f"Success! Found {guilds_response.data.get('count', 0)} guilds")
+            for i, guild in enumerate(guilds_response.data.get('items', [])[:3], 1):
+                print(f"  {i}. {guild['name']} (ID: {guild['id']})")
+            print()
+        else:
+            print(f"Error: {guilds_response.error}")
+            print()
+        
+        # Step 5: Get channels from first guild
+        if guilds_response.success and guilds_response.data.get('items'):
+            first_guild = guilds_response.data['items'][0]
+            guild_id = int(first_guild['id'])
+            
+            print(f"Step 5: Fetching channels from guild '{first_guild['name']}'...")
+            print("-" * 80)
+            channels_response = await discord_data_source.get_channels(guild_id, channel_type="text")
+            if channels_response.success:
+                print(f"Success! Found {channels_response.data.get('count', 0)} text channels")
+                for i, channel in enumerate(channels_response.data.get('items', [])[:5], 1):
+                    print(f"  {i}. #{channel['name']} (ID: {channel['id']})")
+                print()
+                
+                # Step 6: Get messages from first text channel
+                if channels_response.data.get('items'):
+                    first_channel = channels_response.data['items'][0]
+                    channel_id = int(first_channel['id'])
+                    
+                    print(f"Step 6: Fetching messages from channel '#{first_channel['name']}'...")
+                    print("-" * 80)
+                    messages_response = await discord_data_source.get_messages(channel_id, limit=5)
+                    if messages_response.success:
+                        print(f"Success! Found {messages_response.data.get('count', 0)} messages")
+                        for i, message in enumerate(messages_response.data.get('items', [])[:3], 1):
+                            author = message.get('author', {})
+                            content = message.get('content', '')[:50]
+                            print(f"  {i}. [{author.get('name', 'Unknown')}]: {content}...")
+                        print()
+                    else:
+                        print(f"Error: {messages_response.error}")
+                        print()
+            else:
+                print(f"Error: {channels_response.error}")
+                print()
+            
+            # Step 7: Get guild members
+            print(f"Step 7: Fetching members from guild '{first_guild['name']}'...")
+            print("-" * 80)
+            members_response = await discord_data_source.get_members(guild_id, limit=5)
+            if members_response.success:
+                print(f"Success! Found {members_response.data.get('count', 0)} members (limited to 5)")
+                for i, member in enumerate(members_response.data.get('items', []), 1):
+                    print(f"  {i}. {member['display_name']} (@{member['name']}) - Bot: {member['bot']}")
+                print()
+            else:
+                print(f"Error: {members_response.error}")
+                print()
+            
+            # Step 8: Get guild roles
+            print(f"Step 8: Fetching roles from guild '{first_guild['name']}'...")
+            print("-" * 80)
+            roles_response = await discord_data_source.get_guild_roles(guild_id)
+            if roles_response.success:
+                print(f"Success! Found {roles_response.data.get('count', 0)} roles")
+                for i, role in enumerate(roles_response.data.get('items', [])[:5], 1):
+                    print(f"  {i}. {role['name']} (Position: {role['position']})")
+                print()
+            else:
+                print(f"Error: {roles_response.error}")
+                print()
+        
+        print("=" * 80)
+        print("Example completed successfully!")
+        print("=" * 80)
+        
+        # Close the client
+        await client.close()
+    
+    # Create task for bot
+    asyncio.create_task(client.start(token))
+    
+    # Wait for bot to be ready and run examples
+    await bot_ready()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nExample interrupted by user")
+    except Exception as e:
+        print(f"\nError running example: {e}")
+        import traceback
+        traceback.print_exc()
