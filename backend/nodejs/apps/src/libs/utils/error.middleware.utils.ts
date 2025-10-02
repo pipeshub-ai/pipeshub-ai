@@ -1,34 +1,42 @@
 import { Response } from 'express';
+import { Logger } from '../services/logger.service';
 
 /**
  * Extract error data without circular references
  */
 export const extractErrorData = (error: any): any => {
-    if (!error) return null;
+  if (!error) return null;
 
-    try {
-        // Handle Axios error response data
-        if (error.response?.data) {
-        const data = error.response.data;
-        return {
-            detail: data.detail || data.reason || data.message || 'Unknown error',
-            status: error.response.status,
-            statusText: error.response.statusText,
-        };
-        }
+  try {
+      // For errors with a toJSON method (like BaseError)
+      if (typeof error.toJSON === 'function') {
+          return error.toJSON();
+      }
 
-        // Handle other error types
-        return {
-        message: error.message || 'Unknown error',
-        code: error.code,
-        name: error.name,
-        };
-    } catch (extractionError) {
-        return {
-        message: 'Error processing error data',
-        originalError: String(error),
-        };
-    }
+      // Handle Axios error response data
+      if (error.response?.data) {
+      const data = error.response.data;
+      return {
+          detail: data.detail || data.reason || data.message || 'Unknown error',
+          status: error.response.status,
+          statusText: error.response.statusText,
+          stack: error.stack,
+      };
+      }
+
+      // Handle other error types
+      return {
+      message: error.message || 'Unknown error',
+      code: error.code,
+      name: error.name,
+      stack: error.stack,
+      };
+  } catch (extractionError) {
+      return {
+      message: 'Error processing error data',
+      originalError: String(error),
+      };
+  }
 };
 
 /**
@@ -62,7 +70,7 @@ export const jsonResponse = (
  * Error logging with circular reference protection
  */
 export const logError = (
-  logger: any,
+  logger: Logger,
   message: string,
   error: any,
   context?: any,

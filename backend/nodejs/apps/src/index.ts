@@ -28,7 +28,8 @@ process.on('uncaughtException', (error) => {
       message: error.message,
     }
   });
-  // let the app try to recover
+  // let the app try to recover for now until we have a better solution: to restart the app in a new process
+  gracefulShutdown('uncaughtException'); // TODO: add this once we have a better solution
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -39,7 +40,8 @@ process.on('unhandledRejection', (reason, promise) => {
     } : String(reason),
     promise: promise.toString()
   });
-  // let the app try to recover
+  // let the app try to recover for now until we have a better solution: to restart the app in a new process
+  // gracefulShutdown('unhandledRejection'); TODO: add this once we have a better solution
 });
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
