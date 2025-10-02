@@ -91,7 +91,7 @@ class DataSourceEntitiesProcessor:
                     version=0,
                     is_file=False,
                     extension=None,
-                    mime_type=MimeTypes.FOLDER,
+                    mime_type=MimeTypes.FOLDER.value,
                 )
                 await tx_store.batch_upsert_records([parent_record])
 
