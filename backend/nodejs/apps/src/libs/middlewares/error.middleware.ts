@@ -1,16 +1,33 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
 import { BaseError } from '../errors/base.error';
+import { jsonResponse, logError } from '../utils/error.middleware.utils';
 
 export class ErrorMiddleware {
   private static logger = Logger.getInstance();
 
   static handleError() {
     return (error: Error, req: Request, res: Response, _next: NextFunction) => {
-      if (error instanceof BaseError) {
-        this.handleBaseError(error, req, res);
-      } else {
-        this.handleUnknownError(error, req, res);
+      // Check if response has already been sent
+      if (res.headersSent) {
+        return;
+      }
+
+      try {
+        if (error instanceof BaseError) {
+          this.handleBaseError(error, req, res);
+        } else {
+          this.handleUnknownError(error, req, res);
+        }
+      } catch (middlewareError) {
+        // If even the error middleware fails, send a basic error response
+        console.error('Error in error middleware:', middlewareError);
+        jsonResponse(res, 500, {
+          error: {
+            code: 'MIDDLEWARE_ERROR',
+            message: 'An unexpected error occurred while processing the request'
+          }
+        });
       }
     };
   }
@@ -20,14 +37,11 @@ export class ErrorMiddleware {
     req: Request,
     res: Response,
   ) {
-    const logMethod = 'error';
-
-    this.logger[logMethod]('Application error', {
-      error: error.toJSON(),
+    logError(this.logger, 'Application error', error, {
       request: this.getRequestContext(req),
     });
 
-    res.status(error.statusCode).json({
+    const errorResponse = {
       error: {
         code: error.code,
         message: error.message,
@@ -36,20 +50,17 @@ export class ErrorMiddleware {
           stack: error.stack,
         }),
       },
-    });
+    };
+
+    jsonResponse(res, error.statusCode, errorResponse);
   }
 
   private static handleUnknownError(error: Error, req: Request, res: Response) {
-    this.logger.error('Unhandled error', {
-      error: {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      },
+    logError(this.logger, 'Unhandled error', error, {
       request: this.getRequestContext(req),
     });
 
-    res.status(500).json({
+    const errorResponse = {
       error: {
         code: 'INTERNAL_ERROR',
         message:
@@ -57,7 +68,9 @@ export class ErrorMiddleware {
             ? 'An unexpected error occurred'
             : error.message,
       },
-    });
+    };
+
+    jsonResponse(res, 500, errorResponse);
   }
 
   private static getRequestContext(req: Request) {
@@ -78,3 +91,4 @@ export class ErrorMiddleware {
     return sanitized;
   }
 }
+
