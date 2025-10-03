@@ -664,7 +664,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       const savePromises = configurationsToSave.map((config) =>
         config.saveFn().catch((error: any) => {
           console.error(`Error saving ${config.type}:`, error);
-          throw new Error(`Failed to save ${config.type} configuration`);
+          throw new Error(error.message || `Failed to save ${config.type} configuration`);
         })
       );
 
