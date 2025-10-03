@@ -438,7 +438,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     if (activeStep < CONFIGURATION_STEPS.length - 1) {
       const nextIndex = activeStep + 1;
       setActiveStep(nextIndex);
-
     } else {
       // This is the last step, complete configuration with current data
       await completeConfiguration();
@@ -465,7 +464,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     if (activeStep < CONFIGURATION_STEPS.length - 1) {
       const nextIndex = activeStep + 1;
       setActiveStep(nextIndex);
-
     } else {
       completeConfiguration();
     }
@@ -473,7 +471,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
 
   // Robust rehydration on step change to ensure persistence across multiple navigations
   useEffect(() => {
-    if (!open)  return () => {};
+    if (!open) return () => {};
     const timer = setTimeout(async () => {
       try {
         const step = getCurrentStep();
@@ -664,7 +662,12 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       const savePromises = configurationsToSave.map((config) =>
         config.saveFn().catch((error: any) => {
           console.error(`Error saving ${config.type}:`, error);
-          throw new Error(`Failed to save ${config.type} configuration`);
+          throw new Error(
+            error.response?.data?.error?.message ||
+              error.response?.data?.message ||
+              error.message ||
+              `Failed to save ${config.type} configuration`
+          );
         })
       );
 

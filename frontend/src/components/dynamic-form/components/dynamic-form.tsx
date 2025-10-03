@@ -339,8 +339,9 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
 
               resolve({ success: true });
             } catch (error: any) {
+              console.error('Error saving configuration:', error);
               const errorMessage =
-                error.response?.data?.message ||
+                error.response?.data?.message || error.message ||
                 `Failed to save ${providerConfig?.label} configuration`;
               setSaveError(errorMessage);
               resolve({ success: false, error: errorMessage });
