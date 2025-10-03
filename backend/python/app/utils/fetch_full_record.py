@@ -75,10 +75,6 @@ async def _fetch_full_record_impl(
       ...
     }
     """
-    print(f"record_id: {record_id}")
-    # record = await arango_service.get_record_by_id(record_id)
-    # 1) Try blob store (fast path in your pipeline)
-    # record = await _try_blobstore_fetch(blob_store, org_id, record.virtual_record_id)
     records = list(virtual_record_id_to_result.values())
     
     record = next((record for record in records if  record is not None and record.get("id") == record_id), None)

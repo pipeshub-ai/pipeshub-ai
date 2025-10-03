@@ -470,9 +470,13 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                 },
                 "page_content": payload.get("page_content")
                 })
-
+        
+        sorted_blocks = sorted(blocks, key=lambda x: x.get("index", 0))
+        for i,block in enumerate(sorted_blocks):
+            block["index"] = i
+            
         record["block_containers"] = {
-            "blocks": blocks,
+            "blocks": sorted_blocks,
             "block_groups": []
         }
 
@@ -591,23 +595,6 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
             
             if block_type == BlockType.IMAGE.value:
                 continue
-                if isinstance(data, dict):
-                    image_uri = data.get("uri", "")
-                    if image_uri and image_uri.startswith("data:image/"):
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:\n\n"
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": image_uri}
-                        })
-                    # else:
-                        # Todo: Handle image description
-                        # content.append({
-                        #     "type": "text",
-                        #     "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {image_uri}\n\n"
-                        # })
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",

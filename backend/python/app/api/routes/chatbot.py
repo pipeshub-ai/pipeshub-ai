@@ -1,4 +1,5 @@
 import json
+import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from dependency_injector.wiring import inject
@@ -7,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
+from app.utils.streaming import stream_llm_response_with_tools
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, CollectionNames
@@ -351,83 +353,6 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
     return ai
 
 
-async def stream_llm_response_with_tools(llm, messages, tools, tool_runtime_kwargs, final_results, max_hops=4) -> AsyncGenerator[Dict[str, Any], None]:
-    """Stream LLM response while handling tool calls"""
-    llm_with_tools = llm.bind_tools(tools)
-
-    # First get the initial response
-    ai: AIMessage = await llm_with_tools.ainvoke(messages)
-
-    hops = 0
-    while isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None) and hops < max_hops:
-        # Notify about tool usage
-        for call in ai.tool_calls:
-            yield {
-                "event": "tool_call",
-                "data": {
-                    "tool_name": call["name"],
-                    "tool_args": call.get("args", {})
-                }
-            }
-
-        tool_msgs = []
-        for call in ai.tool_calls:
-            name = call["name"]
-            args = call.get("args", {}) or {}
-            call_id = call.get("id")
-
-            tool = next((t for t in tools if t.name == name), None)
-            if tool is None:
-                tool_result = json.dumps({"ok": False, "error": f"Unknown tool: {name}"})
-            else:
-                try:
-                    tool_result = await tool.arun(args, **tool_runtime_kwargs)
-                except Exception as e:
-                    tool_result = json.dumps({"ok": False, "error": str(e)})
-
-            tool_msgs.append(ToolMessage(content=tool_result, tool_call_id=call_id))
-
-            # Notify about tool result
-            yield {
-                "event": "tool_result",
-                "data": {
-                    "tool_name": name,
-                    "result": tool_result
-                }
-            }
-
-        # Feed back tool results
-        messages.append(ai)
-        messages.extend(tool_msgs)
-
-        # Get next response
-        ai = await llm_with_tools.ainvoke(messages)
-        hops += 1
-
-    # Stream the final response
-    if hasattr(ai, "content") and ai.content:
-        # For now, we'll send the final content in chunks
-        # In a real implementation, you'd want to stream the generation
-        content = ai.content
-        chunk_size = 100
-        for i in range(0, len(content), chunk_size):
-            chunk = content[i:i + chunk_size]
-            yield {
-                "event": "answer_chunk",
-                "data": {
-                    "chunk": chunk,
-                    "is_final": i + chunk_size >= len(content)
-                }
-            }
-
-    # Send final results
-    yield {
-        "event": "answer_complete",
-        "data": {
-            "final_answer": ai.content if hasattr(ai, "content") else "",
-            "citations": final_results
-        }
-    }
 
 
 @router.post("/chat/stream")
@@ -481,7 +406,7 @@ async def askAIStream(
                 is_multimodal_llm,
                 tools=tools,
                 tool_runtime_kwargs=tool_runtime_kwargs,
-                target_words_per_chunk=5,
+                target_words_per_chunk=3,
 
             ):
                 event_type = stream_event["event"]
@@ -526,7 +451,7 @@ async def askAI(
 
         # Make async LLM call with tools
         final_ai_msg = await resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4)
-
+        
         # Guard: ensure we have content
         if not getattr(final_ai_msg, "content", None):
             raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")

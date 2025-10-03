@@ -8,12 +8,16 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from fastapi import HTTPException
 from langchain.schema import  HumanMessage
-
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
-from app.utils.citations import normalize_citations_and_chunks
+from app.utils.citations import normalize_citations_and_chunks, process_citations
+from app.utils.latency_measurement import (
+    measure_latency,
+    measure_latency_context,
+)
+
 
 
 def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
@@ -124,15 +128,53 @@ def escape_ctl(raw: str) -> str:
 
 
 async def aiter_llm_stream(llm, messages) -> AsyncGenerator[str, None]:
-    """Async iterator for LLM streaming"""
+    """Async iterator for LLM streaming that normalizes content to text.
+
+    The LLM provider may return content as a string or a list of content parts
+    (e.g., [{"type": "text", "text": "..."}, {"type": "image_url", ...}]).
+    We extract and concatenate only textual parts for streaming.
+    """
+
+    def _stringify_content(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    # Prefer explicit text field
+                    if item.get("type") == "text":
+                        text_val = item.get("text")
+                        if isinstance(text_val, str):
+                            parts.append(text_val)
+                    # Some providers may return just {"text": "..."}
+                    elif "text" in item and isinstance(item["text"], str):
+                        parts.append(item["text"])
+                    # Ignore non-text parts (e.g., images)
+                elif isinstance(item, str):
+                    parts.append(item)
+                else:
+                    # Fallback to stringification
+                    parts.append(str(item))
+            return "".join(parts)
+        # Fallback to stringification for other types
+        return str(content)
+
     if hasattr(llm, "astream"):
         async for part in llm.astream(messages):
-            if part and getattr(part, "content", ""):
-                yield part.content
+            if not part:
+                continue
+            content = getattr(part, "content", None)
+            text = _stringify_content(content)
+            if text:
+                yield text
     else:
         # Non-streaming – yield whole blob once
         response = await llm.ainvoke(messages)
-        yield getattr(response, "content", str(response))
+        content = getattr(response, "content", response)
+        yield _stringify_content(content)
 
 
 async def execute_tool_calls(
@@ -148,7 +190,7 @@ async def execute_tool_calls(
     user_id: str,
     org_id: str,
     is_multimodal_llm: Optional[bool] = False,
-    max_hops: int = 4,
+    max_hops: int = 1,
    
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
@@ -274,7 +316,6 @@ async def execute_tool_calls(
         
         message_contents = []
         record_ids = []
-        previous_tokens = 80000
         if new_tokens+previous_tokens > 80000:
             
             virtual_record_ids = [tool_result.get("record",{}).get("virtual_record_id") for tool_result in tool_results_inner if tool_result.get("ok")]
@@ -318,6 +359,7 @@ async def execute_tool_calls(
         for i,tool_result in enumerate(tool_results_inner):
             if tool_result.get("ok") and msg_ind < len(message_contents):
                 message_content = message_contents[msg_ind]
+                # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
                 tool_msgs.append(ToolMessage(content=message_content, tool_call_id=tool_call_ids[record_ids[msg_ind]]))
                 msg_ind += 1
             else:
@@ -334,7 +376,8 @@ async def execute_tool_calls(
                 CRITICAL REQUIREMENTS:\n
                 - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
                 - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
-                - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""))
+                - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers).
+                - Do not list excessive citations for the same point. Include only the top 4-5 most relevant block citations per answer."""))
 
     # Return the final values as the last yielded item
     yield {
@@ -373,6 +416,58 @@ async def stream_llm_response(
     prev_norm_len = 0  # length of the previous normalised answer
     emit_upto = 0
     words_in_chunk = 0
+
+    # Fast-path: if the last message is already an AI answer, stream that without invoking the LLM again
+    try:
+        last_msg = messages[-1] if messages else None
+        existing_ai_content: Optional[str] = None
+        if isinstance(last_msg, AIMessage):
+            existing_ai_content = getattr(last_msg, "content", None)
+        elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
+            existing_ai_content = getattr(last_msg, "content", None)
+        elif isinstance(last_msg, dict) and last_msg.get("role") == "assistant":
+            existing_ai_content = last_msg.get("content")
+
+        if existing_ai_content:
+            try:
+                parsed = json.loads(existing_ai_content)
+                final_answer = parsed.get("answer", existing_ai_content)
+                reason = parsed.get("reason")
+                confidence = parsed.get("confidence")
+            except Exception:
+                final_answer = existing_ai_content
+                reason = None
+                confidence = None
+
+            normalized, cites = normalize_citations_and_chunks(final_answer, final_results)
+
+            words = re.findall(r'\S+', normalized)
+            for i in range(0, len(words), target_words_per_chunk):
+                chunk_words = words[i:i + target_words_per_chunk]
+                chunk_text = ' '.join(chunk_words)
+                accumulated = ' '.join(words[:i + len(chunk_words)])
+                yield {
+                    "event": "answer_chunk",
+                    "data": {
+                        "chunk": chunk_text,
+                        "accumulated": accumulated,
+                        "citations": cites,
+                    },
+                }
+
+            yield {
+                "event": "complete",
+                "data": {
+                    "answer": normalized,
+                    "citations": cites,
+                    "reason": reason,
+                    "confidence": confidence,
+                },
+            }
+            return
+    except Exception:
+        # If detection fails, fall back to normal path
+        pass
 
     # Try to bind structured output
     try:
@@ -504,21 +599,69 @@ async def stream_llm_response_with_tools(
 
         # Execute tools and get updated messages
         final_messages = messages.copy()
-        async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm): 
-            if tool_event.get("event") == "tool_execution_complete":
-                # Extract the final messages and tools_executed status
-                final_messages = tool_event["data"]["messages"]
-                # tool_args = tool_event["data"]["tool_args"]
-                tool_results = tool_event["data"]["tool_results"]
-                if tool_results:
-                    records = [r.get("record") for r in tool_results]
-                # tool_event["data"]["tools_executed"]
-            else:
-                yield tool_event
-
+        try:
+            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm): 
+                if tool_event.get("event") == "tool_execution_complete":
+                    # Extract the final messages and tools_executed status
+                    final_messages = tool_event["data"]["messages"]
+                    # tool_args = tool_event["data"]["tool_args"]
+                    tool_results = tool_event["data"]["tool_results"]
+                    if tool_results:
+                        records = [r.get("record") for r in tool_results]
+                    # tool_event["data"]["tools_executed"]
+                else:
+                    yield tool_event
+            
+            messages = final_messages
+        except Exception:
+            pass
         # Update messages with the final state
-        messages = final_messages
+        print("messagesssssssssssss",messages)
 
+        if len(messages) > 0 and isinstance(messages[-1], AIMessage):
+            final_ai_msg = messages[-1]
+            if not getattr(final_ai_msg, "content", None):
+                raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")
+
+            # Stream chunks from the existing AI content instead of a single complete event
+            existing_content = final_ai_msg.content
+            try:
+                parsed = json.loads(existing_content)
+                final_answer = parsed.get("answer", existing_content)
+                reason = parsed.get("reason")
+                confidence = parsed.get("confidence")
+            except Exception:
+                final_answer = existing_content
+                reason = None
+                confidence = None
+
+            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records)
+
+            words = re.findall(r'\S+', normalized)
+            for i in range(0, len(words), target_words_per_chunk):
+                chunk_words = words[i:i + target_words_per_chunk]
+                chunk_text = ' '.join(chunk_words)
+                accumulated = ' '.join(words[:i + len(chunk_words)])
+                yield {
+                    "event": "answer_chunk",
+                    "data": {
+                        "chunk": chunk_text,
+                        "accumulated": accumulated,
+                        "citations": cites,
+                    },
+                }
+
+            yield {
+                "event": "complete",
+                "data": {
+                    "answer": normalized,
+                    "citations": cites,
+                    "reason": reason,
+                    "confidence": confidence,
+                },
+            }
+            return
+        
         # Re-bind tools for the final response
         if tools:
             llm = llm.bind_tools(tools)
@@ -527,7 +670,7 @@ async def stream_llm_response_with_tools(
             "event": "status",
             "data": {"status": "generating_answer", "message": "Generating final answer..."}
         }
-    
+
     # Original streaming logic for the final answer
     full_json_buf: str = ""         # whole JSON as it trickles in
     answer_buf: str = ""            # the running "answer" value (no quotes)
@@ -607,9 +750,7 @@ async def stream_llm_response_with_tools(
         try:
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
-            print("final_answerrr",final_answer)
             normalized, c = normalize_citations_and_chunks(final_answer, final_results,records)
-            print("normalizedddddd",normalized)
             yield {
                 "event": "complete",
                 "data": {
@@ -631,153 +772,11 @@ async def stream_llm_response_with_tools(
                     "confidence": None,
                 },
             }
-
     except Exception as exc:
         yield {
             "event": "error",
             "data": {"error": f"Error in LLM streaming: {exc}"},
         }
-
-
-async def stream_llm_response_with_tools_integrated(
-    llm,
-    messages,
-    final_results,
-    tools: Optional[List] = None,
-    tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
-    target_words_per_chunk: int = 5,
-    max_tool_hops: int = 4
-) -> AsyncGenerator[Dict[str, Any], None]:
-    """
-    Alternative implementation that fully integrates tools into the streaming process.
-    This version executes tools inline and continues streaming seamlessly.
-    """
-    if not tools or not tool_runtime_kwargs:
-        # No tools, use original implementation
-        async for event in stream_llm_response_with_tools(llm, messages, final_results, target_words_per_chunk=target_words_per_chunk):
-            yield event
-        return
-
-    llm_with_tools = llm.bind_tools(tools)
-    hops = 0
-
-    # Try structured output
-    try:
-        llm_with_tools.with_structured_output(AnswerWithMetadata)
-    except Exception as e:
-        print(f"LLM provider does not support structured output: {e}")
-
-    while hops < max_tool_hops:
-        # Get response from LLM
-        response = await llm_with_tools.ainvoke(messages)
-
-        # Check for tool calls
-        if isinstance(response, AIMessage) and getattr(response, "tool_calls", None):
-            # Execute tools
-            for call in response.tool_calls:
-                yield {
-                    "event": "tool_call",
-                    "data": {
-                        "tool_name": call["name"],
-                        "tool_args": call.get("args", {}),
-                        "hop": hops + 1
-                    }
-                }
-
-                name = call["name"]
-                args = call.get("args", {}) or {}
-                call_id = call.get("id")
-
-                tool = next((t for t in tools if t.name == name), None)
-
-                if tool:
-                    try:
-                        tool_result = await tool.arun(args, **tool_runtime_kwargs)
-                        yield {
-                            "event": "tool_success",
-                            "data": {
-                                "tool_name": name,
-                                "summary": f"Executed {name}",
-                                "hop": hops + 1
-                            }
-                        }
-                    except Exception as e:
-                        tool_result = json.dumps({"ok": False, "error": str(e)})
-                        yield {
-                            "event": "tool_error",
-                            "data": {"tool_name": name, "error": str(e)}
-                        }
-                else:
-                    tool_result = json.dumps({"ok": False, "error": f"Unknown tool: {name}"})
-
-                messages.append(response)
-                messages.append(ToolMessage(content=tool_result, tool_call_id=call_id))
-
-            hops += 1
-            continue
-
-        # No more tool calls, stream the final response
-        if hasattr(response, "content") and response.content:
-            # Use the original streaming logic for the final answer
-            yield {"event": "status", "data": {"status": "streaming_answer", "message": "Streaming final answer..."}}
-
-            # Parse and stream the content
-            content = response.content
-            try:
-                # Try to parse as JSON first
-                parsed = json.loads(content)
-                final_answer = parsed.get("answer", content)
-
-                # Stream the answer in chunks
-                normalized, cites = normalize_citations_and_chunks(final_answer, final_results)
-
-                # Stream in word-based chunks
-                words = re.findall(r'\S+', normalized)
-                chunk_size = target_words_per_chunk
-
-                for i in range(0, len(words), chunk_size):
-                    chunk_words = words[i:i + chunk_size]
-                    chunk_text = ' '.join(chunk_words)
-
-                    # Get accumulated text up to this point
-                    accumulated = ' '.join(words[:i + len(chunk_words)])
-
-                    yield {
-                        "event": "answer_chunk",
-                        "data": {
-                            "chunk": chunk_text,
-                            "accumulated": accumulated,
-                            "citations": cites,
-                        }
-                    }
-
-                yield {
-                    "event": "complete",
-                    "data": {
-                        "answer": normalized,
-                        "citations": cites,
-                        "reason": parsed.get("reason"),
-                        "confidence": parsed.get("confidence"),
-                        "tools_used": hops > 0
-                    }
-                }
-
-            except json.JSONDecodeError:
-                # Not JSON, stream as plain text
-                normalized, cites = normalize_citations_and_chunks(content, final_results)
-
-                yield {
-                    "event": "complete",
-                    "data": {
-                        "answer": normalized,
-                        "citations": cites,
-                        "reason": None,
-                        "confidence": None,
-                        "tools_used": hops > 0
-                    }
-                }
-        break
-
 
 def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""

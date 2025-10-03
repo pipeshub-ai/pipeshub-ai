@@ -120,16 +120,6 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
             
             
-        # else:
-        #     block_container = record.get("block_containers",{})
-        #     blocks = block_container.get("blocks",[])
-        #     block_index = doc.get("block_index")
-        #     block_type = doc.get("block_type")
-        #     if block_type == GroupType.TABLE.value:
-        #         _,child_results = doc.get("content")
-        #         if child_results:
-    # Create mapping from old citation keys to new sequential numbers
-    record_number_to_record_index = {}
     for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
 
@@ -147,16 +137,37 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                     "citationType": "vectordb|document",
                 })
         else:
-            record_number = old_citation_key.split("-")[0]
-            number = int(re.findall(r'\d+', record_number)[0])
+            # Safely parse citation key like "R<record>-<block>"
+            key_match = re.match(r"R(\d+)-(\d+)", old_citation_key)
+            if not key_match:
+                continue
+            try:
+                number = int(key_match.group(1))
+                block_index = int(key_match.group(2))
+            except (TypeError, ValueError):
+                continue
+
+            # Ensure record number maps to a known VRID
+            if number not in record_number_to_vrid:
+                continue
             vrid = record_number_to_vrid[number]
-            record = next ((r for r in records if r.get("virtual_record_id") == vrid),None)
+
+            # Find the record by VRID
+            record = next((r for r in records if r.get("virtual_record_id") == vrid), None)
             if record is None:
                 continue
-            block_index = int(old_citation_key.split("-")[1])
-            block_container = record.get("block_containers",{})
-            blocks = block_container.get("blocks",[])
+
+            # Extract blocks safely
+            block_container = record.get("block_containers", {}) or {}
+            blocks = block_container.get("blocks", []) or []
+            if not isinstance(blocks, list):
+                continue
+            if block_index < 0 or block_index >= len(blocks):
+                continue
+
             block = blocks[block_index]
+            if not isinstance(block, dict):
+                continue
             block_type = block.get("type")
             data = block.get("data")
             if block_type == BlockType.TABLE_ROW.value:
@@ -181,7 +192,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]],from_agent:bool = False) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]],records: List[Dict[str, Any]],from_agent:bool = False) -> Dict[str, Any]:
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -245,7 +256,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],from_agent:b
             if from_agent:
                 normalized_answer, citations = normalize_citations_and_chunks_for_agent(result["answer"], documents)
             else:
-                normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
+                normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents,records)
             result["answer"] = normalized_answer
             result["citations"] = citations
         else:
@@ -253,7 +264,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],from_agent:b
             if from_agent:
                 normalized_answer, citations = normalize_citations_and_chunks_for_agent(str(response_data), documents)
             else:
-                normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
+                normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents,records)
             result = {
                 "answer": normalized_answer,
                 "citations": citations
