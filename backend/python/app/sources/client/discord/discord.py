@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import discord  # type: ignore
-from app.config.configuration_service import ConfigurationService
+
 from app.sources.client.iclient import IClient
 
 
@@ -185,24 +185,4 @@ class DiscordClient(IClient):
         """
         return cls(config.create_client())
 
-    @classmethod
-    async def build_from_services(
-        cls,
-        logger,
-        config_service: ConfigurationService,
-        arango_service,
-        org_id: str,
-        user_id: str,
-    ) -> "DiscordClient":
-        """Build DiscordClient using configuration service and arango service
-        Args:
-            logger: Logger instance
-            config_service: Configuration service instance
-            arango_service: ArangoDB service instance
-            org_id: Organization ID
-            user_id: User ID
-        Returns:
-            DiscordClient instance
-        """
-        # TODO: Implement
-        raise NotImplementedError("build_from_services is not yet implemented.")
+

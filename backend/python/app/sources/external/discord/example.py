@@ -6,7 +6,7 @@ from app.sources.client.discord.discord import DiscordClient, DiscordTokenConfig
 from app.sources.external.discord.discord import DiscordDataSource
 
 
-async def main():
+async def main() -> None:
     """Example usage of Discord client and data source"""
 
     token = os.getenv("DISCORD_BOT_TOKEN")
@@ -37,7 +37,7 @@ async def main():
     done_event = asyncio.Event()
 
     @client.event
-    async def on_ready():
+    async def on_ready() -> None:
         print("✓ Discord bot is ready!")
         print(f"  Bot User: {client.user}")
         print(f"  Bot ID: {client.user.id}")
