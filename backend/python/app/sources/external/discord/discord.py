@@ -36,6 +36,7 @@ class DiscordDataSource:
                     discord.Member,
                     discord.User,
                     discord.Message,
+                    discord.Role,
                 ),
             ):
                 # Convert Discord object to dict
@@ -132,6 +133,15 @@ class DiscordDataSource:
                 if obj.embeds
                 else [],
             }
+        if isinstance(obj, discord.Role):
+            return {
+                "id": str(obj.id),
+                "name": obj.name,
+                "color": str(obj.color),
+                "position": obj.position,
+                "permissions": obj.permissions.value,
+                "mentionable": obj.mentionable,
+            }
         # Fallback for unknown types
         return (
             {"id": str(obj.id), "type": type(obj).__name__}
@@ -156,7 +166,7 @@ class DiscordDataSource:
 
         """
         try:
-            # Client is already ready when using async context manager
+            await self.client.wait_until_ready()
             guilds = self.client.guilds
             # Convert to list explicitly (client.guilds returns a sequence-like object)
             guilds_list = list(guilds)
@@ -278,6 +288,7 @@ class DiscordDataSource:
 
         """
         try:
+            await self.client.wait_until_ready()
             channel = self.client.get_channel(channel_id)
             if channel is None:
                 return DiscordResponse(
@@ -319,6 +330,7 @@ class DiscordDataSource:
 
         """
         try:
+            await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
                 return DiscordResponse(
@@ -349,6 +361,7 @@ class DiscordDataSource:
 
         """
         try:
+            await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
                 return DiscordResponse(
@@ -379,6 +392,7 @@ class DiscordDataSource:
 
         """
         try:
+            await self.client.wait_until_ready()
             user = await self.client.fetch_user(user_id)
             if user is None:
                 return DiscordResponse(
@@ -460,27 +474,13 @@ class DiscordDataSource:
 
         """
         try:
+            await self.client.wait_until_ready()
             guild = self.client.get_guild(guild_id)
             if guild is None:
                 return DiscordResponse(
                     success=False, error=f"Guild with ID {guild_id} not found"
                 )
 
-            roles = guild.roles
-            roles_data = [
-                {
-                    "id": str(role.id),
-                    "name": role.name,
-                    "color": str(role.color),
-                    "position": role.position,
-                    "permissions": role.permissions.value,
-                    "mentionable": role.mentionable,
-                }
-                for role in roles
-            ]
-
-            return DiscordResponse(
-                success=True, data={"items": roles_data, "count": len(roles_data)}
-            )
+            return await self._handle_discord_response(guild.roles)
         except Exception as e:
             return await self._handle_discord_error(e)

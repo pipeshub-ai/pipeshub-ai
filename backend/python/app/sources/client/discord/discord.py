@@ -205,4 +205,4 @@ class DiscordClient(IClient):
             DiscordClient instance
         """
         # TODO: Implement
-        return cls(client=None)  # type: ignore
+        raise NotImplementedError("build_from_services is not yet implemented.")
