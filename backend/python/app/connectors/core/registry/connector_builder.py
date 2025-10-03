@@ -330,29 +330,22 @@ class ConnectorBuilder:
 
         missing_items = []
 
-        authorize_url = auth_config.get("authorizeUrl", "")
-        if not authorize_url:
-            missing_items.append("authorizeUrl")
+        required_urls = ["authorizeUrl", "tokenUrl", "redirectUri"]
+        for url_key in required_urls:
+            if not auth_config.get(url_key):
+                missing_items.append(url_key)
 
-        token_url = auth_config.get("tokenUrl", "")
-        if not token_url:
-            missing_items.append("tokenUrl")
-
-        redirect_uri = auth_config.get("redirectUri", "")
-        if not redirect_uri:
-            missing_items.append("redirectUri")
-
-        scopes = auth_config.get("scopes", [])
-        if not isinstance(scopes, list) or len(scopes) == 0:
+        scopes = auth_config.get("scopes")
+        if not isinstance(scopes, list) or not scopes:
             missing_items.append("scopes")
 
         # Validate presence of clientId and clientSecret in auth schema fields
         schema_fields = auth_config.get("schema", {}).get("fields", [])
         field_names = {f.get("name") for f in schema_fields if isinstance(f, dict)}
-        if "clientId" not in field_names:
-            missing_items.append("auth.schema.fields: clientId")
-        if "clientSecret" not in field_names:
-            missing_items.append("auth.schema.fields: clientSecret")
+        required_schema_fields = {"clientId", "clientSecret"}
+        missing_fields = required_schema_fields - field_names
+        for field in sorted(list(missing_fields)):
+            missing_items.append(f"auth.schema.fields: {field}")
 
         if missing_items:
             details = ", ".join(missing_items)
