@@ -304,7 +304,7 @@ class ConnectorBuilder:
         config = self.config_builder.build()
 
         # Validate OAuth requirements when applicable
-        if self.auth_type and self.auth_type.upper() in {"OAUTH"}:
+        if self.auth_type and self.auth_type.upper() == "OAUTH":
             self._validate_oauth_requirements(config)
 
         return Connector(
