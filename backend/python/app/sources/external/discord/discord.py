@@ -1,7 +1,7 @@
 import logging
-from typing import Any
 
 import discord
+
 from app.sources.client.discord.discord import DiscordClient, DiscordResponse
 
 # Set up logger
@@ -19,51 +19,34 @@ class DiscordDataSource:
     def __init__(self, client: DiscordClient) -> None:
         self.client = client.get_discord_client()
 
-    async def _handle_discord_response(self, data: Any) -> DiscordResponse:  # noqa: ANN401
-        """Handle Discord API response and convert to standardized format"""
-        try:
-            if data is None:
-                return DiscordResponse(
-                    success=False, error="Empty response from Discord API"
-                )
+    def _serialize(self, obj) -> object:  # type: ignore[override]
+        if isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        # Basic Discord models we expose selected fields for; rest returned via str() fallback
+        if isinstance(obj, discord.Guild):
+            return {"id": str(obj.id), "name": obj.name}
+        if isinstance(obj, discord.TextChannel):
+            return {"id": str(obj.id), "name": obj.name, "type": str(obj.type)}
+        if isinstance(obj, discord.Member):
+            return {"id": str(obj.id), "display_name": obj.display_name, "bot": obj.bot}
+        if isinstance(obj, discord.User):
+            return {"id": str(obj.id), "name": obj.name, "bot": obj.bot}
+        if isinstance(obj, discord.Message):
+            return {"id": str(obj.id), "content": obj.content, "author_id": str(obj.author.id) if obj.author else None}
+        if isinstance(obj, discord.Role):
+            return {"id": str(obj.id), "name": obj.name}
+        if isinstance(obj, (list, tuple)):
+            return [self._serialize(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: self._serialize(v) for k, v in obj.items()}
+        if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes)):
+            return [self._serialize(x) for x in list(obj)]
+        return str(obj)
 
-            # Convert Discord objects to dict for serialization
-            if isinstance(
-                data,
-                (
-                    discord.Guild,
-                    discord.TextChannel,
-                    discord.Member,
-                    discord.User,
-                    discord.Message,
-                    discord.Role,
-                ),
-            ):
-                # Convert Discord object to dict
-                data_dict = self._discord_object_to_dict(data)
-                return DiscordResponse(success=True, data=data_dict)
-            elif (
-                isinstance(data, (list, tuple))
-                or hasattr(data, "__iter__")
-                and not isinstance(data, (str, dict))
-            ):
-                # Convert list/iterable of Discord objects
-                data_list = [
-                    self._discord_object_to_dict(item) if hasattr(item, "id") else item
-                    for item in data
-                ]
-                return DiscordResponse(
-                    success=True, data={"items": data_list, "count": len(data_list)}
-                )
-            elif isinstance(data, dict):
-                return DiscordResponse(success=True, data=data)
-            return DiscordResponse(success=True, data={"result": str(data)})
+    def _wrap(self, data: object) -> DiscordResponse:
+        return DiscordResponse(success=True, data={"data": self._serialize(data)})
 
-        except Exception as e:
-            logger.error(f"Error handling Discord response: {e}")
-            return DiscordResponse(success=False, error=str(e))
-
-    def _discord_object_to_dict(self, obj: Any) -> dict[str, Any]:  # noqa: ANN401
+    def _discord_object_to_dict(self, obj: object) -> dict[str, object]:  # legacy helper (unused after simplification)
         """Convert Discord object to dictionary"""
         if isinstance(obj, discord.Guild):
             return {
@@ -170,7 +153,7 @@ class DiscordDataSource:
             guilds = self.client.guilds
             # Convert to list explicitly (client.guilds returns a sequence-like object)
             guilds_list = list(guilds)
-            return await self._handle_discord_response(guilds_list)
+            return self._wrap(guilds_list)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -194,7 +177,7 @@ class DiscordDataSource:
                 return DiscordResponse(
                     success=False, error=f"Guild with ID {guild_id} not found"
                 )
-            return await self._handle_discord_response(guild)
+            return self._wrap(guild)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -237,7 +220,7 @@ class DiscordDataSource:
                         ch for ch in channels if isinstance(ch, discord.CategoryChannel)
                     ]
 
-            return await self._handle_discord_response(channels)
+            return self._wrap(channels)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -261,7 +244,7 @@ class DiscordDataSource:
                 return DiscordResponse(
                     success=False, error=f"Channel with ID {channel_id} not found"
                 )
-            return await self._handle_discord_response(channel)
+            return self._wrap(channel)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -301,7 +284,7 @@ class DiscordDataSource:
                 )
 
             # Prepare parameters for history
-            history_kwargs: dict[str, Any] = {"limit": min(limit, 100)}
+            history_kwargs: dict[str, object] = {"limit": min(limit, 100)}
             if before:
                 history_kwargs["before"] = discord.Object(id=before)
             if after:
@@ -311,7 +294,7 @@ class DiscordDataSource:
             async for message in channel.history(**history_kwargs):
                 messages.append(message)
 
-            return await self._handle_discord_response(messages)
+            return self._wrap(messages)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -342,7 +325,7 @@ class DiscordDataSource:
             async for member in guild.fetch_members(limit=limit):
                 members.append(member)
 
-            return await self._handle_discord_response(members)
+            return self._wrap(members)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -374,7 +357,7 @@ class DiscordDataSource:
                     success=False, error=f"Member with ID {user_id} not found in guild"
                 )
 
-            return await self._handle_discord_response(member)
+            return self._wrap(member)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -398,7 +381,7 @@ class DiscordDataSource:
                 return DiscordResponse(
                     success=False, error=f"User with ID {user_id} not found"
                 )
-            return await self._handle_discord_response(user)
+            return self._wrap(user)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -456,7 +439,7 @@ class DiscordDataSource:
                         # Skip channels bot doesn't have access to
                         continue
 
-            return await self._handle_discord_response(matching_messages)
+            return self._wrap(matching_messages)
         except Exception as e:
             return await self._handle_discord_error(e)
 
@@ -481,6 +464,6 @@ class DiscordDataSource:
                     success=False, error=f"Guild with ID {guild_id} not found"
                 )
 
-            return await self._handle_discord_response(guild.roles)
+            return self._wrap(guild.roles)
         except Exception as e:
             return await self._handle_discord_error(e)
