@@ -1040,6 +1040,7 @@ class DropboxConnector(BaseConnector):
             app_users = self.get_app_users(users)
             await self.data_entities_processor.on_new_app_users(app_users)
 
+
             # Step 2: fetch and sync all user groups
             group_sync_key = generate_record_sync_point_key("user_group_events", "team_events", "global")
             group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(group_sync_key)
@@ -1057,12 +1058,13 @@ class DropboxConnector(BaseConnector):
                 self.logger.info("Running an INCREMENTAL sync for user groups...")
                 await self._sync_group_changes_with_cursor()
 
+
             # Step 3: List all shared folders within a team and create record groups
             self.logger.info("Syncing record groups...")
             await self.sync_record_groups(app_users)
-            
-            # Step 3.5: Create all personal folder record groups
+            # Step 3.1: Create all personal folder record groups
             await self.sync_personal_record_groups(app_users)
+
 
             # Step 4: fetch and sync all user drives
             self.logger.info("Syncing User Drives")
@@ -2055,6 +2057,7 @@ class DropboxConnector(BaseConnector):
                 team_folder_id = record.external_record_group_id
 
             response = await self.data_source.files_get_temporary_link(path=file_record["path"], team_folder_id=team_folder_id, team_member_id=team_member_id)
+            # print("!!!!!!!!!!!!!!!!!!! response:", response)
             return response.data.link
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
@@ -2068,7 +2071,7 @@ class DropboxConnector(BaseConnector):
 
         return StreamingResponse(
             stream_content(signed_url),
-            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
+            media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }

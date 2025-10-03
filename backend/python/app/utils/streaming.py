@@ -92,16 +92,9 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
-    headers = {  # Define this!
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                signed_url,
-                headers=headers,
-                allow_redirects=True  # Critical for Dropbox URLs!
-            ) as response:
+            async with session.get(signed_url) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     raise HTTPException(
                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
