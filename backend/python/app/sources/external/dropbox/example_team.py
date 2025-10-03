@@ -80,7 +80,7 @@ async def main() -> None:
 
     #List dropbox logs events
     print("\nListing dropbox logs events:")
-    dropbox_logs = await data_source.team_log_get_events_continue(cursor="AAGrq_veuQEt1o-G2PUENIKAG3cf0KhacqGEVTpIyuXkLD95osu6mJgisn2cv3Zw_v55jPLPCITK5TMF-Zd59qtl6tmoxbI5Zc-cf6oBkqNX_Ysn9F1iV-oMIUKpi3T1czrXEMlCeNfzObg85Ds95q2ovLyoJzS9z_wkWnmxln7VeptjYG7y9ms0HObhnSaur8oCBravCVVW_016nVVgy80_X03RI8syyJ0k_Hj4zw_foHw4_AwAuAq1uV_IgDcymZVdm89Oi5bDj8sUsT8BDT-Pf6LNaRg60LDXt4umcUuS011LrvwKDiLiur3Z646Vy8sY6H7tfJNXnRInDjhawSrE8hfjPHDW4wF12dDx00_rog04urJfPnIMS0BBzpbzQQa_HMu3hudBDSfbKnscyboNQ54Mnv98wNqXsCpoiMFyrQ")
+    dropbox_logs = await data_source.team_log_get_events_continue(cursor="AAGSQt1lkXlxS7p4Q1TerLmwvJMAUWftRR4ozeRQH27Vovi7XI7it0LPpv-9ZEBRiuPcz_MFxxy1atO-IwbuBSH_PZDZniurq7TmGtEs6MSZGN0FWdY9BspMJqHm9XPuHcYn9Ae8tGO-9fp_8lGX1SzDvvHmxakOrOGVdhtvtzhbjoF4lv79b6czTmTfbai4BDBWV3AMhpKaoVZZ2kvItQtgolY8wHGIDFLm2YoxRahWemTPrpbYaqP_0prw3e28osYmmcdSCwuLGsd1n2gryCvob-JP5scsM2CC6x2C1dAOwM788jDV1YLbziIUNbV8yyCpoKvhmmjGVoYK1clrm5k3RPB_3EQYAhVK6Bf4TCbYANmF0Xxm1hVoai39O6PfCJ6tJD9B0Mxhlpfz7-W4uWa5oKaK2Exli_r2p2LEUlledg")
     print(dropbox_logs)
     
     # def get_parent_path_from_path(path: str):
@@ -96,12 +96,12 @@ async def main() -> None:
     # print(parent_metadata)
 
     #file metadata
-    print("\nListing folder metadata:")
-    file_metadata = await data_source.files_get_metadata(path="ns:12814702001", team_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
-    print(file_metadata)
+    # print("\nListing folder metadata:")
+    # file_metadata = await data_source.files_get_metadata(path="ns:12814702001", team_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
+    # print(file_metadata)
 
-    file_metadata = await data_source.files_get_metadata(path="id:ao7lcW3O2rQAAAAAAAAAXg", team_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
-    print(file_metadata)
+    # file_metadata = await data_source.files_get_metadata(path="id:ao7lcW3O2rQAAAAAAAAAXg", team_folder_id="12814702001", team_member_id=team_members.data.members[2].profile.team_member_id)
+    # print(file_metadata)
 
     #sahred folder metadata
     # print("\nListing shared folder metadata:")
@@ -109,24 +109,24 @@ async def main() -> None:
     # print((shared_folder_metadata))
 
     #generate link
-    print("\nGenerating link:")
-    link = await data_source.sharing_create_shared_link_with_settings(path="id:7ycJU6IBbZkAAAAAAAAACw", team_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id)
-    print(link)
+    # print("\nGenerating link:")
+    # link = await data_source.sharing_create_shared_link_with_settings(path="id:7ycJU6IBbZkAAAAAAAAACw", team_folder_id="13131350499", team_member_id=team_members.data.members[2].profile.team_member_id)
+    # print(link)
 
-    link_settings = SharedLinkSettings(
-        audience=LinkAudience('no_one'), 
-        allow_download=True
-    )
-    print("\nGenerating link2:")
-    link = await data_source.sharing_create_shared_link_with_settings(path="id:7ycJU6IBbZkAAAAAAAAABw", team_folder_id="13131350499", settings=link_settings, team_member_id=team_members.data.members[2].profile.team_member_id)
-    print(link)
+    # link_settings = SharedLinkSettings(
+    #     audience=LinkAudience('no_one'), 
+    #     allow_download=True
+    # )
+    # print("\nGenerating link2:")
+    # link = await data_source.sharing_create_shared_link_with_settings(path="id:7ycJU6IBbZkAAAAAAAAABw", team_folder_id="13131350499", settings=link_settings, team_member_id=team_members.data.members[2].profile.team_member_id)
+    # print(link)
 
-    #get team member info
-    memebers = [UserSelectorArg("email","harshit@pipeshub.app")]
-    print("\nGetting team member info:")
-    team_member_info = await data_source.team_members_get_info_v2(memebers)
-    print(team_member_info)
-    print(team_member_info.data.members_info[0].get_member_info().profile.team_member_id)
+    # #get team member info
+    # memebers = [UserSelectorArg("email","harshit@pipeshub.app")]
+    # print("\nGetting team member info:")
+    # team_member_info = await data_source.team_members_get_info_v2(memebers)
+    # print(team_member_info)
+    # print(team_member_info.data.members_info[0].get_member_info().profile.team_member_id)
 
 
     # #list all the folders I have access to 
