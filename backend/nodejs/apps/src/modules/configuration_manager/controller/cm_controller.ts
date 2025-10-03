@@ -68,8 +68,6 @@ const handleBackendError = (error: any, operation: string): Error => {
     return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
   }
 
-  console.log('error', error);
-
   if (error.response) {
     const { status, data } = error.response;
     const errorDetail =
@@ -82,7 +80,7 @@ const handleBackendError = (error: any, operation: string): Error => {
     });
 
     if (errorDetail === 'ECONNREFUSED') {
-      throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+      throw new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
     }
 
     switch (status) {
