@@ -3978,7 +3978,6 @@ class BaseArangoService:
 
             if result:
                 self.logger.info("✅ Successfully retrieved file record for id %s", id)
-                print("!!!!!!!!!!!!!!!!!!!!!!! result: ", result)
                 return result
                 # return FileRecord.from_arango_base_file_record(
                 #     arango_base_file_record=result,

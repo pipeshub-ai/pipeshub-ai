@@ -74,10 +74,9 @@ class DataSourceEntitiesProcessor:
             self.org_id = orgs[0]["_key"]
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
-        print("!!!!!! got parent record !!!!!!!!", record.parent_external_record_id)
         if record.parent_external_record_id:
-            print("!!!!!!!!! Handling Parent Record Creation for: ", record.record_name)
-            print("!!!!!!!!! Parent External Record ID: ", record.parent_external_record_id)
+            self.logger.info("Handling Parent Record Creation for: %s", record.record_name)
+            self.logger.info("Parent External Record ID: %s", record.parent_external_record_id)
             parent_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
                                                                      external_id=record.parent_external_record_id)
 
@@ -101,7 +100,7 @@ class DataSourceEntitiesProcessor:
             if parent_record and isinstance(parent_record, Record):
                 # Create a edge between the record and the parent record if it doesn't exist
                 await tx_store.create_record_relation(parent_record.id, record.id, "PARENT_CHILD")
-                print("!!!!!!!!! Parent Record Created")
+                self.logger.info("Parent Record Created")
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
@@ -140,10 +139,7 @@ class DataSourceEntitiesProcessor:
         record_permissions = []
 
         try:
-
-            print("!!!!!!!!!! Handling records permissions !!!!!!!!")
-            # print(permissions)
-            # print(record)
+            self.logger.info("Handling records permissions")
 
             for permission in permissions:
                 from_collection = None
@@ -187,12 +183,10 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_create_edges(
                     record_permissions, collection=CollectionNames.PERMISSION.value
                 )
-                print("!!!! created permision edge")
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
     
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!! on_updated_record_permissions !!!!!!!!!!!!!!!!!!!!!!!!!!!")
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
     
 
@@ -227,8 +221,6 @@ class DataSourceEntitiesProcessor:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
         else:
-            print("!!!!!!!!!!!!!!!!! existing record: ", existing_record)
-            print("!!!!!!!!!!!!!!!!! new record: ", record)
             record.id = existing_record.id
             # pass
             #check if revision Id is same as existing record
@@ -263,12 +255,9 @@ class DataSourceEntitiesProcessor:
 
             async with self.data_store_provider.transaction() as tx_store:
                 for record, permissions in records_with_permissions:
-                    print("!!!!! going to process_record", record.record_name)
                     processed_record = await self._process_record(record, permissions, tx_store)
                     
                     if processed_record:
-                        print("!!!!! processed_record: ", processed_record)
-                        print("!!!!! adding to records_to_publish")
                         records_to_publish.append(processed_record)
 
             if records_to_publish:
@@ -285,13 +274,13 @@ class DataSourceEntitiesProcessor:
 
     async def on_record_content_update(self, record: Record, tx_store: TransactionStore) -> None:
         processed_record = await self._process_record(record, [], tx_store)
-        print("!!!!!!!!!!!!!!!!! publishing record 1: ", record)
+        self.logger.info(f"Publishing record for reindexing:  {record.record_name}")
         await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
                 key=record.id
             )
-        print("!!!!!!!!!!!!!!!!! published record 1")
+        
         
     async def on_record_metadata_update(self, record: Record, tx_store: TransactionStore) -> None:
         pass
