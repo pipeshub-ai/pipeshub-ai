@@ -303,6 +303,10 @@ class ConnectorBuilder:
 
         config = self.config_builder.build()
 
+        # Validate OAuth requirements when applicable
+        if self.auth_type and self.auth_type.upper() in {"OAUTH"}:
+            self._validate_oauth_requirements(config)
+
         return Connector(
             name=self.name,
             app_group=self.app_group,
@@ -311,6 +315,50 @@ class ConnectorBuilder:
             app_categories=self.app_categories,
             config=config
         )
+
+    def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:
+        """Ensure required OAuth fields are provided for OAuth connectors.
+
+        Required:
+        - authorizeUrl
+        - tokenUrl
+        - redirectUri
+        - scopes (non-empty list)
+        - auth schema includes fields: clientId, clientSecret
+        """
+        auth_config = config.get("auth", {})
+
+        missing_items = []
+
+        authorize_url = auth_config.get("authorizeUrl", "")
+        if not authorize_url:
+            missing_items.append("authorizeUrl")
+
+        token_url = auth_config.get("tokenUrl", "")
+        if not token_url:
+            missing_items.append("tokenUrl")
+
+        redirect_uri = auth_config.get("redirectUri", "")
+        if not redirect_uri:
+            missing_items.append("redirectUri")
+
+        scopes = auth_config.get("scopes", [])
+        if not isinstance(scopes, list) or len(scopes) == 0:
+            missing_items.append("scopes")
+
+        # Validate presence of clientId and clientSecret in auth schema fields
+        schema_fields = auth_config.get("schema", {}).get("fields", [])
+        field_names = {f.get("name") for f in schema_fields if isinstance(f, dict)}
+        if "clientId" not in field_names:
+            missing_items.append("auth.schema.fields: clientId")
+        if "clientSecret" not in field_names:
+            missing_items.append("auth.schema.fields: clientSecret")
+
+        if missing_items:
+            details = ", ".join(missing_items)
+            raise ValueError(
+                f"OAuth configuration incomplete for connector '{self.name}': missing {details}"
+            )
 
 
 # Common field definitions that can be reused
