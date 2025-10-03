@@ -10,6 +10,7 @@ from app.config.constants.arangodb import AccountType, CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.prompt_templates import qna_prompt
 from app.utils.citations import fix_json_string, process_citations
+from app.utils.datetime_utils import get_current_datetime
 from app.utils.streaming import stream_llm_response
 
 
@@ -160,6 +161,7 @@ def prepare_clean_prompt_node(
 
         # Build context based on available data
         context_parts = []
+        current_datetime = get_current_datetime()
 
         # Add internal data context if retrieved
         if state.get("final_results"):
@@ -181,11 +183,14 @@ def prepare_clean_prompt_node(
                 query=state["query"],
                 rephrased_queries=[],
                 chunks=state["final_results"],
+                current_datetime=current_datetime,
             )
             context_parts.append(internal_context)
 
         # Build clean system message
         system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
+        # Include current time in system prompt for temporal grounding
+        system_content += f"\n\nCurrent date time: {current_datetime}"
 
         # Get ALL available tools from registry - no filtering
         from app.modules.agents.qna.tool_registry import (

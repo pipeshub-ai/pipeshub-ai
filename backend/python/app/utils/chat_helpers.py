@@ -14,6 +14,7 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.utils.datetime_utils import get_current_datetime
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
@@ -519,12 +520,13 @@ def checkForLargeTable(markdown: str) -> bool:
 
 def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger) -> str:
     content = []
-
+    current_datetime = get_current_datetime()
     template = Template(qna_prompt_instructions_1)
     rendered_form = template.render(
                 user_data=user_data,
                 query=query,
                 rephrased_queries=[],
+                current_datetime=current_datetime,
                 )
 
     content.append({
