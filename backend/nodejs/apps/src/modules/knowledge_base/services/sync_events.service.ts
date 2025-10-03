@@ -3,16 +3,9 @@ import { Logger } from '../../../libs/services/logger.service';
 import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
 import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 
-export enum EventType {
-  ReindexAllRecordEvent = 'reindexFailed',
-  SyncDriveEvent = 'drive.resync',
-  SyncGmailEvent = 'gmail.resync',
-  SyncOneDriveEvent = 'onedrive.resync',
-  SyncSharePointOnlineEvent = 'sharepointonline.resync',
-}
 
 export interface Event {
-  eventType: EventType;
+  eventType: string;
   timestamp: number;
   payload: ReindexAllRecordEvent;
 }
@@ -26,7 +19,7 @@ export interface ReindexAllRecordEvent {
   sourceCreatedAtTimestamp: string;
 }
 
-interface BaseSyncEvent {
+export interface BaseSyncEvent {
   orgId: string;
   connector: string;
   origin: string;
@@ -34,11 +27,6 @@ interface BaseSyncEvent {
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
 }
-
-export interface SyncDriveEvent extends BaseSyncEvent {}
-export interface SyncGmailEvent extends BaseSyncEvent {}
-export interface SyncOneDriveEvent extends BaseSyncEvent {}
-export interface SyncSharePointOnlineEvent extends BaseSyncEvent {}
 
 @injectable()
 export class SyncEventProducer extends BaseKafkaProducerConnection {

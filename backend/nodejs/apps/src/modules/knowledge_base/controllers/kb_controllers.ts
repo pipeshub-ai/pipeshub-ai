@@ -2346,7 +2346,7 @@ export const getRecordBuffer =
   };
 
 export const reindexAllRecords =
-  (recordRelationService: RecordRelationService) =>
+  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
@@ -2356,23 +2356,29 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = [
-        'ONEDRIVE',
-        'DRIVE',
-        'GMAIL',
-        'CONFLUENCE',
-        'SLACK',
-        'SHAREPOINT ONLINE',
-        'JIRA',
-      ];
-      if (!allowedApps.includes(app)) {
-        throw new BadRequestError('APP not allowed');
+      const activeAppsResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/active`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      if (activeAppsResponse.statusCode !== 200) {
+        throw new InternalServerError('Failed to get active connectors');
+      }
+
+      const data = activeAppsResponse.data as any;
+      const connectors = data.connectors;
+
+      const allowedApps = connectors.map((connector: any) => connector.name.replace(' ', '').toLowerCase());
+
+      if (!allowedApps.includes(app.replace(' ', '').toLowerCase())) {
+        throw new BadRequestError('Connector not allowed');
       }
 
       const reindexPayload = {
         userId,
         orgId,
-        app,
+        app: app.replace(' ', '').toLowerCase(),
       };
 
       const reindexResponse =
@@ -2393,7 +2399,7 @@ export const reindexAllRecords =
   };
 
 export const resyncConnectorRecords =
-  (recordRelationService: RecordRelationService) =>
+  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
@@ -2403,23 +2409,29 @@ export const resyncConnectorRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedConnectors = [
-        'ONEDRIVE',
-        'DRIVE',
-        'GMAIL',
-        'CONFLUENCE',
-        'JIRA',
-        'SLACK',
-        'SHAREPOINT ONLINE',
-      ];
-      if (!allowedConnectors.includes(connectorName)) {
+      const activeAppsResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/active`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      if (activeAppsResponse.statusCode !== 200) {
+        throw new InternalServerError('Failed to get active connectors');
+      }
+
+      const data = activeAppsResponse.data as any;
+      const connectors = data.connectors;
+
+      const allowedApps = connectors.map((connector: any) => connector.name.replace(' ', '').toLowerCase());
+
+      if (!allowedApps.includes(connectorName.replace(' ', '').toLowerCase())) {
         throw new BadRequestError(`Connector ${connectorName} not allowed`);
       }
 
       const resyncConnectorPayload = {
         userId,
         orgId,
-        connectorName,
+        connectorName: connectorName.replace(' ', '').toLowerCase(),
       };
 
       const resyncConnectorResponse =

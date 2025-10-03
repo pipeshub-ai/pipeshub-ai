@@ -52,7 +52,7 @@ export class CrawlingWorkerService {
       await job.updateProgress(10);
 
       // Get the appropriate task service for this connector type
-      const taskService = this.taskFactory.getTaskService(connector);
+      const taskService = this.taskFactory.getTaskService();
 
       await job.updateProgress(20);
 
