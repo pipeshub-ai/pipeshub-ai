@@ -125,6 +125,7 @@ class Record(BaseModel):
             updated_at=arango_base_record.get("updatedAtTimestamp", None),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
+            virtual_record_id=arango_base_record.get("virtualRecordId", None),
         )
 
     def to_kafka_record(self) -> Dict:

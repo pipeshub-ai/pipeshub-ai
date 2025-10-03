@@ -270,7 +270,6 @@ class DoclingDocToBlocksConverter():
 
             childBlocks = []
             for i,row in enumerate(table_rows):
-                self.logger.debug(f"Processing table row: {json.dumps(row, indent=4)}")
                 index = len(blocks)
                 block = Block(
                     id=str(uuid.uuid4()),
