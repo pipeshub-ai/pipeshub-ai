@@ -11976,11 +11976,12 @@ class BaseArangoService:
             query = f"""
             FOR edge IN @@collection
                 FILTER edge._to == @node_key
-                LIMIT 1
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user._id == edge._from
+                    LIMIT 1
                     RETURN user
             """
+
             
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
@@ -11997,6 +11998,59 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to get user with permission to node: %s in collection: %s: %s", 
                             node_key, collection, str(e))
+            return None
+
+    async def get_first_user_with_permission_to_node2(
+        self,
+        node_id: str,
+        graph_name: str = "knowledgeGraph",
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[User]:
+        """
+        Get the first user that has a permission edge to a specific node using a graph traversal.
+
+        Args:
+            node_id: The full record/node ID (e.g., "records/12345").
+            graph_name: The name of the graph to traverse.
+            transaction: Optional transaction database.
+
+        Returns:
+            Optional[User]: A User object with permission to the node, or None if not found.
+        """
+        try:
+            self.logger.info("🚀 Getting first user with permission to node: %s in graph: %s", node_id, graph_name)
+
+            # The graph name is safely injected via an f-string because it's a controlled identifier.
+            # The collection name for filtering is passed as a bind parameter for best practice.
+            query = f"""
+            FOR user IN 1..1 INBOUND @node_id GRAPH '{graph_name}'
+                OPTIONS {{ bfs: true, uniqueVertices: 'global' }}
+                FILTER IS_SAME_COLLECTION(@users_collection, user)
+                LIMIT 1
+                RETURN user
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "node_id": node_id,
+                    "users_collection": CollectionNames.USERS.value
+                }
+            )
+            result = next(cursor, None)
+
+            if result:
+                user = User.from_arango_user(result)
+                self.logger.info("✅ Found user with permission to node: %s -> %s", node_id, user.email)
+                return user
+            else:
+                self.logger.warning("⚠️ No user found with permission to node: %s in graph: %s", node_id, graph_name)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get user with permission to node: %s in graph: %s: %s",
+                            node_id, graph_name, str(e))
             return None
 
     async def get_file_record_by_id(

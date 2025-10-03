@@ -488,6 +488,7 @@ class DropboxConnector(BaseConnector):
                 # If no explicit permissions were found (e.g., personal file), 
                 # add the owner's permission
                 if not new_permissions:
+                    #in case of personal file/folder, add owner permission
                     new_permissions = [
                         Permission(
                             external_id=user_id, 
@@ -496,6 +497,21 @@ class DropboxConnector(BaseConnector):
                             entity_type=EntityType.USER
                         )
                     ]
+                else:
+                    #in all other cases atleast add user permission
+                    user_already_has_permission = any(
+                        perm.email == user_email
+                        for perm in new_permissions
+                    )
+                    if not user_already_has_permission:
+                        new_permissions.append(
+                            Permission(
+                                external_id=user_id, 
+                                email=user_email, 
+                                type=PermissionType.WRITE, 
+                                entity_type=EntityType.USER
+                            )
+                        )
                 
             except Exception as perm_ex:
                 self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
@@ -1735,7 +1751,38 @@ class DropboxConnector(BaseConnector):
         
         self.logger.info(f"Using team admin user: {team_admin_user.email} (ID: {team_admin_user.source_user_id})")
         
-        team_folders = await self.data_source.team_team_folder_list()
+        # --- Fetch all team folders with pagination ---
+        all_team_folders = []
+        
+        # Initial call
+        team_folders_response = await self.data_source.team_team_folder_list()
+        
+        if not team_folders_response.success:
+            self.logger.error(f"Failed to fetch team folders: {team_folders_response.error}")
+            return
+        
+        all_team_folders.extend(team_folders_response.data.team_folders)
+        
+        # Handle pagination for team folders
+        cursor = team_folders_response.data.cursor
+        has_more = getattr(team_folders_response.data, 'has_more', False)
+        
+        while has_more:
+            self.logger.debug("Fetching more team folders...")
+            
+            folders_continue = await self.data_source.team_team_folder_list_continue(cursor=cursor)
+            
+            if not folders_continue.success:
+                self.logger.error(f"Error during team folder pagination: {folders_continue.error}")
+                break
+            
+            all_team_folders.extend(folders_continue.data.team_folders)
+            cursor = folders_continue.data.cursor
+            has_more = getattr(folders_continue.data, 'has_more', False)
+        
+        self.logger.info(f"Fetched {len(all_team_folders)} total team folders")
+        # --- End of team folders pagination ---
+        
         record_groups = []
 
         dropbox_to_permission_type = {
@@ -1744,16 +1791,62 @@ class DropboxConnector(BaseConnector):
             'viewer': PermissionType.READ,
         }
 
-        for folder in team_folders.data.team_folders:
+        for folder in all_team_folders:
+            if folder.status._tag != "active":
+                continue
+            
+            # --- Fetch all folder members with pagination ---
+            all_users = []
+            all_groups = []
+            
+            # Initial call
             team_folder_members = await self.data_source.sharing_list_folder_members(
                 shared_folder_id=folder.team_folder_id,
                 team_member_id=team_admin_user.source_user_id,
                 as_admin=True
             )
-
-            if folder.status._tag != "active":
+            
+            if not team_folder_members.success:
+                self.logger.warning(f"Failed to fetch members for folder {folder.name}: {team_folder_members.error}")
                 continue
+            
+            # Collect members from first page
+            if team_folder_members.data.users:
+                all_users.extend(team_folder_members.data.users)
+            if team_folder_members.data.groups:
+                all_groups.extend(team_folder_members.data.groups)
+            
+            # Handle pagination for folder members
+            cursor = team_folder_members.data.cursor
+            has_more = getattr(team_folder_members.data, 'has_more', False)
+            
+            while has_more:
+                self.logger.debug(f"Fetching more members for folder {folder.name}...")
                 
+                members_continue = await self.data_source.sharing_list_folder_members_continue(
+                    cursor=cursor,
+                    team_member_id=team_admin_user.source_user_id,
+                    as_admin=True
+                )
+                
+                if not members_continue.success:
+                    self.logger.error(f"Error during member pagination for folder {folder.name}: {members_continue.error}")
+                    break
+                
+                # Collect members from current page
+                if members_continue.data.users:
+                    all_users.extend(members_continue.data.users)
+                if members_continue.data.groups:
+                    all_groups.extend(members_continue.data.groups)
+                
+                # Update pagination state
+                cursor = members_continue.data.cursor
+                has_more = getattr(members_continue.data, 'has_more', False)
+            
+            self.logger.info(f"Fetched {len(all_users)} users and {len(all_groups)} groups for folder {folder.name}")
+            # --- End of folder members pagination ---
+            
+            # Create record group
             record_group = RecordGroup(
                 name=folder.name,
                 org_id=self.data_entities_processor.org_id,
@@ -1763,44 +1856,32 @@ class DropboxConnector(BaseConnector):
                 group_type=RecordGroupType.DRIVE,
             )
 
-            # --- Create permissions list from folder members ---
+            # --- Create permissions list from all collected members ---
             permissions_list = []
             
-            if team_folder_members.success:
-                # Handle USER permissions
-                if team_folder_members.data.users:
-                    for user_info in team_folder_members.data.users:
-                        # Get the permission type string (e.g., 'editor')
-                        access_level_tag = user_info.access_type._tag
-                        
-                        # Map it to our internal PermissionType enum
-                        permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
-                        
-                        # Create the permission object
-                        user_permission = Permission(
-                            email=user_info.user.email,
-                            type=permission_type,
-                            entity_type=EntityType.USER
-                        )
-                        permissions_list.append(user_permission)
+            # Handle USER permissions
+            for user_info in all_users:
+                access_level_tag = user_info.access_type._tag
+                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
                 
-                # Handle GROUP permissions
-                if team_folder_members.data.groups:
-                    for group_info in team_folder_members.data.groups:
-                        # Get the permission type string (e.g., 'editor')
-                        access_level_tag = group_info.access_type._tag
-                        
-                        # Map it to our internal PermissionType enum
-                        permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
-                        
-                        # Create the permission object for group
-                        group_permission = Permission(
-                            external_id=group_info.group.group_id,  # Use group_id as external_id
-                            type=permission_type,
-                            entity_type=EntityType.GROUP
-                            # Note: groups don't have email, so we use external_id instead
-                        )
-                        permissions_list.append(group_permission)
+                user_permission = Permission(
+                    email=user_info.user.email,
+                    type=permission_type,
+                    entity_type=EntityType.USER
+                )
+                permissions_list.append(user_permission)
+            
+            # Handle GROUP permissions
+            for group_info in all_groups:
+                access_level_tag = group_info.access_type._tag
+                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
+                
+                group_permission = Permission(
+                    external_id=group_info.group.group_id,
+                    type=permission_type,
+                    entity_type=EntityType.GROUP
+                )
+                permissions_list.append(group_permission)
             # ---
             
             # Append the record group and the list of user/group permissions
@@ -1831,6 +1912,7 @@ class DropboxConnector(BaseConnector):
             record_groups.append((record_group, [user_permission]))
         
         await self.data_entities_processor.on_new_record_groups(record_groups)
+        
     
     async def _sync_sharing_changes_with_cursor(self, sync_point_key: str, cursor: str) -> None:
         """
