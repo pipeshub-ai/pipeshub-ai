@@ -30,7 +30,7 @@ class DiscordDataSource:
         for name in dir(obj):
             if name.startswith("_"):
                 continue
-            if name in {"guild", "channel", "author", "raw_data", "data"} or name.startswith("interaction"):
+            if name in {"guild", "channel", "raw_data", "data"} or name.startswith("interaction"):
                 continue
             try:
                 value = getattr(obj, name)
@@ -40,6 +40,15 @@ class DiscordDataSource:
                 continue
             if isinstance(value, (str, int, float, bool)) or value is None:
                 result[name] = value
+        try:
+            author = getattr(obj, "author", None)
+            if author is not None:
+                if hasattr(author, "id"):
+                    result.setdefault("author_id", str(getattr(author, "id")))
+                if hasattr(author, "name"):
+                    result.setdefault("author_name", getattr(author, "name"))
+        except Exception:
+            pass
         if result:
             return result
         return str(obj)
