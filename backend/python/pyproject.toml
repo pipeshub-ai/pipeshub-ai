@@ -31,6 +31,7 @@ dependencies = [
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docling==2.53.0",
+    "dropbox==12.0.2",
     "docx2python==3.5.0",
     "etcd3==0.12.0",
     "evernote3>=1.25.14",
