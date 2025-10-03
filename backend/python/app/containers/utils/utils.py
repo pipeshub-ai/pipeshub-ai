@@ -5,7 +5,7 @@ from arango import ArangoClient  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
 from app.config.constants.service import RedisConfig, config_node_constants
-from app.core.ai_arango_service import ArangoService
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.extraction.domain_extraction import DomainExtractor
@@ -20,9 +20,6 @@ from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
-from app.modules.retrieval.retrieval_arango import (
-    ArangoService as RetrievalArangoService,
-)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.arango import Arango
 from app.modules.transformers.blob_storage import BlobStorage
@@ -60,9 +57,10 @@ class ContainerUtils:
         logger: Logger,
         arango_client: ArangoClient,
         config_service: ConfigurationService,
-    ) -> ArangoService:
-        """Async factory to create and connect ArangoService"""
-        service = ArangoService(logger, arango_client, config_service)
+        kafka_service,
+    ) -> BaseArangoService:
+        """Async factory to create and connect BaseArangoService"""
+        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
         await service.connect()
         return service
 
@@ -70,7 +68,7 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        arango_service: ArangoService,
+        arango_service: BaseArangoService,
         vector_db_service: IVectorDBService,
     ) -> IndexingPipeline:
         """Async factory for IndexingPipeline"""
@@ -87,7 +85,7 @@ class ContainerUtils:
     async def create_domain_extractor(
         self,
         logger: Logger,
-        arango_service: ArangoService,
+        arango_service: BaseArangoService,
         config_service: ConfigurationService,
     ) -> DomainExtractor:
         """Async factory for DomainExtractor"""
@@ -141,7 +139,7 @@ class ContainerUtils:
         logger: Logger,
         config_service: ConfigurationService,
         indexing_pipeline: IndexingPipeline,
-        arango_service: ArangoService,
+        arango_service: BaseArangoService,
         parsers: dict,
         document_extractor: DocumentExtraction,
         sink_orchestrator: SinkOrchestrator,
@@ -165,7 +163,7 @@ class ContainerUtils:
         self,
         logger: Logger,
         processor: Processor,
-        arango_service: ArangoService,
+        arango_service: BaseArangoService,
     ) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
@@ -200,9 +198,10 @@ class ContainerUtils:
         logger: Logger,
         arango_client: ArangoClient,
         config_service: ConfigurationService,
-    ) -> RetrievalArangoService:
-        """Async factory to create and connect ArangoService"""
-        service = RetrievalArangoService(logger, arango_client, config_service)
+        kafka_service,
+    ) -> BaseArangoService:
+        """Async factory to create and connect BaseArangoService"""
+        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
         await service.connect()
         return service
 
@@ -211,7 +210,7 @@ class ContainerUtils:
         config_service: ConfigurationService,
         logger: Logger,
         vector_db_service: IVectorDBService,
-        arango_service: ArangoService,
+        arango_service: BaseArangoService,
         blob_store: BlobStorage,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""

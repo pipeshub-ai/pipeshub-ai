@@ -11,13 +11,13 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.core.ai_arango_service import ArangoService
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class BlobStorage(Transformer):
-    def __init__(self,logger,config_service, arango_service: ArangoService = None) -> None:
+    def __init__(self,logger,config_service, arango_service: BaseArangoService = None) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service

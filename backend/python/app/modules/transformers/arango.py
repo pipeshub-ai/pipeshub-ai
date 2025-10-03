@@ -3,14 +3,14 @@ import uuid
 from app.config.constants.arangodb import (
     CollectionNames,
 )
-from app.core.ai_arango_service import ArangoService
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class Arango(Transformer):
-    def __init__(self, arango_service: ArangoService, logger) -> None:
+    def __init__(self, arango_service: BaseArangoService, logger) -> None:
         super().__init__()
         self.arango_service = arango_service
         self.logger = logger

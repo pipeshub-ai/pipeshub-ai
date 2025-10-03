@@ -6,10 +6,8 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
-from app.connectors.sources.localKB.core.arango_service import (
-    KnowledgeBaseArangoService,
-)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -19,7 +17,7 @@ class KnowledgeBaseService :
     def __init__(
         self,
         logger,
-        arango_service : KnowledgeBaseArangoService,
+        arango_service : BaseArangoService,
         kafka_service : KafkaService
     ) -> None:
         self.logger = logger

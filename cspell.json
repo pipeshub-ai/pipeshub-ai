@@ -9,6 +9,7 @@
         "aimodels",
         "Airtable",
         "APIHTTP",
+        "arango",
         "arangodb",
         "asimilarity",
         "autorename",

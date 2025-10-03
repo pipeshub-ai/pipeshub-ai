@@ -15,9 +15,7 @@ from app.config.constants.arangodb import (
     LegacyCollectionNames,
     LegacyGraphNames,
 )
-from app.connectors.sources.localKB.core.arango_service import (
-    KnowledgeBaseArangoService,
-)
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -25,7 +23,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 class KnowledgeBaseMigrationService:
     """Service to handle migration from old KB system to new recordGroups system"""
 
-    def __init__(self, arango_service: KnowledgeBaseArangoService, logger: Logger) -> None:
+    def __init__(self, arango_service: BaseArangoService, logger: Logger) -> None:
         self.arango_service = arango_service
         self.logger = logger
         self.db = arango_service.db

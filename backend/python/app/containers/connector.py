@@ -8,12 +8,12 @@ from google.oauth2 import service_account
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
-from app.connectors.sources.google.common.arango_service import ArangoService
 from app.connectors.sources.google.common.google_token_handler import GoogleTokenHandler
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
@@ -47,9 +47,6 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
 )
 from app.connectors.sources.google.google_drive.services.sync_service.sync_tasks import (
     DriveSyncTasks,
-)
-from app.connectors.sources.localKB.core.arango_service import (
-    KnowledgeBaseArangoService,
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
@@ -736,11 +733,11 @@ class ConnectorAppContainer(BaseAppContainer):
         KafkaService, logger=logger, config_service=config_service
     )
 
-    # First create an async factory for the connected ArangoService
+    # First create an async factory for the connected BaseArangoService
     @staticmethod
-    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> ArangoService:
-        """Async factory to create and connect ArangoService"""
-        service = ArangoService(logger, arango_client, kafka_service, config_service)
+    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
+        """Async factory to create and connect BaseArangoService"""
+        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
         await service.connect()
         return service
 
@@ -752,11 +749,11 @@ class ConnectorAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
-    # First create an async factory for the connected KnowledgeBaseArangoService
+    # First create an async factory for the connected BaseArangoService
     @staticmethod
-    async def _create_kb_arango_service(logger, arango_client, kafka_service, config_service) -> KnowledgeBaseArangoService:
-        """Async factory to create and connect KnowledgeBaseArangoService"""
-        service = KnowledgeBaseArangoService(logger, arango_client, kafka_service, config_service)
+    async def _create_kb_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
+        """Async factory to create and connect BaseArangoService"""
+        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
         await service.connect()
         return service
 
