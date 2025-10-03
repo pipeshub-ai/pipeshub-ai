@@ -2,7 +2,7 @@
 
 <h2 align="center">
 <a href="https://www.pipeshub.com/">
-<img width="50%" src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg"/> 
+<img width="10%" alt="PipesHub Logo" src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg"/> 
 </a>
 </h2>
 
