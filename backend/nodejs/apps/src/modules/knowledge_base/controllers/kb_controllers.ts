@@ -132,6 +132,41 @@ const handleConnectorResponse = (
   res.status(200).json(connectorsData);
 };
 
+// Types and helpers for active connector validation
+interface ConnectorInfo {
+  name: string;
+}
+
+interface ActiveConnectorsResponse {
+  connectors: ConnectorInfo[];
+}
+
+const normalizeAppName = (value: string): string => value.replace(' ', '').toLowerCase();
+
+const validateActiveConnector = async (
+  appName: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const activeAppsResponse = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/active`,
+    HttpMethod.GET,
+    headers,
+  );
+
+  if (activeAppsResponse.statusCode !== 200) {
+    throw new InternalServerError('Failed to get active connectors');
+  }
+
+  const data = activeAppsResponse.data as ActiveConnectorsResponse;
+  const connectors = data?.connectors || [];
+  const allowedApps = connectors.map((connector) => normalizeAppName(connector.name));
+
+  if (!allowedApps.includes(normalizeAppName(appName))) {
+    throw new BadRequestError(`Connector ${appName} not allowed`);
+  }
+};
+
 export const createKnowledgeBase =
   (appConfig: AppConfig) =>
   async (
@@ -2356,29 +2391,16 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const activeAppsResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/active`,
-        HttpMethod.GET,
+      await validateActiveConnector(
+        app,
+        appConfig,
         req.headers as Record<string, string>,
       );
-
-      if (activeAppsResponse.statusCode !== 200) {
-        throw new InternalServerError('Failed to get active connectors');
-      }
-
-      const data = activeAppsResponse.data as any;
-      const connectors = data.connectors;
-
-      const allowedApps = connectors.map((connector: any) => connector.name.replace(' ', '').toLowerCase());
-
-      if (!allowedApps.includes(app.replace(' ', '').toLowerCase())) {
-        throw new BadRequestError('Connector not allowed');
-      }
 
       const reindexPayload = {
         userId,
         orgId,
-        app: app.replace(' ', '').toLowerCase(),
+        app: normalizeAppName(app),
       };
 
       const reindexResponse =
@@ -2409,29 +2431,16 @@ export const resyncConnectorRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const activeAppsResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/active`,
-        HttpMethod.GET,
+      await validateActiveConnector(
+        connectorName,
+        appConfig,
         req.headers as Record<string, string>,
       );
-
-      if (activeAppsResponse.statusCode !== 200) {
-        throw new InternalServerError('Failed to get active connectors');
-      }
-
-      const data = activeAppsResponse.data as any;
-      const connectors = data.connectors;
-
-      const allowedApps = connectors.map((connector: any) => connector.name.replace(' ', '').toLowerCase());
-
-      if (!allowedApps.includes(connectorName.replace(' ', '').toLowerCase())) {
-        throw new BadRequestError(`Connector ${connectorName} not allowed`);
-      }
 
       const resyncConnectorPayload = {
         userId,
         orgId,
-        connectorName: connectorName.replace(' ', '').toLowerCase(),
+        connectorName: normalizeAppName(connectorName),
       };
 
       const resyncConnectorResponse =

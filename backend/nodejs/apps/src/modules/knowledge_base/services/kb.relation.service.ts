@@ -2777,13 +2777,13 @@ export class RecordRelationService {
 
   async resyncConnectorRecords(resyncConnectorPayload: any): Promise<any> {
     try {
-      const resyncConnectorEventPayload =
+      const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-      const eventType = resyncConnectorEventPayload.connector.replace(' ', '').toLowerCase() + '.resync';
+      const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
       const event: SyncEvent = {
         eventType: eventType,
         timestamp: Date.now(),
-        payload: resyncConnectorEventPayload,
+        payload: resyncPayload,
       };
 
       await this.syncEventProducer.publishEvent(event);
