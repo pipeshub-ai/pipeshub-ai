@@ -1,4 +1,3 @@
-# ruff: noqa
 import asyncio
 import contextlib
 import os
