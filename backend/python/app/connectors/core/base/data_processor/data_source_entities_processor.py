@@ -345,8 +345,6 @@ class DataSourceEntitiesProcessor:
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
-                    if record_group.parent_record_group_id:
-                        await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
 
                     # 2. Create the BELONGS_TO edge for the organization
                     org_relation = {
@@ -407,7 +405,10 @@ class DataSourceEntitiesProcessor:
                         await tx_store.batch_create_edges(
                             record_group_permissions, collection=CollectionNames.PERMISSION.value
                         )
-
+                    
+                    if record_group.parent_record_group_id:
+                        await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
+                        
         except Exception as e:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
@@ -429,18 +430,6 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
-
-    # async def on_new_user_groups(self, user_groups: List[AppUserGroup], permissions: List[Permission]) -> None:
-    #     try:
-    #         async with self.data_store_provider.transaction():
-
-    #             for user_group in user_groups:
-    #                 self.logger.info(f"Processing user group: {user_group}")
-    #                 # Create user group if it doesn't exist
-    #                 # Create a edge between the user and user group
-    #     except Exception as e:
-    #         self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
-    #         raise e
 
     async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[Permission]]]) -> None:
         """
@@ -630,7 +619,7 @@ class DataSourceEntitiesProcessor:
                 existing_edge = await tx_store.get_edge(from_key, to_key, CollectionNames.PERMISSION.value)
                 if existing_edge:
                     self.logger.info(f"Permission edge already exists between {user_email} and group {user_group.name}")
-                    return True
+                    return False
                 
                 # 4. Create the permission object
                 permission = Permission(
@@ -640,50 +629,19 @@ class DataSourceEntitiesProcessor:
                     entity_type=EntityType.USER
                 )
                 
-                if existing_edge:
-                    # Check if permission type has changed
-                    current_permission_type = existing_edge.get('permissionType')  # Adjust based on your edge schema
-                    
-                    if current_permission_type == permission_type.value:
-                        self.logger.info(
-                            f"Permission edge already exists between {user_email} and group {user_group.name} "
-                            f"with correct permission type {permission_type}"
-                        )
-                        return True
-                    else:
-                        # Permission type has changed - update the edge
-                        self.logger.info(
-                            f"Updating permission for {user_email} in group {user_group.name} "
-                            f"from {current_permission_type} to {permission_type}"
-                        )
-                        
-                        # Option 1: Delete old edge and create new one
-                        await tx_store.delete_edge(from_key, to_key, CollectionNames.PERMISSION.value)
-                        permission_edge = permission.to_arango_permission(from_key, to_key)
-                        await tx_store.batch_create_edges(
-                            [permission_edge], 
-                            collection=CollectionNames.PERMISSION.value
-                        )
-                        
-                        self.logger.info(
-                            f"Successfully updated permission for {user_email} in group {user_group.name} "
-                            f"to {permission_type}"
-                        )
-                        return True
-                else:
-                    # 5. Create new permission edge since it doesn't exist
-                    permission_edge = permission.to_arango_permission(from_key, to_key)
-                    
-                    await tx_store.batch_create_edges(
-                        [permission_edge], 
-                        collection=CollectionNames.PERMISSION.value
-                    )
-                    
-                    self.logger.info(
-                        f"Successfully added user {user_email} to group {user_group.name} "
-                        f"(external_id: {external_group_id}) with permission {permission_type}"
-                    )
-                    return True
+                # 5. Create new permission edge since it doesn't exist
+                permission_edge = permission.to_arango_permission(from_key, to_key)
+                
+                await tx_store.batch_create_edges(
+                    [permission_edge], 
+                    collection=CollectionNames.PERMISSION.value
+                )
+                
+                self.logger.info(
+                    f"Successfully added user {user_email} to group {user_group.name} "
+                    f"(external_id: {external_group_id}) with permission {permission_type}"
+                )
+                return True
                     
         except Exception as e:
             self.logger.error(
@@ -715,9 +673,6 @@ class DataSourceEntitiesProcessor:
                     external_id=external_group_id
                 )
 
-                await tx_store.delete_edges_to("groups/051b4f1e-7d21-4879-a1a6-66c42eb61195", CollectionNames.PERMISSION.value)
-                await tx_store.delete_edges_from("groups/051b4f1e-7d21-4879-a1a6-66c42eb61195", CollectionNames.BELONGS_TO.value)
-                
                 if not user_group:
                     self.logger.warning(
                         f"Cannot delete group: Group with external ID {external_group_id} not found in database"
