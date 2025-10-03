@@ -344,7 +344,6 @@ class DropboxConnector(BaseConnector):
                     team_member_id=user_id,
                     team_folder_id=record_group_id if not is_person_folder else None
                 )
-                print("!!!!!!!!!!!! temp_link_result !!!!!!!!!!!!!!: ", temp_link_result)
                 if temp_link_result.success:
                     signed_url = temp_link_result.data.link
             
@@ -581,19 +580,16 @@ class DropboxConnector(BaseConnector):
         try:
             # Fetch members based on type
             if is_file:
-                print("!!!!!!!!!! fetching sharing_list_file_members")
                 members_result = await self.data_source.sharing_list_file_members(
                     file=file_or_folder_id,
                     include_inherited=True,
                     team_member_id=team_member_id
                 )
             else:
-                print("!!!!!!!!!! fetching sharing_list_folder_members")
                 # For folders, only fetch if it's a shared folder
                 if not shared_folder_id:
                     # Not a shared folder, no permissions to fetch
                     return []
-                print("!!!!!!!!!!!!!!!!!!!!!! 1")
                 members_result = await self.data_source.sharing_list_folder_members(
                     shared_folder_id=shared_folder_id,
                     team_member_id=team_member_id
@@ -858,7 +854,6 @@ class DropboxConnector(BaseConnector):
             else:
                 self.logger.warning(f"Could not list shared folders for user {user_email}: {shared_folders.error}")
 
-
             # Loop through each folder (personal + shared) and run a separate sync
             for folder_id in folders_to_sync:
                 
@@ -921,7 +916,6 @@ class DropboxConnector(BaseConnector):
                             has_more = False
                             continue # Skip to the next 'while' iteration (which will exit)
                         
-                        print(result)
                         self.logger.info(f"[{sync_log_name}] Got {len(result.data.entries)} entries. Has_more: {result.data.has_more}")
                         entries = result.data.entries
 
@@ -1288,7 +1282,6 @@ class DropboxConnector(BaseConnector):
                 await self._handle_group_renamed_event(event)
             elif event_type in ["group_change_member_role"]:
                 await self._handle_group_change_member_role_event(event)
-                
             else:
                 self.logger.debug(f"Ignoring event type: {event_type}")
 
@@ -1979,7 +1972,6 @@ class DropboxConnector(BaseConnector):
                     team_member_id=team_member_id,
                     team_folder_id=external_id
                 )
-                print("!!!!!!!!!!!!!!! metadata result: ", to_pretty_json(metadata_result))
                 file_id = metadata_result.data.id
 
             if not metadata_result or not metadata_result.success:
@@ -2008,7 +2000,6 @@ class DropboxConnector(BaseConnector):
                 # record_group_id = external_id
                 # is_person_folder = False
 
-            print("!!!!!!!!!!!!!!! giving to process dropbox entry")
             record_update = await self._process_dropbox_entry(
                 entry=entry,
                 user_id=team_member_id,
@@ -2046,10 +2037,8 @@ class DropboxConnector(BaseConnector):
         try:
             user_with_permission = None
             async with self.data_store_provider.transaction() as tx_store:
-                print("!!!!!!!!!!!!!!!!!! record: ", record.id)
                 user_with_permission = await tx_store.get_first_user_with_permission_to_node(f"{CollectionNames.RECORDS.value}/{record.id}")
                 file_record = await tx_store.get_file_record_by_id(record.id)
-                print("!!!!!!!!!!!!!!!!!!!!! file_record: ", file_record)
             if not user_with_permission:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
@@ -2066,29 +2055,13 @@ class DropboxConnector(BaseConnector):
                 team_folder_id = record.external_record_group_id
 
             response = await self.data_source.files_get_temporary_link(path=file_record["path"], team_folder_id=team_folder_id, team_member_id=team_member_id)
-            print("!!!!!!!!!!!!!!! response: ", response)
-            print("!!!!!!!!!!!!!!! signed url: ", response.data.link)
             return response.data.link
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
             return None
     
-    # async def get_signed_url(self, record: Record) -> Optional[str]:
-    #     print("!!!!!!!!!!!!!!!!!!!! s1")
-    #     if not self.data_source: return None
-    #     try:
-    #         print("!!!!!!!!!!!!!!!!!!!! s2")
-    #         weburl = record.weburl
-    #         if not weburl: return None
-    #         direct_download_url = weburl.replace('dl=0', 'dl=1')
-    #         print("!!!!!!!!!!!!!!!!!!!! s3: ", direct_download_url)
-    #         return direct_download_url
-    #     except Exception as e:
-    #         self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
-    #         return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        print("!!!!!!!!!!!!!! streaming record: ", record)
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")

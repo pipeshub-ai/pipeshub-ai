@@ -142,7 +142,6 @@ class DataSourceEntitiesProcessor:
 
         try:
 
-
             for permission in permissions:
                 from_collection = None
                 to_collection = f"{CollectionNames.RECORDS.value}/{record.id}"

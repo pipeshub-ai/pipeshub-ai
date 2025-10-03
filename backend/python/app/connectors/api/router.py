@@ -1356,11 +1356,9 @@ async def stream_record(
                         )
             else:
                 connector_name = connector.lower().replace(" ", "")
-                print("!!!!!!!!!!!!!! connector_name: ", connector_name)
                 container: ConnectorAppContainer = request.app.container
                 connector: BaseConnector = container.connectors_map[connector_name]
                 buffer = await connector.stream_record(record)
-                print("!!!!!!!!!!!!!! buffer: ", buffer)
                 return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")

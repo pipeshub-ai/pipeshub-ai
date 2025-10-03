@@ -79,19 +79,18 @@ async def test_run() -> None:
     }
 
 
-
     await key_value_store.create_key(f"/services/connectors/dropbox/config", config)
 
     #### logs
-    print(f"\n\nDEBUG: Stored config at key: /services/connectors/dropbox/config")
+    logger.info(f"\nDEBUG: Stored config at key: /services/connectors/dropbox/config")
 
     # Try to retrieve it immediately
     stored_config = await key_value_store.get_key(f"/services/connectors/dropbox/config")
-    print(f"\n\nDEBUG: Retrieved config: {stored_config}")
+    logger.info(f"\nDEBUG: Retrieved config: {stored_config}")
 
     # Also list all keys to see what's actually in the store
     all_keys = await key_value_store.get_all_keys()
-    print(f"\n\nDEBUG: All keys in store: {all_keys}")
+    logger.info(f"\nDEBUG: All keys in store: {all_keys}")
 
     # 4. Create and run the Dropbox connector
     try:
