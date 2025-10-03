@@ -130,6 +130,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 <img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gitlab.png" alt="GitLab" width="50" height="50">
 <img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/zendesk.png" alt="Zendesk" width="50" height="50">
 <img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/airtable.png" alt="Airtable" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/bookstack.png" alt="Bookstack" width="50" height="50">
 <img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/s3.png" alt="S3" width="50" height="50">
 <img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/azure-blob.png" alt="Azure Blob" width="50" height="50">
 <img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/box.png" alt="Box" width="50" height="50">
