@@ -1076,9 +1076,19 @@ class DropboxConnector(BaseConnector):
 
 
             # Step 3: List all shared folders within a team and create record groups
+            record_group_sync_key = generate_record_sync_point_key("record_group_events", "team_events", "global")
+            record_group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(record_group_sync_key)
+            
+            if not record_group_sync_point.get('cursor'):
+                self.logger.info("Initializing cursor for record group events...")
+                await self._initialize_event_cursor(record_group_sync_key, EventCategory.team_folders)
+                await self.sync_record_groups(app_users)
+            else:
+                self.logger.info("Running incremental sync for record group events...")
+                await self._sync_record_group_changes_with_cursor(app_users)
             self.logger.info("Syncing record groups...")
-            await self.sync_record_groups(app_users)
-            # Step 3.1: Create all personal folder record groups
+            
+
             await self.sync_personal_record_groups(app_users)
 
 
@@ -1737,7 +1747,154 @@ class DropboxConnector(BaseConnector):
             )
             return False
 
+    def _extract_folder_info_from_event(self, event) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extract folder ID and name from event assets.
+        
+        Returns:
+            Tuple of (folder_id, folder_name) or (None, None) if extraction fails
+        """
+        folder_id = None
+        folder_name = None
+        
+        for asset in event.assets:
+            if asset.is_folder():
+                folder_info = asset.get_folder()
+                folder_name = folder_info.display_name
+                
+                if (folder_info.path and 
+                    folder_info.path.namespace_relative and 
+                    folder_info.path.namespace_relative.ns_id):
+                    folder_id = folder_info.path.namespace_relative.ns_id
+                break
+        
+        return folder_id, folder_name
+
+    async def _create_and_sync_single_record_group(
+        self, 
+        folder_id: str, 
+        folder_name: str, 
+        team_admin_user
+    ) -> None:
+        """
+        Fetch folder members and create a single record group.
+        Used by both full sync and incremental event handling.
+        
+        Args:
+            folder_id: The Dropbox team folder ID (ns_id)
+            folder_name: The display name of the folder
+            team_admin_user: AppUser with team_admin role for API calls
+        """
+        try:
+            # Fetch folder members with pagination
+            all_users_list = []
+            all_groups_list = []
+            
+            folder_members = await self.data_source.sharing_list_folder_members(
+                shared_folder_id=folder_id,
+                team_member_id=team_admin_user.source_user_id,
+                as_admin=True
+            )
+            
+            if not folder_members.success:
+                self.logger.warning(
+                    f"Failed to fetch members for folder '{folder_name}': {folder_members.error}"
+                )
+                return
+            
+            # Collect members from first page
+            if folder_members.data.users:
+                all_users_list.extend(folder_members.data.users)
+            if folder_members.data.groups:
+                all_groups_list.extend(folder_members.data.groups)
+            
+            # Handle pagination
+            cursor = folder_members.data.cursor
+            has_more = getattr(folder_members.data, 'has_more', False)
+            
+            while has_more:
+                self.logger.debug(f"Fetching more members for folder '{folder_name}'...")
+                
+                members_continue = await self.data_source.sharing_list_folder_members_continue(
+                    cursor=cursor,
+                    team_member_id=team_admin_user.source_user_id,
+                    as_admin=True
+                )
+                
+                if not members_continue.success:
+                    self.logger.error(
+                        f"Error during member pagination for folder '{folder_name}': {members_continue.error}"
+                    )
+                    break
+                
+                if members_continue.data.users:
+                    all_users_list.extend(members_continue.data.users)
+                if members_continue.data.groups:
+                    all_groups_list.extend(members_continue.data.groups)
+                
+                cursor = members_continue.data.cursor
+                has_more = getattr(members_continue.data, 'has_more', False)
+            
+            self.logger.info(
+                f"Fetched {len(all_users_list)} users and {len(all_groups_list)} groups "
+                f"for folder '{folder_name}'"
+            )
+            
+            # Create record group
+            record_group = RecordGroup(
+                name=folder_name,
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=folder_id,
+                description="Team Folder",
+                connector_name=Connectors.DROPBOX,
+                group_type=RecordGroupType.DRIVE,
+            )
+            
+            # Create permissions
+            dropbox_to_permission_type = {
+                'owner': PermissionType.OWNER,
+                'editor': PermissionType.WRITE,
+                'viewer': PermissionType.READ,
+            }
+            
+            permissions_list = []
+            
+            for user_info in all_users_list:
+                access_level_tag = user_info.access_type._tag
+                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
+                
+                user_permission = Permission(
+                    email=user_info.user.email,
+                    type=permission_type,
+                    entity_type=EntityType.USER
+                )
+                permissions_list.append(user_permission)
+            
+            for group_info in all_groups_list:
+                access_level_tag = group_info.access_type._tag
+                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
+                
+                group_permission = Permission(
+                    external_id=group_info.group.group_id,
+                    type=permission_type,
+                    entity_type=EntityType.GROUP
+                )
+                permissions_list.append(group_permission)
+            
+            # Submit to processor
+            await self.data_entities_processor.on_new_record_groups([(record_group, permissions_list)])
+            self.logger.info(f"Successfully synced record group '{folder_name}' ({folder_id})")
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error creating record group for folder '{folder_name}' ({folder_id}): {e}", 
+                exc_info=True
+            )
+            raise
+
+
     async def sync_record_groups(self, users: List[AppUser]):
+        """Sync all team folders as record groups."""
         # Find a team admin user
         team_admin_user = None
         for user in users:
@@ -1751,10 +1908,9 @@ class DropboxConnector(BaseConnector):
         
         self.logger.info(f"Using team admin user: {team_admin_user.email} (ID: {team_admin_user.source_user_id})")
         
-        # --- Fetch all team folders with pagination ---
+        # Fetch all team folders with pagination
         all_team_folders = []
         
-        # Initial call
         team_folders_response = await self.data_source.team_team_folder_list()
         
         if not team_folders_response.success:
@@ -1763,7 +1919,6 @@ class DropboxConnector(BaseConnector):
         
         all_team_folders.extend(team_folders_response.data.team_folders)
         
-        # Handle pagination for team folders
         cursor = team_folders_response.data.cursor
         has_more = getattr(team_folders_response.data, 'has_more', False)
         
@@ -1781,113 +1936,21 @@ class DropboxConnector(BaseConnector):
             has_more = getattr(folders_continue.data, 'has_more', False)
         
         self.logger.info(f"Fetched {len(all_team_folders)} total team folders")
-        # --- End of team folders pagination ---
         
-        record_groups = []
-
-        dropbox_to_permission_type = {
-            'owner': PermissionType.OWNER,
-            'editor': PermissionType.WRITE,
-            'viewer': PermissionType.READ,
-        }
-
+        # Process each active folder using the shared function
         for folder in all_team_folders:
             if folder.status._tag != "active":
                 continue
             
-            # --- Fetch all folder members with pagination ---
-            all_users = []
-            all_groups = []
-            
-            # Initial call
-            team_folder_members = await self.data_source.sharing_list_folder_members(
-                shared_folder_id=folder.team_folder_id,
-                team_member_id=team_admin_user.source_user_id,
-                as_admin=True
-            )
-            
-            if not team_folder_members.success:
-                self.logger.warning(f"Failed to fetch members for folder {folder.name}: {team_folder_members.error}")
+            try:
+                await self._create_and_sync_single_record_group(
+                    folder_id=folder.team_folder_id,
+                    folder_name=folder.name,
+                    team_admin_user=team_admin_user
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to sync folder '{folder.name}': {e}", exc_info=True)
                 continue
-            
-            # Collect members from first page
-            if team_folder_members.data.users:
-                all_users.extend(team_folder_members.data.users)
-            if team_folder_members.data.groups:
-                all_groups.extend(team_folder_members.data.groups)
-            
-            # Handle pagination for folder members
-            cursor = team_folder_members.data.cursor
-            has_more = getattr(team_folder_members.data, 'has_more', False)
-            
-            while has_more:
-                self.logger.debug(f"Fetching more members for folder {folder.name}...")
-                
-                members_continue = await self.data_source.sharing_list_folder_members_continue(
-                    cursor=cursor,
-                    team_member_id=team_admin_user.source_user_id,
-                    as_admin=True
-                )
-                
-                if not members_continue.success:
-                    self.logger.error(f"Error during member pagination for folder {folder.name}: {members_continue.error}")
-                    break
-                
-                # Collect members from current page
-                if members_continue.data.users:
-                    all_users.extend(members_continue.data.users)
-                if members_continue.data.groups:
-                    all_groups.extend(members_continue.data.groups)
-                
-                # Update pagination state
-                cursor = members_continue.data.cursor
-                has_more = getattr(members_continue.data, 'has_more', False)
-            
-            self.logger.info(f"Fetched {len(all_users)} users and {len(all_groups)} groups for folder {folder.name}")
-            # --- End of folder members pagination ---
-            
-            # Create record group
-            record_group = RecordGroup(
-                name=folder.name,
-                org_id=self.data_entities_processor.org_id,
-                external_group_id=folder.team_folder_id,
-                description="Team Folder",
-                connector_name=Connectors.DROPBOX,
-                group_type=RecordGroupType.DRIVE,
-            )
-
-            # --- Create permissions list from all collected members ---
-            permissions_list = []
-            
-            # Handle USER permissions
-            for user_info in all_users:
-                access_level_tag = user_info.access_type._tag
-                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
-                
-                user_permission = Permission(
-                    email=user_info.user.email,
-                    type=permission_type,
-                    entity_type=EntityType.USER
-                )
-                permissions_list.append(user_permission)
-            
-            # Handle GROUP permissions
-            for group_info in all_groups:
-                access_level_tag = group_info.access_type._tag
-                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
-                
-                group_permission = Permission(
-                    external_id=group_info.group.group_id,
-                    type=permission_type,
-                    entity_type=EntityType.GROUP
-                )
-                permissions_list.append(group_permission)
-            # ---
-            
-            # Append the record group and the list of user/group permissions
-            record_groups.append((record_group, permissions_list))
-        
-        await self.data_entities_processor.on_new_record_groups(record_groups)
 
     async def sync_personal_record_groups(self, users: List[AppUser]):
         record_groups = []
@@ -1912,7 +1975,233 @@ class DropboxConnector(BaseConnector):
             record_groups.append((record_group, [user_permission]))
         
         await self.data_entities_processor.on_new_record_groups(record_groups)
+
+    async def _sync_record_group_changes_with_cursor(self, users: List[AppUser]) -> None:
+        """
+        Syncs record group (team folder) changes incrementally using the team event log cursor.
+        """
+        try:
+            self.logger.info("Starting incremental sync for record groups...")
+
+            sync_point_key = generate_record_sync_point_key(
+                "record_group_events", "team_events", "global"
+            )
+
+            sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
+            cursor = sync_point.get('cursor')
+
+            if not cursor:
+                self.logger.warning("No cursor found for incremental record group sync.")
+                # Initialize cursor for team folder events
+                await self._initialize_event_cursor(sync_point_key, EventCategory.team_folders)
+                return
+
+            has_more = True
+            latest_cursor_to_save = cursor
+
+            while has_more:
+                try:
+                    async with self.rate_limiter:
+                        response = await self.data_source.team_log_get_events_continue(cursor)
+
+                    if not response.success:
+                        self.logger.error(f"Error fetching team folder event log: {response.error}")
+                        break
+
+                    events = response.data.events
+                    self.logger.info(f"Processing {len(events)} team folder events.")
+
+                    for event in events:
+                        try:
+                            await self._process_record_group_event(event, users)
+                        except Exception as e:
+                            self.logger.error(f"Error processing record group event: {e}", exc_info=True)
+                            continue
+
+                    latest_cursor_to_save = response.data.cursor
+                    has_more = response.data.has_more
+                    cursor = latest_cursor_to_save
+
+                except Exception as e:
+                    self.logger.error(f"Error in record group sync loop: {e}", exc_info=True)
+                    has_more = False
+
+            if latest_cursor_to_save:
+                print("\n\n\n!!!!!!!!!!!!! saving new cursor")
+                await self.dropbox_cursor_sync_point.update_sync_point(
+                    sync_point_key,
+                    sync_point_data={"cursor": latest_cursor_to_save}
+                )
+
+        except Exception as e:
+            self.logger.error(f"Fatal error in incremental record group sync: {e}", exc_info=True)
+            raise
+    
+    async def _process_record_group_event(self, event, users) -> None:
+        """
+        Process a single record group (team folder) event from the Dropbox audit log.
+        """
+        try:
+            self.logger.debug(f"Processing record group event: {event}")
+            
+            event_type = event.event_type._tag
+
+            if event_type == "team_folder_create":
+                print("\n\n\n!!!!!!!!!!!!! got team_folder_create")
+                await self._handle_record_group_created_event(event, users)
+            elif event_type == "team_folder_rename":
+                print("\n\n\n!!!!!!!!!!!!! got team_folder_rename")
+                await self._handle_record_group_renamed_event(event)
+            elif event_type == "team_folder_archived":
+                print("\n\n\n!!!!!!!!!!!!! got team_folder_archived")
+                await self._handle_record_group_archived_event(event)
+            elif event_type == "team_folder_permanently_delete":
+                print("\n\n\n!!!!!!!!!!!!! got team_folder_permanently_delete")
+                await self._handle_record_group_deleted_event(event)
+            elif event_type == "team_folder_change_status":
+                print("\n\n\n!!!!!!!!!!!!! got team_folder_change_status")
+                await self._handle_record_group_status_changed_event(event, users)
+            else:
+                self.logger.debug(f"Ignoring event type: {event_type}")
+
+        except Exception as e:
+            self.logger.error(f"Error processing record group event of type {getattr(event, 'event_type', 'unknown')}: {e}", exc_info=True)
+    
+    async def _handle_record_group_created_event(self, event, users: List[AppUser]) -> None:
+        """Handle team_folder_create events."""
+        folder_id, folder_name = self._extract_folder_info_from_event(event)
         
+        if not folder_id or not folder_name:
+            self.logger.warning(
+                f"Could not extract folder info from team_folder_create event. "
+                f"folder_id={folder_id}, folder_name={folder_name}"
+            )
+            return
+        
+        self.logger.info(f"Creating record group for team folder '{folder_name}' (ID: {folder_id})")
+        
+        # Find team admin user
+        team_admin_user = None
+        for user in users:
+            if hasattr(user, 'title') and user.title == "team_admin":
+                team_admin_user = user
+                break
+        
+        if not team_admin_user:
+            self.logger.error("No team admin user found. Cannot sync newly created folder.")
+            return
+        
+        try:
+            await self._create_and_sync_single_record_group(folder_id, folder_name, team_admin_user)
+            self.logger.info(f"Successfully processed team_folder_create event for '{folder_name}'")
+        except Exception as e:
+            self.logger.error(
+                f"Error processing team_folder_create event for folder '{folder_name}' ({folder_id}): {e}", 
+                exc_info=True
+            )
+    
+    async def _handle_record_group_renamed_event(self, event) -> None:
+        """Handle team_folder_rename events."""
+        folder_id, new_name = self._extract_folder_info_from_event(event)
+        
+        # Try to get old name from event details
+        old_name = None
+        if hasattr(event.details, 'get_team_folder_rename_details'):
+            rename_details = event.details.get_team_folder_rename_details()
+            old_name = getattr(rename_details, 'previous_folder_name', None)
+        
+        if not folder_id or not new_name:
+            self.logger.warning(
+                f"Could not extract required info from team_folder_rename event. "
+                f"folder_id={folder_id}, new_name={new_name}"
+            )
+            return
+        
+        self.logger.info(f"Renaming record group {folder_id} from '{old_name}' to '{new_name}'")
+        
+        try:
+            await self.data_entities_processor.update_record_group_name(folder_id, new_name, old_name, self.connector_name)
+        except Exception as e:
+            self.logger.error(
+                f"Error processing team_folder_rename event for folder {folder_id}: {e}", 
+                exc_info=True
+            )
+    
+    async def _handle_record_group_deleted_event(self, event) -> None:
+        """Handle team_folder_permanently_delete events."""
+        folder_id, folder_name = self._extract_folder_info_from_event(event)
+        
+        if not folder_id:
+            self.logger.warning("Could not extract folder_id from team_folder_permanently_delete event")
+            return
+        
+        self.logger.info(f"Deleting record group '{folder_name}' ({folder_id})")
+        
+        try:
+            await self.data_entities_processor.on_record_group_deleted(
+                external_group_id=folder_id,
+                connector_name=self.connector_name
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Error processing team_folder_permanently_delete event for folder {folder_id}: {e}", 
+                exc_info=True
+            )
+    
+    async def _handle_record_group_status_changed_event(self, event, users: List[AppUser]) -> None:
+        """Handle team_folder_change_status events."""
+        
+        folder_id, folder_name = self._extract_folder_info_from_event(event)
+
+        # Extract old and new status from event details
+        old_status = None
+        new_status = None
+        
+        if hasattr(event.details, 'get_team_folder_change_status_details'):
+            status_details = event.details.get_team_folder_change_status_details()
+            old_status = getattr(status_details.previous_value, '_tag', None)
+            new_status = getattr(status_details.new_value, '_tag', None)
+        
+        if not folder_id or not new_status:
+            self.logger.warning(
+                f"Could not extract required info from team_folder_change_status event. "
+                f"folder_id={folder_id}, old_status={old_status}, new_status={new_status}"
+            )
+            return
+        
+        self.logger.info(
+            f"Status change for record group '{folder_name}' ({folder_id}): "
+            f"{old_status} -> {new_status}"
+        )
+        
+        try:
+            # If changing TO active from any other status, treat as creation/reactivation
+            if new_status == 'active':
+                self.logger.info(
+                    f"Folder '{folder_name}' is now active. Syncing as new/reactivated record group."
+                )
+                
+                await self._handle_record_group_created_event(event, users)
+            
+            # If changing FROM active to any other status (archived, etc.), treat as deletion
+            elif old_status == 'active':
+                self.logger.info(
+                    f"Folder '{folder_name}' is no longer active. Deleting record group."
+                )
+                await self._handle_record_group_deleted_event(event)
+            
+            # For other status transitions (e.g., archived -> permanently_deleted), log but don't act
+            else:
+                self.logger.info(
+                    f"Status change from {old_status} to {new_status} for '{folder_name}'. "
+                    f"No action needed (folder was already inactive)."
+                )
+                
+        except Exception as e:
+            self.logger.error(
+                f"Error processing team_folder_change_status event for folder {folder_id}: {e}", 
+                exc_info=True
+            )
     
     async def _sync_sharing_changes_with_cursor(self, sync_point_key: str, cursor: str) -> None:
         """

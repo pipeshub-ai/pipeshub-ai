@@ -3846,7 +3846,7 @@ class BaseArangoService:
             deleted_nodes = await self.delete_nodes(keys, collection)
 
             if deleted_nodes:
-                self.logger.info(f"✅ Successfully deleted {len(deleted_nodes)} nodes and their associated edges: {keys}")
+                self.logger.info(f"✅ Successfully deleted nodes and their associated edges: {keys}")
                 return True
             else:
                 self.logger.warning(f"⚠️ No nodes found in '{collection}' with keys: {keys}")

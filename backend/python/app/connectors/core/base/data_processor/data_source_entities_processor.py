@@ -411,6 +411,35 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
 
+    async def update_record_group_name(self, folder_id: str, new_name: str, old_name: str = None, connector_name: str = None) -> None:
+        """Update the name of an existing record group in the database."""
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_group = await tx_store.get_record_group_by_external_id(
+                    connector_name=connector_name,
+                    external_id=folder_id
+                )
+                
+                if not existing_group:
+                    self.logger.warning(
+                        f"Cannot rename record group: Group with external ID {folder_id} not found in database"
+                    )
+                    return
+                
+                existing_group.name = new_name
+                existing_group.updated_at = get_epoch_timestamp_in_ms()
+                
+                await tx_store.batch_upsert_record_groups([existing_group])
+                
+                self.logger.info(
+                    f"Successfully renamed record group {folder_id} from '{old_name}' to '{new_name}' "
+                    f"(internal_id: {existing_group.id})"
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
+            raise
+
     async def on_new_app_users(self, users: List[AppUser]) -> None:
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -706,6 +735,61 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
+    
+    async def on_record_group_deleted(
+        self,
+        external_group_id: str,
+        connector_name: str
+    ) -> bool:
+        """
+        Delete a record group and all its associated edges from the database.
+
+        Args:
+            external_group_id: The external ID of the group from the source system.
+            connector_name: The name of the connector (e.g., 'DROPBOX').
+
+        Returns:
+            bool: True if the group was successfully deleted, False otherwise.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Find the record group by its external ID
+                record_group = await tx_store.get_record_group_by_external_id(
+                    connector_name=connector_name,
+                    external_id=external_group_id
+                )
+
+                if not record_group:
+                    self.logger.warning(
+                        f"Cannot delete record group: Group with external ID {external_group_id} not found."
+                    )
+                    return False
+
+                record_group_internal_id = record_group.id
+                record_group_name = record_group.name
+
+                self.logger.info(
+                    f"Deleting record group: '{record_group_name}' (internal_id: {record_group_internal_id})"
+                )
+
+                # 2. Atomically delete the group node and all its connected edges
+                await tx_store.delete_nodes_and_edges(
+                    [record_group_internal_id], CollectionNames.RECORD_GROUPS.value
+                )
+
+                self.logger.info(
+                    f"Successfully deleted record group '{record_group_name}' "
+                    f"(external_id: {external_group_id}) and its edges."
+                )
+                return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to delete record group with external ID {external_group_id}: {str(e)}",
+                exc_info=True
+            )
+            return False
+
     
     async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:
         """Delete BELONGS_TO edges between group and organization."""
