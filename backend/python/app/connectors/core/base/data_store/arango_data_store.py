@@ -119,7 +119,7 @@ class ArangoTransactionStore(TransactionStore):
         record_ids = [r.id for r in records]
         duplicates = [x for x in record_ids if record_ids.count(x) > 1]
         if duplicates:
-            self.logger.warning(f"!!!!!!!!!!!!!!!!!!!!! DUPLICATE RECORD IDS IN BATCH: {duplicates}")
+            self.logger.warning(f"! DUPLICATE RECORD IDS IN BATCH: {duplicates}")
 
         self.logger.info("Upserting records in batch_record_upsert: %s", records)
 
@@ -161,21 +161,16 @@ class ArangoTransactionStore(TransactionStore):
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
 
-                print("!!!!!!!!!!!!!!!!!!! record to upsert: ", record.to_arango_base_record())
                 # Upsert base record
                 await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
-                print("!!!!!!!!!!!!!!!!!!! B0")
                 # Upsert specific record type if it has a specific method
                 await self.arango_service.batch_upsert_nodes([record.to_arango_record()], collection=config["collection"], transaction=self.txn)
 
-                print("!!!!!!!!!!!!!!!!!!!!!!!!! B1")
                 # Create IS_OF_TYPE edge
                 await self.arango_service.batch_create_edges([is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=self.txn)
 
-                print("!!!!!!!!!!!!!!!!!!!!!!!!! B2")
                 
-            self.logger.info("!!!!!!!! Successfully upserted records !!!!!!!!!")
-            print("record id: ", record.id)
+            self.logger.info("Successfully upserted record %s", record.record_name)
             return True
         except Exception as e:
             self.logger.error("❌ Batch upsert failed: %s", str(e))

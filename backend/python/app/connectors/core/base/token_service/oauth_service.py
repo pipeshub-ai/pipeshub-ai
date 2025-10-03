@@ -166,7 +166,6 @@ class OAuthProvider:
             response.raise_for_status()
             token_data = await response.json()
 
-        print("!!!!!!!!!!!!!!!!!!!!! got token data1 : ",token_data)
         token = OAuthToken(**token_data)
         return token
 
@@ -190,7 +189,6 @@ class OAuthProvider:
 
         # Create new token with current timestamp
 
-        print("!!!!!!!!!!!!!!!!!!!!! got token data2 : ",token_data)
         token = OAuthToken(**token_data)
 
         # Handle different OAuth providers:
@@ -278,7 +276,6 @@ class OAuthProvider:
 
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
-        print("!!!!!!!!!!!!!!!!!!!!! stored_state: ", stored_state)
 
         # Validate state
         if not stored_state or stored_state != state:
