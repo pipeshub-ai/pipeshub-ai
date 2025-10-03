@@ -93,7 +93,7 @@ async def main():
                             messages_response.data.get("items", [])[:3], 1
                         ):
                             content = message.get("content", "")[:50]
-                            author_name = message.get("author_name") or message.get("author_id") or "Unknown"
+                            author_name = message.get("author", {}).get("name") if isinstance(message.get("author"), dict) else (message.get("author_id") or message.get("id") or "Unknown")
                             print(
                                 f"  {i}. [{author_name}]: {content}..."
                             )

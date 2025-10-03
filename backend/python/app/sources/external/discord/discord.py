@@ -19,27 +19,29 @@ class DiscordDataSource:
     def __init__(self, client: DiscordClient) -> None:
         self.client = client.get_discord_client()
 
-    def _serialize(self, obj) -> object:  # type: ignore[override]
+    def _serialize(self, obj) -> object:  # generic JSON-safe conversion
         if isinstance(obj, (str, int, float, bool)) or obj is None:
             return obj
-        if isinstance(obj, discord.Guild):
-            return {"id": str(obj.id), "name": obj.name}
-        if isinstance(obj, discord.TextChannel):
-            return {"id": str(obj.id), "name": obj.name, "type": str(obj.type)}
-        if isinstance(obj, discord.Member):
-            return {"id": str(obj.id), "display_name": obj.display_name, "bot": obj.bot}
-        if isinstance(obj, discord.User):
-            return {"id": str(obj.id), "name": obj.name, "bot": obj.bot}
-        if isinstance(obj, discord.Message):
-            return {"id": str(obj.id), "content": obj.content, "author_id": str(obj.author.id) if obj.author else None, "author_name": obj.author.name if obj.author else None}
-        if isinstance(obj, discord.Role):
-            return {"id": str(obj.id), "name": obj.name}
-        if isinstance(obj, (list, tuple)):
+        if isinstance(obj, (list, tuple, set)):
             return [self._serialize(x) for x in obj]
         if isinstance(obj, dict):
             return {k: self._serialize(v) for k, v in obj.items()}
-        if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes)):
-            return [self._serialize(x) for x in list(obj)]
+        result = {}
+        for name in dir(obj):
+            if name.startswith("_"):
+                continue
+            if name in {"guild", "channel", "author", "raw_data", "data"} or name.startswith("interaction"):
+                continue
+            try:
+                value = getattr(obj, name)
+            except Exception:
+                continue
+            if callable(value):
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                result[name] = value
+        if result:
+            return result
         return str(obj)
 
     def _wrap(self, data: object) -> DiscordResponse:
