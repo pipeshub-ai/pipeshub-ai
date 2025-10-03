@@ -3,30 +3,36 @@ import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import aiohttp
-from app.utils.chat_helpers import count_tokens_in_records, get_flattened_results, get_message_content, get_message_content_for_tool, record_to_message_content
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
 from fastapi import HTTPException
-from langchain.schema import  HumanMessage
-from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
+from langchain.schema import HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
-from app.utils.citations import normalize_citations_and_chunks, process_citations
-from app.utils.latency_measurement import (
-    measure_latency,
-    measure_latency_context,
+from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
+from app.utils.chat_helpers import (
+    count_tokens_in_records,
+    get_flattened_results,
+    get_message_content_for_tool,
+    record_to_message_content,
 )
+from app.utils.citations import normalize_citations_and_chunks
+from app.utils.logger import create_logger
 
+MAX_TOKENS_THRESHOLD = 80000
+
+# Create a logger for this module
+logger = create_logger("streaming")
 
 
 def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
     """
     Count the total number of tokens in a messages array.
-    
+
     Args:
         messages: List of message dictionaries with 'role' and 'content' keys
-        
+
     Returns:
         Total number of tokens across all messages
     """
@@ -54,14 +60,14 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
         return max(1, len(text) // 4)
 
     total_tokens = 0
-    
+
     for message in messages:
         if not isinstance(message, dict):
             continue
-            
+
         # Extract content from message
         content = message.get("content", "")
-        
+
         # Handle different content types
         if isinstance(content, str):
             total_tokens += count_tokens(content)
@@ -78,7 +84,7 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
         else:
             # Convert other types to string
             total_tokens += count_tokens(str(content))
-    
+
     return total_tokens
 
 
@@ -135,7 +141,7 @@ async def aiter_llm_stream(llm, messages) -> AsyncGenerator[str, None]:
     We extract and concatenate only textual parts for streaming.
     """
 
-    def _stringify_content(content: Any) -> str:
+    def _stringify_content(content: Union[str, list, dict, None]) -> str:
         if content is None:
             return ""
         if isinstance(content, str):
@@ -191,7 +197,7 @@ async def execute_tool_calls(
     org_id: str,
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
-   
+
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -245,7 +251,7 @@ async def execute_tool_calls(
                 tool_call_ids[record_id] = call_id
             tool = next((t for t in tools if t.name == name), None)
             tool_args.append((args,tool))
-                
+
         tool_results_inner= []
 
         for args,tool in tool_args:
@@ -265,14 +271,14 @@ async def execute_tool_calls(
                     }
                 }
                 continue
-            
+
             try:
                     tool_result = await tool.arun(args, **tool_runtime_kwargs)
                     tool_results_inner.append(tool_result)
                     tool_results.append(tool_result)
                     # Parse result for user feedback
                     if tool_result.get("ok", False):
-                        
+
                         yield {
                             "event": "tool_success",
                             "data": {
@@ -285,7 +291,7 @@ async def execute_tool_calls(
                         # tool_message_content = record_to_message_content(tool_result, final_results)
                         # tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
                     else:
-                        
+
                         yield {
                             "event": "tool_error",
                             "data": {
@@ -295,7 +301,7 @@ async def execute_tool_calls(
                             }
                         }
             except Exception as e:
-                    
+
                     tool_result = {
                         "ok": False,
                         "error": str(e)
@@ -310,16 +316,16 @@ async def execute_tool_calls(
                             "call_id": call_id
                         }
                     }
-        
+
         records = [tool_result.get("record",{}) for tool_result in tool_results_inner if tool_result.get("ok")]
         new_tokens = count_tokens_in_records(records)
-        
+
         message_contents = []
         record_ids = []
-        if new_tokens+previous_tokens > 80000:
-            
+        if new_tokens+previous_tokens > MAX_TOKENS_THRESHOLD:
+
             virtual_record_ids = [tool_result.get("record",{}).get("virtual_record_id") for tool_result in tool_results_inner if tool_result.get("ok")]
-            
+
             result = await retrieval_service.search_with_filters(
             queries=[all_queries[0]],
             org_id=org_id,
@@ -340,7 +346,7 @@ async def execute_tool_calls(
                         "message": result.get("message", "No results found"),
                     }
                 )
-        
+
             if search_results:
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
@@ -368,9 +374,9 @@ async def execute_tool_calls(
         # Add messages for next iteration
         messages.append(ai)
         messages.extend(tool_msgs)
-        
+
         hops += 1
-    
+
     if len(tool_results)>0:
         messages.append(HumanMessage(content="""Now produce the final answer STRICTLY following the previously provided Output format.\n
                 CRITICAL REQUIREMENTS:\n
@@ -580,7 +586,7 @@ async def stream_llm_response_with_tools(
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 3,
-   
+
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -589,7 +595,7 @@ async def stream_llm_response_with_tools(
     Now supports tool calls before generating the final answer.
     """
     records = []
-    
+
     # Handle tool calls first if tools are provided
     if tools and tool_runtime_kwargs:
         yield {
@@ -600,7 +606,7 @@ async def stream_llm_response_with_tools(
         # Execute tools and get updated messages
         final_messages = messages.copy()
         try:
-            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm): 
+            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm):
                 if tool_event.get("event") == "tool_execution_complete":
                     # Extract the final messages and tools_executed status
                     final_messages = tool_event["data"]["messages"]
@@ -611,12 +617,10 @@ async def stream_llm_response_with_tools(
                     # tool_event["data"]["tools_executed"]
                 else:
                     yield tool_event
-            
+
             messages = final_messages
         except Exception:
             pass
-        # Update messages with the final state
-        print("messagesssssssssssss",messages)
 
         if len(messages) > 0 and isinstance(messages[-1], AIMessage):
             final_ai_msg = messages[-1]
@@ -661,7 +665,7 @@ async def stream_llm_response_with_tools(
                 },
             }
             return
-        
+
         # Re-bind tools for the final response
         if tools:
             llm = llm.bind_tools(tools)

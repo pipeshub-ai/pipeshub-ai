@@ -1,5 +1,4 @@
 import json
-import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from dependency_injector.wiring import inject
@@ -8,7 +7,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
-from app.utils.streaming import stream_llm_response_with_tools
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, CollectionNames
@@ -24,7 +22,7 @@ from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
-from app.utils.streaming import create_sse_event
+from app.utils.streaming import create_sse_event, stream_llm_response_with_tools
 
 router = APIRouter()
 
@@ -239,7 +237,7 @@ async def process_chat_query(
         )
 
     blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
-    
+
     virtual_record_id_to_result = {}
     flattened_results = await get_flattened_results(
         search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
@@ -295,9 +293,9 @@ async def process_chat_query(
         elif conversation.get("role") == "bot_response":
             messages.append({"role": "assistant", "content": conversation.get("content")})
 
-
-            content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
-            messages.append({"role": "user", "content": content})
+    # Always add the current query with retrieved context as the final user message
+    content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
+    messages.append({"role": "user", "content": content})
 
     # Prepare tools
     fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
@@ -390,7 +388,6 @@ async def askAIStream(
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
 
             # Stream response with enhanced tool support using your existing implementation
-            from app.utils.streaming import stream_llm_response_with_tools
             org_id = request.state.user.get('orgId')
             user_id = request.state.user.get('userId')
             async for stream_event in stream_llm_response_with_tools(
@@ -451,7 +448,7 @@ async def askAI(
 
         # Make async LLM call with tools
         final_ai_msg = await resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4)
-        
+
         # Guard: ensure we have content
         if not getattr(final_ai_msg, "content", None):
             raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")

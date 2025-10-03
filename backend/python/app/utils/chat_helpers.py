@@ -44,8 +44,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         if virtual_record_id not in virtual_record_id_to_result:
             await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
-        
-        
+
+
 
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
@@ -470,11 +470,11 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                 },
                 "page_content": payload.get("page_content")
                 })
-        
+
         sorted_blocks = sorted(blocks, key=lambda x: x.get("index", 0))
         for i,block in enumerate(sorted_blocks):
             block["index"] = i
-            
+
         record["block_containers"] = {
             "blocks": sorted_blocks,
             "block_groups": []
@@ -534,16 +534,16 @@ def checkForLargeTable(markdown: str) -> bool:
 def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
     Convert a record JSON object to message content format matching get_message_content.
-    
+
     Args:
         record: The record JSON object containing block_containers and other metadata
         user_data: Optional user data for context
         query: Optional query for context
-        
+
     Returns:
         List of message content dictionaries in the same format as get_message_content
     """
-  
+
     try:
         content = []
         record_id = record.get("id", "")
@@ -560,7 +560,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
         block_groups = block_containers.get("block_groups", [])
-        
+
         seen_block_groups = set()
         record_number = 1
         # Determine record_number consistent with previously sent context if possible
@@ -580,19 +580,19 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                 if current_vrid in ordered_unique_vrids:
                     record_number = ordered_unique_vrids.index(current_vrid) + 1
         except Exception:
-            return []   
-            
-        
+            return []
+
+
         # Group blocks with parent_index (like table rows) for processing as block groups
-        
+
         # Process individual blocks
         for block in blocks:
             block_index = block.get("index", 0)
             block_type = block.get("type")
-            
+
             block_number = f"R{record_number}-{block_index}"
             data = block.get("data", "")
-            
+
             if block_type == BlockType.IMAGE.value:
                 continue
             elif block_type == BlockType.TEXT.value:
@@ -609,11 +609,11 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                 seen_block_groups.add(block_group_id)
                 if block_group_index is not None:
                     corresponding_block_group = block_groups[block_group_index]
-            
+
                     # Process the block group with its child rows
                     block_type = corresponding_block_group.get("type")
                     data = corresponding_block_group.get("data", {})
-                    
+
                     if block_type == GroupType.TABLE.value:
                         table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
                         rows_to_be_included_list = [ child.get("block_index") for child in corresponding_block_group.get("children", [])]
@@ -627,12 +627,12 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                     row_text = block_data.get("row_natural_language_text", "")
                                 else:
                                     row_text = str(block_data)
-                                
+
                                 child_results.append({
                                     "content": row_text,
                                     "block_index": row_index,
                                 })
-                        
+
                         if child_results:
                             template = Template(table_prompt)
                             rendered_form = template.render(
@@ -655,13 +655,13 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
                 })
-        
+
         # Add closing tags
         content.append({
             "type": "text",
             "text": "</record>"
         })
-        
+
         return content
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
@@ -780,7 +780,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
     virtual_record_id_to_record_number = {}
     seen_virtual_record_ids = set()
     record_number = 1
-    
+
     for result in final_results:
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
@@ -882,7 +882,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
 
     content.append({
         "type": "text",
-        "text": f"</record>"
+        "text": "</record>"
     })
     all_contents.append(content)
 
@@ -913,12 +913,12 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
             row_text = block_data.get("row_natural_language_text", "")
         else:
             row_text = str(block_data)
-        
+
         child_results.append({
             "content": row_text,
             "block_index": block.get("index", 0),
         })
-    
+
     if child_results:
         template = Template(table_prompt)
         rendered_form = template.render(
@@ -951,10 +951,10 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
 def count_tokens_in_records(records: List[Dict[str, Any]]) -> int:
     """
     Count the total number of tokens in a list of records, excluding image type blocks.
-    
+
     Args:
         records: List of record dictionaries containing block_containers with blocks
-        
+
     Returns:
         Total number of tokens across all non-image blocks in all records
     """
@@ -982,28 +982,28 @@ def count_tokens_in_records(records: List[Dict[str, Any]]) -> int:
         return max(1, len(text) // 4)
 
     total_tokens = 0
-    
+
     for record in records:
         if not record:
             continue
-            
+
         # Get block containers
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
-        block_groups = block_containers.get("block_groups", [])
-        
+        block_containers.get("block_groups", [])
+
         # Process individual blocks
         for block in blocks:
             block_type = block.get("type")
-            
+
             # Skip image type blocks
             if block_type == BlockType.IMAGE.value:
                 continue
-                
+
             # Extract text content based on block type
             data = block.get("data", "")
             text_content = ""
-            
+
             if block_type == BlockType.TEXT.value:
                 text_content = str(data) if data else ""
             elif block_type == BlockType.TABLE_ROW.value:
@@ -1015,9 +1015,9 @@ def count_tokens_in_records(records: List[Dict[str, Any]]) -> int:
             else:
                 # For any other non-image block type, include the data as text
                 text_content = str(data) if data else ""
-            
+
             # Count tokens for this block's text content
             if text_content:
                 total_tokens += count_tokens(text_content)
-    
+
     return total_tokens

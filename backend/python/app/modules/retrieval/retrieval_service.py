@@ -22,7 +22,6 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import config_node_constants
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
-from app.exceptions.indexing_exceptions import IndexingError
 from app.models.blocks import GroupType
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -32,16 +31,16 @@ from app.utils.aimodels import (
     get_embedding_model,
     get_generator_model,
 )
-
-
-# OPTIMIZATION: User data cache with TTL
-_user_cache: Dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
-USER_CACHE_TTL = 300  # 5 minutes
 from app.utils.chat_helpers import (
     get_flattened_results,
     get_record,
 )
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
+
+# OPTIMIZATION: User data cache with TTL
+_user_cache: Dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
+USER_CACHE_TTL = 300  # 5 minutes
+MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
 
 class RetrievalService:
@@ -133,7 +132,7 @@ class RetrievalService:
                     self.logger.info("Using default embedding model")
                     embedding_model = DEFAULT_EMBEDDING_MODEL
                     dense_embeddings = get_default_embedding_model()
-                    
+
                 else:
                     self.logger.info(f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}")
                     ai_models = await self.config_service.get_config(
@@ -161,7 +160,7 @@ class RetrievalService:
                 ) from e
 
             # Get the embedding dimensions from the model
-           
+
             self.logger.info(
                 f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
             )
@@ -344,18 +343,12 @@ class RetrievalService:
             new_type_results = []
             final_search_results = []
             for idx, result in enumerate(search_results):
-            # Replace virtualRecordId with first accessible record ID in search results
-            
                 if not result or not isinstance(result, dict):
                     continue
-
-                # Check if metadata exists before accessing it
                 if not result.get("metadata"):
                     self.logger.warning(f"Result has no metadata: {result}")
                     continue
-
                 virtual_id = result["metadata"].get("virtualRecordId")
-                # Skip results with None virtualRecordId
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id]
                     result["metadata"]["recordId"] = record_id
@@ -384,12 +377,27 @@ class RetrievalService:
                             elif record.get("recordType", "") == RecordTypes.MAIL.value:
                                 mail_record_ids_to_fetch.append(record_id)
                                 result_to_record_map[idx] = (record_id, "mail")
+                            continue
+
+                        if knowledge_search:
+                            meta = result.get("metadata")
+                            is_block_group = meta.get("isBlockGroup")
+                            if is_block_group is not None:
+                                if virtual_id not in virtual_record_id_to_record:
+                                    await get_record(meta,virtual_id,virtual_record_id_to_record,self.blob_store,org_id)
+                                    record = virtual_record_id_to_record[virtual_id]
+                                    if record is None:
+                                        continue
+                                    new_type_results.append(result)
+                                    continue
+
+                final_search_results.append(result)
 
             # OPTIMIZATION: Batch fetch all files and mails in parallel
             files_map = {}
             mails_map = {}
 
-            async def fetch_files():
+            async def fetch_files() -> Dict:
                 if not file_record_ids_to_fetch:
                     return {}
                 try:
@@ -407,7 +415,7 @@ class RetrievalService:
                     self.logger.warning(f"Failed to batch fetch files: {str(e)}")
                     return {}
 
-            async def fetch_mails():
+            async def fetch_mails() -> Dict:
                 if not mail_record_ids_to_fetch:
                     return {}
                 try:
@@ -428,7 +436,7 @@ class RetrievalService:
             if file_record_ids_to_fetch or mail_record_ids_to_fetch:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
-            # Second pass - apply fetched URLs to results
+        # Second pass - apply fetched URLs to results
             for idx, (record_id, record_type) in result_to_record_map.items():
                 result = search_results[idx]
                 record = record_id_to_record_map.get(record_id)
@@ -453,6 +461,7 @@ class RetrievalService:
 
                 if weburl:
                     result["metadata"]["webUrl"] = weburl
+                final_search_results.append(result)
 
             # OPTIMIZATION: Get full record documents from Arango using list comprehension
             records = [
@@ -460,52 +469,6 @@ class RetrievalService:
                 for record_id in unique_record_ids
                 if record_id in record_id_to_record_map
             ]
-                        # Fetch additional file URL if needed
-                        if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
-                            try:
-                                files = await self.arango_service.get_document(
-                                    record_id, CollectionNames.FILES.value
-                                )
-                                if files:  # Check if files is not None
-                                    weburl = files.get("webUrl")
-                                    if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
-                                        user_email = user.get("email") if user else None
-                                        if user_email:
-                                            weburl = weburl.replace("{user.email}", user_email)
-                                    result["metadata"]["webUrl"] = weburl
-                            except Exception as e:
-                                self.logger.warning(f"Failed to fetch file document for {record_id}: {str(e)}")
-
-                        # Fetch additional mail URL if needed
-                        if not weburl and record.get("recordType", "") == RecordTypes.MAIL.value:
-                            try:
-                                mail = await self.arango_service.get_document(
-                                    record_id, CollectionNames.MAILS.value
-                                )
-                                if mail:  # Check if mail is not None
-                                    weburl = mail.get("webUrl")
-                                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                                        user_email = user.get("email") if user else None
-                                        if user_email:
-                                            weburl = weburl.replace("{user.email}", user_email)
-                                    result["metadata"]["webUrl"] = weburl
-                            except Exception as e:
-                                self.logger.warning(f"Failed to fetch mail document for {record_id}: {str(e)}")
-
-                        if knowledge_search:
-                            meta = result.get("metadata")
-                            is_block_group = meta.get("isBlockGroup")
-                            if is_block_group is not None:
-                                if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(meta,virtual_id,virtual_record_id_to_record,self.blob_store,org_id)
-
-                                record = virtual_record_id_to_record[virtual_id]
-                                if record is None:
-                                    continue
-                                new_type_results.append(result)
-                                continue
-
-                final_search_results.append(result)
 
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
@@ -519,22 +482,11 @@ class RetrievalService:
                     else:
                         final_search_results.append(result)
 
-                final_search_results = sorted(
-                    final_search_results,
-                    key=lambda x: x.get("score") or 0,
-                    reverse=True,
-                )
-
-
-
-            # Get full record documents from Arango
-            records = []
-            if unique_record_ids:
-                for record_id in unique_record_ids:
-                    # FIX: Add null check for r before accessing r.get("_key")
-                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
-                    if record:  # Only append non-None records
-                        records.append(record)
+            final_search_results = sorted(
+                final_search_results,
+                key=lambda x: x.get("score") or 0,
+                reverse=True,
+            )
 
             # Filter out incomplete results to prevent citation validation failures
             required_fields = ['origin', 'recordName', 'recordId', 'mimeType',"orgId"]
@@ -626,8 +578,8 @@ class RetrievalService:
         # Store in cache
         _user_cache[user_id] = (user_data, time.time())
 
-        # Simple cache size management - keep only last 1000 users
-        if len(_user_cache) > 1000:
+        # Simple cache size management - keep only last MAX_USER_CACHE_SIZE users
+        if len(_user_cache) > MAX_USER_CACHE_SIZE:
             # Remove oldest entry
             oldest_key = min(_user_cache.keys(), key=lambda k: _user_cache[k][1])
             del _user_cache[oldest_key]

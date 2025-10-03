@@ -71,7 +71,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     # Extract all citation numbers from the answer text
     citation_pattern = r'\[R(\d+)-(\d+)\]'
     matches = re.findall(citation_pattern, answer_text)
-    
+
     if not matches:
         return answer_text, []
 
@@ -100,7 +100,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             record_number += 1
             record_number_to_vrid[record_number] = virtual_record_id
             seen.add(virtual_record_id)
-        
+
 
         if virtual_record_id not in vrids:
             block_index = doc.get("block_index")
@@ -118,8 +118,8 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             else:
                 flattened_final_results.append(doc)
                 block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
-            
-            
+
+
     for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
 

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
-
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.transformers.blob_storage import BlobStorage
 
 
@@ -59,7 +56,7 @@ async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_i
     if record:
         return {"ok": True, "record": record}
     else:
-        return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}   
+        return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}
 
 async def _fetch_full_record_impl(
     record_id: str,
@@ -76,7 +73,7 @@ async def _fetch_full_record_impl(
     }
     """
     records = list(virtual_record_id_to_result.values())
-    
+
     record = next((record for record in records if  record is not None and record.get("id") == record_id), None)
     if record:
         return {"ok": True, "record": record}
@@ -96,7 +93,7 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
         Retrieve the complete content of a record (all blocks/groups) for better answering.
         Returns a JSON string: {"ok": true, "record": {...}} or {"ok": false, "error": "..."}.
         """
-        
+
         result = await _fetch_full_record_impl(record_id, virtual_record_id_to_result)
         return result
 
@@ -121,7 +118,7 @@ def create_fetch_block_group_tool(blob_store: BlobStorage,final_results: List[Di
                 if count == number:
                     vrid = result.get("virtual_record_id")
                     break
-        
+
         if vrid:
             record = await _fetch_full_record_using_vrid(vrid, blob_store,org_id)
             if record:
