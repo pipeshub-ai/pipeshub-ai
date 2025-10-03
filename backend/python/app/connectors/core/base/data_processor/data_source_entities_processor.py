@@ -313,7 +313,6 @@ class DataSourceEntitiesProcessor:
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
-            print("should be deleted by now !! ")
     
     
     #- Create a permission edge between the record group and the org if it doesn't exist
@@ -448,7 +447,6 @@ class DataSourceEntitiesProcessor:
                         connector_name=user_group.app_name,
                         external_id=user_group.source_user_group_id
                     )
-                    print("Got an existing UG!!: ",existing_user_group)
                     
                     if existing_user_group is None:
                         # The ID is already set by default_factory, but we log
