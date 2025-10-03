@@ -132,6 +132,41 @@ const handleConnectorResponse = (
   res.status(200).json(connectorsData);
 };
 
+// Types and helpers for active connector validation
+interface ConnectorInfo {
+  name: string;
+}
+
+interface ActiveConnectorsResponse {
+  connectors: ConnectorInfo[];
+}
+
+const normalizeAppName = (value: string): string => value.replace(' ', '').toLowerCase();
+
+const validateActiveConnector = async (
+  appName: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const activeAppsResponse = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/active`,
+    HttpMethod.GET,
+    headers,
+  );
+
+  if (activeAppsResponse.statusCode !== 200) {
+    throw new InternalServerError('Failed to get active connectors');
+  }
+
+  const data = activeAppsResponse.data as ActiveConnectorsResponse;
+  const connectors = data?.connectors || [];
+  const allowedApps = connectors.map((connector) => normalizeAppName(connector.name));
+
+  if (!allowedApps.includes(normalizeAppName(appName))) {
+    throw new BadRequestError(`Connector ${appName} not allowed`);
+  }
+};
+
 export const createKnowledgeBase =
   (appConfig: AppConfig) =>
   async (
@@ -2346,7 +2381,7 @@ export const getRecordBuffer =
   };
 
 export const reindexAllRecords =
-  (recordRelationService: RecordRelationService) =>
+  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
@@ -2356,23 +2391,16 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = [
-        'ONEDRIVE',
-        'DRIVE',
-        'GMAIL',
-        'CONFLUENCE',
-        'SLACK',
-        'SHAREPOINT ONLINE',
-        'JIRA',
-      ];
-      if (!allowedApps.includes(app)) {
-        throw new BadRequestError('APP not allowed');
-      }
+      await validateActiveConnector(
+        app,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
 
       const reindexPayload = {
         userId,
         orgId,
-        app,
+        app: normalizeAppName(app),
       };
 
       const reindexResponse =
@@ -2393,7 +2421,7 @@ export const reindexAllRecords =
   };
 
 export const resyncConnectorRecords =
-  (recordRelationService: RecordRelationService) =>
+  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
@@ -2403,23 +2431,16 @@ export const resyncConnectorRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedConnectors = [
-        'ONEDRIVE',
-        'DRIVE',
-        'GMAIL',
-        'CONFLUENCE',
-        'JIRA',
-        'SLACK',
-        'SHAREPOINT ONLINE',
-      ];
-      if (!allowedConnectors.includes(connectorName)) {
-        throw new BadRequestError(`Connector ${connectorName} not allowed`);
-      }
+      await validateActiveConnector(
+        connectorName,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
 
       const resyncConnectorPayload = {
         userId,
         orgId,
-        connectorName,
+        connectorName: normalizeAppName(connectorName),
       };
 
       const resyncConnectorResponse =

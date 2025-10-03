@@ -1,13 +1,4 @@
 import {
-  IGoogleWorkspaceConnectorConfig,
-} from './connectors/google_workspace';
-import {
-  IOneDriveConnectorConfig,
-} from './connectors/one_drive';
-import { IS3ConnectorConfig } from './connectors/s3';
-import { ISlackConnectorConfig } from './connectors/slack';
-import {
-  ConnectorType,
   CrawlingScheduleType,
   CrawlingStatus,
   FileFormatType,
@@ -77,13 +68,6 @@ export interface IFileFormatConfig {
   reason?: string;
 }
 
-// Discriminated union for all connector configurations
-export type IConnectorSpecificConfig =
-  | ISlackConnectorConfig
-  | IGoogleWorkspaceConnectorConfig
-  | IOneDriveConnectorConfig
-  | IS3ConnectorConfig;
-
 // Discriminated union for all schedule configurations
 export type ICrawlingSchedule =
   | ICustomCrawlingSchedule
@@ -109,7 +93,7 @@ export interface ICrawlingStats {
   lastError?: {
     message: string;
     timestamp: Date;
-    connectorType?: ConnectorType;
+    connectorType?: string;
   };
 }
 
@@ -125,9 +109,6 @@ export interface ICrawlingManagerConfig extends Document {
 
   // File Format Configuration
   fileFormatConfigs: IFileFormatConfig[];
-
-  // Connector-specific Configurations
-  connectorConfigs: IConnectorSpecificConfig[];
 
   // Schedule Configuration
   crawlingSchedule: ICrawlingSchedule;
@@ -157,31 +138,6 @@ export interface ICrawlingManagerConfig extends Document {
   lastUpdatedBy: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
-}
-
-// Type guards for connector configurations
-export function isSlackConnectorConfig(
-  config: IConnectorSpecificConfig,
-): config is ISlackConnectorConfig {
-  return config.connectorType === ConnectorType.SLACK;
-}
-
-export function isGoogleWorkspaceConnectorConfig(
-  config: IConnectorSpecificConfig,
-): config is IGoogleWorkspaceConnectorConfig {
-  return config.connectorType === ConnectorType.GOOGLE_WORKSPACE;
-}
-
-export function isOneDriveConnectorConfig(
-  config: IConnectorSpecificConfig,
-): config is IOneDriveConnectorConfig {
-  return config.connectorType === ConnectorType.ONE_DRIVE;
-}
-
-export function isS3ConnectorConfig(
-  config: IConnectorSpecificConfig,
-): config is IS3ConnectorConfig {
-  return config.connectorType === ConnectorType.S3;
 }
 
 // Type guards for schedule configurations

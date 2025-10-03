@@ -6,13 +6,8 @@ import {
   IOnceCrawlingSchedule,
   IWeeklyCrawlingSchedule,
 } from './scheduler/scheduler';
-import { ISlackConnectorConfig } from './connectors/slack';
-import { IGoogleWorkspaceConnectorConfig } from './connectors/google_workspace';
-import { IOneDriveConnectorConfig } from './connectors/one_drive';
-import { IS3ConnectorConfig } from './connectors/s3';
 import mongoose, { Model, Schema } from 'mongoose';
 import {
-  ConnectorType,
   CrawlingScheduleType,
   CrawlingStatus,
   FileFormatType,
@@ -65,7 +60,6 @@ const BaseConnectorConfigSchema = new Schema(
   {
     connectorType: {
       type: String,
-      enum: Object.values(ConnectorType),
       required: true,
     },
     isEnabled: { type: Boolean, default: true },
@@ -82,67 +76,6 @@ const BaseConnectorConfigSchema = new Schema(
   },
 );
 
-// Individual connector settings schemas
-const SlackSettingsSchema = new Schema(
-  {
-    excludedChannels: [{ type: String }],
-    excludedWorkspaces: [{ type: String }],
-    includePrivateChannels: { type: Boolean, default: false },
-    includeDMs: { type: Boolean, default: false },
-    includeThreads: { type: Boolean, default: true },
-  },
-  { _id: false },
-);
-
-const GoogleWorkspaceSettingsSchema = new Schema(
-  {
-    excludedDrives: [{ type: String }],
-    excludedFolders: [{ type: String }],
-    includeSharedDrives: { type: Boolean, default: true },
-    includeMyDrive: { type: Boolean, default: true },
-  },
-  { _id: false },
-);
-
-const OneDriveSharePointSettingsSchema = new Schema(
-  {
-    excludedSites: [{ type: String }],
-    excludedLibraries: [{ type: String }],
-    includePersonalOneDrive: { type: Boolean, default: true },
-    includeSharePointSites: { type: Boolean, default: true },
-  },
-  { _id: false },
-);
-
-const S3SettingsSchema = new Schema(
-  {
-    bucketName: { type: String, required: true },
-    region: { type: String },
-    prefix: { type: String },
-    excludedPrefixes: [{ type: String }],
-    includeMetadata: { type: Boolean, default: true },
-    maxFileSize: { type: Number, default: 100 * 1024 * 1024 }, // 100MB default
-  },
-  { _id: false },
-);
-
-// Create discriminated schemas for each connector type
-const SlackConnectorSchema = new Schema<ISlackConnectorConfig>({
-  settings: { type: SlackSettingsSchema, required: true },
-});
-
-const GoogleWorkspaceConnectorSchema =
-  new Schema<IGoogleWorkspaceConnectorConfig>({
-    settings: { type: GoogleWorkspaceSettingsSchema, required: true },
-  });
-
-const OneDriveConnectorSchema = new Schema<IOneDriveConnectorConfig>({
-  settings: { type: OneDriveSharePointSettingsSchema, required: true },
-});
-
-const S3ConnectorSchema = new Schema<IS3ConnectorConfig>({
-  settings: { type: S3SettingsSchema, required: true },
-});
 
 // Base schema for schedule configurations
 const BaseScheduleConfigSchema = new Schema(
@@ -334,7 +267,6 @@ const CrawlingStatsSchema = new Schema<ICrawlingStats>({
     timestamp: { type: Date },
     connectorType: {
       type: String,
-      enum: Object.values(ConnectorType),
     },
   },
 });
@@ -366,9 +298,6 @@ const CrawlingManagerConfigSchema = new Schema<ICrawlingManagerConfig>(
 
     // File Format Configuration
     fileFormatConfigs: [FileFormatConfigSchema],
-
-    // Connector-specific Configurations
-    connectorConfigs: [BaseConnectorConfigSchema],
 
     // Schedule Configuration
     crawlingSchedule: {
@@ -420,23 +349,6 @@ const CrawlingManagerConfigSchema = new Schema<ICrawlingManagerConfig>(
   },
 );
 
-// Add discriminators for connector configurations
-CrawlingManagerConfigSchema.discriminator(
-  ConnectorType.SLACK,
-  SlackConnectorSchema,
-);
-
-CrawlingManagerConfigSchema.discriminator(
-  ConnectorType.GOOGLE_WORKSPACE,
-  GoogleWorkspaceConnectorSchema,
-);
-
-CrawlingManagerConfigSchema.discriminator(
-  ConnectorType.ONE_DRIVE,
-  OneDriveConnectorSchema,
-);
-
-CrawlingManagerConfigSchema.discriminator(ConnectorType.S3, S3ConnectorSchema);
 
 // Add discriminators for schedule configurations
 CrawlingManagerConfigSchema.discriminator(
@@ -482,15 +394,6 @@ CrawlingManagerConfigSchema.index({ lastStatusUpdate: 1 });
 
 // Validation middleware
 CrawlingManagerConfigSchema.pre('save', function (next) {
-  // Validate that connector configs match their types
-  for (const connectorConfig of this.connectorConfigs) {
-    if (!Object.values(ConnectorType).includes(connectorConfig.connectorType)) {
-      return next(
-        new Error(`Invalid connector type: ${connectorConfig.connectorType}`),
-      );
-    }
-  }
-
   // Validate schedule configuration
   const schedule = this.crawlingSchedule;
   if (!Object.values(CrawlingScheduleType).includes(schedule.scheduleType)) {
@@ -505,10 +408,6 @@ CrawlingManagerConfigSchema.pre('save', function (next) {
   next();
 });
 
-// Virtual for active connector count
-CrawlingManagerConfigSchema.virtual('activeConnectorCount').get(function () {
-  return this.connectorConfigs.filter((config) => config.isEnabled).length;
-});
 
 // Method to get next run time based on schedule
 CrawlingManagerConfigSchema.methods.calculateNextRunTime =
@@ -551,10 +450,6 @@ export const CrawlingManagerConfig: Model<ICrawlingManagerConfig> =
 export default {
   BaseScheduleConfigSchema,
   BaseConnectorConfigSchema,
-  SlackConnectorSchema,
-  GoogleWorkspaceConnectorSchema,
-  OneDriveConnectorSchema,
-  S3ConnectorSchema,
   BaseCrawlingScheduleSchema,
   CustomCrawlingScheduleSchema,
   WeeklyCrawlingScheduleSchema,

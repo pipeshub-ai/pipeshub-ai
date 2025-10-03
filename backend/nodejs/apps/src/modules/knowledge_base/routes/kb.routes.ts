@@ -187,7 +187,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     userAdminCheck,
     ValidationMiddleware.validate(reindexAllRecordSchema),
-    reindexAllRecords(recordRelationService),
+    reindexAllRecords(recordRelationService, appConfig),
   );
 
   // resync connector records
@@ -197,7 +197,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     userAdminCheck,
     ValidationMiddleware.validate(resyncConnectorSchema),
-    resyncConnectorRecords(recordRelationService),
+    resyncConnectorRecords(recordRelationService, appConfig),
   );
 
   // get specific knowledge base
