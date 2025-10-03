@@ -1,4 +1,5 @@
 import base64
+import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
@@ -285,22 +286,65 @@ class AirtableClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger,
+        logger: logging.Logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
+        graph_db_service: Optional[IGraphService] = None,
     ) -> "AirtableClient":
-        """Build AirtableClient using configuration service and graph database service
+        """Build AirtableClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
+            graph_db_service: Graph database service instance (optional)
         Returns:
             AirtableClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored Airtable credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials (token vs OAuth)
+        try:
+            # Get Airtable configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
 
-        return cls(client=None)  # type: ignore
+            if not config:
+                raise ValueError("Failed to get Airtable connector configuration")
+
+            # Extract configuration values
+            base_url = config.get("base_url", "https://api.airtable.com/v0")
+            auth_type = config.get("auth_type", "token")  # token or oauth
+
+            # Create appropriate client based on auth type
+            if auth_type == "oauth":
+                client_id = config.get("client_id", "")
+                client_secret = config.get("client_secret", "")
+                redirect_uri = config.get("redirect_uri", "")
+                access_token = config.get("access_token", "")
+
+                if not client_id or not client_secret or not redirect_uri:
+                    raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")
+
+                client = AirtableRESTClientViaOAuth(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
+                    access_token=access_token,
+                    base_url=base_url
+                )
+
+            else:  # Default to token auth
+                token = config.get("token", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = AirtableRESTClientViaToken(token, base_url)
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Airtable client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Airtable."""
+        try:
+            config = await config_service.get_config("/services/connectors/airtable/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Airtable connector config: {e}")
+            return {}

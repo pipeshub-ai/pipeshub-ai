@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -35,17 +36,17 @@ class Calculator:
                 name="a",
                 type=ParameterType.NUMBER,
                 description="The first number",
-                required=True
+                required=False
                 ),
             ToolParameter(
                 name="operation",
                 type=ParameterType.STRING,
-                description="The operation to use",
-                required=True
+                description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)",
+                required=False
                 )
             ]
         )
-    def calculate_single_operand(self, a: float, operation: str) -> float:
+    def calculate_single_operand(self, a: Optional[float] = None, operation: Optional[str] = None) -> float:
         """Calculate the result of a mathematical operation
         Args:
             a: The first number
@@ -53,6 +54,10 @@ class Calculator:
         Returns:
             The result of the mathematical operation
         """
+        # Validate required parameters
+        if a is None or operation is None:
+            raise ValueError("Missing required parameters: 'a' and 'operation' are required for calculate_single_operand")
+
         if operation in ("square root", "square root of", "sqrt"):
             return self._square_root(a)
         elif operation in ("cube root", "cube root of", "cbrt"):
@@ -68,23 +73,23 @@ class Calculator:
                 name="a",
                 type=ParameterType.NUMBER,
                 description="The first number",
-                required=True
+                required=False
                 ),
             ToolParameter(
                 name="b",
                 type=ParameterType.NUMBER,
                 description="The second number",
-                required=True
+                required=False
                 ),
             ToolParameter(
                 name="operation",
                 type=ParameterType.STRING,
-                description="The operation to use",
-                required=True
+                description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'",
+                required=False
                 )
-        ]
-    )
-    def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
+            ]
+        )
+    def calculate_two_operands(self, a: Optional[float] = None, b: Optional[float] = None, operation: Optional[str] = None) -> float:
         """Calculate the result of a mathematical operation
         Args:
             a: The first number
@@ -93,6 +98,10 @@ class Calculator:
         Returns:
             The result of the mathematical operation
         """
+        # Validate required parameters
+        if a is None or b is None or operation is None:
+            raise ValueError("Missing required parameters: 'a', 'b', and 'operation' are required for calculate_two_operands")
+
         if operation in ("add", "addition", "plus", "sum", "+"):
             return self._add(a, b)
         elif operation in ("subtract", "subtraction", "minus", "difference", "-"):

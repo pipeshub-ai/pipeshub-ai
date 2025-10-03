@@ -178,7 +178,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           position: { x: 50, y: 250 },
           data: {
             id: 'llm-1',
-            type: `llm-${availableModels[0]?.modelKey || 'default'}`,
+            type: `llm-${availableModels[0]?.provider || 'azureOpenAI'}-${availableModels[0]?.modelName || 'default'}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase(),
             label:
               availableModels[0]?.modelName
                 ?.replace(/[^a-zA-Z0-9]/g, ' ')

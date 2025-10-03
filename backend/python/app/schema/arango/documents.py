@@ -108,7 +108,7 @@ app_schema = {
                         "properties": {
                             "type": {
                                 "type": "string",
-                                "enum": ["OAUTH", "OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD", "BEARER_TOKEN", "CUSTOM"]
+                                "enum": ["OAUTH", "OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD", "BEARER_TOKEN", "CUSTOM","API_KEY"]
                             },
                             "displayRedirectUri": {"type": "boolean", "default": True},
                             "redirectUri": {"type": "string"},

@@ -2,7 +2,6 @@
 
 import json
 import logging
-from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
@@ -35,7 +34,12 @@ class OneDriveResponse:
         self.message = message
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            'success': self.success,
+            'data': self.data,
+            'error': self.error,
+            'message': self.message
+        }
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())

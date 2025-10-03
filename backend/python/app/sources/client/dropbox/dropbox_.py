@@ -199,12 +199,70 @@ class DropboxClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger : logging.Logger,
+        logger: logging.Logger,
         config_service: ConfigurationService,
-        arango_service: IGraphService,
+        arango_service: Optional[IGraphService] = None,
         is_team: bool = False,
     ) -> "DropboxClient":
         """
-        Build DropboxClient using your configuration service & org/user context.
+        Build DropboxClient using configuration service
+        Args:
+            logger: Logger instance
+            config_service: Configuration service instance
+            arango_service: GraphDB service instance (optional)
+            is_team: Whether to use team client
+        Returns:
+            DropboxClient instance
         """
-        ...
+        try:
+            # Get Dropbox configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
+
+            if not config:
+                raise ValueError("Failed to get Dropbox connector configuration")
+
+            # Extract configuration values
+            auth_type = config.get("auth_type", "token")  # token or app_key_secret
+            timeout = config.get("timeout")
+
+            # Create appropriate client based on auth type
+            if auth_type == "app_key_secret":
+                app_key = config.get("app_key", "")
+                app_secret = config.get("app_secret", "")
+
+                if not app_key or not app_secret:
+                    raise ValueError("App key and app secret required for app_key_secret auth type")
+
+                app_config = DropboxAppKeySecretConfig(
+                    app_key=app_key,
+                    app_secret=app_secret,
+                    timeout=timeout
+                )
+                client = await app_config.create_client(is_team=is_team)
+
+            else:  # Default to token auth
+                token = config.get("token", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+
+                token_config = DropboxTokenConfig(
+                    token=token,
+                    timeout=timeout
+                )
+                client = await token_config.create_client(is_team=is_team)
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Dropbox client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Dropbox."""
+        try:
+            config = await config_service.get_config("/services/connectors/dropbox/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Dropbox connector config: {e}")
+            return {}

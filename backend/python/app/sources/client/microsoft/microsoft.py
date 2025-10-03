@@ -1,6 +1,7 @@
+import logging
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
 
@@ -193,23 +194,75 @@ class MSGraphClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger,
+        service_name: str,
+        logger: logging.Logger,
         config_service: ConfigurationService,
-        arango_service,
-        org_id: str,
-        user_id: str,
         mode: GraphMode = GraphMode.APP,
     ) -> 'MSGraphClient':
         """
-        Build MSGraphClient using configuration service and arango service
+        Build MSGraphClient using configuration service
         Args:
+            service_name: Service name
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: ArangoDB service instance
-            org_id: Organization ID
-            user_id: User ID
+            mode: Graph mode (APP or DELEGATED)
         Returns:
             MSGraphClient instance
         """
-        #TODO: Implement
-        return cls(client=None, mode=mode) #type:ignore
+        try:
+            # Get Microsoft Graph configuration from the configuration service
+            config = await cls._get_connector_config(service_name.replace(" ", "").lower(), logger, config_service)
+
+            if not config:
+                raise ValueError("Failed to get Microsoft Graph connector configuration")
+            auth_config = config.get("auth",{}) or {}
+            # Extract configuration values
+            auth_type = auth_config.get("authType", "OAUTH_ADMIN_CONSENT")  # client_secret, username_password, certificate
+            tenant_id = auth_config.get("tenantId", "")
+            client_id = auth_config.get("clientId", "")
+
+            if not tenant_id or not client_id:
+                raise ValueError("Tenant ID and Client ID are required for Microsoft Graph authentication")
+
+            # Create appropriate client based on auth type
+            # to be implemented
+            if auth_type == "USERNAME_PASSWORD":
+                username = auth_config.get("username", "")
+                password = auth_config.get("password", "")
+                if not username or not password:
+                    raise ValueError("Username and password required for username_password auth type")
+                client = MSGraphClientViaUsernamePassword(username, password, client_id, tenant_id, mode)
+
+            # to be implemented
+            # elif auth_type == "OAUTH":
+            #     access_token = config.get("credentials",{}).get("accessToken", "")
+            #     certificate_path = config.get("credentials",{}).get("certificatePath", "")
+            #     if not certificate_path:
+            #         raise ValueError("Certificate path required for certificate auth type")
+            #     client = MSGraphClientWithCertificatePath(certificate_path, tenant_id, client_id, mode)
+
+            elif auth_type == "OAUTH_ADMIN_CONSENT":  # Default to client_secret auth
+                client_secret = auth_config.get("clientSecret", "")
+                if not client_secret:
+                    raise ValueError("Client secret required for client_secret auth type")
+                scopes = auth_config.get("scopes", ["https://graph.microsoft.com/.default"])
+                client = MSGraphClientWithClientIdSecret(client_id, client_secret, tenant_id, scopes, mode)
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            return cls(client, mode)
+
+        except Exception as e:
+            logger.error(f"Failed to build Microsoft Graph client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Microsoft Graph."""
+        try:
+            config = await config_service.get_config(f"/services/connectors/{service_name}/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Microsoft Graph connector config: {e}")
+            return {}

@@ -187,6 +187,13 @@ def prepare_clean_prompt_node(
         # Build clean system message
         system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
 
+        # Include current UTC time to help the LLM reason about relative dates (e.g., last 2 days)
+        try:
+            current_time_utc = datetime.utcnow().isoformat() + "Z"
+            system_content += f"\n\nCurrent datetime (UTC): {current_time_utc}"
+        except Exception:
+            pass
+
         # Get ALL available tools from registry - no filtering
         from app.modules.agents.qna.tool_registry import (
             get_agent_tools,

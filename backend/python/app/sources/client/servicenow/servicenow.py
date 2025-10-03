@@ -132,7 +132,72 @@ class ServiceNowClient(IClient):
             org_id: Organization ID
             user_id: User ID
         Returns:
-            ServiceNowClient instance with placeholder implementation # noqa: S101
+            ServiceNowClient instance
         """
-        #TODO: Implement
-        return cls(client=None) #type:ignore # noqa: S101
+        try:
+            # Get ServiceNow configuration from config service
+            config_data = await cls._get_connector_config(config_service, "servicenow")
+
+            # Extract configuration parameters
+            auth_type = config_data.get("auth_type", "token")
+            base_url = config_data.get("base_url")
+
+            if not base_url:
+                raise ValueError("base_url is required in ServiceNow configuration")
+
+            if auth_type == "username_password":
+                username = config_data.get("username")
+                password = config_data.get("password")
+
+                if not username or not password:
+                    raise ValueError("username and password are required for username_password auth_type")
+
+                config = ServiceNowUsernamePasswordConfig(
+                    base_url=base_url,
+                    username=username,
+                    password=password
+                )
+                return cls.build_with_config(config)
+
+            elif auth_type == "api_key":
+                email = config_data.get("email")
+                api_key = config_data.get("api_key")
+
+                if not email or not api_key:
+                    raise ValueError("email and api_key are required for api_key auth_type")
+
+                config = ServiceNowApiKeyConfig(
+                    base_url=base_url,
+                    email=email,
+                    api_key=api_key
+                )
+                return cls.build_with_config(config)
+
+            elif auth_type == "token":
+                token = config_data.get("token")
+
+                if not token:
+                    raise ValueError("token is required for token auth_type")
+
+                config = ServiceNowTokenConfig(
+                    base_url=base_url,
+                    token=token
+                )
+                return cls.build_with_config(config)
+
+            else:
+                raise ValueError(f"Unsupported auth_type: {auth_type}")
+
+        except Exception as e:
+            logger.error(f"Failed to build ServiceNow client from services: {e}")
+            raise ValueError(f"Failed to build ServiceNow client: {str(e)}")
+
+    @staticmethod
+    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> dict:
+        """Get connector configuration from config service"""
+        try:
+            config_path = f"/services/connectors/{connector_name}/config"
+            config_data = await config_service.get_config(config_path)
+            return config_data
+        except Exception as e:
+            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")

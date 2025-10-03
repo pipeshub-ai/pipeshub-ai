@@ -15,8 +15,13 @@ from app.connectors.core.base.data_store.arango_data_store import ArangoDataStor
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector import (
+    CalendarConnector,
+    DocsConnector,
     GmailConnector,
     GoogleDriveConnector,
+    MeetConnector,
+    NotionConnector,
+    SlackConnector,
 )
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
@@ -189,6 +194,13 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
             registry.register_connector(connector_class)
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
+        registry.register_connector(SlackConnector)
+        registry.register_connector(NotionConnector)
+        # registry.register_connector(SlidesConnector)
+        # registry.register_connector(FormsConnector)
+        registry.register_connector(CalendarConnector)
+        registry.register_connector(DocsConnector)
+        registry.register_connector(MeetConnector)
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
         # Sync with database

@@ -379,10 +379,89 @@ class BoxClient(IClient):
         """
         Build BoxClient using your configuration service & org/user context.
         """
-        # Implementation would follow the same pattern as DropboxClient
-        # This would be customized based on your specific configuration service
-        # Example implementation:
+        try:
+            # Get Box configuration from config service
+            config_data = await cls._get_connector_config(config_service, "box")
 
-        # Get Box configuration from config service
-        # TODO Add platform specific implementation
-        ...
+            # Extract configuration parameters
+            auth_type = config_data.get("auth_type", "token")
+
+            if auth_type == "token":
+                access_token = config_data.get("access_token")
+                if not access_token:
+                    raise ValueError("access_token is required for token auth_type")
+
+                config = BoxTokenConfig(token=access_token)
+                return await cls.build_with_config(config)
+
+            elif auth_type == "jwt":
+                client_id = config_data.get("client_id")
+                client_secret = config_data.get("client_secret")
+                enterprise_id = config_data.get("enterprise_id")
+                jwt_key_id = config_data.get("jwt_key_id")
+                rsa_private_key_data = config_data.get("rsa_private_key_data")
+                rsa_private_key_passphrase = config_data.get("rsa_private_key_passphrase")
+
+                if not all([client_id, client_secret, enterprise_id, jwt_key_id, rsa_private_key_data]):
+                    raise ValueError("client_id, client_secret, enterprise_id, jwt_key_id, and rsa_private_key_data are required for jwt auth_type")
+
+                config = BoxJWTConfig(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    enterprise_id=enterprise_id,
+                    jwt_key_id=jwt_key_id,
+                    rsa_private_key_data=rsa_private_key_data,
+                    rsa_private_key_passphrase=rsa_private_key_passphrase
+                )
+                return await cls.build_with_config(config)
+
+            elif auth_type == "oauth2":
+                client_id = config_data.get("client_id")
+                client_secret = config_data.get("client_secret")
+                access_token = config_data.get("access_token")
+                refresh_token = config_data.get("refresh_token")
+
+                if not all([client_id, client_secret, access_token]):
+                    raise ValueError("client_id, client_secret, and access_token are required for oauth2 auth_type")
+
+                config = BoxOAuth2Config(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    access_token=access_token,
+                    refresh_token=refresh_token
+                )
+                return await cls.build_with_config(config)
+
+            elif auth_type == "oauth_code":
+                client_id = config_data.get("client_id")
+                client_secret = config_data.get("client_secret")
+                code = config_data.get("code")
+                redirect_uri = config_data.get("redirect_uri")
+
+                if not all([client_id, client_secret, code]):
+                    raise ValueError("client_id, client_secret, and code are required for oauth_code auth_type")
+
+                config = BoxOAuthCodeConfig(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    code=code,
+                    redirect_uri=redirect_uri
+                )
+                return await cls.build_with_config(config)
+
+            else:
+                raise ValueError(f"Unsupported auth_type: {auth_type}")
+
+        except Exception as e:
+            logger.error(f"Failed to build Box client from services: {e}")
+            raise ValueError(f"Failed to build Box client: {str(e)}")
+
+    @staticmethod
+    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+        """Get connector configuration from config service"""
+        try:
+            config_path = f"/services/connectors/{connector_name}/config"
+            config_data = await config_service.get_config(config_path)
+            return config_data
+        except Exception as e:
+            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")

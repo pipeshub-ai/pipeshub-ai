@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
@@ -152,22 +153,65 @@ class SlackClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger,
+        logger: logging.Logger,
         config_service: ConfigurationService,
-        arango_service,
-        org_id: str,
-        user_id: str,
     ) -> 'SlackClient':
         """
-        Build SlackClient using configuration service and arango service
+        Build SlackClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: ArangoDB service instance
-            org_id: Organization ID
-            user_id: User ID
         Returns:
             SlackClient instance
         """
-        #TODO: Implement
-        return cls(client=None) #type:ignore
+        try:
+            # Get Slack configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
+
+            if not config:
+                raise ValueError("Failed to get Slack connector configuration")
+
+            # Extract configuration values
+            auth_type = config.get("authType", "botToken")  # token, username_password, api_key
+
+            # Create appropriate client based on auth type
+            # to be implemented
+            if auth_type == "USERNAME_PASSWORD":
+                username = config.get("username", "")
+                password = config.get("password", "")
+                if not username or not password:
+                    raise ValueError("Username and password required for username_password auth type")
+                client = SlackRESTClientViaUsernamePassword(username, password)
+
+            # to be implemented
+            elif auth_type == "API_KEY":
+                email = config.get("email", "")
+                api_key = config.get("apiKey", "")
+                if not email or not api_key:
+                    raise ValueError("Email and API key required for api_key auth type")
+                client = SlackRESTClientViaApiKey(email, api_key)
+
+            elif auth_type == "API_TOKEN":  # Default to token auth
+                token = config.get("botToken", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = SlackRESTClientViaToken(token)
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Slack client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Slack."""
+        try:
+            config = await config_service.get_config("/services/connectors/slack/config")
+            return config.get("auth",{}) or {}
+        except Exception as e:
+            logger.error(f"Failed to get Slack connector config: {e}")
+            return {}

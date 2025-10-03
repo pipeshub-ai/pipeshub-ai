@@ -659,7 +659,8 @@ class GoogleDriveDataSource:
         supportsAllDrives: Optional[bool] = None,
         supportsTeamDrives: Optional[bool] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Google Drive API: Creates a copy of a file and applies any requested updates with patch semantics.
 
@@ -699,9 +700,8 @@ class GoogleDriveDataSource:
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
 
-        # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        # Handle request body if provided
+        if body is not None:
             request = self.client.files().copy(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().copy(**kwargs) # type: ignore
@@ -717,7 +717,8 @@ class GoogleDriveDataSource:
         supportsTeamDrives: Optional[bool] = None,
         useContentAsIndexableText: Optional[bool] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Google Drive API:  Creates a new file. This method supports an */upload* URI and accepts uploaded media with the following characteristics: - *Maximum file size:* 5,120 GB - *Accepted Media MIME types:*`*/*` Note: Specify a valid MIME type, rather than the literal `*/*` value. The literal `*/*` is only used to indicate that any valid MIME type can be uploaded. For more information on uploading files, see [Upload file data](/workspace/drive/api/guides/manage-uploads). Apps creating shortcuts with `files.create` must specify the MIME type `application/vnd.google-apps.shortcut`. Apps should specify a file extension in the `name` property when inserting files with the API. For example, an operation to insert a JPEG file should specify something like `"name": "cat.jpg"` in the metadata. Subsequent `GET` requests include the read-only `fileExtension` property populated with the extension originally specified in the `title` property. When a Google Drive user requests to download a file, or when the file is downloaded through the sync client, Drive builds a full filename (with extension) based on the title. In cases where the extension is missing, Drive attempts to determine the extension based on the file's MIME type.
 
@@ -757,9 +758,8 @@ class GoogleDriveDataSource:
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
 
-        # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        # Handle request body if provided
+        if body is not None:
             request = self.client.files().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().create(**kwargs) # type: ignore
