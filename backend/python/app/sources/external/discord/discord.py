@@ -64,14 +64,10 @@ class DiscordDataSource:
         return DiscordResponse(success=False, error=error_msg)
 
     async def get_guilds(self) -> DiscordResponse:
-        """Get all guilds (servers) the bot has access to
-
+        """GET /users/@me/guilds
+        Get all guilds (servers) the bot has access to.
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches all guilds the bot is a member of using discord.py SDK.
-
+            DiscordResponse: success + list of guilds (id, name)
         """
         try:
             await self.client.wait_until_ready()
@@ -83,17 +79,12 @@ class DiscordDataSource:
             return await self._handle_discord_error(e)
 
     async def get_guild(self, guild_id: int) -> DiscordResponse:
-        """Get specific guild details
-
+        """GET /guilds/{guild.id}
+        Get specific guild details.
         Args:
-            guild_id: The Discord guild (server) ID
-
+            guild_id: Guild ID
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches details of a specific guild by ID.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -109,18 +100,13 @@ class DiscordDataSource:
     async def get_channels(
         self, guild_id: int, channel_type: str | None = None
     ) -> DiscordResponse:
-        """Get all channels in a guild
-
+        """GET /guilds/{guild.id}/channels
+        List channels in a guild (optionally filtered by type).
         Args:
-            guild_id: The Discord guild (server) ID
-            channel_type: Optional filter by channel type (text, voice, category)
-
+            guild_id: Guild ID
+            channel_type: Optional filter (text|voice|category)
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches all channels in the specified guild, optionally filtered by type.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -150,17 +136,12 @@ class DiscordDataSource:
             return await self._handle_discord_error(e)
 
     async def get_channel(self, channel_id: int) -> DiscordResponse:
-        """Get specific channel details
-
+        """GET /channels/{channel.id}
+        Get a channel by ID.
         Args:
-            channel_id: The Discord channel ID
-
+            channel_id: Channel ID
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches details of a specific channel by ID.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -180,20 +161,15 @@ class DiscordDataSource:
         before: int | None = None,
         after: int | None = None,
     ) -> DiscordResponse:
-        """Get messages from a channel
-
+        """GET /channels/{channel.id}/messages (iterative history via SDK)
+        Fetch messages from a text channel.
         Args:
-            channel_id: The Discord channel ID
-            limit: Maximum number of messages to fetch (default: 100, max: 100)
-            before: Get messages before this message ID
-            after: Get messages after this message ID
-
+            channel_id: Channel ID
+            limit: Max messages (<=100)
+            before: Message ID to fetch before
+            after: Message ID to fetch after
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches messages from the specified channel with pagination support.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -224,18 +200,13 @@ class DiscordDataSource:
             return await self._handle_discord_error(e)
 
     async def get_members(self, guild_id: int, limit: int = 100) -> DiscordResponse:
-        """Get members of a guild
-
+        """GET /guilds/{guild.id}/members (paginated via REST; iterative here)
+        Fetch members (requires privileged intents).
         Args:
-            guild_id: The Discord guild (server) ID
-            limit: Maximum number of members to fetch (default: 100)
-
+            guild_id: Guild ID
+            limit: Max members (approx)
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches members from the specified guild. Requires members intent.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -255,18 +226,13 @@ class DiscordDataSource:
             return await self._handle_discord_error(e)
 
     async def get_member(self, guild_id: int, user_id: int) -> DiscordResponse:
-        """Get specific member details from a guild
-
+        """GET /guilds/{guild.id}/members/{user.id}
+        Fetch a specific member.
         Args:
-            guild_id: The Discord guild (server) ID
-            user_id: The Discord user ID
-
+            guild_id: Guild ID
+            user_id: User ID
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches a specific member from the guild.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -287,17 +253,12 @@ class DiscordDataSource:
             return await self._handle_discord_error(e)
 
     async def get_user(self, user_id: int) -> DiscordResponse:
-        """Get user information
-
+        """GET /users/{user.id}
+        Fetch a user profile.
         Args:
-            user_id: The Discord user ID
-
+            user_id: User ID
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches user information by ID.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -317,21 +278,15 @@ class DiscordDataSource:
         channel_id: int | None = None,
         limit: int = 100,
     ) -> DiscordResponse:
-        """Search for messages in a guild
-
+        """CLIENT-SIDE (no direct REST endpoint for bot full-text search)
+        Naive search across recent messages.
         Args:
-            guild_id: The Discord guild (server) ID
-            query: Search query string
-            channel_id: Optional channel ID to limit search to specific channel
-            limit: Maximum number of messages to search through (default: 100)
-
+            guild_id: Guild ID
+            query: Case-insensitive substring
+            channel_id: Optional channel limit
+            limit: Messages per channel (approx)
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Searches through messages in the guild. This is a client-side search
-            as Discord API doesn't provide native message search for bots.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
@@ -369,17 +324,12 @@ class DiscordDataSource:
             return await self._handle_discord_error(e)
 
     async def get_guild_roles(self, guild_id: int) -> DiscordResponse:
-        """Get all roles in a guild
-
+        """GET /guilds/{guild.id}/roles
+        Fetch all roles in a guild.
         Args:
-            guild_id: The Discord guild (server) ID
-
+            guild_id: Guild ID
         Returns:
-            DiscordResponse: Standardized response wrapper with success/data/error
-
-        Notes:
-            Fetches all roles from the specified guild.
-
+            DiscordResponse
         """
         try:
             await self.client.wait_until_ready()
