@@ -22,7 +22,6 @@ class DiscordDataSource:
     def _serialize(self, obj) -> object:  # type: ignore[override]
         if isinstance(obj, (str, int, float, bool)) or obj is None:
             return obj
-        # Basic Discord models we expose selected fields for; rest returned via str() fallback
         if isinstance(obj, discord.Guild):
             return {"id": str(obj.id), "name": obj.name}
         if isinstance(obj, discord.TextChannel):
@@ -32,7 +31,7 @@ class DiscordDataSource:
         if isinstance(obj, discord.User):
             return {"id": str(obj.id), "name": obj.name, "bot": obj.bot}
         if isinstance(obj, discord.Message):
-            return {"id": str(obj.id), "content": obj.content, "author_id": str(obj.author.id) if obj.author else None}
+            return {"id": str(obj.id), "content": obj.content, "author_id": str(obj.author.id) if obj.author else None, "author_name": obj.author.name if obj.author else None}
         if isinstance(obj, discord.Role):
             return {"id": str(obj.id), "name": obj.name}
         if isinstance(obj, (list, tuple)):
@@ -44,93 +43,19 @@ class DiscordDataSource:
         return str(obj)
 
     def _wrap(self, data: object) -> DiscordResponse:
-        return DiscordResponse(success=True, data={"data": self._serialize(data)})
+        if isinstance(data, list):
+            return DiscordResponse(
+                success=True,
+                data={
+                    "items": self._serialize(data),
+                    "count": len(data),
+                },
+            )
+        ser = self._serialize(data)
+        if isinstance(ser, dict):
+            return DiscordResponse(success=True, data=ser)
+        return DiscordResponse(success=True, data={"result": ser})
 
-    def _discord_object_to_dict(self, obj: object) -> dict[str, object]:  # legacy helper (unused after simplification)
-        """Convert Discord object to dictionary"""
-        if isinstance(obj, discord.Guild):
-            return {
-                "id": str(obj.id),
-                "name": obj.name,
-                "description": obj.description,
-                "member_count": obj.member_count,
-                "created_at": obj.created_at.isoformat() if obj.created_at else None,
-                "icon": str(obj.icon.url) if obj.icon else None,
-                "owner_id": str(obj.owner_id) if obj.owner_id else None,
-            }
-        if isinstance(obj, discord.TextChannel):
-            return {
-                "id": str(obj.id),
-                "name": obj.name,
-                "type": str(obj.type),
-                "position": obj.position,
-                "topic": obj.topic,
-                "category_id": str(obj.category_id) if obj.category_id else None,
-                "created_at": obj.created_at.isoformat() if obj.created_at else None,
-            }
-        if isinstance(obj, discord.Member):
-            return {
-                "id": str(obj.id),
-                "name": obj.name,
-                "display_name": obj.display_name,
-                "discriminator": obj.discriminator,
-                "bot": obj.bot,
-                "avatar": str(obj.avatar.url) if obj.avatar else None,
-                "joined_at": obj.joined_at.isoformat() if obj.joined_at else None,
-                "roles": [str(role.id) for role in obj.roles] if obj.roles else [],
-            }
-        if isinstance(obj, discord.User):
-            return {
-                "id": str(obj.id),
-                "name": obj.name,
-                "discriminator": obj.discriminator,
-                "bot": obj.bot,
-                "avatar": str(obj.avatar.url) if obj.avatar else None,
-                "created_at": obj.created_at.isoformat() if obj.created_at else None,
-            }
-        if isinstance(obj, discord.Message):
-            return {
-                "id": str(obj.id),
-                "content": obj.content,
-                "author": {
-                    "id": str(obj.author.id),
-                    "name": obj.author.name,
-                    "discriminator": obj.author.discriminator,
-                }
-                if obj.author
-                else None,
-                "channel_id": str(obj.channel.id) if obj.channel else None,
-                "guild_id": str(obj.guild.id) if obj.guild else None,
-                "created_at": obj.created_at.isoformat() if obj.created_at else None,
-                "edited_at": obj.edited_at.isoformat() if obj.edited_at else None,
-                "attachments": [
-                    {"url": att.url, "filename": att.filename}
-                    for att in obj.attachments
-                ]
-                if obj.attachments
-                else [],
-                "embeds": [
-                    {"title": emb.title, "description": emb.description}
-                    for emb in obj.embeds
-                ]
-                if obj.embeds
-                else [],
-            }
-        if isinstance(obj, discord.Role):
-            return {
-                "id": str(obj.id),
-                "name": obj.name,
-                "color": str(obj.color),
-                "position": obj.position,
-                "permissions": obj.permissions.value,
-                "mentionable": obj.mentionable,
-            }
-        # Fallback for unknown types
-        return (
-            {"id": str(obj.id), "type": type(obj).__name__}
-            if hasattr(obj, "id")
-            else {"data": str(obj)}
-        )
 
     async def _handle_discord_error(self, error: Exception) -> DiscordResponse:
         """Handle Discord API errors and convert to standardized format"""
@@ -464,6 +389,148 @@ class DiscordDataSource:
                     success=False, error=f"Guild with ID {guild_id} not found"
                 )
 
-            return self._wrap(guild.roles)
+            try:
+                roles = await guild.fetch_roles()
+            except Exception:
+                roles = guild.roles  # fallback
+            return self._wrap(list(roles))
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+
+    async def send_message(self, channel_id: int, content: str) -> DiscordResponse:
+        """POST /channels/{channel.id}/messages
+        Send a message to a text channel.
+        Args:
+            channel_id: Target text channel ID
+            content: Message content
+        """
+        try:
+            await self.client.wait_until_ready()
+            channel = self.client.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return DiscordResponse(success=False, error="Channel not found or not a text channel")
+            msg = await channel.send(content)
+            return self._wrap(msg)
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+    async def add_reaction(self, channel_id: int, message_id: int, emoji: str) -> DiscordResponse:
+        """PUT /channels/{channel.id}/messages/{message.id}/reactions/{emoji}/@me
+        Add a reaction to a message.
+        Args:
+            channel_id: Text channel ID
+            message_id: Message ID
+            emoji: Unicode emoji or custom emoji in name:id format
+        """
+        try:
+            await self.client.wait_until_ready()
+            channel = self.client.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return DiscordResponse(success=False, error="Channel not found or not a text channel")
+            msg = await channel.fetch_message(message_id)
+            await msg.add_reaction(emoji)
+            return DiscordResponse(success=True, data={"message_id": str(msg.id), "emoji": emoji})
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+    async def remove_reaction(self, channel_id: int, message_id: int, emoji: str) -> DiscordResponse:
+        """DELETE /channels/{channel.id}/messages/{message.id}/reactions/{emoji}/@me
+        Remove the bot's reaction from a message.
+        Args:
+            channel_id: Text channel ID
+            message_id: Message ID
+            emoji: Emoji to remove
+        """
+        try:
+            await self.client.wait_until_ready()
+            channel = self.client.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return DiscordResponse(success=False, error="Channel not found or not a text channel")
+            msg = await channel.fetch_message(message_id)
+            # Remove own reaction (discord.py lacks direct helper; iterate reactions)
+            for reaction in msg.reactions:
+                if str(reaction.emoji) == emoji:
+                    async for user in reaction.users():
+                        if user == self.client.user:
+                            await reaction.remove(user)
+                            break
+            return DiscordResponse(success=True, data={"message_id": str(msg.id), "removed": emoji})
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+    async def edit_message(self, channel_id: int, message_id: int, content: str) -> DiscordResponse:
+        """PATCH /channels/{channel.id}/messages/{message.id}
+        Edit a previously sent message by the bot.
+        Args:
+            channel_id: Text channel ID
+            message_id: Message ID
+            content: New message content
+        """
+        try:
+            await self.client.wait_until_ready()
+            channel = self.client.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return DiscordResponse(success=False, error="Channel not found or not a text channel")
+            msg = await channel.fetch_message(message_id)
+            if msg.author != self.client.user:
+                return DiscordResponse(success=False, error="Cannot edit a message not authored by the bot")
+            edited = await msg.edit(content=content)
+            return self._wrap(edited)
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+    async def delete_message(self, channel_id: int, message_id: int) -> DiscordResponse:
+        """DELETE /channels/{channel.id}/messages/{message.id}
+        Delete a message authored by the bot.
+        Args:
+            channel_id: Text channel ID
+            message_id: Message ID
+        """
+        try:
+            await self.client.wait_until_ready()
+            channel = self.client.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return DiscordResponse(success=False, error="Channel not found or not a text channel")
+            msg = await channel.fetch_message(message_id)
+            if msg.author != self.client.user:
+                return DiscordResponse(success=False, error="Cannot delete a message not authored by the bot")
+            await msg.delete()
+            return DiscordResponse(success=True, data={"deleted_message_id": str(message_id)})
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+    async def create_role(self, guild_id: int, name: str) -> DiscordResponse:
+        """POST /guilds/{guild.id}/roles
+        Create a role in the guild.
+        Args:
+            guild_id: Guild ID
+            name: Role name
+        """
+        try:
+            await self.client.wait_until_ready()
+            guild = self.client.get_guild(guild_id)
+            if guild is None:
+                return DiscordResponse(success=False, error="Guild not found")
+            role = await guild.create_role(name=name)
+            return self._wrap(role)
+        except Exception as e:
+            return await self._handle_discord_error(e)
+
+    async def send_dm(self, user_id: int, content: str) -> DiscordResponse:
+        """POST /users/@me/channels then POST /channels/{channel.id}/messages
+        Send a direct message to a user.
+        Args:
+            user_id: Target user ID
+            content: Message content
+        """
+        try:
+            await self.client.wait_until_ready()
+            user = await self.client.fetch_user(user_id)
+            if user is None:
+                return DiscordResponse(success=False, error="User not found")
+            dm = await user.create_dm()
+            msg = await dm.send(content)
+            return self._wrap(msg)
         except Exception as e:
             return await self._handle_discord_error(e)

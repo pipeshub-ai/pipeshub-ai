@@ -92,10 +92,10 @@ async def main():
                         for i, message in enumerate(
                             messages_response.data.get("items", [])[:3], 1
                         ):
-                            author = message.get("author", {})
                             content = message.get("content", "")[:50]
+                            author_name = message.get("author_name") or message.get("author_id") or "Unknown"
                             print(
-                                f"  {i}. [{author.get('name', 'Unknown')}]: {content}..."
+                                f"  {i}. [{author_name}]: {content}..."
                             )
                         print()
                     else:
@@ -113,8 +113,9 @@ async def main():
                     f"Success! Found {members_response.data.get('count', 0)} members (limited to 5)"
                 )
                 for i, member in enumerate(members_response.data.get("items", []), 1):
+                    dn = member.get("display_name") or member.get("name")
                     print(
-                        f"  {i}. {member['display_name']} (@{member['name']}) - Bot: {member['bot']}"
+                        f"  {i}. {dn} - Bot: {member.get('bot')}"
                     )
                 print()
             else:
@@ -127,11 +128,27 @@ async def main():
             if roles_response.success:
                 print(f"Success! Found {roles_response.data.get('count', 0)} roles")
                 for i, role in enumerate(roles_response.data.get("items", [])[:5], 1):
-                    print(f"  {i}. {role['name']} (Position: {role['position']})")
+                    print(f"  {i}. {role.get('name')}")
                 print()
             else:
                 print(f"Error: {roles_response.error}")
                 print()
+
+            print("Step 9: Demonstrating write - sending a test message...")
+            print("-" * 80)
+            test_message_response = await discord_data_source.send_message(channel_id, "Hello from pipeshub DiscordDataSource example!")
+            if test_message_response.success:
+                sent_id = test_message_response.data.get("id") or test_message_response.data.get("result") or test_message_response.data.get("message_id")
+                print(f"Sent message ID: {sent_id}")
+                print("Adding reaction to the sent message...")
+                reaction_resp = await discord_data_source.add_reaction(channel_id, int(sent_id), "👍")
+                if reaction_resp.success:
+                    print("✓ Reaction added")
+                else:
+                    print(f"Failed to add reaction: {reaction_resp.error}")
+            else:
+                print(f"Failed to send message: {test_message_response.error}")
+            print()
 
         print("=" * 80)
         print("Example completed successfully!")
