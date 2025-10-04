@@ -887,7 +887,7 @@ class SharePointConnector(BaseConnector):
                 source_updated_at=updated_at,
                 weburl=getattr(item, 'web_url', None),
                 signed_url=signed_url,
-                mime_type=MimeTypes(item.file.mime_type) if hasattr(item, 'file') and item.file else MimeTypes.FOLDER.value,
+                mime_type=item.file.mime_type if item.file else MimeTypes.FOLDER.value,
                 parent_external_record_id=parent_id,
                 external_record_group_id=drive_id,
                 size_in_bytes=getattr(item, 'size', 0),

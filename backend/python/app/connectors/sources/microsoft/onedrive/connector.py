@@ -250,7 +250,7 @@ class OneDriveConnector(BaseConnector):
                 source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 weburl=item.web_url,
                 signed_url=signed_url,
-                mime_type=MimeTypes(item.file.mime_type) if item.file else MimeTypes.FOLDER.value,
+                mime_type=item.file.mime_type if item.file else MimeTypes.FOLDER.value,
                 parent_external_record_id=item.parent_reference.id if item.parent_reference else None,
                 external_record_group_id=item.parent_reference.drive_id if item.parent_reference else None,
                 size_in_bytes=item.size,
