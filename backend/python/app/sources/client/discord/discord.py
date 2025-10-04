@@ -1,28 +1,32 @@
-import json
-from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Optional
 
 import discord  # type: ignore
+from pydantic import BaseModel, Field
 
 from app.sources.client.iclient import IClient
 
 
-@dataclass
-class DiscordResponse:
-    """Standardized Discord API response wrapper"""
+class DiscordResponse(BaseModel):
+    """Standardized Discord API response wrapper using Pydantic"""
 
-    success: bool
-    data: dict[str, Any] | None = None
-    error: str | None = None
-    message: str | None = None
+    success: bool = Field(..., description="Whether the API call was successful")
+    data: Optional[dict[str, Any]] = Field(
+        None, description="Response data from Discord API"
+    )
+    error: Optional[str] = Field(None, description="Error message if the call failed")
+    message: Optional[str] = Field(None, description="Additional message information")
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
-        return asdict(self)
+    class Config:
+        """Pydantic configuration"""
 
-    def to_json(self) -> str:
-        """Convert to JSON string"""
-        return json.dumps(self.to_dict())
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "data": {"id": "123456789", "name": "Example Guild"},
+                "error": None,
+                "message": None,
+            }
+        }
 
 
 class DiscordRESTClientViaUsernamePassword:
@@ -78,70 +82,61 @@ class DiscordRESTClientViaToken:
         return self.client
 
 
-@dataclass
-class DiscordUsernamePasswordConfig:
-    """Configuration for Discord REST client via username and password
-    Args:
-        username: The username to use for authentication
-        password: The password to use for authentication
-        ssl: Whether to use SSL
-    """
+class DiscordUsernamePasswordConfig(BaseModel):
+    """Configuration for Discord REST client via username and password"""
 
-    username: str
-    password: str
-    ssl: bool = False
+    username: str = Field(..., description="The username to use for authentication")
+    password: str = Field(..., description="The password to use for authentication")
+    ssl: bool = Field(False, description="Whether to use SSL")
 
     def create_client(self) -> DiscordRESTClientViaUsernamePassword:
+        """Create Discord client with username/password authentication.
+
+        Returns:
+            DiscordRESTClientViaUsernamePassword instance
+        """
         return DiscordRESTClientViaUsernamePassword(
             self.username, self.password, "Basic"
         )
 
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return asdict(self)
-
     def get_client(self) -> discord.Client:
+        """Get the underlying discord.Client instance.
+
+        Returns:
+            discord.Client instance
+        """
         return self.create_client().get_client()
 
 
-@dataclass
-class DiscordTokenConfig:
-    """Configuration for Discord REST client via token
-    Args:
-        token: The bot token to use for authentication
-        ssl: Whether to use SSL
-    """
+class DiscordTokenConfig(BaseModel):
+    """Configuration for Discord REST client via bot token"""
 
-    token: str
-    ssl: bool = False
+    token: str = Field(..., description="The bot token to use for authentication")
+    ssl: bool = Field(False, description="Whether to use SSL")
 
     def create_client(self) -> DiscordRESTClientViaToken:
+        """Create Discord client with token authentication.
+
+        Returns:
+            DiscordRESTClientViaToken instance
+        """
         return DiscordRESTClientViaToken(self.token)
 
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return asdict(self)
 
+class DiscordApiKeyConfig(BaseModel):
+    """Configuration for Discord REST client via API key"""
 
-@dataclass
-class DiscordApiKeyConfig:
-    """Configuration for Discord REST client via API key
-    Args:
-        email: The email to use for authentication
-        api_key: The API key to use for authentication
-        ssl: Whether to use SSL
-    """
-
-    email: str
-    api_key: str
-    ssl: bool = False
+    email: str = Field(..., description="The email to use for authentication")
+    api_key: str = Field(..., description="The API key to use for authentication")
+    ssl: bool = Field(False, description="Whether to use SSL")
 
     def create_client(self) -> DiscordRESTClientViaApiKey:
-        return DiscordRESTClientViaApiKey(self.email, self.api_key)
+        """Create Discord client with API key authentication.
 
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return asdict(self)
+        Returns:
+            DiscordRESTClientViaApiKey instance
+        """
+        return DiscordRESTClientViaApiKey(self.email, self.api_key)
 
 
 class DiscordClient(IClient):
@@ -153,7 +148,11 @@ class DiscordClient(IClient):
         | DiscordRESTClientViaApiKey
         | DiscordRESTClientViaToken,
     ) -> None:
-        """Initialize with a Discord client object"""
+        """Initialize with a Discord client object.
+
+        Args:
+            client: Discord REST client instance
+        """
         self.client = client
 
     def get_client(
@@ -163,11 +162,19 @@ class DiscordClient(IClient):
         | DiscordRESTClientViaApiKey
         | DiscordRESTClientViaToken
     ):
-        """Return the Discord client object"""
+        """Return the Discord client object.
+
+        Returns:
+            Discord REST client instance
+        """
         return self.client
 
     def get_discord_client(self) -> discord.Client:
-        """Return the Discord SDK client object"""
+        """Return the Discord SDK client object.
+
+        Returns:
+            discord.Client instance
+        """
         return self.client.get_client()
 
     @classmethod
@@ -177,12 +184,24 @@ class DiscordClient(IClient):
         | DiscordTokenConfig
         | DiscordApiKeyConfig,
     ) -> "DiscordClient":
-        """Build DiscordClient with configuration
+        """Build DiscordClient with configuration.
+
         Args:
-            config: DiscordConfigBase instance
+            config: Discord configuration instance (Pydantic model)
+
         Returns:
             DiscordClient instance
         """
         return cls(config.create_client())
 
 
+__all__ = [
+    "DiscordResponse",
+    "DiscordClient",
+    "DiscordTokenConfig",
+    "DiscordUsernamePasswordConfig",
+    "DiscordApiKeyConfig",
+    "DiscordRESTClientViaToken",
+    "DiscordRESTClientViaUsernamePassword",
+    "DiscordRESTClientViaApiKey",
+]
