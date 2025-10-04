@@ -115,11 +115,3 @@ class DiscordClient(IClient):
             DiscordClient instance
         """
         return cls(config.create_client())
-
-
-__all__ = [
-    "DiscordResponse",
-    "DiscordClient",
-    "DiscordTokenConfig",
-    "DiscordRESTClientViaToken",
-]
