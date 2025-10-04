@@ -22,6 +22,9 @@ import os
 from app.sources.client.discord.discord import DiscordClient, DiscordTokenConfig
 from app.sources.external.discord.discord import DiscordDataSource
 
+# Constants
+MESSAGE_DISPLAY_LIMIT = 5
+
 
 async def main() -> None:
     token = os.getenv("DISCORD_BOT_TOKEN")
@@ -91,13 +94,15 @@ async def main() -> None:
             if messages.success:
                 message_list = messages.data if isinstance(messages.data, list) else []
                 print(f"Messages (up to 10): {len(message_list)}")
-                for msg in message_list[:5]:  # Show first 5 for brevity
+                for msg in message_list[:MESSAGE_DISPLAY_LIMIT]:  # Show first N for brevity
                     author = msg.get("author", {}).get("username", "Unknown")
                     content = msg.get("content", "")[:50]
                     timestamp = msg.get("timestamp", "")[:19]
                     print(f"  [{timestamp}] {author}: {content}")
-                if len(message_list) > 5:
-                    print(f"  ... and {len(message_list) - 5} more messages")
+                if len(message_list) > MESSAGE_DISPLAY_LIMIT:
+                    print(
+                        f"  ... and {len(message_list) - MESSAGE_DISPLAY_LIMIT} more messages"
+                    )
             else:
                 print(f"Error fetching messages: {messages.error}")
             print()
