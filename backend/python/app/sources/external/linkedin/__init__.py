@@ -17,7 +17,7 @@ Example:
         LinkedInOAuth2Config(access_token="YOUR_TOKEN")
     )
     datasource = LinkedInDataSource(client)
-    
+
     response = await datasource.get_profile()
     if response.success:
         print(response.data)

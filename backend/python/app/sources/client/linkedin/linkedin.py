@@ -27,7 +27,7 @@ class LinkedInResponse:
 
 class LinkedInRESTClientViaOAuth2:
     """LinkedIn REST client via OAuth 2.0 access token
-    
+
     Args:
         access_token: OAuth 2.0 access token for authentication
         api_version: LinkedIn API version (default: v2)
@@ -46,7 +46,7 @@ class LinkedInRESTClientViaOAuth2:
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            
+
             connector = aiohttp.TCPConnector(ssl=ssl_context)
             self.session = aiohttp.ClientSession(connector=connector)
         return self.session
@@ -58,20 +58,20 @@ class LinkedInRESTClientViaOAuth2:
         **kwargs: Any
     ) -> Dict[str, Any]:
         """Execute an HTTP request to LinkedIn API
-        
+
         Args:
             method: HTTP method (GET, POST, PUT, DELETE, etc.)
             path: API endpoint path
             **kwargs: Additional parameters (params, json, headers, etc.)
-        
+
         Returns:
             Response data as dictionary
         """
         session = await self._get_session()
-        
+
         # Build URL
         url = f"{self.base_url}{path}"
-        
+
         # Prepare headers
         headers = kwargs.pop("headers", {})
         headers.update({
@@ -79,14 +79,14 @@ class LinkedInRESTClientViaOAuth2:
             "Content-Type": "application/json",
             "X-Restli-Protocol-Version": "2.0.0"
         })
-        
+
         # Separate params and body
         params = kwargs.pop("params", {})
         body = kwargs.pop("json", kwargs.pop("data", None))
-        
+
         # All remaining kwargs are query parameters
         params.update(kwargs)
-        
+
         # Execute request
         async with session.request(
             method=method.upper(),
@@ -100,16 +100,16 @@ class LinkedInRESTClientViaOAuth2:
                 data = await response.json()
             except Exception:
                 data = {"text": await response.text()}
-            
+
             # Add status to response
             if "status" not in data:
                 data["status"] = response.status
-            
+
             # Check for errors
             if response.status >= 400:
                 error_msg = data.get("message") or data.get("error") or f"HTTP {response.status}"
                 data["error"] = error_msg
-            
+
             return data
 
     async def close(self) -> None:
@@ -134,7 +134,7 @@ class LinkedInRESTClientViaOAuth2:
 @dataclass
 class LinkedInOAuth2Config:
     """Configuration for LinkedIn REST client via OAuth 2.0
-    
+
     Args:
         access_token: OAuth 2.0 access token
         api_version: API version (default: v2)
@@ -176,10 +176,10 @@ class LinkedInClient(IClient):
     @classmethod
     def build_with_config(cls, config: LinkedInOAuth2Config) -> 'LinkedInClient':
         """Build LinkedInClient with configuration
-        
+
         Args:
             config: LinkedInOAuth2Config instance
-            
+
         Returns:
             LinkedInClient instance
         """
@@ -195,14 +195,14 @@ class LinkedInClient(IClient):
         user_id: str,
     ) -> 'LinkedInClient':
         """Build LinkedInClient using configuration service and arango service
-        
+
         Args:
             logger: Logger instance
             config_service: Configuration service instance
             arango_service: ArangoDB service instance
             org_id: Organization ID
             user_id: User ID
-            
+
         Returns:
             LinkedInClient instance
         """

@@ -19,7 +19,6 @@ Example usage:
 
 import asyncio
 import os
-from typing import Optional
 
 from app.sources.client.linkedin.linkedin import LinkedInClient, LinkedInOAuth2Config
 from app.sources.external.linkedin.linkedin import LinkedInDataSource
@@ -30,12 +29,12 @@ async def test_profile_operations(linkedin: LinkedInDataSource) -> None:
     print("\n" + "="*60)
     print("TESTING PROFILE OPERATIONS")
     print("="*60)
-    
+
     # Get current user's profile
     print("\n1. Getting current user's profile...")
     response = await linkedin.get_profile()
     if response.success:
-        print(f"✅ Profile retrieved successfully")
+        print("✅ Profile retrieved successfully")
         print(f"   Data: {response.data}")
     else:
         print(f"❌ Error: {response.error}")
@@ -46,14 +45,14 @@ async def test_organization_operations(linkedin: LinkedInDataSource) -> None:
     print("\n" + "="*60)
     print("TESTING ORGANIZATION OPERATIONS")
     print("="*60)
-    
+
     # Note: Replace with actual organization ID
     org_id = "12345678"
-    
+
     print(f"\n1. Getting organization details (ID: {org_id})...")
     response = await linkedin.get_organization(id=org_id)
     if response.success:
-        print(f"✅ Organization retrieved successfully")
+        print("✅ Organization retrieved successfully")
         print(f"   Data: {response.data}")
     else:
         print(f"❌ Error: {response.error}")
@@ -64,18 +63,18 @@ async def test_share_operations(linkedin: LinkedInDataSource) -> None:
     print("\n" + "="*60)
     print("TESTING SHARE/POST OPERATIONS")
     print("="*60)
-    
+
     print("\n1. Getting user's shares...")
     response = await linkedin.get_shares(
         q="authors",
         count=10
     )
     if response.success:
-        print(f"✅ Shares retrieved successfully")
+        print("✅ Shares retrieved successfully")
         print(f"   Data: {response.data}")
     else:
         print(f"❌ Error: {response.error}")
-    
+
     # Example: Create a share (commented out to avoid accidental posting)
     # print("\n2. Creating a new share...")
     # response = await linkedin.create_share(
@@ -104,17 +103,17 @@ async def test_analytics_operations(linkedin: LinkedInDataSource) -> None:
     print("\n" + "="*60)
     print("TESTING ANALYTICS OPERATIONS")
     print("="*60)
-    
+
     # Note: Replace with actual organization URN
     org_urn = "urn:li:organization:12345678"
-    
-    print(f"\n1. Getting follower statistics...")
+
+    print("\n1. Getting follower statistics...")
     response = await linkedin.get_organization_follower_statistics(
         q="organizationalEntity",
         organizationalEntity=org_urn
     )
     if response.success:
-        print(f"✅ Follower statistics retrieved successfully")
+        print("✅ Follower statistics retrieved successfully")
         print(f"   Data: {response.data}")
     else:
         print(f"❌ Error: {response.error}")
@@ -125,11 +124,11 @@ async def test_connection_operations(linkedin: LinkedInDataSource) -> None:
     print("\n" + "="*60)
     print("TESTING CONNECTION OPERATIONS")
     print("="*60)
-    
+
     print("\n1. Getting connections...")
     response = await linkedin.get_connections(count=10)
     if response.success:
-        print(f"✅ Connections retrieved successfully")
+        print("✅ Connections retrieved successfully")
         print(f"   Data: {response.data}")
     else:
         print(f"❌ Error: {response.error}")
@@ -140,14 +139,14 @@ async def test_search_operations(linkedin: LinkedInDataSource) -> None:
     print("\n" + "="*60)
     print("TESTING SEARCH OPERATIONS")
     print("="*60)
-    
+
     print("\n1. Searching companies...")
     response = await linkedin.search_companies(
         q="technology",
         count=5
     )
     if response.success:
-        print(f"✅ Companies search completed successfully")
+        print("✅ Companies search completed successfully")
         print(f"   Data: {response.data}")
     else:
         print(f"❌ Error: {response.error}")
@@ -193,12 +192,12 @@ async def main() -> None:
         print("\n" + "="*60)
         print("ALL TESTS COMPLETED")
         print("="*60)
-        
+
     except Exception as e:
         print(f"\n❌ Unexpected error: {e}")
         import traceback
         traceback.print_exc()
-    
+
     finally:
         # Cleanup
         await linkedin_client.close()

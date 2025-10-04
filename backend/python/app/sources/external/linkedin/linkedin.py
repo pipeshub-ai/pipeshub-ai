@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Dict
+
 from app.sources.client.linkedin.linkedin import LinkedInClient, LinkedInResponse
 
 # Set up logger
@@ -167,7 +168,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def create_share(self, 
+    async def create_share(self,
         *,
         author: Any,
         specificContent: Any,
@@ -211,7 +212,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def get_shares(self, 
+    async def get_shares(self,
         *,
         q: Any,
         authors: Any = None,
@@ -255,7 +256,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def get_share_statistics(self, 
+    async def get_share_statistics(self,
         *,
         q: Any,
         organizationalEntity: Any,
@@ -291,7 +292,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def get_connections(self, 
+    async def get_connections(self,
         *,
         q: Any = None,
         start: Any = None,
@@ -331,7 +332,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def get_organization_follower_statistics(self, 
+    async def get_organization_follower_statistics(self,
         *,
         q: Any,
         organizationalEntity: Any,
@@ -395,7 +396,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def search_companies(self, 
+    async def search_companies(self,
         *,
         q: Any,
         start: Any = None,
@@ -435,7 +436,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def get_member_companies(self, 
+    async def get_member_companies(self,
         *,
         id: Any,
         count: Any = None,
@@ -475,7 +476,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def create_comment(self, 
+    async def create_comment(self,
         *,
         shareUrn: Any,
         message: Any,
@@ -511,7 +512,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def get_comments(self, 
+    async def get_comments(self,
         *,
         shareUrn: Any,
         count: Any = None,
@@ -579,7 +580,7 @@ class LinkedInDataSource:
         except Exception as e:
             return await self._handle_linkedin_error(e)
 
-    async def delete_like(self, 
+    async def delete_like(self,
         *,
         shareUrn: Any,
         actor: Any,
