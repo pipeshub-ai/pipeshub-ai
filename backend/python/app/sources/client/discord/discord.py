@@ -1,4 +1,4 @@
-from typing import Any, Optional, Union
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,7 @@ class DiscordResponse(BaseModel):
     """Standardized Discord API response wrapper using Pydantic"""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: Optional[Union[dict[str, Any], list[Any]]] = Field(
+    data: Optional[Union[dict[str, object], list[object]]] = Field(
         None, description="Response data from Discord API (dict or list)"
     )
     error: Optional[str] = Field(None, description="Error message if the call failed")
@@ -28,7 +28,7 @@ class DiscordResponse(BaseModel):
             }
         }
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
