@@ -166,9 +166,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
         const formDataResults = await Promise.all(formDataPromises);
 
         formDataResults.forEach(({ type, formData }) => {
-          const { providerType, modelType, _provider,isMultimodal, ...cleanConfig } = formData;
-          console.log("isMultimodal", isMultimodal);
-          console.log("cleanConfig", cleanConfig);
+          const { providerType, modelType, _provider, isMultimodal, ...cleanConfig } = formData;
           promises.push(
             modelService.addModel(type as ModelType, {
               provider: currentProvider.id,
@@ -229,21 +227,31 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
     },
     updateConfig: async (config: any) => {
       if (isEditMode && currentProvider.editingModel!.modelType === modelType) {
-        const { providerType, modelType: configModelType, _provider,isMultimodal, ...cleanConfig } = config;
-        console.log("isMultimodal", isMultimodal);
-        console.log("cleanConfig", cleanConfig);
-        const result = await modelService.updateModel(
-          currentProvider.editingModel!.modelType as ModelType,
-          currentProvider.editingModel!.modelKey || currentProvider.editingModel!.id,
-          {
-            provider: currentProvider.id,
-            configuration: cleanConfig,
-            isDefault: currentProvider.editingModel!.isDefault,
-            isMultimodal,
-            name: config.name || currentProvider.editingModel!.name,
-          }
-        );
-        return result;
+        const {
+          providerType,
+          modelType: configModelType,
+          _provider,
+          isMultimodal,
+          ...cleanConfig
+        } = config;
+        try {
+          const result = await modelService.updateModel(
+            currentProvider.editingModel!.modelType as ModelType,
+            currentProvider.editingModel!.modelKey || currentProvider.editingModel!.id,
+            {
+              provider: currentProvider.id,
+              configuration: cleanConfig,
+              isDefault: currentProvider.editingModel!.isDefault,
+              isMultimodal,
+              name: config.name || currentProvider.editingModel!.name,
+            }
+          );
+          return result;
+        } catch (err: any) {
+          console.error('Error updating model:', err);
+          setError(err.message || 'Failed to update model');
+          throw new Error(err.message || 'Failed to update model');
+        }
       }
       return config;
     },

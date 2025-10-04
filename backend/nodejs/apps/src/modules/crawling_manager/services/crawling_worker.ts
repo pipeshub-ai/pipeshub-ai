@@ -3,7 +3,8 @@ import { Logger } from '../../../libs/services/logger.service';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { CrawlingJobData } from '../schema/interface';
-import { CrawlingTaskFactory } from './task/crawling_task_service_factory';
+import { ConnectorsCrawlingService } from './connectors/connectors';
+import { ICrawlingTaskService } from './task/crawling_task_service';
 
 @injectable()
 export class CrawlingWorkerService {
@@ -12,7 +13,7 @@ export class CrawlingWorkerService {
 
   constructor(
     @inject('RedisConfig') redisConfig: RedisConfig,
-    @inject(CrawlingTaskFactory) private taskFactory: CrawlingTaskFactory,
+    @inject(ConnectorsCrawlingService) private taskService: ICrawlingTaskService,
   ) { 
     this.logger = Logger.getInstance({ service: 'CrawlingWorkerService' });
 
@@ -51,13 +52,10 @@ export class CrawlingWorkerService {
       // Update job progress
       await job.updateProgress(10);
 
-      // Get the appropriate task service for this connector type
-      const taskService = this.taskFactory.getTaskService(connector);
-
       await job.updateProgress(20);
 
       // Execute the crawling task with connector information
-      const result = await taskService.crawl(
+      const result = await this.taskService.crawl(
         orgId, 
         userId, 
         scheduleConfig, 

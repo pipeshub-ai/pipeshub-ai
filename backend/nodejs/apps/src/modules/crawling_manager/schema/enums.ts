@@ -19,18 +19,6 @@ export enum CrawlingStatus {
     FAILED = 'failed',
 }
 
-export enum ConnectorType {
-    GOOGLE_WORKSPACE = 'googleWorkspace',
-    SLACK = 'slack',
-    CONFLUENCE = 'confluence',
-    JIRA = 'jira',
-    ONE_DRIVE = 'onedrive',
-    SHAREPOINT_ONLINE = 'sharepointOnline',
-    S3 = 's3',
-    AZURE_BLOB_STORAGE = 'azureBlobStorage',
-}
-
-
 export enum FileFormatType {
     DOCUMENT = 'document',
     SPREADSHEET = 'spreadsheet',

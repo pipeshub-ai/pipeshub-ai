@@ -7,7 +7,6 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { CrawlingWorkerService } from '../services/crawling_worker';
-import { CrawlingTaskFactory } from '../services/task/crawling_task_service_factory';
 import { CrawlingSchedulerService } from '../services/crawling_service';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { ConnectorsCrawlingService } from '../services/connectors/connectors';
@@ -179,10 +178,7 @@ export function setupCrawlingDependencies(
     .inSingletonScope();
 
   // Bind task factory
-  container
-    .bind<CrawlingTaskFactory>(CrawlingTaskFactory)
-    .to(CrawlingTaskFactory)
-    .inSingletonScope();
+  // Removed CrawlingTaskFactory; inject ConnectorsCrawlingService directly
 
   // Bind core services
   container
