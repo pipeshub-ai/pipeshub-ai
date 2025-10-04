@@ -41,9 +41,8 @@ class DiscordDataSource:
             "id": str(guild.id),
             "name": guild.name,
             "icon": guild.icon.key if guild.icon else None,
-            "owner": guild.owner_id == self.client.user.id
-            if self.client.user
-            else False,
+            # Bot ownership: True if current bot user exists and matches guild owner
+            "owner": self.client.user is not None and guild.owner_id == self.client.user.id,
             "permissions": str(guild.me.guild_permissions.value) if guild.me else "0",
             "features": guild.features,
         }
@@ -261,6 +260,8 @@ class DiscordDataSource:
         Returns:
             Dict matching Discord's user object format
         """
+        # Note: discord.User / Member always have attributes (may be None).
+        # Use .key for Asset-based media fields and .value for Color / Flag enums.
         return {
             "id": str(user.id),
             "username": user.name,
@@ -268,12 +269,8 @@ class DiscordDataSource:
             "avatar": user.avatar.key if user.avatar else None,
             "bot": user.bot,
             "system": user.system,
-            "banner": user.banner.key
-            if hasattr(user, "banner") and user.banner
-            else None,
-            "accent_color": user.accent_color
-            if hasattr(user, "accent_color")
-            else None,
+            "banner": user.banner.key if user.banner else None,
+            "accent_color": user.accent_color.value if user.accent_color else None,
             "public_flags": user.public_flags.value,
         }
 
@@ -409,18 +406,14 @@ class DiscordDataSource:
 
             channels = guild.channels
             if channel_type:
-                if channel_type == "text":
-                    channels = [
-                        ch for ch in channels if isinstance(ch, discord.TextChannel)
-                    ]
-                elif channel_type == "voice":
-                    channels = [
-                        ch for ch in channels if isinstance(ch, discord.VoiceChannel)
-                    ]
-                elif channel_type == "category":
-                    channels = [
-                        ch for ch in channels if isinstance(ch, discord.CategoryChannel)
-                    ]
+                channel_type_map = {
+                    "text": discord.TextChannel,
+                    "voice": discord.VoiceChannel,
+                    "category": discord.CategoryChannel,
+                }
+                channel_cls = channel_type_map.get(channel_type)
+                if channel_cls is not None:
+                    channels = [ch for ch in channels if isinstance(ch, channel_cls)]
 
             serialized_channels = [self._serialize_channel(ch) for ch in channels]
             return DiscordResponse(
@@ -658,7 +651,20 @@ class DiscordDataSource:
 
             try:
                 roles = await guild.fetch_roles()
-            except Exception:
+            except discord.Forbidden:
+                # Insufficient permissions to fetch fresh roles, fall back to cached roles
+                logger.warning(
+                    "Forbidden fetching roles for guild %s; using cached roles list.",
+                    guild_id,
+                )
+                roles = guild.roles
+            except discord.HTTPException as http_err:
+                # HTTP error (e.g., transient). Fallback keeps some data rather than failing entirely.
+                logger.warning(
+                    "HTTP error fetching roles for guild %s (%s); using cached roles list.",
+                    guild_id,
+                    http_err,
+                )
                 roles = guild.roles
 
             serialized_roles = [self._serialize_role(role) for role in roles]

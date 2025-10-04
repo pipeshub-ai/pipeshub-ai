@@ -11,7 +11,7 @@ from app.sources.external.discord.discord import DiscordDataSource
 async def main() -> None:
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        raise Exception("DISCORD_BOT_TOKEN is not set")
+        raise ValueError("DISCORD_BOT_TOKEN is not set")
 
     discord_client = DiscordClient.build_with_config(DiscordTokenConfig(token=token))
     discord_data_source = DiscordDataSource(discord_client)

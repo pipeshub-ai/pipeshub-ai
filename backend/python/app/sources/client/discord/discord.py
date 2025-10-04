@@ -29,41 +29,6 @@ class DiscordResponse(BaseModel):
         }
 
 
-class DiscordRESTClientViaUsernamePassword:
-    """Discord REST client via username and password
-    Args:
-        username: The username to use for authentication
-        password: The password to use for authentication
-        token_type: The type of token to use for authentication
-    """
-
-    def __init__(self, username: str, password: str, token_type: str = "Basic") -> None:
-        # TODO: Implement
-        self.client = None
-        raise NotImplementedError
-
-    def get_client(self) -> discord.Client:
-        raise NotImplementedError(
-            "Username/Password authentication is not yet implemented."
-        )
-
-
-class DiscordRESTClientViaApiKey:
-    """Discord REST client via API key
-    Args:
-        email: The email to use for authentication
-        api_key: The API key to use for authentication
-    """
-
-    def __init__(self, email: str, api_key: str) -> None:
-        # TODO: Implement
-        self.client = None
-        raise NotImplementedError
-
-    def get_client(self) -> discord.Client:
-        raise NotImplementedError("API Key authentication is not yet implemented.")
-
-
 class DiscordRESTClientViaToken:
     """Discord REST client via bot token
     Args:
@@ -82,37 +47,10 @@ class DiscordRESTClientViaToken:
         return self.client
 
 
-class DiscordUsernamePasswordConfig(BaseModel):
-    """Configuration for Discord REST client via username and password"""
-
-    username: str = Field(..., description="The username to use for authentication")
-    password: str = Field(..., description="The password to use for authentication")
-    ssl: bool = Field(False, description="Whether to use SSL")
-
-    def create_client(self) -> DiscordRESTClientViaUsernamePassword:
-        """Create Discord client with username/password authentication.
-
-        Returns:
-            DiscordRESTClientViaUsernamePassword instance
-        """
-        return DiscordRESTClientViaUsernamePassword(
-            self.username, self.password, "Basic"
-        )
-
-    def get_client(self) -> discord.Client:
-        """Get the underlying discord.Client instance.
-
-        Returns:
-            discord.Client instance
-        """
-        return self.create_client().get_client()
-
-
 class DiscordTokenConfig(BaseModel):
     """Configuration for Discord REST client via bot token"""
 
     token: str = Field(..., description="The bot token to use for authentication")
-    ssl: bool = Field(False, description="Whether to use SSL")
 
     def create_client(self) -> DiscordRESTClientViaToken:
         """Create Discord client with token authentication.
@@ -123,30 +61,12 @@ class DiscordTokenConfig(BaseModel):
         return DiscordRESTClientViaToken(self.token)
 
 
-class DiscordApiKeyConfig(BaseModel):
-    """Configuration for Discord REST client via API key"""
-
-    email: str = Field(..., description="The email to use for authentication")
-    api_key: str = Field(..., description="The API key to use for authentication")
-    ssl: bool = Field(False, description="Whether to use SSL")
-
-    def create_client(self) -> DiscordRESTClientViaApiKey:
-        """Create Discord client with API key authentication.
-
-        Returns:
-            DiscordRESTClientViaApiKey instance
-        """
-        return DiscordRESTClientViaApiKey(self.email, self.api_key)
-
-
 class DiscordClient(IClient):
     """Builder class for Discord clients with different construction methods"""
 
     def __init__(
         self,
-        client: DiscordRESTClientViaUsernamePassword
-        | DiscordRESTClientViaApiKey
-        | DiscordRESTClientViaToken,
+    client: DiscordRESTClientViaToken,
     ) -> None:
         """Initialize with a Discord client object.
 
@@ -157,11 +77,7 @@ class DiscordClient(IClient):
 
     def get_client(
         self,
-    ) -> (
-        DiscordRESTClientViaUsernamePassword
-        | DiscordRESTClientViaApiKey
-        | DiscordRESTClientViaToken
-    ):
+    ) -> DiscordRESTClientViaToken:
         """Return the Discord client object.
 
         Returns:
@@ -180,9 +96,7 @@ class DiscordClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: DiscordUsernamePasswordConfig
-        | DiscordTokenConfig
-        | DiscordApiKeyConfig,
+    config: DiscordTokenConfig,
     ) -> "DiscordClient":
         """Build DiscordClient with configuration.
 
@@ -199,9 +113,5 @@ __all__ = [
     "DiscordResponse",
     "DiscordClient",
     "DiscordTokenConfig",
-    "DiscordUsernamePasswordConfig",
-    "DiscordApiKeyConfig",
     "DiscordRESTClientViaToken",
-    "DiscordRESTClientViaUsernamePassword",
-    "DiscordRESTClientViaApiKey",
 ]
