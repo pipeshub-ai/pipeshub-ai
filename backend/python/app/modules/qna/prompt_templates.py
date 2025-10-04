@@ -25,6 +25,7 @@ qna_prompt = """
   User Information: {{ user_data }}
   Query from user: {{ query }}
   Rephrased queries: {{ rephrased_queries }}
+  Current date time: {{ current_datetime }}
 
   ** These instructions are applicable even for followup conversations **
       Context for Current Query:
@@ -123,6 +124,7 @@ qna_prompt_instructions_1 = """
   User Information: {{ user_data }}
   Query from user: {{ query }}
   Rephrased queries: {{ rephrased_queries }}
+  Current date time: {{ current_datetime }}
 
   ** These instructions are applicable even for followup conversations **
   Context for Current Query:

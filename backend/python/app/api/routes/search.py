@@ -10,6 +10,7 @@ from app.config.configuration_service import ConfigurationService
 from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.utils.datetime_utils import get_current_datetime
 from app.utils.query_transform import setup_query_transformation
 
 router = APIRouter()
@@ -115,9 +116,11 @@ async def search(
         # Setup query transformation
         rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
-        # Run query transformations in parallel
+        # Run query transformations in parallel with current UTC time
+        current_time = get_current_datetime()
         rewritten_query, expanded_queries = await asyncio.gather(
-            rewrite_chain.ainvoke(body.query), expansion_chain.ainvoke(body.query)
+            rewrite_chain.ainvoke({"query": body.query, "current_time": current_time}),
+            expansion_chain.ainvoke({"query": body.query, "current_time": current_time}),
         )
 
         logger.debug(f"Rewritten query: {rewritten_query}")
