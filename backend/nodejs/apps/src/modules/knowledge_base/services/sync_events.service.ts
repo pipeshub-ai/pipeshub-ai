@@ -3,7 +3,6 @@ import { Logger } from '../../../libs/services/logger.service';
 import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
 import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 
-
 export interface Event {
   eventType: string;
   timestamp: number;

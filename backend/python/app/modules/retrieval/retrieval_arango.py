@@ -494,6 +494,16 @@ class ArangoService:
                 }}
             )
 
+            LET directAccess2 = (
+                FOR records, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'DIRECT',
+                    source: userDoc,
+                    role: edge.role
+                }}
+            )
+
             LET groupAccess = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER belongsEdge.entityType == 'GROUP'
@@ -506,10 +516,34 @@ class ArangoService:
                 }}
             )
 
+            LET groupAccess2 = (
+                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER belongsEdge.entityType == 'GROUP'
+                FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'GROUP',
+                    source: group,
+                    role: permEdge.role
+                }}
+            )
+
             LET orgAccess = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER belongsEdge.entityType == 'ORGANIZATION'
                 FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'ORGANIZATION',
+                    source: org,
+                    role: permEdge.role
+                }}
+            )
+
+            LET orgAccess2 = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER belongsEdge.entityType == 'ORGANIZATION'
+                FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
                     type: 'ORGANIZATION',
@@ -542,8 +576,11 @@ class ArangoService:
 
             LET allAccess = UNION_DISTINCT(
                 directAccess,
+                directAccess2,
                 groupAccess,
+                groupAccess2,
                 orgAccess,
+                orgAccess2,
                 kbAccess,
                 anyoneAccess
             )
