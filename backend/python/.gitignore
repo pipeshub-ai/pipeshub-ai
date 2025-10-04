@@ -6,3 +6,5 @@ token.pickle
 tests/
 google_test
 celerybeat-schedule.*
+.env
+__pycache__/
