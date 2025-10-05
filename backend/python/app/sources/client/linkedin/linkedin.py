@@ -1,28 +1,30 @@
-import json
-from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 import aiohttp
+from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
 
 
-@dataclass
-class LinkedInResponse:
+class LinkedInResponse(BaseModel):
     """Standardized LinkedIn API response wrapper"""
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
+    class Config:
+        """Pydantic configuration"""
+        arbitrary_types_allowed = True
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
-        return asdict(self)
+        return self.model_dump()
 
     def to_json(self) -> str:
         """Convert to JSON string"""
-        return json.dumps(self.to_dict())
+        return self.model_dump_json()
 
 
 class LinkedInRESTClientViaOAuth2:
@@ -131,8 +133,7 @@ class LinkedInRESTClientViaOAuth2:
                 pass
 
 
-@dataclass
-class LinkedInOAuth2Config:
+class LinkedInOAuth2Config(BaseModel):
     """Configuration for LinkedIn REST client via OAuth 2.0
 
     Args:
@@ -142,6 +143,10 @@ class LinkedInOAuth2Config:
     access_token: str
     api_version: str = "v2"
 
+    class Config:
+        """Pydantic configuration"""
+        arbitrary_types_allowed = True
+
     def create_client(self) -> LinkedInRESTClientViaOAuth2:
         return LinkedInRESTClientViaOAuth2(
             access_token=self.access_token,
@@ -150,7 +155,7 @@ class LinkedInOAuth2Config:
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
-        return asdict(self)
+        return self.model_dump()
 
 
 class LinkedInClient(IClient):
