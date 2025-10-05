@@ -1,3 +1,4 @@
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -11,11 +12,11 @@ class DiscordResponse(BaseModel):
     """Standardized Discord API response wrapper using Pydantic"""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: dict[str, object] | list[object] | None = Field(
-        None, description="Response data from Discord API (dict or list)",
+    data: Optional[Union[dict[str, object], list[object]]] = Field(
+        None, description="Response data from Discord API (dict or list)"
     )
-    error: str | None = Field(None, description="Error message if the call failed")
-    message: str | None = Field(None, description="Additional message information")
+    error: Optional[str] = Field(None, description="Error message if the call failed")
+    message: Optional[str] = Field(None, description="Additional message information")
 
     class Config:
         """Pydantic configuration"""
@@ -62,7 +63,7 @@ class DiscordTokenConfig(BaseModel):
     """Configuration for Discord REST client via bot token"""
 
     token: str = Field(..., description="The bot token to use for authentication")
-    base_url: str | None = Field(
+    base_url: Optional[str] = Field(
         default="https://discord.com/api/v10",
         description="The base URL of the Discord API",
     )
