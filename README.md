@@ -36,8 +36,8 @@
     <img src="https://img.shields.io/github/forks/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub forks">
   </a>
   &nbsp;
-  <a href="https://opensource.org/licenses/Apache-2.0">
-    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
+  <a href="https://hub.docker.com/r/pipeshubai/pipeshub-ai">
+    <img src="https://img.shields.io/docker/pulls/pipeshubai/pipeshub-ai?logo=docker&logoColor=white" alt="Docker Prod Pulls">
   </a>
 </p>
 
@@ -58,6 +58,9 @@
 </p>
 
 <p align="center">
+  <a href="https://opensource.org/licenses/Apache-2.0">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
+  </a>
   <a href="https://x.com/PipesHub">
     <img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter Follow">
   </a>
