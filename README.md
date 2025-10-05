@@ -1,18 +1,23 @@
 <a name="readme-top"></a>
 
-<h2 align="center">
+<p align="center">
 <a href="https://www.pipeshub.com/">
 <img width="10%" alt="PipesHub Logo" src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg"/> 
 </a>
-</h2>
-
+</p>
 <p align="center"></p>
-<p align="center">Workplace AI Platform</p>
+<p align="center"><b>Workplace AI Platform</b></p>
 
 <p align="center" style="display: flex; justify-content: center; gap: 20px; align-items: center;">
   <a href="https://trendshift.io/repositories/14618" target="_blank">
     <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
+
+<div align="center">
+<b>⭐ Star the repo! It helps the platform reach more developers and grow the community.</b>
+</div>
+
+<h2 align="center"></h2>
 
 <!--Links in Readme-->
 <p align="center">
