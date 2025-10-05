@@ -1,5 +1,7 @@
 from typing import Optional, Union
 
+from app.config.configuration_service import ConfigurationService
+from app.services.graph_db.interface.graph_db import IGraphService
 from pydantic import BaseModel, Field
 
 from app.sources.client.http.http_client import HTTPClient
@@ -115,3 +117,23 @@ class DiscordClient(IClient):
             DiscordClient instance
         """
         return cls(config.create_client())
+    
+    @classmethod
+    async def build_from_services(
+        cls,
+        config_service: ConfigurationService,
+        graph_db_service: IGraphService,
+    ) -> "DiscordClient":
+        """Build DiscordClient using configuration service and graph database service
+            config_service: Configuration service instance
+            graph_db_service: Graph database service instance
+        Returns:
+            DiscordClient instance
+        """
+        # TODO: Implement - fetch config from services
+        # This would typically:
+        # 1. Query graph_db_service for stored DiscordClient credentials
+        # 2. Use config_service to get environment-specific settings
+        # 3. Return appropriate client based on available credentials
+
+        raise NotImplementedError("build_from_services is not yet implemented")
