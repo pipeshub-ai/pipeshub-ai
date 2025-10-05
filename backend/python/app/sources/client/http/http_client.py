@@ -31,8 +31,7 @@ class HTTPClient(IClient):
         if self.client is None:
             self.client = httpx.AsyncClient(
                 timeout=self.timeout,
-                follow_redirects=self.follow_redirects,
-                headers=self.headers
+                follow_redirects=self.follow_redirects
             )
         return self.client
 
@@ -47,9 +46,11 @@ class HTTPClient(IClient):
         url = f"{request.url.format(**request.path_params)}"
         client = await self._ensure_client()
 
+        # Merge client headers with request headers (request headers take precedence)
+        merged_headers = {**self.headers, **request.headers}
         request_kwargs = {
             "params": request.query_params,
-            "headers": request.headers,
+            "headers": merged_headers,
             **kwargs
         }
 

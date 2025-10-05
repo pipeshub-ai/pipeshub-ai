@@ -8,6 +8,7 @@ from pydantic import BaseModel  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.services.graph_db.interface.graph_db import IGraphService
+from app.sources.client.http.exception.exception import BadRequestError
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
@@ -44,13 +45,13 @@ class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
         # Initialize with empty token and override headers
         super().__init__("", "")
         self.instance_url = instance_url.rstrip('/')
-        self.base_url = f"{self.instance_url}/api/now"
+        self.base_url = f"{self.instance_url}"
+        self.username = username
 
-        # Set Basic authentication header
         self.headers = {
             "Authorization": f"Basic {encoded_credentials}",
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
 
     def get_base_url(self) -> str:
@@ -177,13 +178,13 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
             body=data
         )
 
-        async with HTTPClient(token="") as client:
-            response = await client.execute(request)
 
-            if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                raise Exception(f"Token request failed with status {response.status}: {response.text}")
+        response = await self.execute(request)
 
-            token_data = response.json()
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            raise BadRequestError(f"Token request failed with status {response.status}: {response.text()}")
+
+        token_data = response.json()
 
         self.access_token = token_data.get("access_token")
 
@@ -297,13 +298,12 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
             body=data
         )
 
-        async with HTTPClient(token="") as client:
-            response = await client.execute(request)
+        response = await self.execute(request)
 
-            if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                raise Exception(f"Token refresh failed with status {response.status}: {response.text}")
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            raise BadRequestError(f"Token refresh failed with status {response.status}: {response.text()}")
 
-            token_data = response.json()
+        token_data = response.json()
 
         self.access_token = token_data.get("access_token")
         self.refresh_token = token_data.get("refresh_token", self.refresh_token)
@@ -338,7 +338,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         response = await self.execute(request)
 
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Token exchange failed with status {response.status}: {response.text}")
+            raise BadRequestError(f"Token exchange failed with status {response.status}: {response.text()}")
 
         token_data = response.json()
 
@@ -422,13 +422,12 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
             body=data
         )
 
-        async with HTTPClient(token="") as client:
-            response = await client.execute(request)
+        response = await self.execute(request)
 
-            if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                raise Exception(f"Token request failed with status {response.status}: {response.text}")
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            raise BadRequestError(f"Token request failed with status {response.status}: {response.text()}")
 
-            token_data = response.json()
+        token_data = response.json()
 
         self.access_token = token_data.get("access_token")
 
