@@ -1,0 +1,47 @@
+---
+openapi: "3.0.1"
+info:
+  title: "Email API"
+  description: "Allows you to create emails and retrieve details about existing emails"
+  version: "v1"
+externalDocs:
+  url: ""
+servers:
+- url: "https://<instance_name>.service-now.com/"
+paths:
+  /api/now/v1/email:
+    post:
+      description: "Create a new email"
+      parameters: []
+      requestBody:
+        content:
+          application/json: {}
+          application/xml: {}
+          text/xml: {}
+      responses:
+        "200":
+          description: "ok"
+          content:
+            application/json: {}
+            application/xml: {}
+            text/xml: {}
+  /api/now/v1/email/{id}:
+    get:
+      description: "Get an email"
+      parameters:
+      - name: "id"
+        in: "path"
+        required: true
+        schema: {}
+      - name: "sysparm_fields"
+        in: "query"
+        description: "A comma-separated list of fields to return in the response"
+        required: false
+        schema: {}
+      responses:
+        "200":
+          description: "ok"
+          content:
+            application/json: {}
+            application/xml: {}
+            text/xml: {}
