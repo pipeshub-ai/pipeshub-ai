@@ -314,12 +314,6 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
     
-    
-    #- Create a permission edge between the record group and the org if it doesn't exist
-    #- Create a permission edge between the record group and the user if it doesn't exist
-    #  Create a permission edge between the record group and the user group if it doesn't exist
-    #! Create a edge between the record group and the app with sync status if it doesn't exist
-    #  Cleanup this code    
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:
             async with self.data_store_provider.transaction() as tx_store:
