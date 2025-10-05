@@ -127,11 +127,14 @@ class DiscordClient(IClient):
         config_service: ConfigurationService,
         graph_db_service: IGraphService,
     ) -> "DiscordClient":
-        """Build DiscordClient using configuration service and graph database service
-            config_service: Configuration service instance
-            graph_db_service: Graph database service instance
+        """Build DiscordClient using configuration service and graph database service.
+
+        Args:
+            config_service: Configuration service instance.
+            graph_db_service: Graph database service instance.
+
         Returns:
-            DiscordClient instance
+            DiscordClient instance.
         """
         # TODO: Implement - fetch config from services
         # This would typically:
