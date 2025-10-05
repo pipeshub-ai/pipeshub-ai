@@ -1,9 +1,8 @@
-from typing import Optional, Union
+
+from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.interface.graph_db import IGraphService
-from pydantic import BaseModel, Field
-
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
@@ -12,11 +11,11 @@ class DiscordResponse(BaseModel):
     """Standardized Discord API response wrapper using Pydantic"""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: Optional[Union[dict[str, object], list[object]]] = Field(
-        None, description="Response data from Discord API (dict or list)"
+    data: dict[str, object] | list[object] | None = Field(
+        None, description="Response data from Discord API (dict or list)",
     )
-    error: Optional[str] = Field(None, description="Error message if the call failed")
-    message: Optional[str] = Field(None, description="Additional message information")
+    error: str | None = Field(None, description="Error message if the call failed")
+    message: str | None = Field(None, description="Additional message information")
 
     class Config:
         """Pydantic configuration"""
@@ -27,7 +26,7 @@ class DiscordResponse(BaseModel):
                 "data": {"id": "123456789", "name": "Example Guild"},
                 "error": None,
                 "message": None,
-            }
+            },
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -47,7 +46,7 @@ class DiscordRESTClientViaToken(HTTPClient):
     """
 
     def __init__(
-        self, token: str, base_url: str = "https://discord.com/api/v10"
+        self, token: str, base_url: str = "https://discord.com/api/v10",
     ) -> None:
         super().__init__(token, "Bot")
         self.base_url = base_url
@@ -63,7 +62,7 @@ class DiscordTokenConfig(BaseModel):
     """Configuration for Discord REST client via bot token"""
 
     token: str = Field(..., description="The bot token to use for authentication")
-    base_url: Optional[str] = Field(
+    base_url: str | None = Field(
         default="https://discord.com/api/v10",
         description="The base URL of the Discord API",
     )
@@ -73,9 +72,10 @@ class DiscordTokenConfig(BaseModel):
 
         Returns:
             DiscordRESTClientViaToken instance
+
         """
         return DiscordRESTClientViaToken(
-            self.token, self.base_url or "https://discord.com/api/v10"
+            self.token, self.base_url or "https://discord.com/api/v10",
         )
 
 
@@ -90,6 +90,7 @@ class DiscordClient(IClient):
 
         Args:
             client: Discord REST client instance
+
         """
         self.client = client
 
@@ -100,6 +101,7 @@ class DiscordClient(IClient):
 
         Returns:
             Discord REST client instance
+
         """
         return self.client
 
@@ -115,9 +117,10 @@ class DiscordClient(IClient):
 
         Returns:
             DiscordClient instance
+
         """
         return cls(config.create_client())
-    
+
     @classmethod
     async def build_from_services(
         cls,
