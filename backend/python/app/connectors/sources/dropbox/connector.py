@@ -238,25 +238,6 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Dropbox client: {e}", exc_info=True)
             return False
 
-    # Place these new methods inside the DropboxConnector class
-
-    def _permissions_equal(self, old_perms: List[Permission], new_perms: List[Permission]) -> bool:
-        """
-        Compare two lists of permissions to detect changes.
-        """
-        if not old_perms and not new_perms:
-            return True
-        if not old_perms or not new_perms: # Catches one list being empty and the other not
-            return False
-        if len(old_perms) != len(new_perms):
-            return False
-
-        # Create sets of permission tuples for comparison
-        old_set = {(p.external_id, p.type, p.entity_type) for p in old_perms}
-        new_set = {(p.external_id, p.type, p.entity_type) for p in new_perms}
-
-        return old_set == new_set
-
     async def _process_dropbox_entry(
         self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
          user_id: str, user_email: str,
@@ -1008,24 +989,22 @@ class DropboxConnector(BaseConnector):
                 await self.data_entities_processor.on_record_deleted(
                     record_id=record_update.external_record_id
                 )
-                print("should be deleted by now 2")
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:
-                async with self.data_store_provider.transaction() as tx_store:
-                    if record_update.content_changed:
-                        self.logger.info(f"Content changed for record: {record_update.record.record_name}")
-                        await self.data_entities_processor.on_record_content_update(record_update.record, tx_store)
-                    if record_update.metadata_changed:
-                        self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
-                        await self.data_entities_processor.on_record_metadata_update(record_update.record, tx_store)
-                    if record_update.permissions_changed:
-                        self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
-                        await self.data_entities_processor.on_updated_record_permissions(
-                            record_update.record,
-                            record_update.new_permissions,
-                            tx_store
-                        )
+                
+                if record_update.content_changed:
+                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_record_content_update(record_update.record)
+                if record_update.metadata_changed:
+                    self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_record_metadata_update(record_update.record)
+                if record_update.permissions_changed:
+                    self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_updated_record_permissions(
+                        record_update.record,
+                        record_update.new_permissions
+                    )
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
@@ -1035,7 +1014,7 @@ class DropboxConnector(BaseConnector):
             profile = member.profile
             app_users.append(
                 AppUser(
-                    app_name="DROPBOX",
+                    app_name=self.connector_name,
                     source_user_id=profile.team_member_id,
                     full_name=profile.name.display_name,
                     email=profile.email,
@@ -1054,7 +1033,19 @@ class DropboxConnector(BaseConnector):
             self.logger.info("Syncing users...")
             users = await self.data_source.team_members_list()
             app_users = self.get_app_users(users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+
+            # Step 1.5: Initialize cursor for member events
+            member_sync_key = generate_record_sync_point_key("member_events", "team_events", "global")
+            member_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(member_sync_key)
+
+            if not member_sync_point.get('cursor'):
+                self.logger.info("Initializing cursor for member events...")
+                await self._initialize_event_cursor(member_sync_key, EventCategory.members)
+                await self.data_entities_processor.on_new_app_users(app_users)
+
+            else:
+                self.logger.info("Running an INCREMENTAL sync for member events...")
+                await self._sync_member_changes_with_cursor(app_users)
 
 
             # Step 2: fetch and sync all user groups
@@ -1145,7 +1136,178 @@ class DropboxConnector(BaseConnector):
                 
         except Exception as e:
             self.logger.error(f"Could not initialize event cursor for {category}: {e}", exc_info=True)
+
+    async def _sync_member_changes_with_cursor(self, app_users: List[AppUser]) -> None:
+        """
+        Syncs team member changes incrementally using the team event log cursor.
+        """
+        try:
+            self.logger.info("Starting incremental sync for team members...")
+
+            # 1. Define the sync point key for member events
+            sync_point_key = generate_record_sync_point_key(
+                "member_events", "team_events", "global"
+            )
+
+            # 2. Get the last saved cursor from your database
+            sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
+            cursor = sync_point.get('cursor')
+
+            if not cursor:
+                self.logger.warning("No cursor found for incremental member sync.")
+                return
+
+            has_more = True
+            latest_cursor_to_save = cursor 
+            events_processed = 0
+
+            while has_more:
+                try:
+                    # 3. Fetch the latest events from the Dropbox audit log
+                    async with self.rate_limiter:
+                        response = await self.data_source.team_log_get_events_continue(cursor)
+
+                    if not response.success:
+                        self.logger.error(f"⚠️ Error fetching team member event log: {response.error}")
+                        break
+
+                    events = response.data.events
+                    self.logger.info(f"Processing {len(events)} new member-related events.")
+
+                    # 4. Process each event individually
+                    for event in events:
+                        try:
+                            await self._process_member_event(event, app_users)
+                            events_processed += 1
+                        except Exception as e:
+                            self.logger.error(f"Error processing member event: {e}", exc_info=True)
+                            continue
+
+                    # 5. Update state for the next loop iteration
+                    latest_cursor_to_save = response.data.cursor
+                    has_more = response.data.has_more
+                    cursor = latest_cursor_to_save
+
+                except Exception as e:
+                    self.logger.error(f"⚠️ Error in member sync loop: {e}", exc_info=True)
+                    has_more = False
+
+            # 6. Save the final cursor
+            if latest_cursor_to_save:
+                self.logger.info(f"Storing latest member sync cursor for key {sync_point_key}")
+                await self.dropbox_cursor_sync_point.update_sync_point(
+                    sync_point_key,
+                    sync_point_data={"cursor": latest_cursor_to_save}
+                )
+            
+            self.logger.info(f"Incremental member sync completed. Processed {events_processed} events.")
+
+        except Exception as e:
+            self.logger.error(f"⚠️ Fatal error in incremental member sync: {e}", exc_info=True)
+            raise
     
+    async def _process_member_event(self, event, app_users: List[AppUser]) -> None:
+        """
+        Process a single member-related event from the Dropbox audit log.
+        """
+        try:
+            # Log the full event for debugging
+            self.logger.debug(f"Processing member event: {event}")
+            
+            event_type = event.event_type._tag
+
+            if event_type == "member_change_status":
+                await self._handle_member_change_status_event(event, app_users)
+            else:
+                self.logger.debug(f"Ignoring event type: {event_type}")
+
+        except Exception as e:
+            self.logger.error(
+                f"Error processing member event of type {getattr(event, 'event_type', 'unknown')}: {e}", 
+                exc_info=True
+            )
+
+    async def _handle_member_change_status_event(self, event, app_users: List[AppUser]) -> None:
+        """Handle member_change_status events from Dropbox audit log."""
+        # Extract user info from event context
+        user_email = None
+        user_name = None
+        team_member_id = None
+        
+        if event.context and event.context.is_team_member():
+            user_info = event.context.get_team_member()
+            user_email = user_info.email
+            user_name = user_info.display_name
+            team_member_id = user_info.team_member_id
+        
+        # Extract status change details
+        new_status = None
+        previous_status = None
+        
+        if hasattr(event.details, 'get_member_change_status_details'):
+            status_details = event.details.get_member_change_status_details()
+            new_status = status_details.new_value._tag if status_details.new_value else None
+            previous_status = status_details.previous_value._tag if status_details.previous_value else None
+        
+        if not user_email or not new_status:
+            self.logger.warning(
+                f"Could not extract required info from member_change_status event. "
+                f"email={user_email}, new_status={new_status}"
+            )
+            return
+        
+        self.logger.info(
+            f"Member status change for '{user_name}' ({user_email}): "
+            f"{previous_status} -> {new_status}"
+        )
+        
+        try:
+            # If new status is 'active', treat as member added
+            if new_status == 'active':
+                self.logger.info(f"Adding team member '{user_name}' ({user_email}, ID: {team_member_id})")
+                await self._handle_member_added(user_email, team_member_id, app_users)
+            
+            # If new status is 'removed', treat as member removed
+            elif new_status == 'removed':
+                self.logger.info(f"Removing team member '{user_name}' ({user_email}, ID: {team_member_id})")
+                # await self._handle_member_removed(user_email)
+            
+            else:
+                self.logger.info(
+                    f"Status change to '{new_status}' for '{user_name}'. No action needed."
+                )
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error processing member_change_status event for user {user_email}: {e}", 
+                exc_info=True
+            )
+
+    async def _handle_member_added(self, user_email: str, team_member_id: str, app_users: List[AppUser]) -> None:
+        """Process a newly added team member from the app_users list."""
+        try:
+            # Find the specific user in the app_users list
+            new_user = None
+            for user in app_users:
+                if user.email == user_email:
+                    new_user = user
+                    break
+            
+            if not new_user:
+                self.logger.warning(
+                    f"Could not find newly added user {user_email} in app_users list. "
+                    f"User may need to be synced in the next full sync."
+                )
+                return
+            
+            # Process the single user
+            await self.data_entities_processor.on_new_app_users([new_user])
+            
+            self.logger.info(f"Successfully processed member addition for {user_email}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing member addition for {user_email}: {e}", exc_info=True)
+            
     async def _sync_user_groups(self) -> None:
         """
         Syncs all Dropbox groups and their members, collecting them into a 
@@ -1524,10 +1686,6 @@ class DropboxConnector(BaseConnector):
                 new_group_name = group_info.display_name  # This should have the updated name
                 break
         
-        # Extract old and new names from event details
-        # old_name = None
-        # if hasattr(event.details, 'previous_value'):
-        #     old_name = event.details.previous_value
 
         details_obj = event.details
         
@@ -1955,6 +2113,15 @@ class DropboxConnector(BaseConnector):
     async def sync_personal_record_groups(self, users: List[AppUser]):
         record_groups = []
         for user in users:
+            # Validate data first
+            if not user.full_name or not user.full_name.strip():
+                print(f"⚠️ Skipping user with empty full_name: {user.email}")
+                continue
+            
+            if not user.source_user_id or not user.source_user_id.strip():
+                print(f"⚠️ Skipping user with empty source_user_id: {user.email}")
+                continue
+            
             record_group = RecordGroup(
                 name=user.full_name,
                 org_id=self.data_entities_processor.org_id,
@@ -2027,7 +2194,6 @@ class DropboxConnector(BaseConnector):
                     has_more = False
 
             if latest_cursor_to_save:
-                print("\n\n\n!!!!!!!!!!!!! saving new cursor")
                 await self.dropbox_cursor_sync_point.update_sync_point(
                     sync_point_key,
                     sync_point_data={"cursor": latest_cursor_to_save}
@@ -2047,19 +2213,14 @@ class DropboxConnector(BaseConnector):
             event_type = event.event_type._tag
 
             if event_type == "team_folder_create":
-                print("\n\n\n!!!!!!!!!!!!! got team_folder_create")
                 await self._handle_record_group_created_event(event, users)
             elif event_type == "team_folder_rename":
-                print("\n\n\n!!!!!!!!!!!!! got team_folder_rename")
                 await self._handle_record_group_renamed_event(event)
             elif event_type == "team_folder_archived":
-                print("\n\n\n!!!!!!!!!!!!! got team_folder_archived")
                 await self._handle_record_group_archived_event(event)
             elif event_type == "team_folder_permanently_delete":
-                print("\n\n\n!!!!!!!!!!!!! got team_folder_permanently_delete")
                 await self._handle_record_group_deleted_event(event)
             elif event_type == "team_folder_change_status":
-                print("\n\n\n!!!!!!!!!!!!! got team_folder_change_status")
                 await self._handle_record_group_status_changed_event(event, users)
             else:
                 self.logger.debug(f"Ignoring event type: {event_type}")

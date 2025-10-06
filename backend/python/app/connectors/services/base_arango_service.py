@@ -3161,6 +3161,7 @@ class BaseArangoService:
 
             cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
             results = list(cursor)
+
             self.logger.info(
                 "✅ Successfully upserted %d nodes in collection '%s'.",
                 len(results),
@@ -12055,7 +12056,7 @@ class BaseArangoService:
 
     async def get_file_record_by_id(
         self, id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[FileRecord]:
+    ) -> Dict:
         """
         Get file record using the id
 

@@ -458,7 +458,7 @@ class RecordGroup(BaseModel):
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
 
     def to_arango_base_record_group(self) -> Dict:
-        return {
+        doc = {
             "_key": self.id,
             "orgId": self.org_id,
             "groupName": self.name,
@@ -474,6 +474,7 @@ class RecordGroup(BaseModel):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
+        return doc
 
     @staticmethod
     def from_arango_base_record_group(arango_base_record_group: Dict) -> "RecordGroup":

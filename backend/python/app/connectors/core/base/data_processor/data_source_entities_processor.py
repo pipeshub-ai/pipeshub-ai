@@ -19,7 +19,6 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -213,28 +212,29 @@ class DataSourceEntitiesProcessor:
         self.logger.info(f"Created external user record for: {email}")
         return user
 
-    async def on_updated_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
+    async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
     
 
         record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
 
         try:
-            # Step 1: Delete all existing permission edges that point TO this record.
-            deleted_count = await tx_store.delete_edges_to(
-                to_key=record_node_id,
-                collection=CollectionNames.PERMISSION.value
-            )
-            self.logger.info(f"Deleted {deleted_count} old permission edge(s) for record: {record.id}")
+            async with self.data_store_provider.transaction() as tx_store:
+                # Step 1: Delete all existing permission edges that point TO this record.
+                deleted_count = await tx_store.delete_edges_to(
+                    to_key=record_node_id,
+                    collection=CollectionNames.PERMISSION.value
+                )
+                self.logger.info(f"Deleted {deleted_count} old permission edge(s) for record: {record.id}")
 
-            # Step 2: Add the new permissions by reusing the existing helper method.
-            if permissions:
-                self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
-                await self._handle_record_permissions(record, permissions, tx_store)
-            else:
-                self.logger.info(f"No new permissions to add for record: {record.id}")
+                # Step 2: Add the new permissions by reusing the existing helper method.
+                if permissions:
+                    self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
+                    await self._handle_record_permissions(record, permissions, tx_store)
+                else:
+                    self.logger.info(f"No new permissions to add for record: {record.id}")
 
-            self.logger.info(f"Successfully updated permissions for record: {record.id}")
+                self.logger.info(f"Successfully updated permissions for record: {record.id}")
 
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
@@ -299,15 +299,16 @@ class DataSourceEntitiesProcessor:
             raise e
 
 
-    async def on_record_content_update(self, record: Record, tx_store: TransactionStore) -> None:
-        processed_record = await self._process_record(record, [], tx_store)
-        await self.messaging_producer.send_message(
+    async def on_record_content_update(self, record: Record) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            processed_record = await self._process_record(record, [], tx_store)
+            await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
                 key=record.id
             )
         
-    async def on_record_metadata_update(self, record: Record, tx_store: TransactionStore) -> None:
+    async def on_record_metadata_update(self, record: Record) -> None:
         pass
 
     async def on_record_deleted(self, record_id: str) -> None:
@@ -704,17 +705,8 @@ class DataSourceEntitiesProcessor:
                 
                 self.logger.info(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
 
-                #x Delete the node and edges
+                #Delete the node and edges
                 await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
-                
-                # 2. Delete all edges connected to this group
-                # group_collection_id = f"{CollectionNames.GROUPS.value}/{group_internal_id}"
-                # print("!!!!!!!!!!!!!!!! group_collection_id", group_collection_id)
-                # await tx_store.delete_edges_to(group_collection_id, CollectionNames.PERMISSION.value)
-                # await tx_store.delete_edges_from(group_collection_id, CollectionNames.BELONGS_TO.value)
-                
-                # # 3. Delete the group node itself
-                # await tx_store.delete_nodes([group_internal_id], CollectionNames.GROUPS.value)
                 
                 self.logger.info(
                     f"Successfully deleted user group {group_name} "
@@ -805,3 +797,51 @@ class DataSourceEntitiesProcessor:
                 
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
+
+    async def on_user_removed(
+        self, 
+        user_email: str, 
+        connector_name: str
+    ) -> bool:
+        """
+        Delete a user and all its associated edges from the database.
+        
+        Args:
+            user_email: The email of the user to be removed
+            connector_name: The name of the connector (e.g., 'DROPBOX')
+        
+        Returns:
+            bool: True if the user was successfully deleted, False otherwise
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the user by email
+                user = await tx_store.get_user_by_email(user_email)
+
+                if not user:
+                    self.logger.warning(
+                        f"Cannot delete user: User with email {user_email} not found in database"
+                    )
+                    return False
+                
+                user_internal_id = user.id
+                user_name = user.full_name
+                
+                self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
+
+                # Delete the node and edges
+                await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
+                
+                self.logger.info(
+                    f"Successfully deleted user {user_name} "
+                    f"(email: {user_email}, internal_id: {user_internal_id}) "
+                    f"and all associated edges"
+                )
+                return True
+                    
+        except Exception as e:
+            self.logger.error(
+                f"Failed to delete user {user_email}: {str(e)}", 
+                exc_info=True
+            )
+            return False
