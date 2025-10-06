@@ -20,10 +20,10 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
-from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import (
@@ -50,7 +50,7 @@ class RetrievalService:
         config_service: ConfigurationService,
         collection_name: str,
         vector_db_service: IVectorDBService,
-        arango_service: ArangoService,
+        arango_service: BaseArangoService,
         blob_store: BlobStorage,
     ) -> None:
         """
@@ -241,7 +241,7 @@ class RetrievalService:
         filter_groups: Optional[Dict[str, List[str]]] = None,
         limit: int = 20,
         virtual_record_ids_from_tool: Optional[List[str]] = None,
-        arango_service: Optional[ArangoService] = None,
+        arango_service: Optional[BaseArangoService] = None,
         knowledge_search:bool = False,
     ) -> Dict[str, Any]:
         """Perform semantic search on accessible records with multiple queries."""
@@ -540,7 +540,7 @@ class RetrievalService:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service) -> List[Dict[str, Any]]:
+    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service: BaseArangoService) -> List[Dict[str, Any]]:
         """Separate task for getting accessible records"""
         filter_groups = filter_groups or {}
         arango_filters = {}
