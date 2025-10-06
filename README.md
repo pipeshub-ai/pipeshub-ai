@@ -15,7 +15,6 @@
 
 <div align="center">
 <b>⭐ Star the repo! It helps the platform reach more developers and grow the community.</b>
-
 </div>
 
 <h2 align="center"></h2>
@@ -248,7 +247,9 @@ Want to join our community of developers? Please check out our [Contributing Gui
 ---
 
 ## ⭐ Star Us on GitHub!
-![Star us on GitHub](https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif)
+<a href="https://github.com/pipeshub-ai/pipeshub-ai" target="_blank">
+    <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub" style="width:80%;">
+</a>
 
 
 <a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&Date">
