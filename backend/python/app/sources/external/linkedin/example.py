@@ -2,8 +2,12 @@
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import requests
+
+# HTTP status code threshold for success
+HTTP_SUCCESS_THRESHOLD = 400
 
 try:
     from dotenv import load_dotenv
@@ -11,13 +15,13 @@ try:
 except Exception:
     pass
 
-def call_api(endpoint, token, method="GET", data=None, headers_override=None):
+def call_api(endpoint: str, token: str, method: str = "GET", data: Optional[dict] = None, headers_override: Optional[dict] = None) -> dict:
     headers = headers_override or {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     url = f"https://api.linkedin.com{endpoint}"
     r = requests.request(method, url, headers=headers, json=data)
-    return {"status": r.status_code, "ok": r.status_code < 400, "data": r.json() if r.text and 'application/json' in r.headers.get('content-type', '') else r.text}
+    return {"status": r.status_code, "ok": r.status_code < HTTP_SUCCESS_THRESHOLD, "data": r.json() if r.text and 'application/json' in r.headers.get('content-type', '') else r.text}
 
-def test_userinfo(token):
+def test_userinfo(token: str) -> Optional[str]:
     """Get user profile information via OpenID Connect"""
     print("\n1. TESTING: User Info (/v2/userinfo)")
     r = call_api("/v2/userinfo", token)
@@ -31,7 +35,7 @@ def test_userinfo(token):
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_media_upload(token, user_id):
+def test_media_upload(token: str, user_id: str) -> Optional[str]:
     """Register an image upload (Step 1 of media upload process)"""
     print("\n2. TESTING: Media Upload Registration (/v2/assets?action=registerUpload)")
     data = {
@@ -53,7 +57,7 @@ def test_media_upload(token, user_id):
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_video_upload_registration(token, user_id):
+def test_video_upload_registration(token: str, user_id: str) -> Optional[str]:
     """Register a video upload (Step 1 of video upload process)"""
     print("\n3. TESTING: Video Upload Registration (/v2/assets?action=registerUpload)")
     data = {
@@ -73,7 +77,7 @@ def test_video_upload_registration(token, user_id):
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_ugc_post_creation(token, user_id, asset_id=None):
+def test_ugc_post_creation(token: str, user_id: str, asset_id: Optional[str] = None) -> Optional[str]:
     """Create a UGC post (requires w_member_social scope)"""
     print("\n4. TESTING: Create UGC Post (/v2/ugcPosts)")
 
@@ -112,7 +116,7 @@ def test_ugc_post_creation(token, user_id, asset_id=None):
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_multi_image_upload(token, user_id):
+def test_multi_image_upload(token: str, user_id: str) -> Optional[list]:
     """Register multiple images for carousel post"""
     print("\n5. TESTING: Multi-Image Upload Registration (Carousel)")
     assets = []
@@ -137,7 +141,7 @@ def test_multi_image_upload(token, user_id):
     print("   ❌ Failed to register images")
     return None
 
-def main():
+def main() -> None:
     token = os.getenv("LINKEDIN_ACCESS_TOKEN")
     if not token:
         print("❌ Set LINKEDIN_ACCESS_TOKEN in .env")
