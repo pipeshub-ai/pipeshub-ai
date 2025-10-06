@@ -447,6 +447,7 @@ app_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isConfigured": {"type": "boolean", "default": False},
+            "isAuthenticated": {"type": "boolean", "default": False},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
