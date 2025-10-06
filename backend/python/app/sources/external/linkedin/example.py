@@ -11,7 +11,7 @@ HTTP_SUCCESS_THRESHOLD = 400
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
+    load_dotenv(Path(__file__).parent.parent.parent.parent.parent / ".env")
 except Exception:
     pass
 
