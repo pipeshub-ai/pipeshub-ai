@@ -13,10 +13,8 @@
     <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
 
-<div align="center">⭐ Star Us on GitHub! It helps the platform reach more developers and grow the community.</div>
-<p align="center">
-  <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub", style="width:80%;>
-</p>
+<div align="center">
+<b>⭐ Star the repo! It helps the platform reach more developers and grow the community.</b>
 
 </div>
 
@@ -248,6 +246,10 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
 
 ---
+
+## ⭐ Star Us on GitHub!
+![Star us on GitHub](https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif)
+
 
 <a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&Date">
   <picture>
