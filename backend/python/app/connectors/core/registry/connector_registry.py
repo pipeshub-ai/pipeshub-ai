@@ -167,6 +167,7 @@ class ConnectorRegistry:
                 return {
                     'isActive': doc.get('isActive', False),
                     'isConfigured': doc.get('isConfigured', False),
+                    'isAuthenticated': doc.get('isAuthenticated', False),
                     'appGroupId': doc.get('appGroupId'),
                     'appDescription': doc.get('appDescription', ''),
                     'appCategories': doc.get('appCategories', []),
@@ -184,6 +185,7 @@ class ConnectorRegistry:
         return {
             'isActive': False,
             'isConfigured': False,
+            'isAuthenticated': False,
             'appDescription': '',
             'appCategories': [],
             'supportsRealtime': False,
@@ -434,6 +436,7 @@ class ConnectorRegistry:
                 'config': metadata.get('config', {}),
                 'isActive': False,
                 'isConfigured': False,
+                'isAuthenticated': False,
                 'createdAtTimestamp': None,
                 'updatedAtTimestamp': None
             }
@@ -445,6 +448,7 @@ class ConnectorRegistry:
                     connector_info.update({
                         'isActive': db_status.get('isActive', False),
                         'isConfigured': db_status.get('isConfigured', False),
+                        'isAuthenticated': db_status.get('isAuthenticated', False),
                         'createdAtTimestamp': db_status.get('createdAtTimestamp'),
                         'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
                         'appGroupId': db_status.get('appGroupId'),

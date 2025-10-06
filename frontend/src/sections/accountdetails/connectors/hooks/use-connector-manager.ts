@@ -52,14 +52,8 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     const authType = (connectorParam.authType || '').toUpperCase();
     
     if (authType === 'OAUTH') {
-      const creds = config?.config?.credentials;
-      return !!(creds && creds.access_token);
-    }
-    if (authType === 'OAUTH_ADMIN_CONSENT') {
-      const authConfig = config?.config?.auth;
-      const hasAdminEmail = authConfig?.adminEmail;
-      const hasServiceAccountCredentials = authConfig?.client_id && authConfig?.project_id && authConfig?.type === 'service_account';
-      return !!(hasAdminEmail && hasServiceAccountCredentials);
+      const authFlag = config?.isAuthenticated || false;
+      return authFlag ;
     }
     return !!connectorParam.isConfigured;
   }, []);
