@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import AccountType, CollectionNames, Connectors
 from app.connectors.core.base.event_service.event_service import BaseEventService
-from app.connectors.sources.google.common.arango_service import ArangoService
+from app.connectors.services.base_arango_service import (
+    BaseArangoService as ArangoService,
+)
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_enterprise_google_account_services_fn,
