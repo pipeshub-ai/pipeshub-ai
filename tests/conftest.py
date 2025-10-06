@@ -273,7 +273,19 @@ def mock_user_context():
 class HealthCheckerAdapter:
     """Adapter over utils.ServiceHealthChecker for consistent interface."""
     def __init__(self, timeout: float, retry_attempts: int, retry_delay: float):
-        from tests.utils.api_helpers import ServiceHealthChecker as UtilsChecker  # local import
+        try:
+            from tests.utils.api_helpers import ServiceHealthChecker as UtilsChecker  # type: ignore
+        except ModuleNotFoundError:
+            # Load directly from file so that 'tests' doesn't need to be a package
+            import importlib.util
+            from pathlib import Path
+            module_path = Path(__file__).resolve().parent / "utils" / "api_helpers.py"
+            spec = importlib.util.spec_from_file_location("tests_utils_api_helpers", module_path)
+            if spec is None or spec.loader is None:
+                raise
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # type: ignore[attr-defined]
+            UtilsChecker = getattr(module, "ServiceHealthChecker")
         self._checker = UtilsChecker(timeout=timeout, retry_attempts=retry_attempts, retry_delay=retry_delay)
 
     async def check_nodejs_backend(self, base_url: str) -> Dict[str, Any]:
