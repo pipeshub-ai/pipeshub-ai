@@ -344,8 +344,8 @@ class ConnectorBuilder:
         field_names = {f.get("name") for f in schema_fields if isinstance(f, dict)}
         required_schema_fields = {"clientId", "clientSecret"}
         missing_fields = required_schema_fields - field_names
-        for field in sorted(list(missing_fields)):
-            missing_items.append(f"auth.schema.fields: {field}")
+        for field_name in sorted(list(missing_fields)):
+            missing_items.append(f"auth.schema.fields: {field_name}")
 
         if missing_items:
             details = ", ".join(missing_items)
