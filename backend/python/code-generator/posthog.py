@@ -552,7 +552,7 @@ class PostHogDataSourceGenerator:
         
         class_code = '''from typing import Dict, List, Optional, Any
 
-from app.sources.client.posthog.posthogclient import (
+from app.sources.client.posthog.posthog import (
     PostHogClient,
     PostHogResponse
 )

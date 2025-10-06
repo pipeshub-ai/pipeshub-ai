@@ -18,6 +18,7 @@ Prerequisites:
 
 import asyncio
 import os
+import traceback
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -352,7 +353,6 @@ async def main() -> None:
     print("PostHog API Examples")
     print("="*80)
     print(f"Host: {POSTHOG_HOST}")
-    print(f"API Key: {API_KEY[:10]}..." if len(API_KEY) > 10 else "API Key: [set]")
     
     # Configure and build the PostHog client
     config = PostHogTokenConfig(
@@ -395,7 +395,6 @@ async def main() -> None:
         
     except Exception as e:
         print(f"\n❌ Error during examples: {e}")
-        import traceback
         traceback.print_exc()
     
     print("\n" + "="*80)

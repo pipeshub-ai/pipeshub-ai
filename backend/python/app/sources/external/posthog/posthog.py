@@ -78,19 +78,12 @@ class PostHogDataSource:
         if limit is not None:
             variables["limit"] = limit
         
-        try:
-            response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "events"),
-                variables=variables,
-                operation_name="events"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query events: {str(e)}"
-            )
+
+        return await self._posthog_client.execute_query(
+            query=self._get_query("query", "events"),
+            variables=variables,
+            operation_name="events"
+        )
 
     async def event(
         self,

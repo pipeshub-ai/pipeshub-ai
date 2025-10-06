@@ -95,7 +95,7 @@ class PostHogGraphQLClientViaToken:
 
         # If using body authentication, add API key to variables
         if not self.use_header_auth:
-            variables = variables or {}
+            variables = (variables or {}).copy()
             variables["personal_api_key"] = self.api_key
 
         try:
@@ -118,6 +118,7 @@ class PostHogGraphQLClientViaToken:
                     message=response.message
                 )
         except Exception as e:
+            logging.error(f"Query execution failed: {str(e)}", exc_info=True)
             return PostHogResponse(
                 success=False,
                 error=str(e),
@@ -145,7 +146,6 @@ class PostHogTokenConfig:
     endpoint: str = "https://app.posthog.com/api/graphql"
     timeout: int = 30
     use_header_auth: bool = True
-    ssl: bool = True
 
     def create_client(self) -> PostHogGraphQLClientViaToken:
         """Create a PostHog GraphQL client"""
