@@ -2,14 +2,16 @@
 
 # pylint: disable=E1101, W0718
 import asyncio
+import datetime
+import json
 import uuid
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-import aiohttp
-from arango import ArangoClient
-from arango.database import TransactionDatabase
-from fastapi import Request
+import aiohttp  # type: ignore
+from arango import ArangoClient  # type: ignore
+from arango.database import TransactionDatabase  # type: ignore
+from fastapi import Request  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -109,7 +111,7 @@ class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: KafkaService,
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: Optional[KafkaService] = None,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
@@ -417,36 +419,21 @@ class BaseArangoService:
             raise
 
     async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
-            """Get a document by its key"""
-            try:
-                query = """
-                FOR doc IN @@collection
-                    FILTER doc._key == @document_key
-                    RETURN doc
-                """
-                cursor = self.db.aql.execute(
-                    query,
-                    bind_vars={"document_key": document_key, "@collection": collection},
-                )
-                result = list(cursor)
-                return result[0] if result else None
-            except Exception as e:
-                self.logger.error("❌ Error getting document: %s", str(e))
-                return None
-
-    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user ID"""
+        """Get a document by its key"""
         try:
-            query = f"""
-                FOR user IN {CollectionNames.USERS.value}
-                    FILTER user.userId == @user_id
-                    RETURN user
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key == @document_key
+                RETURN doc
             """
-            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
-            result = next(cursor, None)
-            return result
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"document_key": document_key, "@collection": collection},
+            )
+            result = list(cursor)
+            return result[0] if result else None
         except Exception as e:
-            self.logger.error(f"Error getting user by user ID: {str(e)}")
+            self.logger.error("❌ Error getting document: %s", str(e))
             return None
 
     async def get_connector_stats(
@@ -910,65 +897,6 @@ class BaseArangoService:
             )
             raise
 
-    async def get_records_by_virtual_record_id(
-        self,
-        virtual_record_id: str,
-        accessible_record_ids: Optional[List[str]] = None
-    ) -> List[str]:
-        """
-        Get all record keys that have the given virtualRecordId.
-        Optionally filter by a list of record IDs.
-
-        Args:
-            virtual_record_id (str): Virtual record ID to look up
-            record_ids (Optional[List[str]]): Optional list of record IDs to filter by
-
-        Returns:
-            List[str]: List of record keys that match the criteria
-        """
-        try:
-            self.logger.info(
-                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
-            )
-
-            # Base query
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.virtualRecordId == @virtual_record_id
-            """
-
-            # Add optional filter for record IDs
-            if accessible_record_ids:
-                query += """
-                AND record._key IN @accessible_record_ids
-                """
-
-            query += """
-                RETURN record._key
-            """
-
-            bind_vars = {"virtual_record_id": virtual_record_id}
-            if accessible_record_ids:
-                bind_vars["accessible_record_ids"] = accessible_record_ids
-
-            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
-            results = list(cursor)
-
-            self.logger.info(
-                "✅ Found %d records with virtualRecordId %s",
-                len(results),
-                virtual_record_id
-            )
-            return results
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Error finding records with virtualRecordId %s: %s",
-                virtual_record_id,
-                str(e)
-            )
-            return []
-
     async def get_records(
         self,
         user_id: str,
@@ -1369,66 +1297,6 @@ class BaseArangoService:
                 "indexingStatus": [],
                 "permissions": []
             }
-
-    async def get_user_kb_permission(
-        self,
-        kb_id: str,
-        user_id: str,
-    ) -> Optional[str]:
-        """Validate user knowledge permission"""
-        try:
-            self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
-
-            query = """
-            FOR perm IN @@permissions_collection
-                FILTER perm._from == CONCAT('users/', @user_id)
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                RETURN perm
-            """
-
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={
-                    "kb_id": kb_id,
-                    "user_id": user_id,
-                    "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                },
-            )
-
-            permission = next(cursor, None)
-
-            if permission:
-                role = permission.get("role")
-                self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
-                return role
-            else:
-                self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
-
-                # Debug: Let's see what permissions exist for this KB
-                debug_query = """
-                FOR perm IN @@permissions_collection
-                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                    RETURN {
-                        from: perm._from,
-                        role: perm.role,
-                        type: perm.type
-                    }
-                """
-                debug_cursor = self.db.aql.execute(
-                    debug_query,
-                    bind_vars={
-                        "kb_id": kb_id,
-                        "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                    },
-                )
-                existing_perms = list(debug_cursor)
-                self.logger.info(f"🔍 Debug - All permissions for KB {kb_id}: {existing_perms}")
-
-                return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
-            raise
 
     async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> Dict:
         """
@@ -3110,25 +2978,11 @@ class BaseArangoService:
                 "payload": payload
             }
 
-            await self.kafka_service.publish_event("sync-events", event)
-            self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
-
-    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
-        """Publish record event to Kafka"""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
-
-            event = {
-                "eventType": event_type,
-                "timestamp": timestamp,
-                "payload": payload
-            }
-
-            await self.kafka_service.publish_event("record-events", event)
-            self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            if self.kafka_service:
+                await self.kafka_service.publish_event("sync-events", event)
+                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            else:
+                self.logger.debug("Skipping Kafka publish for sync-events: kafka_service is not configured")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
@@ -3854,3 +3708,7819 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to update edge by key: %s: %s", key, str(e))
             return False
+
+    async def store_page_token(
+        self,
+        channel_id: str,
+        resource_id: str,
+        user_email: str,
+        token: str,
+        expiration: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Store page token with user channel information"""
+        try:
+            self.logger.info(
+                """
+            🚀 Storing page token:
+
+            - Channel: %s
+            - Resource: %s
+            - User Email: %s
+            - Token: %s
+            - Expiration: %s
+            """,
+                channel_id,
+                resource_id,
+                user_email,
+                token,
+                expiration,
+            )
+
+            if not self.db.has_collection(CollectionNames.PAGE_TOKENS.value):
+                self.db.create_collection(CollectionNames.PAGE_TOKENS.value)
+
+            token_doc = {
+                "channelId": channel_id,
+                "resourceId": resource_id,
+                "userEmail": user_email,
+                "token": token,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "expiration": expiration,
+            }
+
+            # Upsert to handle updates to existing channel tokens
+            query = """
+            UPSERT { userEmail: @userEmail }
+            INSERT @token_doc
+            UPDATE @token_doc
+            IN @@pageTokens
+            RETURN NEW
+            """
+
+            list(
+                self.db.aql.execute(
+                    query,
+                    bind_vars={
+                        "userEmail": user_email,
+                        "token_doc": token_doc,
+                        "@pageTokens": CollectionNames.PAGE_TOKENS.value,
+                    },
+                )
+            )
+
+            self.logger.info("✅ Page token stored successfully")
+
+        except Exception as e:
+            self.logger.error("❌ Error storing page token: %s", str(e))
+
+    async def get_page_token_db(
+        self, channel_id: str = None, resource_id: str = None, user_email: str = None
+    ) -> Optional[Dict]:
+        """Get page token for specific channel"""
+        try:
+            self.logger.info(
+                """
+            🔍 Getting page token for:
+            - Channel: %s
+            - Resource: %s
+            - User Email: %s
+            """,
+                channel_id,
+                resource_id,
+                user_email,
+            )
+
+            filters = []
+            bind_vars = {"@pageTokens": CollectionNames.PAGE_TOKENS.value}
+
+            if channel_id is not None:
+                filters.append("token.channelId == @channel_id")
+                bind_vars["channel_id"] = channel_id
+            if resource_id is not None:
+                filters.append("token.resourceId == @resource_id")
+                bind_vars["resource_id"] = resource_id
+            if user_email is not None:
+                filters.append("token.userEmail == @user_email")
+                bind_vars["user_email"] = user_email
+
+            if not filters:
+                self.logger.warning("⚠️ No filter params provided for page token query")
+                return None
+
+            filter_clause = " OR ".join(filters)
+
+            query = f"""
+            FOR token IN @@pageTokens
+            FILTER {filter_clause}
+            SORT token.createdAtTimestamp DESC
+            LIMIT 1
+            RETURN token
+            """
+
+            result = list(self.db.aql.execute(query, bind_vars=bind_vars))
+
+            if result:
+                self.logger.info("✅ Found token for channel")
+                return result[0]
+
+            self.logger.warning("⚠️ No token found for channel")
+            return None
+
+        except Exception as e:
+            self.logger.error("❌ Error getting page token: %s", str(e))
+            return None
+
+    async def get_all_channel_tokens(self) -> List[Dict]:
+        """Get all active channel tokens"""
+        try:
+            self.logger.info("🚀 Getting all channel tokens")
+            query = """
+            FOR token IN pageTokens
+            RETURN {
+                user_email: token.user_email,
+                channel_id: token.channel_id,
+                resource_id: token.resource_id,
+                token: token.token,
+                updatedAt: token.updatedAt
+            }
+            """
+
+            result = list(self.db.aql.execute(query))
+            self.logger.info("✅ Retrieved %d channel tokens", len(result))
+            return result
+
+        except Exception as e:
+            self.logger.error("❌ Error getting all channel tokens: %s", str(e))
+            return []
+
+    async def store_channel_history_id(
+        self, history_id: str, expiration: str, user_email: str
+    ) -> None:
+        """
+        Store the latest historyId for a user's channel watch
+
+        Args:
+            user_email (str): Email of the user
+            history_id (str): Latest historyId from channel watch
+            channel_id (str, optional): Channel ID associated with the watch
+            resource_id (str, optional): Resource ID associated with the watch
+        """
+        try:
+            self.logger.info(f"🚀 Storing historyId for user {user_email}")
+
+            query = """
+            UPSERT { userEmail: @userEmail }
+            INSERT {
+                userEmail: @userEmail,
+                historyId: @historyId,
+                expiration: @expiration,
+                updatedAt: DATE_NOW()
+            }
+            UPDATE {
+                historyId: @historyId,
+                expiration: @expiration,
+                updatedAt: DATE_NOW()
+            } IN channelHistory
+            RETURN NEW
+            """
+
+            result = list(
+                self.db.aql.execute(
+                    query,
+                    bind_vars={
+                        "userEmail": user_email,
+                        "historyId": history_id,
+                        "expiration": expiration,
+                    },
+                )
+            )
+
+            if result:
+                self.logger.info(f"✅ Successfully stored historyId for {user_email}")
+
+            self.logger.warning(f"⚠️ Failed to store historyId for {user_email}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error storing historyId: {str(e)}")
+
+    async def get_channel_history_id(self, user_email: str) -> Optional[str]:
+        """
+        Retrieve the latest historyId for a user
+
+        Args:
+            user_email (str): Email of the user
+
+        Returns:
+            Optional[str]: Latest historyId if found, None otherwise
+        """
+        try:
+            self.logger.info(f"🚀 Retrieving historyId for user {user_email}")
+
+            query = """
+            FOR history IN channelHistory
+            FILTER history.userEmail == @userEmail
+            RETURN history
+            """
+
+            result = list(
+                self.db.aql.execute(query, bind_vars={"userEmail": user_email})
+            )
+
+            if result:
+                self.logger.info(f"✅ Found historyId for {user_email}")
+                return result[0]
+
+            self.logger.warning(f"⚠️ No historyId found for {user_email}")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Error retrieving historyId: {str(e)}")
+            return None
+
+    async def cleanup_expired_tokens(self, expiry_hours: int = 24) -> int:
+        """Clean up tokens that haven't been updated recently"""
+        try:
+            expiry_time = datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=expiry_hours)
+
+            query = """
+            FOR token IN pageTokens
+            FILTER token.updatedAt < @expiry_time
+            REMOVE token IN pageTokens
+            RETURN OLD
+            """
+
+            removed = list(
+                self.db.aql.execute(query, bind_vars={"expiry_time": expiry_time})
+            )
+
+            self.logger.info("🧹 Cleaned up %d expired tokens", len(removed))
+            return len(removed)
+
+        except Exception as e:
+            self.logger.error("❌ Error cleaning up tokens: %s", str(e))
+            return 0
+
+    async def get_file_parents(self, file_key: str, transaction) -> List[Dict]:
+        try:
+            if not file_key:
+                raise ValueError("File ID is required")
+
+            self.logger.info("🚀 Getting parents for record %s", file_key)
+
+            query = """
+            LET relations = (
+                FOR rel IN @@recordRelations
+                    FILTER rel._to == @record_id
+                    RETURN rel._from
+            )
+
+            LET parent_keys = (
+                FOR rel IN relations
+                    LET key = PARSE_IDENTIFIER(rel).key
+                    RETURN {
+                        original_id: rel,
+                        parsed_key: key
+                    }
+            )
+
+            LET parent_files = (
+                FOR parent IN parent_keys
+                    FOR record IN @@records
+                        FILTER record._key == parent.parsed_key
+                        RETURN {
+                            key: record._key,
+                            externalRecordId: record.externalRecordId
+                        }
+            )
+
+            RETURN {
+                input_file_key: @file_key,
+                found_relations: relations,
+                parsed_parent_keys: parent_keys,
+                found_parent_files: parent_files
+            }
+            """
+
+            bind_vars = {
+                "file_key": file_key,
+                "record_id": CollectionNames.RECORDS.value + "/" + file_key,
+                "@records": CollectionNames.RECORDS.value,
+                "@recordRelations": CollectionNames.RECORD_RELATIONS.value,
+            }
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or not result[0]["found_relations"]:
+                self.logger.warning("⚠️ No relations found for record %s", file_key)
+            if not result or not result[0]["parsed_parent_keys"]:
+                self.logger.warning("⚠️ No parent keys parsed for record %s", file_key)
+            if not result or not result[0]["found_parent_files"]:
+                self.logger.warning("⚠️ No parent files found for record %s", file_key)
+
+            # Return just the external file IDs if everything worked
+            return (
+                [
+                    record["externalRecordId"]
+                    for record in result[0]["found_parent_files"]
+                ]
+                if result
+                else []
+            )
+
+        except ValueError as ve:
+            self.logger.error(f"❌ Validation error: {str(ve)}")
+            return []
+        except Exception as e:
+            self.logger.error(
+                "❌ Error getting parents for record %s: %s", file_key, str(e)
+            )
+            return []
+
+    async def get_entity_id_by_email(
+        self, email: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
+        """
+        Get user or group ID by email address
+
+        Args:
+            email (str): Email address to look up
+
+        Returns:
+            Optional[str]: Entity ID (_key) if found, None otherwise
+        """
+        try:
+            self.logger.info("🚀 Getting Entity Key by mail")
+
+            # First check users collection
+            query = """
+            FOR doc IN users
+                FILTER doc.email == @email
+                RETURN doc._key
+            """
+            db = transaction if transaction else self.db
+            result = db.aql.execute(query, bind_vars={"email": email})
+            user_id = next(result, None)
+            if user_id:
+                self.logger.info("✅ Got User ID: %s", user_id)
+                return user_id
+
+            # If not found in users, check groups collection
+            query = """
+            FOR doc IN groups
+                FILTER doc.email == @email
+                RETURN doc._key
+            """
+            result = db.aql.execute(query, bind_vars={"email": email})
+            group_id = next(result, None)
+            if group_id:
+                self.logger.info("✅ Got group ID: %s", group_id)
+                return group_id
+
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to get entity ID for email %s: %s", email, str(e)
+            )
+            return None
+
+    async def organization_exists(self, organization_name: str) -> bool:
+        """Check if the organization exists in the database"""
+        self.logger.info("🚀 Checking whether the organization exists")
+        query = """
+        FOR doc IN @@orgs
+            FILTER doc.name == @organization_name
+            RETURN doc._key
+        """
+        result = self.db.aql.execute(
+            query,
+            bind_vars={
+                "organization_name": organization_name,
+                "@orgs": CollectionNames.ORGS.value,
+            },
+        )
+        response = bool(next(result, None))
+        self.logger.info("Does Organization exist?: %s", response)
+        return response
+
+    async def get_group_members(self, group_id: str) -> List[Dict]:
+        """Get all users in a group"""
+        try:
+            self.logger.info("🚀 Getting group members for %s", group_id)
+            query = """
+            FOR user, membership IN 1..1 OUTBOUND @group_id GRAPH 'fileAccessGraph'
+                FILTER membership.type == 'membership'
+                RETURN DISTINCT user
+            """
+
+            cursor = self.db.aql.execute(
+                query, bind_vars={"group_id": f"groups/{group_id}"}
+            )
+            self.logger.info("✅ Group members retrieved successfully")
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get group members: %s", str(e))
+            return []
+
+    async def get_file_permissions(
+        self, file_key: str, transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict]:
+        """Get current permissions for a file"""
+        try:
+            self.logger.info("🚀 Getting file permissions for %s", file_key)
+            query = """
+            FOR perm IN @@permissions
+                FILTER perm._from == @file_key
+                RETURN perm
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "file_key": f"{CollectionNames.RECORDS.value}/{file_key}",
+                    "@permissions": CollectionNames.PERMISSIONS.value,
+                },
+            )
+            self.logger.info("✅ File permissions retrieved successfully")
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get file permissions: %s", str(e))
+            return []
+
+    async def store_permission(
+        self,
+        file_key: str,
+        entity_key: str,
+        permission_data: Dict,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool:
+        """Store or update permission relationship with change detection"""
+        try:
+            self.logger.info(
+                "🚀 Storing permission for file %s and entity %s", file_key, entity_key
+            )
+
+            if not entity_key:
+                self.logger.warning("⚠️ Cannot store permission - missing entity_key")
+                return False
+
+            # Use transaction if provided, otherwise use self.db
+            db = transaction if transaction else self.db
+            permissions_collection = db.collection(CollectionNames.PERMISSIONS.value)
+
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Determine the correct collection for the _to field
+            entityType = permission_data.get("type", "user").lower()
+            if entityType == "domain":
+                to_collection = CollectionNames.ORGS.value
+            else:
+                to_collection = f"{entityType}s"
+
+            existing_permissions = await self.get_file_permissions(file_key, transaction)
+            if existing_permissions:
+                existing_perm = next((p for p in existing_permissions if p.get("_to") == f"{to_collection}/{entity_key}"), None)
+                if existing_perm:
+                    edge_key = existing_perm.get("_key")
+                else:
+                    edge_key = str(uuid.uuid4())
+            else:
+                edge_key = str(uuid.uuid4())
+
+            self.logger.info("Permission data is %s", permission_data)
+            # Create edge document with proper formatting
+            edge = {
+                "_key": edge_key,
+                "_from": f"{CollectionNames.RECORDS.value}/{file_key}",
+                "_to": f"{to_collection}/{entity_key}",
+                "type": permission_data.get("type").upper(),
+                "role": permission_data.get("role", "READER").upper(),
+                "externalPermissionId": permission_data.get("id"),
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+                "lastUpdatedTimestampAtSource": timestamp,
+            }
+
+            # Log the edge document for debugging
+            self.logger.debug("Creating edge document: %s", edge)
+
+            # Check if permission edge exists
+            try:
+                existing_edge = permissions_collection.get(edge_key)
+
+                if not existing_edge:
+                    # New permission
+                    permissions_collection.insert(edge)
+                    self.logger.info("✅ Created new permission edge: %s", edge_key)
+                elif self._permission_needs_update(existing_edge, permission_data):
+                    # Update existing permission
+                    self.logger.info("✅ Updating permission edge: %s", edge_key)
+                    await self.batch_upsert_nodes([edge], collection=CollectionNames.PERMISSIONS.value)
+                    self.logger.info("✅ Updated permission edge: %s", edge_key)
+                else:
+                    self.logger.info(
+                        "✅ No update needed for permission edge: %s", edge_key
+                    )
+
+                return True
+
+            except Exception as e:
+                self.logger.error(
+                    "❌ Failed to access permissions collection: %s", str(e)
+                )
+                if transaction:
+                    raise
+                return False
+
+        except Exception as e:
+            self.logger.error("❌ Failed to store permission: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+    async def store_membership(
+        self, group_id: str, user_id: str, role: str = "member"
+    ) -> bool:
+        """Store group membership"""
+        try:
+            self.logger.info(
+                "🚀 Storing membership for group %s and user %s", group_id, user_id
+            )
+            edge = {
+                "_from": f"groups/{group_id}",
+                "_to": f"users/{user_id}",
+                "type": "membership",
+                "role": role,
+            }
+            self._collections[CollectionNames.BELONGS_TO.value].insert(
+                edge, overwrite=True
+            )
+            self.logger.info("✅ Membership stored successfully")
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to store membership: %s", str(e))
+            return False
+
+    async def process_file_permissions(
+        self,
+        org_id: str,
+        file_key: str,
+        permissions_data: List[Dict],
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool:
+        """
+        Process file permissions by comparing new permissions with existing ones.
+        Assumes all entities and files already exist in the database.
+        """
+        try:
+            self.logger.info("🚀 Processing permissions for file %s", file_key)
+            timestamp = get_epoch_timestamp_in_ms()
+
+            db = transaction if transaction else self.db
+
+            # Get existing permissions for comparison
+            # Remove 'anyone' permission for this file if it exists
+            query = """
+            FOR a IN anyone
+                FILTER a.file_key == @file_key
+                FILTER a.organization == @org_id
+                REMOVE a IN anyone
+            """
+            db.aql.execute(query, bind_vars={"file_key": file_key, "org_id": org_id})
+            self.logger.info("🗑️ Removed 'anyone' permission for file %s", file_key)
+
+            existing_permissions = await self.get_file_permissions(
+                file_key, transaction=transaction
+            )
+            self.logger.info("🚀 Existing permissions: %s", existing_permissions)
+
+            # Get all permission IDs from new permissions
+            new_permission_ids = list({p.get("id") for p in permissions_data})
+            self.logger.info("🚀 New permission IDs: %s", new_permission_ids)
+            # Find permissions that exist but are not in new permissions
+            permissions_to_remove = [
+                perm
+                for perm in existing_permissions
+                if perm.get("externalPermissionId") not in new_permission_ids
+            ]
+
+            # Remove permissions that no longer exist
+            if permissions_to_remove:
+                self.logger.info(
+                    "🗑️ Removing %d obsolete permissions", len(permissions_to_remove)
+                )
+                # Check if 'anyone' type permissions exist in new permissions
+
+                for perm in permissions_to_remove:
+                    query = """
+                    FOR p IN permissions
+                        FILTER p._key == @perm_key
+                        REMOVE p IN permissions
+                    """
+                    db.aql.execute(query, bind_vars={"perm_key": perm["_key"]})
+
+            # Process permissions by type
+            for perm_type in ["user", "group", "domain", "anyone"]:
+                # Filter new permissions for current type
+                new_perms = [
+                    p
+                    for p in permissions_data
+                    if p.get("type", "").lower() == perm_type
+                ]
+                # Filter existing permissions for current type
+                existing_perms = [
+                    p
+                    for p in existing_permissions
+                    if p.get("type").lower() == perm_type
+                ]
+
+                # Compare and update permissions
+                if perm_type == "user" or perm_type == "group" or perm_type == "domain":
+                    for new_perm in new_perms:
+                        perm_id = new_perm.get("id")
+                        if existing_perms:
+                            existing_perm = next(
+                                (
+                                    p
+                                    for p in existing_perms
+                                    if p.get("externalPermissionId") == perm_id
+                                ),
+                                None,
+                            )
+                        else:
+                            existing_perm = None
+
+                        if existing_perm:
+                            entity_key = existing_perm.get("_to")
+                            entity_key = entity_key.split("/")[1]
+                            # Update existing permission
+                            await self.store_permission(
+                                file_key,
+                                entity_key,
+                                new_perm,
+                                transaction,
+                            )
+                        else:
+                            # Get entity key from email for user/group
+                            # Create new permission
+                            if perm_type == "user" or perm_type == "group":
+                                entity_key = await self.get_entity_id_by_email(
+                                    new_perm.get("emailAddress")
+                                )
+                                if not entity_key:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping permission for non-existent user or group: {entity_key}"
+                                    )
+                                    pass
+                            elif perm_type == "domain":
+                                entity_key = org_id
+                                if not entity_key:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping permission for non-existent domain: {entity_key}"
+                                    )
+                                    pass
+                            else:
+                                entity_key = None
+                                # Skip if entity doesn't exist
+                                if not entity_key:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping permission for non-existent entity: {entity_key}"
+                                    )
+                                    pass
+                            if entity_key != "anyone" and entity_key:
+                                self.logger.info(
+                                    "🚀 Storing permission for file %s and entity %s: %s",
+                                    file_key,
+                                    entity_key,
+                                    new_perm,
+                                )
+                                await self.store_permission(
+                                    file_key, entity_key, new_perm, transaction
+                                )
+
+                if perm_type == "anyone":
+                    # For anyone type, add permission directly to anyone collection
+                    for new_perm in new_perms:
+                        permission_data = {
+                            "type": "anyone",
+                            "file_key": file_key,
+                            "organization": org_id,
+                            "role": new_perm.get("role", "READER"),
+                            "externalPermissionId": new_perm.get("id"),
+                            "lastUpdatedTimestampAtSource": timestamp,
+                            "active": True,
+                        }
+                        # Store/update permission
+                        await self.batch_upsert_nodes(
+                            [permission_data], collection=CollectionNames.ANYONE.value
+                        )
+
+            self.logger.info(
+                "✅ Successfully processed all permissions for file %s", file_key
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to process permissions: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+
+    def _get_access_level(self, role: str) -> int:
+        """Convert role to numeric access level for easy comparison"""
+        role_levels = {
+            "owner": 100,
+            "organizer": 90,
+            "fileorganizer": 80,
+            "writer": 70,
+            "commenter": 60,
+            "reader": 50,
+            "none": 0,
+        }
+        return role_levels.get(role.lower(), 0)
+
+    async def _cleanup_old_permissions(
+        self, file_id: str, current_entities: Set[Tuple[str, str]]
+    ) -> None:
+        """Mark old access edges as inactive"""
+        try:
+            self.logger.info("🚀 Cleaning up old permissions for file %s", file_id)
+
+            query = """
+            FOR edge IN permissions
+                FILTER edge._from == @file_id
+                AND NOT ([PARSE_IDENTIFIER(edge._to).key, PARSE_IDENTIFIER(edge._to).collection] IN @current_entities)
+                UPDATE edge WITH {
+                    hasAccess: false,
+                } IN permissions
+            """
+
+            self.db.aql.execute(
+                query,
+                bind_vars={
+                    "file_id": f"records/{file_id}",
+                    "current_entities": list(current_entities),
+                },
+            )
+            self.logger.info("✅ Old access edges cleaned up successfully")
+
+        except Exception as e:
+            self.logger.error("❌ Failed to cleanup old access edges: %s", str(e))
+            return
+
+    def _permission_needs_update(self, existing: Dict, new: Dict) -> bool:
+        """Check if permission data needs to be updated"""
+        self.logger.info("🚀 Checking if permission data needs to be updated")
+        relevant_fields = ["role", "permissionDetails", "active"]
+
+        for field in relevant_fields:
+            if field in new:
+                if field == "permissionDetails":
+                    if json.dumps(new[field], sort_keys=True) != json.dumps(
+                        existing.get(field, {}), sort_keys=True
+                    ):
+                        self.logger.info("✅ Permission data needs to be updated. Field %s", field)
+                        return True
+                elif new[field] != existing.get(field):
+                    self.logger.info("✅ Permission data needs to be updated. Field %s", field)
+                    return True
+
+        self.logger.info("✅ Permission data does not need to be updated")
+        return False
+
+    async def get_file_access_history(
+        self, file_id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict]:
+        """Get historical access information for a file"""
+        try:
+            self.logger.info(
+                "🚀 Getting historical access information for file %s", file_id
+            )
+            query = """
+            FOR perm IN permissions
+                FILTER perm._from == @file_id
+                SORT perm.lastUpdatedTimestampAtSource DESC
+                RETURN {
+                    entity: DOCUMENT(perm._to),
+                    permission: perm
+                }
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"file_id": f"records/{file_id}"})
+            self.logger.info("✅ File access history retrieved successfully")
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get file access history: %s", str(e))
+            return []
+
+    async def delete_records_and_relations(
+        self,
+        node_key: str,
+        hard_delete: bool = False,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool:
+        """Delete a node and its edges from all edge collections (Records, Files)."""
+        try:
+            self.logger.info(
+                "🚀 Deleting node %s from collection Records, Files (hard_delete=%s)",
+                node_key,
+                hard_delete,
+            )
+
+            db = transaction if transaction else self.db
+
+            record = await self.get_document(node_key, CollectionNames.RECORDS.value)
+            if not record:
+                self.logger.warning(
+                    "⚠️ Record %s not found in Records collection", node_key
+                )
+                return False
+
+            # Define all edge collections used in the graph
+            EDGE_COLLECTIONS = [
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value,
+                CollectionNames.IS_OF_TYPE.value,
+            ]
+
+            # Step 1: Remove edges from all edge collections
+            for edge_collection in EDGE_COLLECTIONS:
+                try:
+                    edge_removal_query = """
+                    LET record_id_full = CONCAT('records/', @node_key)
+                    FOR edge IN @@edge_collection
+                        FILTER edge._from == record_id_full OR edge._to == record_id_full
+                        REMOVE edge IN @@edge_collection
+                    """
+                    bind_vars = {
+                        "node_key": node_key,
+                        "@edge_collection": edge_collection,
+                    }
+                    db.aql.execute(edge_removal_query, bind_vars=bind_vars)
+                    self.logger.info(
+                        f"✅ Edges from {edge_collection} deleted for node {node_key}"
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {str(e)}"
+                    )
+
+            # Step 2: Delete node from `records` and `files` collections
+            delete_query = """
+            LET removed_record = (
+                FOR doc IN @@records
+                    FILTER doc._key == @node_key
+                    REMOVE doc IN @@records
+                    RETURN OLD
+            )
+
+            LET removed_file = (
+                FOR doc IN @@files
+                    FILTER doc._key == @node_key
+                    REMOVE doc IN @@files
+                    RETURN OLD
+            )
+
+            LET removed_mail = (
+                FOR doc IN @@mails
+                    FILTER doc._key == @node_key
+                    REMOVE doc IN @@mails
+                    RETURN OLD
+            )
+
+            RETURN {
+                record_removed: LENGTH(removed_record) > 0,
+                file_removed: LENGTH(removed_file) > 0,
+                mail_removed: LENGTH(removed_mail) > 0
+            }
+            """
+            bind_vars = {
+                "node_key": node_key,
+                "@records": CollectionNames.RECORDS.value,
+                "@files": CollectionNames.FILES.value,
+                "@mails": CollectionNames.MAILS.value,
+            }
+
+            cursor = db.aql.execute(delete_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            self.logger.info(
+                "✅ Node %s and its edges %s deleted: %s",
+                node_key,
+                "hard" if hard_delete else "soft",
+                result,
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete node %s: %s", node_key, str(e))
+            if transaction:
+                raise
+            return False
+
+    async def get_orgs(self) -> List[Dict]:
+        """Get all organizations"""
+        try:
+            query = "FOR org IN organizations RETURN org"
+            cursor = self.db.aql.execute(query)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error("❌ Failed to get organizations: %s", str(e))
+            return []
+
+
+    async def save_to_people_collection(self, entity_id: str, email: str) -> bool:
+        """Save an entity to the people collection if it doesn't already exist"""
+        try:
+            self.logger.info(
+                "🚀 Checking if entity %s exists in people collection", entity_id
+            )
+            # has() checks document _key, not field values
+            # Need to query by entity_id field instead
+            query = "FOR doc IN people FILTER doc.email == @email RETURN doc"
+            exists = list(self.db.aql.execute(query, bind_vars={"email": email}))
+            if not exists:
+                self.logger.info(
+                    "➕ Entity does not exist, saving to people collection"
+                )
+                self.db.collection(CollectionNames.PEOPLE.value).insert(
+                    {"_key": entity_id, "email": email}
+                )
+                self.logger.info("✅ Entity %s saved to people collection", entity_id)
+                return True
+            else:
+                self.logger.info(
+                    "⏩ Entity %s already exists in people collection", entity_id
+                )
+                return False
+        except Exception as e:
+            self.logger.error("❌ Error saving entity to people collection: %s", str(e))
+            return False
+
+    async def get_all_pageTokens(self) -> List[Dict]:
+        """Get all page tokens from the pageTokens collection.
+
+        Returns:
+            list: List of page token documents, or empty list if none found or error occurs
+        """
+        try:
+            if not self.db.has_collection(CollectionNames.PAGE_TOKENS.value):
+                self.logger.warning("❌ pageTokens collection does not exist")
+                return []
+
+            query = """
+            FOR doc IN pageTokens
+                RETURN doc
+            """
+
+            result = list(self.db.aql.execute(query))
+
+            self.logger.info("✅ Retrieved %d page tokens", len(result))
+            return result
+
+        except Exception as e:
+            self.logger.error("❌ Error retrieving page tokens: %s", str(e))
+            return []
+
+    async def get_key_by_external_file_id(
+        self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
+        """
+        Get internal file key using the external file ID
+
+        Args:
+            external_file_id (str): External file ID to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[str]: Internal file key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for external file ID %s", external_file_id
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalRecordId == @external_file_id
+                RETURN record._key
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_file_id": external_file_id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for external file ID %s",
+                    external_file_id,
+                )
+                return result
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for external file ID %s", external_file_id
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for external file ID %s: %s",
+                external_file_id,
+                str(e),
+            )
+            return None
+
+    async def get_key_by_attachment_id(
+        self,
+        external_attachment_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[str]:
+        """
+        Get internal attachment key using the external attachment ID
+
+        Args:
+            external_attachment_id (str): External attachment ID to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[str]: Internal attachment key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for external attachment ID %s",
+                external_attachment_id,
+            )
+
+            query = """
+            FOR record IN records
+                FILTER record.externalRecordId == @external_attachment_id
+                RETURN record._key
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_attachment_id": external_attachment_id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for external attachment ID %s",
+                    external_attachment_id,
+                )
+                return result
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for external attachment ID %s",
+                    external_attachment_id,
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for external attachment ID %s: %s",
+                external_attachment_id,
+                str(e),
+            )
+            return None
+
+    async def get_account_type(self, org_id: str) -> str:
+        """Get account type for an organization
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            str: Account type ('individual' or 'business')
+        """
+        try:
+            query = """
+                FOR org IN organizations
+                    FILTER org._key == @org_id
+                    RETURN org.accountType
+            """
+            cursor = self.db.aql.execute(query, bind_vars={"org_id": org_id})
+            result = next(cursor, None)
+            return result
+        except Exception as e:
+            self.logger.error(f"Error getting account type: {str(e)}")
+            return None
+
+    async def update_user_sync_state(
+        self,
+        user_email: str,
+        state: str,
+        service_type: str = Connectors.GOOGLE_DRIVE.value,
+    ) -> Optional[Dict]:
+        """
+        Update user's sync state in USER_APP_RELATION collection for specific service
+
+        Args:
+            user_email (str): Email of the user
+            state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
+            service_type (str): Type of service
+
+        Returns:
+            Optional[Dict]: Updated relation document if successful, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Updating %s sync state for user %s to %s",
+                service_type,
+                user_email,
+                state,
+            )
+
+            user_key = await self.get_entity_id_by_email(user_email)
+
+            # Get user key and app key based on service type and update the sync state
+            query = f"""
+            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
+                          FILTER LOWER(a.name) == LOWER(@service_type)
+                          RETURN {{
+                              _key: a._key,
+                              name: a.name
+                          }})
+
+            LET edge = FIRST(
+                FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == CONCAT('users/', @user_key)
+                    FILTER rel._to == CONCAT('apps/', app._key)
+                    UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
+                    RETURN NEW
+            )
+
+            RETURN edge
+            """
+
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "user_key": user_key,
+                    "service_type": service_type,
+                    "state": state,
+                    "lastSyncUpdate": get_epoch_timestamp_in_ms(),
+                },
+            )
+
+            result = next(cursor, None)
+            if result:
+                self.logger.info(
+                    "✅ Successfully updated %s sync state for user %s to %s",
+                    service_type,
+                    user_email,
+                    state,
+                )
+                return result
+
+            self.logger.warning(
+                "⚠️ UPDATE:No user-app relation found for email %s and service %s",
+                user_email,
+                service_type,
+            )
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to update user %s sync state: %s", service_type, str(e)
+            )
+            return None
+
+    async def get_user_sync_state(
+        self, user_email: str, service_type: str = Connectors.GOOGLE_DRIVE.value
+    ) -> Optional[Dict]:
+        """
+        Get user's sync state from USER_APP_RELATION collection for specific service
+
+        Args:
+            user_email (str): Email of the user
+            service_type (str): Type of service
+
+        Returns:
+            Optional[Dict]: Relation document containing sync state if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🔍 Getting %s sync state for user %s", service_type, user_email
+            )
+
+            user_key = await self.get_entity_id_by_email(user_email)
+
+            query = f"""
+            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
+                          FILTER LOWER(a.name) == LOWER(@service_type)
+                          RETURN {{
+                              _key: a._key,
+                              name: a.name
+                          }})
+
+            LET edge = FIRST(
+                FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == CONCAT('users/', @user_key)
+                    FILTER rel._to == CONCAT('apps/', app._key)
+                    RETURN rel
+            )
+
+            RETURN edge
+            """
+
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "user_key": user_key,
+                    "service_type": service_type,
+                },
+            )
+
+            result = next(cursor, None)
+            if result:
+                self.logger.info("Result: %s", result)
+                self.logger.info(
+                    "✅ Found %s sync state for user %s: %s",
+                    service_type,
+                    user_email,
+                    result["syncState"],
+                )
+                return result
+
+            self.logger.warning(
+                "⚠️ GET:No user-app relation found for email %s and service %s",
+                user_email,
+                service_type,
+            )
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to get user %s sync state: %s", service_type, str(e)
+            )
+            return None
+
+    async def update_drive_sync_state(
+        self, drive_id: str, state: str
+    ) -> Optional[Dict]:
+        """
+        Update drive's sync state in drives collection
+
+        Args:
+            drive_id (str): ID of the drive
+            state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
+            additional_data (dict, optional): Additional data to update
+
+        Returns:
+            Optional[Dict]: Updated drive document if successful, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Updating sync state for drive %s to %s", drive_id, state
+            )
+
+            update_data = {
+                "sync_state": state,
+                "last_sync_update": get_epoch_timestamp_in_ms(),
+            }
+
+            query = """
+            FOR drive IN drives
+                FILTER drive.id == @drive_id
+                UPDATE drive WITH @update IN drives
+                RETURN NEW
+            """
+
+            cursor = self.db.aql.execute(
+                query, bind_vars={"drive_id": drive_id, "update": update_data}
+            )
+
+            result = next(cursor, None)
+            if result:
+                self.logger.info(
+                    "✅ Successfully updated sync state for drive %s to %s",
+                    drive_id,
+                    state,
+                )
+                return result
+
+            self.logger.warning("⚠️ No drive found with ID %s", drive_id)
+            return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update drive sync state: %s", str(e))
+            return None
+
+    async def get_drive_sync_state(self, drive_id: str) -> Optional[str]:
+        """Get sync state for a specific drive
+
+        Args:
+            drive_id (str): ID of the drive to check
+
+        Returns:
+            Optional[str]: Current sync state of the drive ('NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'COMPLETED', 'FAILED')
+                          or None if drive not found
+        """
+        try:
+            self.logger.info("🔍 Getting sync state for drive %s", drive_id)
+
+            query = """
+            FOR drive IN drives
+                FILTER drive.id == @drive_id
+                RETURN drive.sync_state
+            """
+
+            result = list(self.db.aql.execute(query, bind_vars={"drive_id": drive_id}))
+
+            if result:
+                self.logger.debug(
+                    "✅ Found sync state for drive %s: %s", drive_id, result[0]
+                )
+                return result[0]
+
+            self.logger.debug(
+                "No sync state found for drive %s, assuming NOT_STARTED", drive_id
+            )
+            return "NOT_STARTED"
+
+        except Exception as e:
+            self.logger.error("❌ Error getting drive sync state: %s", str(e))
+            return None
+
+    async def check_edge_exists(
+        self, from_id: str, to_id: str, collection: str
+    ) -> bool:
+        """Check if an edge exists between two nodes in a specified collection."""
+        try:
+            self.logger.info(
+                "🔍 Checking if edge exists from %s to %s in collection %s",
+                from_id,
+                to_id,
+                collection,
+            )
+
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_id AND edge._to == @to_id
+                RETURN edge
+            """
+
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "@collection": collection,
+                },
+            )
+
+            result = next(cursor, None)
+            exists = result is not None
+            self.logger.info("✅ Edge exists: %s", exists)
+            return exists
+
+        except Exception as e:
+            self.logger.error("❌ Error checking edge existence: %s", str(e))
+            return False
+
+    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Dict:
+        """
+        Creates  NewRecordEvent to Kafka,
+        """
+        try:
+            record_id = record_doc["_key"]
+            self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
+
+            signed_url_route = (
+                f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
+            )
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Construct the payload matching the Node.js NewRecordEvent interface
+            payload = {
+                "orgId": record_doc.get("orgId"),
+                "recordId": record_id,
+                "recordName": record_doc.get("recordName"),
+                "recordType": record_doc.get("recordType"),
+                "version": record_doc.get("version", 1),
+                "signedUrlRoute": signed_url_route,
+                "origin": record_doc.get("origin"),
+                "extension": file_doc.get("extension", ""),
+                "mimeType": file_doc.get("mimeType", ""),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp",timestamp)),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp",timestamp)),
+                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp",record_doc.get("createdAtTimestamp", timestamp))),
+            }
+
+            return payload
+        except Exception:
+            self.logger.error(
+                f"❌ Failed to publish NewRecordEvent for record_id: {record_doc.get('_key', 'N/A')}",
+                exc_info=True
+            )
+            return {}
+
+    async def _publish_upload_events(self, kb_id: str, result: Dict) -> None:
+        """
+        Enhanced event publishing with better error handling
+        """
+        try:
+            self.logger.info(f"This is the result passed to publish record events {result}")
+            # Get the full data of created files directly from the transaction result
+            created_files_data = result.get("created_files_data", [])
+
+            if not created_files_data:
+                self.logger.info("No new records were created, skipping event publishing.")
+                return
+
+            self.logger.info(f"🚀 Publishing creation events for {len(created_files_data)} new records.")
+
+            # Get storage endpoint
+            try:
+                endpoints = await self.config_service.get_config(
+                    config_node_constants.ENDPOINTS.value
+                )
+                self.logger.info(f"This the the endpoint {endpoints}")
+                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            except Exception as config_error:
+                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
+                storage_url = "http://localhost:3000"  # Fallback
+
+            # Create events with enhanced error handling
+            successful_events = 0
+            failed_events = 0
+
+            for file_data in created_files_data:
+                try:
+                    record_doc = file_data.get("record")
+                    file_doc = file_data.get("fileRecord")
+
+                    if record_doc and file_doc:
+                        # Create payload with error handling
+                        create_payload = await self._create_new_record_event_payload(
+                            record_doc, file_doc, storage_url
+                        )
+
+                        if create_payload:  # Only publish if payload creation succeeded
+                            await self._publish_record_event("newRecord", create_payload)
+                            successful_events += 1
+                        else:
+                            self.logger.warning(f"⚠️ Skipping event for record {record_doc.get('_key')} - payload creation failed")
+                            failed_events += 1
+                    else:
+                        self.logger.warning(f"⚠️ Incomplete file data found, cannot publish event: {file_data}")
+                        failed_events += 1
+
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish event for record: {str(event_error)}")
+                    failed_events += 1
+
+            self.logger.info(f"📊 Event publishing summary: {successful_events} successful, {failed_events} failed")
+
+        except Exception as e:
+            self.logger.error(f"❌ Critical error in event publishing for KB {kb_id}: {str(e)}", exc_info=True)
+
+
+    async def _create_update_record_event_payload(
+        self,
+        record: Dict,
+        file_record: Optional[Dict] = None
+    ) -> Dict:
+        """Create update record event payload matching Node.js format"""
+        try:
+            endpoints = await self.config_service.get_config(
+                    config_node_constants.ENDPOINTS.value
+                )
+            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+
+            signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record.get("_key"),
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "signedUrlRoute": signed_url_route,
+                "updatedAtTimestamp": str(record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms())),
+                "sourceLastModifiedTimestamp": str(record.get("sourceLastModifiedTimestamp", record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()))),
+                "virtualRecordId": record.get("virtualRecordId"),
+                "summaryDocumentId": record.get("summaryDocumentId"),
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
+            return {}
+
+    async def _create_deleted_record_event_payload(
+        self,
+        record: Dict,
+        file_record: Optional[Dict] = None
+    ) -> Dict:
+        """Create deleted record event payload matching Node.js format"""
+        try:
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record.get("_key"),
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "summaryDocumentId": record.get("summaryDocumentId"),
+                "virtualRecordId": record.get("virtualRecordId"),
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            return {}
+
+    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
+        """Publish record event to Kafka"""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+
+            event = {
+                "eventType": event_type,
+                "timestamp": timestamp,
+                "payload": payload
+            }
+
+            if self.kafka_service:
+                await self.kafka_service.publish_event("record-events", event)
+                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            else:
+                self.logger.debug("Skipping Kafka publish for record-events: kafka_service is not configured")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
+
+    def _validation_error(self, code: int, reason: str) -> Dict:
+        """Helper to create validation error response"""
+        return {"valid": False, "success": False, "code": code, "reason": reason}
+
+    def _analyze_upload_structure(self, files: List[Dict], validation_result: Dict) -> Dict:
+        """
+        Updated structure analysis - creates folder hierarchy map based on file paths
+        but uses names for validation
+        """
+        folder_hierarchy = {}  # path -> {name: str, parent_path: str, level: int}
+        file_destinations = {}  # file_index -> {type: "root"|"folder", folder_name: str|None, folder_hierarchy_path: str|None}
+
+        for index, file_data in enumerate(files):
+            file_path = file_data["filePath"]
+
+            if "/" in file_path:
+                # File is in a subfolder - analyze the hierarchy
+                path_parts = file_path.split("/")
+                folder_parts = path_parts[:-1]
+
+                # Build folder hierarchy
+                current_path = ""
+                for i, folder_name in enumerate(folder_parts):
+                    parent_path = current_path if current_path else None
+                    current_path = f"{current_path}/{folder_name}" if current_path else folder_name
+
+                    if current_path not in folder_hierarchy:
+                        folder_hierarchy[current_path] = {
+                            "name": folder_name,
+                            "parent_path": parent_path,
+                            "level": i + 1
+                        }
+
+                # File goes to the deepest folder
+                file_destinations[index] = {
+                    "type": "folder",
+                    "folder_name": folder_parts[-1],  # Only the immediate parent folder name
+                    "folder_hierarchy_path": current_path,  # Full hierarchy path for creation
+                }
+            else:
+                # File goes to upload target (KB root or parent folder)
+                file_destinations[index] = {
+                    "type": "root",
+                    "folder_name": None,
+                    "folder_hierarchy_path": None,
+                }
+
+        # Sort folders by level (create parents first)
+        sorted_folder_paths = sorted(folder_hierarchy.keys(), key=lambda x: folder_hierarchy[x]["level"])
+
+        # Add parent folder context to the analysis
+        parent_folder_id = None
+        if validation_result["upload_target"] == "folder":
+            parent_folder_id = validation_result["parent_folder"].get("_key") if validation_result.get("parent_folder") else None
+
+        return {
+            "folder_hierarchy": folder_hierarchy,
+            "sorted_folder_paths": sorted_folder_paths,
+            "file_destinations": file_destinations,
+            "upload_target": validation_result["upload_target"],
+            "parent_folder_id": parent_folder_id,
+            "summary": {
+                "total_folders": len(folder_hierarchy),
+                "root_files": len([d for d in file_destinations.values() if d["type"] == "root"]),
+                "folder_files": len([d for d in file_destinations.values() if d["type"] == "folder"])
+            }
+        }
+
+    async def _ensure_folders_exist(
+        self,
+        kb_id: str,
+        org_id: str,
+        folder_analysis: Dict,
+        validation_result: Dict,
+        transaction,
+        timestamp: int
+    ) -> Dict[str, str]:
+        """
+        Updated folder creation - uses name-based validation instead of path
+        """
+        folder_map = {}  # hierarchy_path -> folder_id
+        upload_parent_folder_id = None
+        if validation_result["upload_target"] == "folder":
+            upload_parent_folder_id = validation_result["parent_folder"].get("_key") if validation_result.get("parent_folder") else None
+
+        for hierarchy_path in folder_analysis["sorted_folder_paths"]:
+            folder_info = folder_analysis["folder_hierarchy"][hierarchy_path]
+            folder_name = folder_info["name"]
+            parent_hierarchy_path = folder_info["parent_path"]
+
+            # Determine parent folder ID
+            parent_folder_id = None
+            if parent_hierarchy_path:
+                # Has a parent folder in the hierarchy
+                parent_folder_id = folder_map.get(parent_hierarchy_path)
+                if parent_folder_id is None:
+                    self.logger.error(f"❌ Parent folder not found in map for path: {parent_hierarchy_path}")
+                    raise Exception(f"Parent folder creation failed for path: {parent_hierarchy_path}")
+            elif upload_parent_folder_id:
+                # First level folder under the upload target folder
+                parent_folder_id = upload_parent_folder_id
+            # else: parent_folder_id remains None (KB root)
+
+            # Check if folder already exists using name-based lookup
+            existing_folder = await self.find_folder_by_name_in_parent(
+                kb_id=kb_id,
+                folder_name=folder_name,
+                parent_folder_id=parent_folder_id
+            )
+
+            if existing_folder:
+                folder_map[hierarchy_path] = existing_folder["_key"]
+                self.logger.debug(f"✅ Folder exists: {folder_name} in parent {parent_folder_id or 'KB root'}")
+            else:
+                # Create new folder
+                folder = await self.create_folder(
+                    kb_id=kb_id,
+                    org_id=org_id,
+                    folder_name=folder_name,
+                    parent_folder_id=parent_folder_id
+                )
+                folder_id = folder['id']
+                if folder_id:
+                    folder_map[hierarchy_path] = folder_id
+                    self.logger.info(f"✅ Created folder: {folder_name} -> {folder_id} in parent {parent_folder_id or 'KB root'}")
+                else:
+                    raise Exception(f"Failed to create folder: {folder_name}")
+
+        return folder_map
+
+    async def _create_folder(
+        self,
+        kb_id: str,
+        org_id: str,
+        folder_path: str,
+        folder_map: Dict[str, str],
+        validation_result: Dict,
+        transaction,
+        timestamp: int
+    ) -> str:
+        """Unified folder creation logic"""
+        folder_id = str(uuid.uuid4())
+        folder_name = folder_path.split("/")[-1]
+
+        # Determine parent folder ID
+        parent_folder_id = None
+        if "/" in folder_path:
+            parent_path = "/".join(folder_path.split("/")[:-1])
+            parent_folder_id = folder_map.get(parent_path)
+
+        # If no parent in map, check if we're uploading to a specific folder
+        if not parent_folder_id and validation_result["upload_target"] == "folder":
+            # For first-level subfolders of the upload target
+            upload_parent_path = validation_result["parent_path"]
+            if folder_path.startswith(f"{upload_parent_path}/") and folder_path.count("/") == upload_parent_path.count("/") + 1:
+                parent_folder_id = validation_result["parent_folder"]["_key"]
+
+        # Create folder document
+        folder_data = {
+            "_key": folder_id,
+            "orgId": org_id,
+            "recordGroupId": kb_id,
+            "name": folder_name,
+            "isFile": False,
+            "extension": None,
+            "mimeType": "application/vnd.folder",
+            "sizeInBytes": 0,
+            "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
+        }
+
+        # Create folder
+        await self.batch_upsert_nodes([folder_data], CollectionNames.FILES.value, transaction)
+
+        # Create relationships
+        edges_to_create = []
+
+        # KB relationship (always needed)
+        edges_to_create.append({
+            "_from": f"{CollectionNames.FILES.value}/{folder_id}",
+            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}",
+            "entityType": Connectors.KNOWLEDGE_BASE.value,
+            "createdAtTimestamp": timestamp,
+            "updatedAtTimestamp": timestamp,
+        })
+
+        # Parent-child relationship (if has parent)
+        if parent_folder_id:
+            edges_to_create.append({
+                "_from": f"{CollectionNames.FILES.value}/{parent_folder_id}",
+                "_to": f"{CollectionNames.FILES.value}/{folder_id}",
+                "relationshipType": "PARENT_CHILD",
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+        else:
+            # record relations edge between folder and kb
+            edges_to_create.append({
+                    "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}",
+                    "_to": f"{CollectionNames.FILES.value}/{folder_id}",
+                    "relationshipType": "PARENT_CHILD",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+
+        # Create edges
+        for edge in edges_to_create:
+            collection = (
+                CollectionNames.BELONGS_TO.value
+                if edge.get("entityType") == Connectors.KNOWLEDGE_BASE.value
+                else CollectionNames.RECORD_RELATIONS.value
+            )
+            await self.batch_create_edges([edge], collection, transaction)
+
+        return folder_id
+
+    def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
+        """
+        Update file destinations with resolved folder IDs using hierarchy paths
+        """
+        for index, destination in folder_analysis["file_destinations"].items():
+            if destination["type"] == "folder":
+                hierarchy_path = destination["folder_hierarchy_path"]
+                if hierarchy_path in folder_map:
+                    destination["folder_id"] = folder_map[hierarchy_path]
+                else:
+                    self.logger.error(f"❌ Folder ID not found in map for hierarchy path: {hierarchy_path}")
+                    # Don't set folder_id, which will cause the file to be added to failed_files
+
+    # ========== UNIFIED RECORD CREATION ==========
+
+    async def _create_records(
+        self,
+        kb_id: str,
+        files: List[Dict],
+        folder_analysis: Dict,
+        transaction,
+        timestamp: int
+    ) -> Dict:
+        total_created = 0
+        failed_files = []
+
+        # Group files by destination
+        root_files = []
+        folder_files = {}  # folder_id -> files
+        created_files_data = []
+        for index, file_data in enumerate(files):
+            destination = folder_analysis["file_destinations"][index]
+
+            if destination["type"] == "root":
+                # File goes to root (KB root or parent folder)
+                parent_folder_id = folder_analysis.get("parent_folder_id")  # Use the validated parent folder ID
+                root_files.append((file_data, parent_folder_id))
+            else:
+                # File goes to subfolder
+                folder_id = destination["folder_id"]
+                if folder_id:
+                    if folder_id not in folder_files:
+                        folder_files[folder_id] = []
+                    folder_files[folder_id].append(file_data)
+                else:
+                    self.logger.error(f"❌ No folder ID found for file: {file_data['filePath']}")
+                    failed_files.append(file_data["filePath"])
+
+        # Create root files
+        if root_files:
+            try:
+                # Separate by target (KB root vs parent folder)
+                kb_root_files = [f for f, folder_id in root_files if folder_id is None]
+                parent_folder_files = {}
+
+                for file_data, folder_id in root_files:
+                    if folder_id is not None:
+                        if folder_id not in parent_folder_files:
+                            parent_folder_files[folder_id] = []
+                        parent_folder_files[folder_id].append(file_data)
+
+                # Create KB root files
+                if kb_root_files:
+                    successful_files = await self._create_files_in_kb_root(
+                        kb_id=kb_id,
+                        files=kb_root_files,
+                        transaction=transaction,
+                        timestamp=timestamp
+                    )
+                    created_files_data.extend(successful_files)
+                    total_created += len(successful_files)
+                    self.logger.info(f"✅ Created {len(successful_files)} files in KB root")
+
+                # Create parent folder files
+                for folder_id, folder_file_list in parent_folder_files.items():
+                    successful_files = await self._create_files_in_folder(
+                        kb_id=kb_id,
+                        folder_id=folder_id,
+                        files=folder_file_list,
+                        transaction=transaction,
+                        timestamp=timestamp
+                    )
+                    created_files_data.extend(successful_files)
+                    total_created += len(successful_files)
+                    self.logger.info(f"✅ Created {len(successful_files)} files in parent folder")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create root files: {str(e)}")
+                failed_files.extend([f[0]["filePath"] for f in root_files])
+
+        # Create subfolder files
+        for folder_id, folder_file_list in folder_files.items():
+            try:
+                successful_files = await self._create_files_in_folder(
+                    kb_id=kb_id,
+                    folder_id=folder_id,
+                    files=folder_file_list,
+                    transaction=transaction,
+                    timestamp=timestamp
+                )
+                created_files_data.extend(successful_files)
+                total_created += len(successful_files)
+                self.logger.info(f"✅ Created {len(successful_files)} files in subfolder {folder_id}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create files in subfolder {folder_id}: {str(e)}")
+                failed_files.extend([f["filePath"] for f in folder_file_list])
+
+        return {"total_created": total_created, "failed_files": failed_files,"created_files_data": created_files_data}
+
+    # ========== SHARED RECORD CREATION HELPERS ==========
+
+    async def _create_files_in_kb_root(self, kb_id: str, files: List[Dict], transaction, timestamp: int) -> int:
+        """Create files directly in KB root"""
+        return await self._create_files_batch(
+            kb_id=kb_id,
+            files=files,
+            parent_folder_id=None,  # No parent = KB root
+            transaction=transaction,
+            timestamp=timestamp
+        )
+
+    async def _create_files_in_folder(self, kb_id: str, folder_id: str, files: List[Dict], transaction, timestamp: int) -> int:
+        """Create files in a specific folder"""
+        return await self._create_files_batch(
+            kb_id=kb_id,
+            files=files,
+            parent_folder_id=folder_id,
+            transaction=transaction,
+            timestamp=timestamp
+        )
+
+    async def _create_files_batch(
+        self,
+        kb_id: str,
+        files: List[Dict],
+        parent_folder_id: Optional[str],
+        transaction,
+        timestamp: int
+    ) -> List[Dict]:
+        """
+        Updated batch file creation with proper conflict handling
+        Skips files with name conflicts instead of creating duplicates
+        """
+        if not files:
+            return []
+
+        valid_files = []
+        skipped_files = []
+
+        # Step 1: Filter out files with name conflicts
+        for file_data in files:
+            file_name = file_data["fileRecord"]["name"]
+
+            # Check for name conflicts using the updated validation
+            conflict_result = await self._check_name_conflict_in_parent(
+                kb_id=kb_id,
+                parent_folder_id=parent_folder_id,
+                item_name=file_name,
+                transaction=transaction
+            )
+
+            if conflict_result["has_conflict"]:
+                conflicts = conflict_result["conflicts"]
+                conflict_names = [c["name"] for c in conflicts]
+                self.logger.warning(f"⚠️ Skipping file due to name conflict: '{file_name}' conflicts with {conflict_names}")
+                skipped_files.append({
+                    "file_name": file_name,
+                    "reason": f"Name conflict with existing items: {conflict_names}",
+                    "conflicts": conflicts
+                })
+            else:
+                valid_files.append(file_data)
+
+        # Log skipping summary
+        if skipped_files:
+            self.logger.info(f"📋 Skipped {len(skipped_files)} files due to name conflicts, processing {len(valid_files)} files")
+
+        # If no valid files, return early
+        if not valid_files:
+            self.logger.warning("⚠️ No valid files to create after conflict filtering")
+            return []
+
+        # Step 2: Extract records and file records from valid files only
+        records = [f["record"] for f in valid_files]
+        file_records = [f["fileRecord"] for f in valid_files]
+
+        # Step 3: Create records and file records
+        await self.batch_upsert_nodes(records, CollectionNames.RECORDS.value, transaction)
+        await self.batch_upsert_nodes(file_records, CollectionNames.FILES.value, transaction)
+
+        # Step 4: Create relationships for valid files only
+        edges_to_create = []
+
+        for file_data in valid_files:
+            record_id = file_data["record"]["_key"]
+            file_id = file_data["fileRecord"]["_key"]
+
+            # Parent -> Record relationship (if has parent)
+            if parent_folder_id:
+                edges_to_create.append({
+                    "_from": f"files/{parent_folder_id}",
+                    "_to": f"records/{record_id}",
+                    "relationshipType": "PARENT_CHILD",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+            else:
+                # Record -> KB relationship (KB root)
+                edges_to_create.append({
+                    "_from": f"recordGroups/{kb_id}",
+                    "_to": f"records/{record_id}",
+                    "relationshipType": "PARENT_CHILD",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+
+            # Record -> File relationship
+            edges_to_create.append({
+                "_from": f"records/{record_id}",
+                "_to": f"files/{file_id}",
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+
+            # Record -> KB relationship (belongs to KB)
+            edges_to_create.append({
+                "_from": f"records/{record_id}",
+                "_to": f"recordGroups/{kb_id}",
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+
+        # Step 5: Batch create edges by type
+        parent_child_edges = [e for e in edges_to_create if e.get("relationshipType") == "PARENT_CHILD"]
+        is_of_type_edges = [e for e in edges_to_create if e["_to"].startswith("files/") and not e.get("relationshipType")]
+        belongs_to_kb_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/")]
+
+        if parent_child_edges:
+            await self.batch_create_edges(parent_child_edges, CollectionNames.RECORD_RELATIONS.value, transaction)
+        if is_of_type_edges:
+            await self.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value, transaction)
+        if belongs_to_kb_edges:
+            await self.batch_create_edges(belongs_to_kb_edges, CollectionNames.BELONGS_TO.value, transaction)
+
+        # Step 6: Store skipped files for reporting (optional)
+        if hasattr(self, '_current_upload_skipped_files'):
+            self._current_upload_skipped_files.extend(skipped_files)
+
+        self.logger.info(f"✅ Successfully created {len(valid_files)} files, skipped {len(skipped_files)} due to conflicts")
+
+        return valid_files
+
+    # ========== HELPER METHODS ==========
+
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> Dict:
+        """Shared validation logic for folder creation"""
+        try:
+            # Get user
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
+
+            user_key = user.get('_key')
+
+            # Check permissions
+            user_role = await self.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                return {
+                    "valid": False,
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient permissions. Role: {user_role}"
+                }
+
+            return {
+                "valid": True,
+                "user": user,
+                "user_key": user_key,
+                "user_role": user_role
+            }
+
+        except Exception as e:
+            return {"valid": False, "success": False, "code": 500, "reason": str(e)}
+
+    def _generate_upload_message(self, result: Dict, upload_type: str) -> str:
+        """Generate success message"""
+        total_created = result["total_created"]
+        folders_created = result["folders_created"]
+        failed_files = len(result.get("failed_files", []))
+
+        message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
+
+        if folders_created > 0:
+            message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
+
+        if failed_files > 0:
+            message += f". {failed_files} file{'s' if failed_files != 1 else ''} failed to upload"
+
+        return message + "."
+
+
+    async def _execute_upload_transaction(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+        folder_analysis: Dict,
+        validation_result: Dict
+    ) -> Dict:
+        """Unified transaction execution for all upload scenarios"""
+        try:
+            # Start transaction
+            transaction = self.db.begin_transaction(
+                write=[
+                    CollectionNames.FILES.value,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.BELONGS_TO.value,
+                ]
+            )
+
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+
+                # Step 1: Ensure all needed folders exist
+                folder_map = await self._ensure_folders_exist(
+                    kb_id=kb_id,
+                    org_id=org_id,
+                    folder_analysis=folder_analysis,
+                    validation_result=validation_result,
+                    transaction=transaction,
+                    timestamp=timestamp
+                )
+
+                # Step 2: Update file destinations with folder IDs
+                self._populate_file_destinations(folder_analysis, folder_map)
+
+                # Step 3: Create all records and relationships
+                creation_result = await self._create_records(
+                    kb_id=kb_id,
+                    files=files,
+                    folder_analysis=folder_analysis,
+                    transaction=transaction,
+                    timestamp=timestamp
+                )
+
+                if creation_result["total_created"] > 0 or len(folder_map) > 0:
+                    # Step 4: Commit transaction BEFORE event publishing
+                    await asyncio.to_thread(lambda: transaction.commit_transaction())
+                    self.logger.info("✅ Upload transaction committed successfully")
+                    # Step 5: Publish events AFTER successful commit
+                    try:
+                        await self._publish_upload_events(kb_id, {
+                            "created_files_data": creation_result["created_files_data"],
+                            "total_created": creation_result["total_created"]
+                        })
+                        self.logger.info(f"✅ Published events for {creation_result['total_created']} records")
+                    except Exception as event_error:
+                        self.logger.error(f"❌ Event publishing failed (records still created): {str(event_error)}")
+                        # Don't fail the main operation - records were successfully created
+
+                    return {
+                        "success": True,
+                        "total_created": creation_result["total_created"],
+                        "folders_created": len(folder_map),
+                        "created_folders": [
+                            {"id": folder_id}
+                            for folder_id in folder_map.values()
+                        ],
+                        "failed_files": creation_result["failed_files"],
+                        "created_files_data": creation_result["created_files_data"]
+                    }
+                else:
+                    # Nothing was created - abort transaction
+                    await asyncio.to_thread(lambda: transaction.abort_transaction())
+                    self.logger.info("🔄 Transaction aborted - no items to create")
+                    return {
+                        "success": True,
+                        "total_created": 0,
+                        "folders_created": 0,
+                        "created_folders": [],
+                        "failed_files": creation_result["failed_files"],
+                        "created_files_data": []
+                    }
+
+            except Exception as e:
+                if transaction:
+                    try:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        self.logger.info("🔄 Transaction aborted due to error")
+                    except Exception as abort_error:
+                        self.logger.error(f"❌ Failed to abort transaction: {str(abort_error)}")
+
+                self.logger.error(f"❌ Upload transaction failed: {str(e)}")
+                return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+
+
+        except Exception as e:
+            return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+
+
+
+    async def _validate_upload_context(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        parent_folder_id: Optional[str] = None
+    ) -> Dict:
+        """Unified validation for all upload scenarios"""
+        try:
+            # Get user
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                return self._validation_error(404, f"User not found: {user_id}")
+
+            user_key = user.get('_key')
+
+            # Check KB permissions
+            user_role = await self.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                return self._validation_error(403, f"Insufficient permissions. Role: {user_role}")
+
+            # Validate folder if specified
+            parent_folder = None
+            parent_path = "/"  # Default for KB root
+
+            if parent_folder_id:
+                # Validate folder exists and belongs to KB
+                folder_valid = await self.validate_folder_exists_in_kb(kb_id, parent_folder_id)
+                if not folder_valid:
+                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
+
+                # Get parent folder details
+                parent_folder = await self.get_document(parent_folder_id, CollectionNames.FILES.value)
+                if not parent_folder:
+                    return self._validation_error(404, f"Parent folder {parent_folder_id} not found")
+
+                parent_path = parent_folder.get("path", "/")
+
+            return {
+                "valid": True,
+                "user": user,
+                "user_key": user_key,
+                "user_role": user_role,
+                "parent_folder": parent_folder,
+                "parent_path": parent_path,
+                "upload_target": "folder" if parent_folder_id else "kb_root"
+            }
+
+        except Exception as e:
+            return self._validation_error(500, f"Validation failed: {str(e)}")
+
+    async def create_knowledge_base(
+        self,
+        kb_data:Dict,
+        permission_edge:Dict,
+        transaction:Optional[TransactionDatabase]=None
+    )-> Dict:
+        """Create knowledge base with permissions"""
+        try:
+            kb_name = kb_data.get('groupName', 'Unknown')
+            self.logger.info(f"🚀 Creating knowledge base: '{kb_name}' in ArangoDB")
+
+            # KB record group creation
+            await self.batch_upsert_nodes(
+                [kb_data], CollectionNames.RECORD_GROUPS.value,transaction=transaction
+            )
+
+            # user KB permission edge
+            await self.batch_create_edges(
+                [permission_edge],
+                CollectionNames.PERMISSIONS_TO_KB.value,transaction=transaction
+            )
+
+            self.logger.info(f"✅ Knowledge base created successfully: {kb_data['_key']}")
+            return {
+                "id": kb_data["_key"],
+                "name": kb_data["groupName"],
+                "success": True
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create knowledge base: {str(e)}")
+            raise
+
+    async def get_user_kb_permission(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
+        """Validate user knowledge permission"""
+        try:
+            self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR perm IN @@permissions_collection
+                FILTER perm._from == CONCAT('users/', @user_id)
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                RETURN perm
+            """
+
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "user_id": user_id,
+                    "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+                },
+            )
+
+            permission = next(cursor, None)
+
+            if permission:
+                role = permission.get("role")
+                self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
+                return role
+            else:
+                self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
+
+                # Debug: Let's see what permissions exist for this KB
+                debug_query = """
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    RETURN {
+                        from: perm._from,
+                        role: perm.role,
+                        type: perm.type
+                    }
+                """
+                debug_cursor = db.aql.execute(
+                    debug_query,
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+                    },
+                )
+                existing_perms = list(debug_cursor)
+                self.logger.info(f"🔍 Debug - All permissions for KB {kb_id}: {existing_perms}")
+
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
+            raise
+
+    async def get_knowledge_base(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[Dict]:
+        """Get knowledge base with user permissions"""
+        try:
+            db = transaction if transaction else self.db
+
+            #  Get the KB and folders
+            query = """
+            FOR kb IN @@recordGroups_collection
+                FILTER kb._key == @kb_id
+                // Get the user's role for this KB
+                LET user_perm = FIRST(
+                    FOR perm IN @@permissions_collection
+                        FILTER perm._from == @user_from
+                        FILTER perm._to == kb._id
+                        RETURN perm
+                )
+                LET user_role = user_perm ? user_perm.role : null
+
+                // Get folders
+                LET folders = (
+                    FOR edge IN @@kb_to_folder_edges
+                        FILTER edge._to == kb._id
+                        // Make sure the _from is actually a file document
+                        FILTER STARTS_WITH(edge._from, 'files/')
+                        LET folder = DOCUMENT(edge._from)
+                        FILTER folder != null AND folder.isFile == false
+                        RETURN {
+                            id: folder._key,
+                            name: folder.name,
+                            createdAtTimestamp: edge.createdAtTimestamp,
+                            updatedAtTimestamp: edge.updatedAtTimestamp,
+                            path: folder.path,
+                            webUrl: folder.webUrl,
+                            mimeType: folder.mimeType,
+                            sizeInBytes: folder.sizeInBytes
+                        }
+                )
+                RETURN {
+                    id: kb._key,
+                    name: kb.groupName,
+                    createdAtTimestamp: kb.createdAtTimestamp,
+                    updatedAtTimestamp: kb.updatedAtTimestamp,
+                    createdBy: kb.createdBy,
+                    userRole: user_role,
+                    folders: folders
+                }
+            """
+            cursor = db.aql.execute(query, bind_vars={
+                "kb_id": kb_id,
+                "user_from": f"users/{user_id}",
+                "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                "@kb_to_folder_edges": CollectionNames.BELONGS_TO.value,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            })
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Knowledge base retrieved successfully")
+                return result
+            else:
+                self.logger.warning("⚠️ Knowledge base not found")
+                return None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
+            raise
+
+    async def get_knowledge_base_by_id(
+        self,
+        kb_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """Get knowledge base by ID"""
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR kb IN @@recordGroups_collection
+                FILTER kb._key == @kb_id
+                FILTER kb.groupType == @kb_type
+                FILTER kb.connectorName == @kb_connector
+                RETURN kb
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "kb_id": kb_id,
+                "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
+            })
+
+            return next(cursor, None)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get knowledge base by ID: {str(e)}")
+            return None
+
+    async def list_user_knowledge_bases(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str] = None,
+        permissions: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """List knowledge bases with pagination, search, and filtering"""
+        try:
+            db = transaction if transaction else self.db
+
+            # Build filter conditions
+            filter_conditions = []
+
+            # Search filter
+            if search:
+                filter_conditions.append("LIKE(LOWER(kb.groupName), LOWER(@search_term))")
+
+            # Permission filter
+            if permissions:
+                filter_conditions.append("perm.role IN @permissions")
+
+            # Build WHERE clause
+            additional_filters = ""
+            if filter_conditions:
+                additional_filters = "AND " + " AND ".join(filter_conditions)
+
+            # Sort field mapping
+            sort_field_map = {
+                "name": "kb.groupName",
+                "createdAtTimestamp": "kb.createdAtTimestamp",
+                "updatedAtTimestamp": "kb.updatedAtTimestamp",
+                "userRole": "perm.role"
+            }
+            sort_field = sort_field_map.get(sort_by, "kb.groupName")
+            sort_direction = sort_order.upper()
+
+            # Main query with pagination
+            main_query = f"""
+            FOR perm IN @@permissions_collection
+                FILTER perm._from == @user_from
+                LET kb = DOCUMENT(perm._to)
+                FILTER kb != null
+                FILTER kb.orgId == @org_id
+                FILTER kb.groupType == @kb_type
+                FILTER kb.connectorName == @kb_connector
+                {additional_filters}
+                // Get all the folders for this KB
+                LET folders = (
+                    FOR edge IN @@belongs_to_kb
+                        FILTER edge._to == kb._id
+                        LET folder = DOCUMENT(edge._from)
+                        FILTER folder != null && folder.isFile == false
+                        RETURN {{
+                            id: folder._key,
+                            name: folder.name,
+                            createdAtTimestamp: edge.createdAtTimestamp,
+                            path: folder.path,
+                            webUrl: folder.webUrl
+                        }}
+                )
+                SORT {sort_field} {sort_direction}
+                LIMIT @skip, @limit
+                RETURN {{
+                    id: kb._key,
+                    name: kb.groupName,
+                    createdAtTimestamp: kb.createdAtTimestamp,
+                    updatedAtTimestamp: kb.updatedAtTimestamp,
+                    createdBy: kb.createdBy,
+                    userRole: perm.role,
+                    folders: folders
+                }}
+            """
+
+            # Count query
+            count_query = f"""
+            FOR perm IN @@count_permissions_collection
+                FILTER perm._from == @count_user_from
+                LET kb = DOCUMENT(perm._to)
+                FILTER kb != null
+                FILTER kb.orgId == @count_org_id
+                FILTER kb.groupType == @count_kb_type
+                FILTER kb.connectorName == @count_kb_connector
+                {additional_filters.replace('@search_term', '@count_search_term').replace('@permissions', '@count_permissions') if additional_filters else ''}
+                COLLECT WITH COUNT INTO total
+                RETURN total
+            """
+
+            # Available filters query
+            filters_query = """
+            FOR perm IN @@filters_permissions_collection
+                FILTER perm._from == @filters_user_from
+                LET kb = DOCUMENT(perm._to)
+                FILTER kb != null
+                FILTER kb.orgId == @filters_org_id
+                FILTER kb.groupType == @filters_kb_type
+                FILTER kb.connectorName == @filters_kb_connector
+                RETURN {
+                    permission: perm.role,
+                    kb_name: kb.groupName
+                }
+            """
+
+            # Bind variables for main query
+            main_bind_vars = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "skip": skip,
+                "limit": limit,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+            }
+
+            # Add search term if provided
+            if search:
+                main_bind_vars["search_term"] = f"%{search}%"
+
+            # Add permissions filter if provided
+            if permissions:
+                main_bind_vars["permissions"] = permissions
+
+            # Bind variables for count query
+            count_bind_vars = {
+                "count_user_from": f"users/{user_id}",
+                "count_org_id": org_id,
+                "count_kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "count_kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "@count_permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            # Add search term if provided for count query
+            if search:
+                count_bind_vars["count_search_term"] = f"%{search}%"
+
+            # Add permissions filter if provided for count query
+            if permissions:
+                count_bind_vars["count_permissions"] = permissions
+
+            # Bind variables for filters query
+            filters_bind_vars = {
+                "filters_user_from": f"users/{user_id}",
+                "filters_org_id": org_id,
+                "filters_kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "filters_kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "@filters_permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            # Execute queries
+            kbs_cursor = db.aql.execute(main_query, bind_vars=main_bind_vars)
+            count_cursor = db.aql.execute(count_query, bind_vars=count_bind_vars)
+            filters_cursor = db.aql.execute(filters_query, bind_vars=filters_bind_vars)
+
+            # Get results
+            kbs = list(kbs_cursor)
+            total_count = next(count_cursor, 0)
+            filter_data = list(filters_cursor)
+
+            # Build available filters
+            available_permissions = list(set(item["permission"] for item in filter_data))
+
+            available_filters = {
+                "permissions": available_permissions,
+                "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
+                "sortOrders": ["asc", "desc"]
+            }
+
+            self.logger.info(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total")
+            return kbs, total_count, available_filters
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list knowledge bases with pagination: {str(e)}")
+            return [], 0, {
+                "permissions": [],
+                "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
+                "sortOrders": ["asc", "desc"]
+            }
+
+    async def update_knowledge_base(
+        self,
+        kb_id: str,
+        updates: Dict,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool:
+        """Update knowledge base"""
+        try:
+            self.logger.info(f"🚀 Updating knowledge base {kb_id}")
+
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR kb IN @@kb_collection
+                FILTER kb._key == @kb_id
+                UPDATE kb WITH @updates IN @@kb_collection
+                RETURN NEW
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "kb_id": kb_id,
+                "updates": updates,
+                "@kb_collection": CollectionNames.RECORD_GROUPS.value,
+            })
+
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info("✅ Knowledge base updated successfully")
+                return True
+            else:
+                self.logger.warning("⚠️ Knowledge base not found")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
+            raise
+
+    async def find_folder_by_name_in_parent(
+        self,
+        kb_id: str,
+        folder_name: str,
+        parent_folder_id: Optional[str] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """
+        Find a folder by name within a specific parent (KB root or folder)
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            if parent_folder_id:
+                # Look for folder in specific parent folder
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET folder = DOCUMENT(edge._to)
+                    FILTER folder != null
+                    FILTER folder.isFile == false
+                    FILTER folder.recordGroupId == @kb_id
+                    FILTER LOWER(folder.name) == LOWER(@folder_name)
+                    RETURN folder
+                """
+
+                cursor = db.aql.execute(query, bind_vars={
+                    "parent_from": f"files/{parent_folder_id}",
+                    "folder_name": folder_name,
+                    "kb_id": kb_id,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                })
+            else:
+                # Look for folder in KB root
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @kb_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET folder = DOCUMENT(edge._to)
+                    FILTER folder != null
+                    FILTER folder.isFile == false
+                    FILTER folder.recordGroupId == @kb_id
+                    FILTER LOWER(folder.name) == LOWER(@folder_name)
+                    RETURN folder
+                """
+
+                cursor = db.aql.execute(query, bind_vars={
+                    "kb_from": f"recordGroups/{kb_id}",
+                    "folder_name": folder_name,
+                    "kb_id": kb_id,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                })
+
+            result = next(cursor, None)
+
+            if result:
+                self.logger.debug(f"✅ Found folder '{folder_name}' in parent")
+            else:
+                self.logger.debug(f"❌ Folder '{folder_name}' not found in parent")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            return None
+
+    async def navigate_to_folder_by_path(
+        self,
+        kb_id: str,
+        folder_path: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """
+        Navigate to a folder using folder names in the path
+        Example: "/folder1/subfolder2" -> Find folder1 in KB root, then subfolder2 in folder1
+        """
+        try:
+            if not folder_path or folder_path == "/":
+                return None
+
+            # Remove leading slash and split path
+            path_parts = folder_path.strip("/").split("/")
+            current_parent_id = None  # Start from KB root
+
+            for folder_name in path_parts:
+                if not folder_name:  # Skip empty parts
+                    continue
+
+                folder = await self.find_folder_by_name_in_parent(
+                    kb_id=kb_id,
+                    folder_name=folder_name,
+                    parent_folder_id=current_parent_id,
+                    transaction=transaction
+                )
+
+                if not folder:
+                    self.logger.debug(f"❌ Folder '{folder_name}' not found in path '{folder_path}'")
+                    return None
+
+                current_parent_id = folder["_key"]
+
+            # Return the final folder if we successfully navigated the entire path
+            return await self.get_file_record_by_id(current_parent_id, transaction)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to navigate to folder by path: {str(e)}")
+            return None
+
+    async def create_folder(
+        self,
+        kb_id: str,
+        folder_name: str,
+        org_id: str,
+        parent_folder_id: Optional[str] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """
+        Create folder using name-based validation
+        """
+        try:
+            folder_id = str(uuid.uuid4())
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                transaction = self.db.begin_transaction(
+                    write=[
+                        CollectionNames.FILES.value,
+                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.RECORD_RELATIONS.value,
+                    ]
+                )
+
+            location = "KB root" if parent_folder_id is None else f"folder {parent_folder_id}"
+            self.logger.info(f"🚀 Creating folder '{folder_name}' in {location}")
+
+            try:
+                # Step 1: Validate parent folder exists (if nested)
+                if parent_folder_id:
+                    parent_folder = await self.get_file_record_by_id(parent_folder_id, transaction)
+                    if not parent_folder:
+                        raise ValueError(f"Parent folder {parent_folder_id} not found")
+                    if parent_folder.get("isFile") is not False:
+                        raise ValueError(f"Parent {parent_folder_id} is not a folder")
+                    if parent_folder.get("recordGroupId") != kb_id:
+                        raise ValueError(f"Parent folder does not belong to KB {kb_id}")
+
+                    self.logger.info(f"✅ Validated parent folder: {parent_folder.get('name')}")
+
+                # Step 2: Check for name conflicts in the target location
+                existing_folder = await self.find_folder_by_name_in_parent(
+                    kb_id=kb_id,
+                    folder_name=folder_name,
+                    parent_folder_id=parent_folder_id,
+                    transaction=transaction
+                )
+
+                if existing_folder:
+                    self.logger.warning(f"⚠️ Name conflict: '{folder_name}' already exists in {location}")
+                    return {
+                        "folderId": existing_folder["_key"],
+                        "name": existing_folder["name"],
+                        "webUrl": existing_folder.get("webUrl", ""),
+                        "parent_folder_id": parent_folder_id,
+                        "exists": True,
+                        "success": True
+                    }
+
+                # Step 3: Create folder document (without path)
+                folder_data = {
+                    "_key": folder_id,
+                    "orgId": org_id,
+                    "recordGroupId": kb_id,
+                    "name": folder_name,
+                    "isFile": False,
+                    "extension": None,
+                    "mimeType": "application/vnd.folder",
+                    "sizeInBytes": 0,
+                    "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
+                }
+
+                # Step 4: Create folder in database
+                await self.batch_upsert_nodes([folder_data], CollectionNames.FILES.value, transaction)
+
+                # Step 5: Create relationships
+                edges_to_create = []
+
+                # Always create KB relationship (for easy querying)
+                kb_relationship_edge = {
+                    "_from": f"{CollectionNames.FILES.value}/{folder_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}",
+                    "entityType": Connectors.KNOWLEDGE_BASE.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                edges_to_create.append((kb_relationship_edge, CollectionNames.BELONGS_TO.value))
+
+                # Create parent-child relationship
+                if parent_folder_id:
+                    # Nested folder: Parent Folder -> Child Folder
+                    parent_child_edge = {
+                        "_from": f"{CollectionNames.FILES.value}/{parent_folder_id}",
+                        "_to": f"{CollectionNames.FILES.value}/{folder_id}",
+                        "relationshipType": "PARENT_CHILD",
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
+                    edges_to_create.append((parent_child_edge, CollectionNames.RECORD_RELATIONS.value))
+                else:
+                    # Root folder: KB -> Folder
+                    kb_parent_edge = {
+                        "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}",
+                        "_to": f"{CollectionNames.FILES.value}/{folder_id}",
+                        "relationshipType": "PARENT_CHILD",
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
+                    edges_to_create.append((kb_parent_edge, CollectionNames.RECORD_RELATIONS.value))
+
+                # Step 6: Create all edges
+                for edge_data, collection in edges_to_create:
+                    await self.batch_create_edges([edge_data], collection, transaction)
+
+                # Step 7: Commit transaction
+                if should_commit:
+                    await asyncio.to_thread(lambda: transaction.commit_transaction())
+
+                self.logger.info(f"✅ Folder '{folder_name}' created successfully")
+                return {
+                    "id": folder_id,
+                    "name": folder_name,
+                    "webUrl": folder_data["webUrl"],
+                    "exists": False,
+                    "success": True
+                }
+
+            except Exception as inner_error:
+                if should_commit:
+                    try:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        self.logger.info("🔄 Transaction aborted after error")
+                    except Exception as abort_error:
+                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                raise inner_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create folder '{folder_name}': {str(e)}")
+            raise
+
+    async def update_folder(
+        self,
+        folder_id:str,
+        updates:Dict,
+        transaction: Optional[TransactionDatabase]= None
+    )-> bool:
+        """ Update folder """
+        try:
+            self.logger.info(f"🚀 Updating folder {folder_id}")
+
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR folder IN @@folder_collection
+                FILTER folder._key == @folder_id
+                UPDATE folder WITH @updates IN @@folder_collection
+                RETURN NEW
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_id": folder_id,
+                "updates": updates,
+                "@folder_collection": CollectionNames.FILES.value,
+            })
+
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info("✅ Folder updated successfully")
+                return True
+            else:
+                self.logger.warning("⚠️ Folder not found")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update Folder : {str(e)}")
+            raise
+
+    async def validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """
+        Validate that a folder exists, is valid, and belongs to a specific knowledge base.
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            LET folder = DOCUMENT(@@files_collection, @folder_id)
+            LET folder_valid = folder != null AND folder.isFile == false
+            LET relationship = folder_valid ? FIRST(
+                FOR edge IN @@belongs_to_collection
+                    FILTER edge._from == @folder_from
+                    FILTER edge._to == @kb_to
+                    FILTER edge.entityType == @entity_type
+                    RETURN 1
+            ) : null
+            RETURN folder_valid AND relationship != null
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_id": folder_id,
+                "folder_from": f"files/{folder_id}",
+                "kb_to": f"recordGroups/{kb_id}",
+                "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                "@files_collection": CollectionNames.FILES.value,
+                "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
+            })
+
+            result = next(cursor, False)
+
+            if not result:
+                self.logger.warning(f"⚠️ Folder {folder_id} validation failed for KB {kb_id}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            return False
+
+    async def validate_record_in_folder(self, folder_id: str, record_id: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """Check if a record is a child of a folder via PARENT_CHILD edge"""
+        try:
+            db = transaction if transaction else self.db
+            query = """
+            FOR edge IN @@record_relations
+                FILTER edge._from == @folder_from
+                FILTER edge._to == @record_to
+                FILTER edge.relationshipType == "PARENT_CHILD"
+                RETURN edge
+            """
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_from": f"files/{folder_id}",
+                "record_to": f"records/{record_id}",
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            })
+            result = next(cursor, None)
+            return result is not None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate record {record_id} in folder {folder_id}: {str(e)}")
+            return False
+
+    async def validate_record_in_kb(self, kb_id: str, record_id: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """Check if a record belongs to a KB via BELONGS_TO_KB edge"""
+        try:
+            db = transaction if transaction else self.db
+            query = """
+            FOR edge IN @@belongs_to_kb
+                FILTER edge._from == @record_from
+                FILTER edge._to == @kb_to
+                RETURN edge
+            """
+            cursor = db.aql.execute(query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "kb_to": f"recordGroups/{kb_id}",
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+            })
+            result = next(cursor, None)
+            return result is not None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate record {record_id} in KB {kb_id}: {str(e)}")
+            return False
+
+    async def get_file_record_by_id(self, file_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        try:
+            db = transaction if transaction else self.db
+            query = """
+            FOR file IN @@files
+                FILTER file._key == @file_id
+                RETURN file
+            """
+            cursor = db.aql.execute(query, bind_vars={
+                "file_id": file_id,
+                "@files": CollectionNames.FILES.value,
+            })
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch file record {file_id}: {str(e)}")
+            return None
+
+    async def update_record(
+        self,
+        record_id: str,
+        user_id: str,
+        updates: Dict,
+        file_metadata: Optional[Dict] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """
+        Update a record by ID with automatic KB and permission detection
+        This method automatically:
+        1. Validates user exists
+        2. Gets the record and finds its KB via belongs_to_kb edge
+        3. Checks user permissions on that KB
+        4. Determines if record is in a folder or KB root
+        5. Updates the record directly (no redundant validation)
+        Args:
+            record_id: The record to update
+            user_id: External user ID doing the update
+            updates: Dictionary of fields to update
+            file_metadata: Optional file metadata for file uploads
+            transaction: Optional existing transaction
+        """
+        try:
+            self.logger.info(f"🚀 Updating record {record_id} by user {user_id}")
+            self.logger.info(f"Record updates: {updates}")
+            self.logger.info(f"File metadata: {file_metadata}")
+
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                try:
+                    transaction = self.db.begin_transaction(
+                        write=[
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.FILES.value,
+                        ]
+                    )
+                    self.logger.info("🔄 Transaction created for record update")
+                except Exception as tx_error:
+                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    return {
+                        "success": False,
+                        "code": 500,
+                        "reason": f"Transaction creation failed: {str(tx_error)}"
+                    }
+
+            try:
+                # Step 1: Get user by external user ID
+                user = await self.get_user_by_user_id(user_id=user_id)
+                if not user:
+                    self.logger.error(f"❌ User not found: {user_id}")
+                    if should_commit:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"User not found: {user_id}"
+                    }
+
+                user_key = user.get('_key')
+                self.logger.info(f"✅ Found user: {user_key}")
+
+                # Step 2: Get record, KB context, permissions, and file record in one query
+                context_query = """
+                LET record = DOCUMENT("records", @record_id)
+                FILTER record != null
+                FILTER record.isDeleted != true
+                // Find KB via belongs_to_kb edge
+                LET kb_edge = FIRST(
+                    FOR edge IN @@belongs_to_kb
+                        FILTER edge._from == record._id
+                        FILTER STARTS_WITH(edge._to, 'recordGroups/')
+                        RETURN edge
+                )
+                LET kb = kb_edge ? DOCUMENT(kb_edge._to) : null
+                // Check if record is in a folder via PARENT_CHILD relationship
+                LET folder_edge = FIRST(
+                    FOR fld_edge IN @@record_relations
+                        FILTER fld_edge._to == record._id
+                        FILTER fld_edge.relationshipType == "PARENT_CHILD"
+                        FILTER STARTS_WITH(fld_edge._from, 'files/')
+                        RETURN fld_edge
+                )
+                LET parent_folder = folder_edge ? DOCUMENT(folder_edge._from) : null
+                // Check user permissions on the KB
+                LET user_permission = kb ? FIRST(
+                    FOR perm IN @@permissions_to_kb
+                        FILTER perm._from == CONCAT('users/', @user_key)
+                        FILTER perm._to == kb._id
+                        FILTER perm.type == "USER"
+                        RETURN perm.role
+                ) : null
+                // Get associated file record
+                LET file_record = FIRST(
+                    FOR isEdge IN @@is_of_type
+                        FILTER isEdge._from == record._id
+                        LET fileRecord = DOCUMENT(isEdge._to)
+                        FILTER fileRecord != null
+                        RETURN fileRecord
+                )
+                RETURN {
+                    record_exists: record != null,
+                    record: record,
+                    kb_exists: kb != null,
+                    kb: kb,
+                    user_permission: user_permission,
+                    has_permission: user_permission != null AND user_permission IN ["OWNER", "WRITER"],
+                    parent_folder: parent_folder,
+                    folder_id: parent_folder ? parent_folder._key : null,
+                    file_record: file_record,
+                    validation_passed: record != null AND kb != null AND user_permission != null AND user_permission IN ["OWNER", "WRITER"]
+                }
+                """
+
+                cursor = transaction.aql.execute(context_query, bind_vars={
+                    "record_id": record_id,
+                    "user_key": user_key,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                })
+
+                context = next(cursor, {})
+
+                # Step 3: Validate context and permissions
+                if not context.get("validation_passed"):
+                    if should_commit:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+
+                    if not context.get("record_exists"):
+                        error_reason = f"Record {record_id} not found or deleted"
+                        error_code = 404
+                    elif not context.get("kb_exists"):
+                        error_reason = f"Knowledge base not found for record {record_id}"
+                        error_code = 500
+                    elif not context.get("has_permission"):
+                        user_perm = context.get("user_permission")
+                        if user_perm is None:
+                            error_reason = f"User {user_id} has no access to the knowledge base containing record {record_id}"
+                            error_code = 403
+                        else:
+                            error_reason = f"User {user_id} has insufficient permissions ({user_perm}) to update record {record_id}. Required: OWNER or WRITER"
+                            error_code = 403
+                    else:
+                        error_reason = "Unknown validation error"
+                        error_code = 500
+
+                    self.logger.error(f"❌ Validation failed: {error_reason}")
+                    return {
+                        "success": False,
+                        "code": error_code,
+                        "reason": error_reason
+                    }
+
+                # Step 4: Extract validated context
+                current_record = context["record"]
+                current_file_record = context.get("file_record")
+                kb = context["kb"]
+                kb_id = kb["_key"]
+                folder_id = context.get("folder_id")
+                user_permission = context["user_permission"]
+
+                self.logger.info("✅ Context validated:")
+                self.logger.info(f"   📚 KB: {kb_id} ({kb.get('groupName', 'Unknown')})")
+                self.logger.info(f"   📁 Folder: {folder_id or 'KB Root'}")
+                self.logger.info(f"   🔐 Permission: {user_permission}")
+
+                # Step 5: Prepare update data (no redundant validation needed)
+                timestamp = get_epoch_timestamp_in_ms()
+                version = (current_record.get("version", 0)) + 1
+                processed_updates = {
+                    **updates,
+                    "version": version,
+                    "updatedAtTimestamp": timestamp
+                }
+
+                # Handle file upload case
+                if file_metadata:
+                    sourceLastModifiedTimestamp = file_metadata.get("lastModified", timestamp)
+                    processed_updates.update({
+                        "sourceCreatedAtTimestamp": sourceLastModifiedTimestamp,
+                        "sourceLastModifiedTimestamp": sourceLastModifiedTimestamp,
+                    })
+
+                    # Set record name from file if provided
+                    original_name = file_metadata.get("originalname", "")
+                    if original_name and "." in original_name:
+                        last_dot = original_name.rfind(".")
+                        if last_dot > 0:
+                            processed_updates["recordName"] = original_name[:last_dot]
+
+                # Step 6: Update the record directly
+                record_update_query = """
+                FOR record IN @@records_collection
+                    FILTER record._key == @record_id
+                    UPDATE record WITH @updates IN @@records_collection
+                    RETURN NEW
+                """
+
+                cursor = transaction.aql.execute(record_update_query, bind_vars={
+                    "record_id": record_id,
+                    "updates": processed_updates,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                })
+
+                updated_record = next(cursor, None)
+
+                if not updated_record:
+                    if should_commit:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                    return {
+                        "success": False,
+                        "code": 500,
+                        "reason": f"Failed to update record {record_id}"
+                    }
+
+                # Step 7: Update file record if file metadata provided
+                file_updated = False
+                updated_file = current_file_record
+
+                if file_metadata and current_file_record:
+                    file_updates = {}
+
+                    if "originalname" in file_metadata:
+                        file_updates["name"] = file_metadata["originalname"]
+
+                    if "size" in file_metadata:
+                        file_updates["sizeInBytes"] = file_metadata["size"]
+
+                    if file_updates:
+                        file_update_query = """
+                        FOR file IN @@files_collection
+                            FILTER file._key == @file_key
+                            UPDATE file WITH @file_updates IN @@files_collection
+                            RETURN NEW
+                        """
+
+                        try:
+                            file_cursor = transaction.aql.execute(file_update_query, bind_vars={
+                                "file_key": current_file_record["_key"],
+                                "file_updates": file_updates,
+                                "@files_collection": CollectionNames.FILES.value,
+                            })
+
+                            updated_file = next(file_cursor, None)
+                            if updated_file:
+                                file_updated = True
+                                self.logger.info(f"✅ File metadata updated for record {record_id}")
+
+                        except Exception as file_error:
+                            self.logger.error(f"❌ Failed to update file metadata: {str(file_error)}")
+                            # Continue without failing the entire operation
+
+                # Step 8: Commit transaction
+                if should_commit:
+                    self.logger.info("💾 Committing record update transaction...")
+                    try:
+                        await asyncio.to_thread(lambda: transaction.commit_transaction())
+                        self.logger.info("✅ Transaction committed successfully!")
+                    except Exception as commit_error:
+                        self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                        try:
+                            await asyncio.to_thread(lambda: transaction.abort_transaction())
+                            self.logger.info("🔄 Transaction aborted after commit failure")
+                        except Exception as abort_error:
+                            self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        return {
+                            "success": False,
+                            "code": 500,
+                            "reason": f"Transaction commit failed: {str(commit_error)}"
+                        }
+
+                # Step 9: Publish update event (after successful commit)
+                try:
+                    update_payload = await self._create_update_record_event_payload(
+                        updated_record, updated_file
+                    )
+                    if update_payload:
+                        await self._publish_record_event("updateRecord", update_payload)
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish update event: {str(event_error)}")
+                    # Don't fail the main operation for event publishing errors
+
+                self.logger.info(f"✅ Record {record_id} updated successfully with auto-detected context")
+
+                return {
+                    "success": True,
+                    "updatedRecord": updated_record,
+                    "updatedFile": updated_file,
+                    "fileUpdated": file_updated,
+                    "recordId": record_id,
+                    "timestamp": timestamp,
+                    "location": "folder" if folder_id else "kb_root",
+                    "folderId": folder_id,
+                    "kb": kb,
+                    "userPermission": user_permission,
+                }
+
+            except Exception as db_error:
+                self.logger.error(f"❌ Database error during record update: {str(db_error)}")
+                if should_commit and transaction:
+                    try:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        self.logger.info("🔄 Transaction aborted due to error")
+                    except Exception as abort_error:
+                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                return {
+                    "success": False,
+                    "code": 500,
+                    "reason": f"Database error: {str(db_error)}"
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update record {record_id}: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Service error: {str(e)}"
+            }
+
+    async def delete_records(
+        self,
+        record_ids: List[str],
+        kb_id: str,
+        folder_id: Optional[str] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict:
+        """
+        Delete multiple records and publish delete events for each
+        Returns details about successfully deleted records for event publishing
+        """
+        try:
+            if not record_ids:
+                return {
+                    "success": True,
+                    "deleted_records": [],
+                    "failed_records": [],
+                    "total_requested": 0,
+                    "successfully_deleted": 0,
+                    "failed_count": 0
+                }
+
+            self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from {'folder ' + folder_id if folder_id else 'KB root'}")
+
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                try:
+                    transaction = self.db.begin_transaction(
+                        write=[
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                            CollectionNames.BELONGS_TO.value,
+                        ]
+                    )
+                    self.logger.info("🔄 Transaction created for bulk record deletion")
+                except Exception as tx_error:
+                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    return {
+                        "success": False,
+                        "reason": f"Transaction creation failed: {str(tx_error)}"
+                    }
+
+            try:
+                # Step 1: Get complete record details for validation and event publishing
+                self.logger.info("🔍 Step 1: Getting record details for event publishing...")
+
+                validation_query = """
+                LET records_with_details = (
+                    FOR rid IN @record_ids
+                        LET record = DOCUMENT("records", rid)
+                        LET record_exists = record != null
+                        LET record_not_deleted = record_exists ? record.isDeleted != true : false
+                        // Check KB relationship
+                        LET kb_relationship = record_exists ? FIRST(
+                            FOR edge IN @@belongs_to_kb
+                                FILTER edge._from == CONCAT('records/', rid)
+                                FILTER edge._to == CONCAT('recordGroups/', @kb_id)
+                                RETURN edge
+                        ) : null
+                        // Check folder relationship if folder_id provided
+                        LET folder_relationship = @folder_id ? (
+                            record_exists ? FIRST(
+                                FOR edge_rel IN @@record_relations
+                                    FILTER edge_rel._to == CONCAT('records/', rid)
+                                    FILTER edge_rel._from == CONCAT('files/', @folder_id)
+                                    FILTER edge_rel.relationshipType == "PARENT_CHILD"
+                                    RETURN edge_rel
+                            ) : null
+                        ) : true
+                        // Get associated file record
+                        LET file_record = record_exists ? FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == CONCAT('records/', rid)
+                                LET fileRec = DOCUMENT(isEdge._to)
+                                FILTER fileRec != null
+                                RETURN fileRec
+                        ) : null
+                        LET is_valid = record_exists AND record_not_deleted AND kb_relationship != null AND folder_relationship != null
+                        RETURN {
+                            record_id: rid,
+                            record: record,
+                            file_record: file_record,
+                            is_valid: is_valid,
+                            validation_errors: is_valid ? [] : [
+                                !record_exists ? "Record not found" : null,
+                                record_exists AND !record_not_deleted ? "Record already deleted" : null,
+                                kb_relationship == null ? "Not in specified KB" : null,
+                                folder_relationship == null ? "Not in specified folder" : null
+                            ]
+                        }
+                )
+                LET valid_records = records_with_details[* FILTER CURRENT.is_valid]
+                LET invalid_records = records_with_details[* FILTER !CURRENT.is_valid]
+                RETURN {
+                    valid_records: valid_records,
+                    invalid_records: invalid_records,
+                    total_valid: LENGTH(valid_records),
+                    total_invalid: LENGTH(invalid_records)
+                }
+                """
+
+                cursor = transaction.aql.execute(validation_query, bind_vars={
+                    "record_ids": record_ids,
+                    "kb_id": kb_id,
+                    "folder_id": folder_id,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                })
+
+                validation_result = next(cursor, {})
+
+                valid_records = validation_result.get("valid_records", [])
+                invalid_records = validation_result.get("invalid_records", [])
+
+                self.logger.info(f"📋 Validation complete: {len(valid_records)} valid, {len(invalid_records)} invalid")
+
+                deleted_records = []
+                failed_records = []
+
+                # Add invalid records to failed list
+                for invalid_record in invalid_records:
+                    errors = [err for err in invalid_record["validation_errors"] if err]
+                    failed_records.append({
+                        "record_id": invalid_record["record_id"],
+                        "reason": ", ".join(errors) if errors else "Record validation failed"
+                    })
+
+                # If no valid records found, return early
+                if not valid_records:
+                    if should_commit:
+                        try:
+                            await asyncio.to_thread(lambda: transaction.commit_transaction())
+                            self.logger.info("✅ Transaction committed (no records to delete)")
+                        except Exception as commit_error:
+                            self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                            try:
+                                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                            except Exception as abort_error:
+                                self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+
+                    self.logger.info("✅ No valid records found to delete")
+                    return {
+                        "success": True,
+                        "deleted_records": [],
+                        "failed_records": failed_records,
+                        "total_requested": len(record_ids),
+                        "successfully_deleted": 0,
+                        "failed_count": len(failed_records),
+                        "files_deleted": 0,
+                        "location": "folder" if folder_id else "kb_root",
+                        "folder_id": folder_id,
+                        "kb_id": kb_id,
+                        "message": "Records already deleted or not found"
+                    }
+
+                # Store records for event publishing before deletion
+                records_for_events = []
+                for valid_record in valid_records:
+                    records_for_events.append({
+                        "record": valid_record["record"],
+                        "file_record": valid_record["file_record"]
+                    })
+
+                # Step 2: Delete edges, file records, and records
+                self.logger.info("🗑️ Step 2: Deleting records and associated data...")
+
+                valid_record_ids = [r["record_id"] for r in valid_records]
+                file_record_ids = [r["file_record"]["_key"] for r in valid_records if r["file_record"]]
+
+                # Delete edges
+                if valid_record_ids:
+                    # Delete all edges related to these records
+                    edges_cleanup_query = """
+                    FOR record_id IN @record_ids
+                        // Delete record relations edges
+                        FOR rec_rel_edge IN @@record_relations
+                            FILTER rec_rel_edge._from == CONCAT('records/', record_id) OR rec_rel_edge._to == CONCAT('records/', record_id)
+                            REMOVE rec_rel_edge IN @@record_relations
+                        // Delete is_of_type edges
+                        FOR iot_edge IN @@is_of_type
+                            FILTER iot_edge._from == CONCAT('records/', record_id)
+                            REMOVE iot_edge IN @@is_of_type
+                        // Delete belongs_to_kb edges
+                        FOR btk_edge IN @@belongs_to_kb
+                            FILTER btk_edge._from == CONCAT('records/', record_id)
+                            REMOVE btk_edge IN @@belongs_to_kb
+                    """
+                    transaction.aql.execute(edges_cleanup_query, bind_vars={
+                        "record_ids": valid_record_ids,
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    })
+                    self.logger.info(f"✅ Deleted edges for {len(valid_record_ids)} records")
+
+                # Delete file records
+                if file_record_ids:
+                    file_records_delete_query = """
+                    FOR file_key IN @file_keys
+                        REMOVE file_key IN @@files_collection
+                    """
+                    transaction.aql.execute(file_records_delete_query, bind_vars={
+                        "file_keys": file_record_ids,
+                        "@files_collection": CollectionNames.FILES.value,
+                    })
+                    self.logger.info(f"✅ Deleted {len(file_record_ids)} file records")
+
+                # Delete records and track successful deletions
+                if valid_record_ids:
+                    records_delete_query = """
+                    FOR record_key IN @record_keys
+                        LET record_doc = DOCUMENT(@@records_collection, record_key)
+                        FILTER record_doc != null
+                        REMOVE record_doc IN @@records_collection
+                        RETURN OLD
+                    """
+
+                    cursor = transaction.aql.execute(records_delete_query, bind_vars={
+                        "record_keys": valid_record_ids,
+                        "@records_collection": CollectionNames.RECORDS.value,
+                    })
+
+                    actually_deleted = list(cursor)
+                    deleted_records = [
+                        {"record_id": record["_key"], "name": record.get("recordName", "Unknown")}
+                        for record in actually_deleted
+                    ]
+
+                    self.logger.info(f"✅ Deleted {len(deleted_records)} records")
+
+                # Step 3: Commit transaction
+                if should_commit:
+                    self.logger.info("💾 Committing bulk deletion transaction...")
+                    try:
+                        await asyncio.to_thread(lambda: transaction.commit_transaction())
+                        self.logger.info("✅ Transaction committed successfully!")
+                    except Exception as commit_error:
+                        self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                        try:
+                            await asyncio.to_thread(lambda: transaction.abort_transaction())
+                            self.logger.info("🔄 Transaction aborted after commit failure")
+                        except Exception as abort_error:
+                            self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        return {
+                            "success": False,
+                            "reason": f"Transaction commit failed: {str(commit_error)}"
+                        }
+
+                # Step 4: Publish delete events for successfully deleted records
+                try:
+                    delete_event_tasks = []
+                    for record_data in records_for_events:
+                        if any(d["record_id"] == record_data["record"]["_key"] for d in deleted_records):
+                            # Only publish events for actually deleted records
+                            delete_payload = await self._create_deleted_record_event_payload(
+                                record_data["record"], record_data["file_record"]
+                            )
+                            if delete_payload:
+                                delete_event_tasks.append(
+                                    self._publish_record_event("deleteRecord", delete_payload)
+                                )
+
+                    if delete_event_tasks:
+                        await asyncio.gather(*delete_event_tasks, return_exceptions=True)
+                        self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records")
+
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish delete events: {str(event_error)}")
+                    # Don't fail the main operation for event publishing errors
+
+                success_count = len(deleted_records)
+                failed_count = len(failed_records)
+
+                self.logger.info(f"🎉 Bulk deletion completed: {success_count} deleted, {failed_count} failed")
+
+                return {
+                    "success": True,
+                    "deleted_records": deleted_records,
+                    "failed_records": failed_records,
+                    "total_requested": len(record_ids),
+                    "successfully_deleted": success_count,
+                    "failed_count": failed_count,
+                    "files_deleted": len(file_record_ids),
+                    "location": "folder" if folder_id else "kb_root",
+                    "folder_id": folder_id,
+                    "kb_id": kb_id
+                }
+
+            except Exception as db_error:
+                self.logger.error(f"❌ Database error during bulk deletion: {str(db_error)}")
+                if should_commit and transaction:
+                    try:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        self.logger.info("🔄 Transaction aborted due to error")
+                    except Exception as abort_error:
+                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                raise db_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed bulk record deletion: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Service error: {str(e)}"
+            }
+
+    async def validate_users_exist(
+        self,
+        user_ids: List[str],
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[str]:
+        """Validate which users exist in the database"""
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR user_id IN @user_ids
+                LET user = FIRST(
+                    FOR user IN @@users_collection
+                        FILTER user._key == user_id
+                        RETURN user._key
+                )
+                FILTER user != null
+                RETURN user
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "user_ids": user_ids,
+                "@users_collection": CollectionNames.USERS.value,
+            })
+
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate users exist: {str(e)}")
+            return []
+
+    async def get_existing_kb_permissions(
+        self,
+        kb_id: str,
+        user_ids: List[str],
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict[str, str]:
+        """Get existing permissions for specified users on a KB"""
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR user_id IN @user_ids
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', user_id)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    RETURN {
+                        user_id: user_id,
+                        role: perm.role
+                    }
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "user_ids": user_ids,
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            })
+
+            result = {}
+            for perm in cursor:
+                result[perm["user_id"]] = perm["role"]
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get existing KB permissions: {str(e)}")
+            return {}
+
+    async def create_kb_permissions(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        role: str
+    ) -> Dict:
+        """Create kb permissions for users and teams - Optimized version"""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Single comprehensive query to validate, check existing permissions, and prepare data
+            main_query = """
+            // Get requester info and validate ownership in one go
+            LET requester_info = FIRST(
+                FOR user IN @@users_collection
+                FILTER user.userId == @requester_id
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', user._key)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == "USER"
+                    FILTER perm.role == "OWNER"
+                RETURN {user_key: user._key, is_owner: true}
+            )
+
+            // Quick KB existence check
+            LET kb_exists = LENGTH(FOR kb IN @@recordGroups_collection FILTER kb._key == @kb_id LIMIT 1 RETURN 1) > 0
+
+            // Process all users and their current permissions in one pass
+            LET user_operations = (
+                FOR user_id IN @user_ids
+                    LET user = FIRST(FOR u IN @@users_collection FILTER u._key == user_id RETURN u)
+                    LET current_perm = user ? FIRST(
+                        FOR perm IN @@permissions_collection
+                        FILTER perm._from == CONCAT('users/', user._key)
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER perm.type == "USER"
+                        RETURN perm
+                    ) : null
+
+                    FILTER user != null  // Skip non-existent users
+
+                    LET operation = current_perm == null ? "insert" :
+                                (current_perm.role != @role ? "update" : "skip")
+
+                    RETURN {
+                        user_id: user_id,
+                        user_key: user._key,
+                        userId: user.userId,
+                        name: user.fullName,
+                        operation: operation,
+                        current_role: current_perm ? current_perm.role : null,
+                        perm_key: current_perm ? current_perm._key : null
+                    }
+            )
+
+            // Process all teams and their current permissions in one pass
+            LET team_operations = (
+                FOR team_id IN @team_ids
+                    LET team = FIRST(FOR t IN @@teams_collection FILTER t._key == team_id RETURN t)
+                    LET current_perm = team ? FIRST(
+                        FOR perm IN @@permissions_collection
+                        FILTER perm._from == CONCAT('teams/', team._key)
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER perm.type == "TEAM"
+                        RETURN perm
+                    ) : null
+
+                    FILTER team != null  // Skip non-existent teams
+
+                    LET operation = current_perm == null ? "insert" :
+                                (current_perm.role != @role ? "update" : "skip")
+
+                    RETURN {
+                        team_id: team_id,
+                        team_key: team._key,
+                        name: team.name,
+                        operation: operation,
+                        current_role: current_perm ? current_perm.role : null,
+                        perm_key: current_perm ? current_perm._key : null
+                    }
+            )
+
+            RETURN {
+                is_valid: requester_info != null AND kb_exists,
+                requester_found: requester_info != null,
+                kb_exists: kb_exists,
+                user_operations: user_operations,
+                team_operations: team_operations,
+                users_to_insert: user_operations[* FILTER CURRENT.operation == "insert"],
+                users_to_update: user_operations[* FILTER CURRENT.operation == "update"],
+                users_skipped: user_operations[* FILTER CURRENT.operation == "skip"],
+                teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
+                teams_to_update: team_operations[* FILTER CURRENT.operation == "update"],
+                teams_skipped: team_operations[* FILTER CURRENT.operation == "skip"]
+            }
+            """
+
+            cursor = self.db.aql.execute(main_query, bind_vars={
+                "kb_id": kb_id,
+                "requester_id": requester_id,
+                "user_ids": user_ids,
+                "team_ids": team_ids,
+                "role": role,
+                "@users_collection": CollectionNames.USERS.value,
+                "@teams_collection": CollectionNames.TEAMS.value,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+            })
+
+            result = next(cursor, {})
+
+            # Fast validation
+            if not result.get("is_valid"):
+                if not result.get("requester_found"):
+                    return {"success": False, "reason": "Requester not found or not owner", "code": 403}
+                if not result.get("kb_exists"):
+                    return {"success": False, "reason": "Knowledge base not found", "code": 404}
+
+            users_to_insert = result.get("users_to_insert", [])
+            users_skipped = result.get("users_skipped", [])
+            teams_to_insert = result.get("teams_to_insert", [])
+            teams_skipped = result.get("teams_skipped", [])
+
+            # Prepare batch operations
+            operations = []
+
+            # Batch insert new permissions
+            if users_to_insert or teams_to_insert:
+                insert_docs = []
+
+                for user_data in users_to_insert:
+                    insert_docs.append({
+                        "_from": f"users/{user_data['user_key']}",
+                        "_to": f"recordGroups/{kb_id}",
+                        "externalPermissionId": "",
+                        "type": "USER",
+                        "role": role,
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                        "lastUpdatedTimestampAtSource": timestamp,
+                    })
+
+                for team_data in teams_to_insert:
+                    insert_docs.append({
+                        "_from": f"teams/{team_data['team_key']}",
+                        "_to": f"recordGroups/{kb_id}",
+                        "externalPermissionId": "",
+                        "type": "TEAM",
+                        "role": role,
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                        "lastUpdatedTimestampAtSource": timestamp,
+                    })
+
+                if insert_docs:
+                    operations.append((
+                        "FOR doc IN @docs INSERT doc INTO @@permissions_collection",
+                        {"docs": insert_docs, "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value}
+                    ))
+
+            # Execute all operations in sequence (could be made parallel if needed)
+            for query, bind_vars in operations:
+                self.db.aql.execute(query, bind_vars=bind_vars)
+
+            # Build optimized response
+            granted_count = len(users_to_insert) + len(teams_to_insert)
+
+            final_result = {
+                "success": True,
+                "grantedCount": granted_count,
+                "grantedUsers": [u["user_id"] for u in users_to_insert],
+                "grantedTeams": [t["team_id"] for t in teams_to_insert],
+                "role": role,
+                "kbId": kb_id,
+                "details": {
+                    "granted": {
+                        "users": [{"user_key": u["user_id"], "userId": u["userId"], "name": u["name"]} for u in users_to_insert],
+                        "teams": [{"team_key": t["team_id"], "name": t["name"]} for t in teams_to_insert]
+                    },
+                    "skipped": {
+                        "users": [{"user_key": u["user_id"], "userId": u["userId"], "name": u["name"], "role": u["current_role"]} for u in users_skipped],
+                        "teams": [{"team_key": t["team_id"], "name": t["name"], "role": t["current_role"]} for t in teams_skipped]
+                    }
+                }
+            }
+
+            self.logger.info(f"Optimized batch operation: {granted_count} granted, {len(users_skipped + teams_skipped)} skipped")
+            return final_result
+
+        except Exception as e:
+            self.logger.error(f"Failed optimized batch operation: {str(e)}")
+            return {"success": False, "reason": f"Database error: {str(e)}", "code": 500}
+
+    async def update_kb_permission(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        new_role: str
+    ) -> Optional[Dict]:
+        """Optimistically update permissions for users and teams on a knowledge base"""
+        try:
+            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
+
+            # Quick validation of inputs
+            if not user_ids and not team_ids:
+                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+
+            # Validate new role
+            valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
+            if new_role not in valid_roles:
+                return {
+                    "success": False,
+                    "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
+                    "code": "400"
+                }
+
+            # Single atomic operation: check requester permission + get current permissions + update
+            bind_vars = {
+                "kb_id": kb_id,
+                "requester_id": requester_id,
+                "new_role": new_role,
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            # Build conditions for targets
+            target_conditions = []
+            if user_ids:
+                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            # Atomic query that does everything in one go
+            atomic_query = f"""
+            LET requester_perm = FIRST(
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', @requester_id)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == 'USER'
+                    RETURN perm.role
+            )
+
+            LET current_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER ({' OR '.join(target_conditions)})
+                    RETURN {{
+                        _key: perm._key,
+                        id: SPLIT(perm._from, '/')[1],
+                        type: perm.type,
+                        current_role: perm.role,
+                        _from: perm._from
+                    }}
+            )
+
+            LET validation_result = (
+                requester_perm != "OWNER" ? {{error: "Only KB owners can update permissions", code: "403"}} :
+                null
+            )
+
+            LET updated_perms = (
+                validation_result == null ? (
+                    FOR perm IN @@permissions_collection
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER ({' OR '.join(target_conditions)})
+                        UPDATE perm WITH {{
+                            role: @new_role,
+                            updatedAtTimestamp: @timestamp,
+                            lastUpdatedTimestampAtSource: @timestamp
+                        }} IN @@permissions_collection
+                        RETURN {{
+                            _key: NEW._key,
+                            id: SPLIT(NEW._from, '/')[1],
+                            type: NEW.type,
+                            old_role: OLD.role,
+                            new_role: NEW.role
+                        }}
+                ) : []
+            )
+            RETURN {{
+                validation_error: validation_result,
+                current_permissions: current_perms,
+                updated_permissions: updated_perms,
+                requester_role: requester_perm
+            }}
+            """
+
+            cursor = self.db.aql.execute(atomic_query, bind_vars=bind_vars)
+            result = next(cursor, None)
+
+            if not result:
+                return {"success": False, "reason": "Query execution failed", "code": "500"}
+
+            # Log the raw result for debugging
+            self.logger.info(f"🔍 Update query result: {result}")
+
+            # Check for validation errors
+            if result["validation_error"]:
+                error = result["validation_error"]
+                return {"success": False, "reason": error["error"], "code": error["code"]}
+
+            updated_permissions = result["updated_permissions"]
+
+            # Count updates by type
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
+
+            # Build detailed response
+            updates_by_type = {"users": {}, "teams": {}}
+            for perm in updated_permissions:
+                if perm["type"] == "USER":
+                    updates_by_type["users"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
+                elif perm["type"] == "TEAM":
+                    updates_by_type["teams"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
+
+            self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
+
+            return {
+                "success": True,
+                "kb_id": kb_id,
+                "new_role": new_role,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams,
+                "updates_detail": updates_by_type,
+                "requester_role": result["requester_role"]
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            return {
+                "success": False,
+                "reason": str(e),
+                "code": "500"
+            }
+
+    async def remove_kb_permission(
+        self,
+        kb_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """Remove permissions for multiple users and teams from a KB (internal method)"""
+        try:
+            db = transaction if transaction else self.db
+
+            # Build conditions for batch removal
+            conditions = []
+            bind_vars = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return False
+
+            query = f"""
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER ({' OR '.join(conditions)})
+                REMOVE perm IN @@permissions_collection
+                RETURN {{
+                    _key: OLD._key,
+                    _from: OLD._from,
+                    type: OLD.type,
+                    role: OLD.role
+                }}
+            """
+
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            if results:
+                removed_users = sum(1 for perm in results if perm["type"] == "USER")
+                removed_teams = sum(1 for perm in results if perm["type"] == "TEAM")
+                self.logger.info(f"✅ Removed {len(results)} permissions from KB {kb_id} ({removed_users} users, {removed_teams} teams)")
+                return True
+            else:
+                self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove KB permissions: {str(e)}")
+            return False
+
+
+    async def count_kb_owners(
+        self,
+        kb_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> int:
+        """Count the number of owners for a knowledge base"""
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER perm.role == 'OWNER'
+                COLLECT WITH COUNT INTO owner_count
+                RETURN owner_count
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            })
+
+            count = next(cursor, 0)
+            self.logger.info(f"📊 KB {kb_id} has {count} owners")
+            return count
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
+            return 0
+
+    async def get_kb_permissions(
+        self,
+        kb_id: str,
+        user_ids: Optional[List[str]] = None,
+        team_ids: Optional[List[str]] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict[str, Dict[str, str]]:
+        """Get current roles for multiple users and teams on a knowledge base in a single query"""
+        try:
+            db = transaction if transaction else self.db
+
+            # Build conditions for batch query
+            conditions = []
+            bind_vars = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"users": {}, "teams": {}}
+
+            query = f"""
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER ({' OR '.join(conditions)})
+                RETURN {{
+                    id: SPLIT(perm._from, '/')[1],
+                    type: perm.type,
+                    role: perm.role
+                }}
+            """
+
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            # Organize results by type
+            result = {"users": {}, "teams": {}}
+
+            for perm in permissions:
+                if perm["type"] == "USER":
+                    result["users"][perm["id"]] = perm["role"]
+                elif perm["type"] == "TEAM":
+                    result["teams"][perm["id"]] = perm["role"]
+
+            self.logger.info(f"✅ Retrieved {len(permissions)} permissions for KB {kb_id}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get KB permissions batch: {str(e)}")
+            raise
+
+    async def list_kb_permissions(
+        self,
+        kb_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict]:
+        """List all permissions for a KB with user details"""
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == @kb_to
+                LET entity = DOCUMENT(perm._from)
+                FILTER entity != null
+                RETURN {
+                    id: entity._key,
+                    name: entity.fullName || entity.name || entity.userName,
+                    userId: entity.userId,
+                    email: entity.email,
+                    role: perm.role,
+                    type: perm.type,
+                    createdAtTimestamp: perm.createdAtTimestamp,
+                    updatedAtTimestamp: perm.updatedAtTimestamp
+                }
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "kb_to": f"recordGroups/{kb_id}",
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            })
+
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            return []
+
+    async def list_all_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        permissions: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """
+        List all records the user can access directly via belongs_to_kb edges.
+        Returns (records, total_count, available_filters)
+        """
+        try:
+            self.logger.info(f"🔍 Listing all records for user {user_id}, source: {source}")
+
+            # Determine what data sources to include
+            include_kb_records = source in ['all', 'local']
+            include_connector_records = source in ['all', 'connector']
+
+            # Build filter conditions function
+            def build_record_filters(include_filter_vars: bool = True) -> str:
+                conditions = []
+                if search and include_filter_vars:
+                    conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
+                if record_types and include_filter_vars:
+                    conditions.append("record.recordType IN @record_types")
+                if origins and include_filter_vars:
+                    conditions.append("record.origin IN @origins")
+                if connectors and include_filter_vars:
+                    conditions.append("record.connectorName IN @connectors")
+                if indexing_status and include_filter_vars:
+                    conditions.append("record.indexingStatus IN @indexing_status")
+                if date_from and include_filter_vars:
+                    conditions.append("record.createdAtTimestamp >= @date_from")
+                if date_to and include_filter_vars:
+                    conditions.append("record.createdAtTimestamp <= @date_to")
+
+                return " AND " + " AND ".join(conditions) if conditions else ""
+
+            base_kb_roles = {"OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"}
+            if permissions:
+                # This ensures we only filter by roles that are valid for KBs AND requested by the user.
+                final_kb_roles = list(base_kb_roles.intersection(set(permissions)))
+                # If the intersection is empty, no KB records will match, which is correct.
+                if not final_kb_roles:
+                    # To prevent an empty `IN []` which can be inefficient, we can just disable the kbRecords part.
+                    include_kb_records = False
+            else:
+                final_kb_roles = list(base_kb_roles)
+
+            # Build permission filter for connector records
+            def build_permission_filter(include_filter_vars: bool = True) -> str:
+                if permissions and include_filter_vars:
+                    return " AND permissionEdge.role IN @permissions"
+                return ""
+
+            # ===== MAIN QUERY (with pagination and filters and file records) =====
+            record_filter = build_record_filters(True)
+            permission_filter = build_permission_filter(True)
+
+            main_query = f"""
+            LET user_from = @user_from
+            LET org_id = @org_id
+            // KB Records Section - Get records DIRECTLY from belongs_to_kb edges (not through folders)
+            LET kbRecords = {
+                f'''(
+                    FOR kbEdge IN @@permissions_to_kb
+                        FILTER kbEdge._from == user_from
+                        FILTER kbEdge.type == "USER"
+                        FILTER kbEdge.role IN @kb_permissions
+                        LET kb = DOCUMENT(kbEdge._to)
+                        FILTER kb != null AND kb.orgId == org_id
+                        // Get records that belong directly to the KB
+                        FOR belongsEdge IN @@belongs_to_kb
+                            FILTER belongsEdge._to == kb._id
+                            LET record = DOCUMENT(belongsEdge._from)
+                            FILTER record != null
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id
+                            FILTER record.origin == "UPLOAD"
+                            // Only include actual records (not folders)
+                            FILTER record.isFile != false
+                            {record_filter}
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: kbEdge.role, type: kbEdge.type }},
+                                kb_id: kb._key,
+                                kb_name: kb.groupName
+                            }}
+                )''' if include_kb_records else '[]'
+            }
+            // Connector Records Section - Direct connector permissions
+            LET connectorRecords = {
+                f'''(
+                    FOR permissionEdge IN @@permissions_to_kb
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        {permission_filter}
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+                        RETURN {{
+                            record: record,
+                            permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                        }}
+                )''' if include_connector_records else '[]'
+            }
+            LET allRecords = APPEND(kbRecords, connectorRecords)
+            FOR item IN allRecords
+                LET record = item.record
+                SORT record.{sort_by} {sort_order.upper()}
+                LIMIT @skip, @limit
+                LET fileRecord = FIRST(
+                    FOR fileEdge IN @@is_of_type
+                        FILTER fileEdge._from == record._id
+                        LET file = DOCUMENT(fileEdge._to)
+                        FILTER file != null
+                        RETURN {{
+                            id: file._key,
+                            name: file.name,
+                            extension: file.extension,
+                            mimeType: file.mimeType,
+                            sizeInBytes: file.sizeInBytes,
+                            isFile: file.isFile,
+                            webUrl: file.webUrl
+                        }}
+                )
+                RETURN {{
+                    id: record._key,
+                    externalRecordId: record.externalRecordId,
+                    externalRevisionId: record.externalRevisionId,
+                    recordName: record.recordName,
+                    recordType: record.recordType,
+                    origin: record.origin,
+                    connectorName: record.connectorName || "KNOWLEDGE_BASE",
+                    indexingStatus: record.indexingStatus,
+                    createdAtTimestamp: record.createdAtTimestamp,
+                    updatedAtTimestamp: record.updatedAtTimestamp,
+                    sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                    sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                    orgId: record.orgId,
+                    version: record.version,
+                    isDeleted: record.isDeleted,
+                    deletedByUserId: record.deletedByUserId,
+                    isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
+                    webUrl: record.webUrl,
+                    fileRecord: fileRecord,
+                    permission: {{role: item.permission.role, type: item.permission.type}},
+                    kb: {{id: item.kb_id || null, name: item.kb_name || null }}
+                }}
+            """
+
+            # ===== COUNT QUERY =====
+            count_query = f"""
+            LET user_from = @user_from
+            LET org_id = @org_id
+            LET kbCount = {
+                f'''LENGTH(
+                    FOR kbEdge IN @@permissions_to_kb
+                        FILTER kbEdge._from == user_from
+                        FILTER kbEdge.type == "USER"
+                        FILTER kbEdge.role IN @kb_permissions
+                        LET kb = DOCUMENT(kbEdge._to)
+                        FILTER kb != null AND kb.orgId == org_id
+                        FOR belongsEdge IN @@belongs_to_kb
+                            FILTER belongsEdge._to == kb._id
+                            LET record = DOCUMENT(belongsEdge._from)
+                            FILTER record != null
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id
+                            FILTER record.origin == "UPLOAD"
+                            FILTER record.isFile != false
+                            {record_filter}
+                            RETURN 1
+                )''' if include_kb_records else '0'
+            }
+            LET connectorCount = {
+                f'''LENGTH(
+                    FOR permissionEdge IN @@permissions_to_kb
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        {permission_filter}
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+                        RETURN 1
+                )''' if include_connector_records else '0'
+            }
+            RETURN kbCount + connectorCount
+            """
+
+            # ===== FILTERS QUERY =====
+            filters_query = f"""
+            LET user_from = @user_from
+            LET org_id = @org_id
+            LET allKbRecords = {
+                '''(
+                    FOR kbEdge IN @@permissions_to_kb
+                        FILTER kbEdge._from == user_from
+                        FILTER kbEdge.type == "USER"
+                        FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
+                        LET kb = DOCUMENT(kbEdge._to)
+                        FILTER kb != null AND kb.orgId == org_id
+                        FOR belongsEdge IN @@belongs_to_kb
+                            FILTER belongsEdge._to == kb._id
+                            LET record = DOCUMENT(belongsEdge._from)
+                            FILTER record != null
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id
+                            FILTER record.origin == "UPLOAD"
+                            FILTER record.isFile != false
+                            RETURN {
+                                record: record,
+                                permission: { role: kbEdge.role }
+                            }
+                )''' if include_kb_records else '[]'
+            }
+            LET allConnectorRecords = {
+                '''(
+                    FOR permissionEdge IN @@permissions_to_kb
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id
+                        FILTER record.origin == "CONNECTOR"
+                        RETURN {
+                            record: record,
+                            permission: { role: permissionEdge.role }
+                        }
+                )''' if include_connector_records else '[]'
+            }
+            LET allRecords = APPEND(allKbRecords, allConnectorRecords)
+            LET flatRecords = (
+                FOR item IN allRecords
+                    RETURN item.record
+            )
+            LET permissionValues = (
+                FOR item IN allRecords
+                    FILTER item.permission != null
+                    RETURN item.permission.role
+            )
+            LET connectorValues = (
+                FOR record IN flatRecords
+                    FILTER record.connectorName != null
+                    RETURN record.connectorName
+            )
+            RETURN {{
+                recordTypes: UNIQUE(flatRecords[*].recordType) || [],
+                origins: UNIQUE(flatRecords[*].origin) || [],
+                connectors: UNIQUE(connectorValues) || [],
+                indexingStatus: UNIQUE(flatRecords[*].indexingStatus) || [],
+                permissions: UNIQUE(permissionValues) || []
+            }}
+            """
+
+            # Build bind variables
+            filter_bind_vars = {}
+            if search:
+                filter_bind_vars["search"] = f"%{search.lower()}%"
+            if record_types:
+                filter_bind_vars["record_types"] = record_types
+            if origins:
+                filter_bind_vars["origins"] = origins
+            if connectors:
+                filter_bind_vars["connectors"] = connectors
+            if indexing_status:
+                filter_bind_vars["indexing_status"] = indexing_status
+            if permissions:
+                filter_bind_vars["permissions"] = permissions
+            if date_from:
+                filter_bind_vars["date_from"] = date_from
+            if date_to:
+                filter_bind_vars["date_to"] = date_to
+
+            main_bind_vars = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "skip": skip,
+                "limit": limit,
+                "kb_permissions": final_kb_roles,
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_bind_vars,
+            }
+
+            count_bind_vars = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "kb_permissions": final_kb_roles,
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                **filter_bind_vars,
+            }
+
+            filters_bind_vars = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+            }
+
+            # Execute queries
+            db = self.db
+            records = list(db.aql.execute(main_query, bind_vars=main_bind_vars))
+            count = list(db.aql.execute(count_query, bind_vars=count_bind_vars))[0]
+            available_filters = list(db.aql.execute(filters_query, bind_vars=filters_bind_vars))[0]
+
+            # Ensure filter structure
+            if not available_filters:
+                available_filters = {}
+            available_filters.setdefault("recordTypes", [])
+            available_filters.setdefault("origins", [])
+            available_filters.setdefault("connectors", [])
+            available_filters.setdefault("indexingStatus", [])
+            available_filters.setdefault("permissions", [])
+
+            self.logger.info(f"✅ Listed {len(records)} records out of {count} total")
+            return records, count, available_filters
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list all records: {str(e)}")
+            return [], 0, {
+                "recordTypes": [],
+                "origins": [],
+                "connectors": [],
+                "indexingStatus": [],
+                "permissions": []
+            }
+
+    async def list_kb_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        folder_id: Optional[str] = None,  # Add folder filter parameter
+    ) -> Tuple[List[Dict], int, Dict]:
+        """
+        List all records in a specific KB through folder structure for better folder-based filtering.
+        """
+        try:
+            self.logger.info(f"🔍 Listing records for KB {kb_id} (folder-based)")
+
+            db = self.db
+
+            # Check user permissions first
+            perm_query = """
+            FOR perm IN @@permissions_to_kb
+                FILTER perm._from == @user_from
+                FILTER perm._to == @kb_to
+                FILTER perm.type == "USER"
+                FILTER perm.role IN ['OWNER', 'READER', 'FILEORGANIZER', 'WRITER', 'COMMENTER', 'ORGANIZER']
+                RETURN perm.role
+            """
+
+            perm_cursor = db.aql.execute(perm_query, bind_vars={
+                "user_from": f"users/{user_id}",
+                "kb_to": f"recordGroups/{kb_id}",
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+            })
+
+            user_permission = next(perm_cursor, None)
+            if not user_permission:
+                self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id}")
+                return [], 0, {
+                    "recordTypes": [],
+                    "origins": [],
+                    "connectors": [],
+                    "indexingStatus": [],
+                    "permissions": []
+                }
+
+            # Build filter conditions
+            def build_record_filters(include_filter_vars: bool = True) -> str:
+                conditions = []
+                if search and include_filter_vars:
+                    conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
+                if record_types and include_filter_vars:
+                    conditions.append("record.recordType IN @record_types")
+                if origins and include_filter_vars:
+                    conditions.append("record.origin IN @origins")
+                if connectors and include_filter_vars:
+                    conditions.append("record.connectorName IN @connectors")
+                if indexing_status and include_filter_vars:
+                    conditions.append("record.indexingStatus IN @indexing_status")
+                if date_from and include_filter_vars:
+                    conditions.append("record.createdAtTimestamp >= @date_from")
+                if date_to and include_filter_vars:
+                    conditions.append("record.createdAtTimestamp <= @date_to")
+
+                return " AND " + " AND ".join(conditions) if conditions else ""
+
+            def build_folder_filter(include_filter_vars: bool = True) -> str:
+                if folder_id and include_filter_vars:
+                    return " AND folder._key == @folder_id"
+                return ""
+
+            # ===== MAIN QUERY =====
+            record_filter = build_record_filters(True)
+            folder_filter = build_folder_filter(True)
+
+            main_query = f"""
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET user_permission = @user_permission
+            // Get all folders in the KB
+            LET kbFolders = (
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET folder = DOCUMENT(belongsEdge._from)
+                    FILTER folder != null
+                    FILTER folder.isFile == false
+                    {folder_filter}
+                    RETURN folder
+            )
+            // Get records from folders via PARENT_CHILD relationships
+            LET folderRecords = (
+                FOR folder IN kbFolders
+                    FOR relEdge IN @@record_relations
+                        FILTER relEdge._from == folder._id
+                        FILTER relEdge.relationshipType == "PARENT_CHILD"
+                        LET record = DOCUMENT(relEdge._to)
+                        FILTER record != null
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == @org_id
+                        FILTER record.isFile != false  // Ensure it's a record, not a folder
+                        {record_filter}
+                        RETURN {{
+                            record: record,
+                            folder_id: folder._key,
+                            folder_name: folder.name,
+                            permission: {{ role: user_permission, type: "USER" }},
+                            kb_id: @kb_id
+                        }}
+            )
+            FOR item IN folderRecords
+                LET record = item.record
+                SORT record.{sort_by} {sort_order.upper()}
+                LIMIT @skip, @limit
+                LET fileRecord = FIRST(
+                    FOR fileEdge IN @@is_of_type
+                        FILTER fileEdge._from == record._id
+                        LET file = DOCUMENT(fileEdge._to)
+                        FILTER file != null
+                        RETURN {{
+                            id: file._key,
+                            name: file.name,
+                            extension: file.extension,
+                            mimeType: file.mimeType,
+                            sizeInBytes: file.sizeInBytes,
+                            isFile: file.isFile,
+                            webUrl: file.webUrl
+                        }}
+                )
+                RETURN {{
+                    id: record._key,
+                    externalRecordId: record.externalRecordId,
+                    externalRevisionId: record.externalRevisionId,
+                    recordName: record.recordName,
+                    recordType: record.recordType,
+                    origin: record.origin,
+                    connectorName: record.connectorName || "KNOWLEDGE_BASE",
+                    indexingStatus: record.indexingStatus,
+                    createdAtTimestamp: record.createdAtTimestamp,
+                    updatedAtTimestamp: record.updatedAtTimestamp,
+                    sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                    sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                    orgId: record.orgId,
+                    version: record.version,
+                    isDeleted: record.isDeleted,
+                    deletedByUserId: record.deletedByUserId,
+                    isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
+                    webUrl: record.webUrl,
+                    fileRecord: fileRecord,
+                    permission: {{role: item.permission.role, type: item.permission.type}},
+                    kb_id: item.kb_id,
+                    folder: {{id: item.folder_id, name: item.folder_name}},
+                }}
+            """
+
+            # ===== COUNT QUERY =====
+            count_query = f"""
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET kbFolders = (
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET folder = DOCUMENT(belongsEdge._from)
+                    FILTER folder != null
+                    FILTER folder.isFile == false
+                    {folder_filter}
+                    RETURN folder
+            )
+            LET folderRecords = (
+                FOR folder IN kbFolders
+                    FOR relEdge IN @@record_relations
+                        FILTER relEdge._from == folder._id
+                        FILTER relEdge.relationshipType == "PARENT_CHILD"
+                        LET record = DOCUMENT(relEdge._to)
+                        FILTER record != null
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == @org_id
+                        FILTER record.isFile != false
+                        {record_filter}
+                        RETURN 1
+            )
+            RETURN LENGTH(folderRecords)
+            """
+
+            # ===== FILTERS QUERY =====
+            filters_query = """
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET user_permission = @user_permission
+            LET kbFolders = (
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET folder = DOCUMENT(belongsEdge._from)
+                    FILTER folder != null
+                    FILTER folder.isFile == false
+                    RETURN folder
+            )
+            LET allRecords = (
+                FOR folder IN kbFolders
+                    FOR relEdge IN @@record_relations
+                        FILTER relEdge._from == folder._id
+                        FILTER relEdge.relationshipType == "PARENT_CHILD"
+                        LET record = DOCUMENT(relEdge._to)
+                        FILTER record != null
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == @org_id
+                        FILTER record.isFile != false
+                        RETURN record
+            )
+            LET connectorValues = (
+                FOR record IN allRecords
+                    FILTER record.connectorName != null
+                    RETURN record.connectorName
+            )
+            // Get available folders for filtering
+            LET availableFolders = (
+                FOR folder IN kbFolders
+                    RETURN {
+                        id: folder._key,
+                        name: folder.name
+                    }
+            )
+            RETURN {
+                recordTypes: UNIQUE(allRecords[*].recordType) || [],
+                origins: UNIQUE(allRecords[*].origin) || [],
+                connectors: UNIQUE(connectorValues) || [],
+                indexingStatus: UNIQUE(allRecords[*].indexingStatus) || [],
+                permissions: [user_permission] || [],
+                folders: availableFolders || []
+            }
+            """
+
+            # Build bind variables
+            filter_bind_vars = {}
+            if search:
+                filter_bind_vars["search"] = f"%{search.lower()}%"
+            if record_types:
+                filter_bind_vars["record_types"] = record_types
+            if origins:
+                filter_bind_vars["origins"] = origins
+            if connectors:
+                filter_bind_vars["connectors"] = connectors
+            if indexing_status:
+                filter_bind_vars["indexing_status"] = indexing_status
+            if date_from:
+                filter_bind_vars["date_from"] = date_from
+            if date_to:
+                filter_bind_vars["date_to"] = date_to
+            if folder_id:
+                filter_bind_vars["folder_id"] = folder_id
+
+            main_bind_vars = {
+                "kb_id": kb_id,
+                "org_id": org_id,
+                "user_permission": user_permission,
+                "skip": skip,
+                "limit": limit,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_bind_vars,
+            }
+
+            count_bind_vars = {
+                "kb_id": kb_id,
+                "org_id": org_id,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                **filter_bind_vars,
+            }
+
+            filters_bind_vars = {
+                "kb_id": kb_id,
+                "org_id": org_id,
+                "user_permission": user_permission,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            }
+
+            # Execute queries
+            records = list(db.aql.execute(main_query, bind_vars=main_bind_vars))
+            count = list(db.aql.execute(count_query, bind_vars=count_bind_vars))[0]
+            available_filters = list(db.aql.execute(filters_query, bind_vars=filters_bind_vars))[0]
+
+            # Ensure filter structure
+            if not available_filters:
+                available_filters = {}
+            available_filters.setdefault("recordTypes", [])
+            available_filters.setdefault("origins", [])
+            available_filters.setdefault("connectors", [])
+            available_filters.setdefault("indexingStatus", [])
+            available_filters.setdefault("permissions", [user_permission] if user_permission else [])
+            available_filters.setdefault("folders", [])
+
+            self.logger.info(f"✅ Listed {len(records)} KB records out of {count} total")
+            return records, count, available_filters
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
+            return [], 0, {
+                "recordTypes": [],
+                "origins": [],
+                "connectors": [],
+                "indexingStatus": [],
+                "permissions": [],
+                "folders": []
+            }
+
+    async def get_kb_children(
+        self,
+        kb_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: Optional[str] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict:
+        """
+        Get KB root contents with folders_first pagination and level order traversal
+        Folders First Logic:
+        - Show ALL folders first (within page limits)
+        - Then show records in remaining space
+        - If folders exceed page limit, paginate folders only
+        - If folders fit in page, fill remaining space with records
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            # Build filter conditions
+            def build_filters() -> Tuple[str, str, Dict]:
+                folder_conditions = []
+                record_conditions = []
+                bind_vars = {}
+
+                if search:
+                    folder_conditions.append("LIKE(LOWER(folder.name), @search_term)")
+                    record_conditions.append("(LIKE(LOWER(record.recordName), @search_term) OR LIKE(LOWER(record.externalRecordId), @search_term))")
+                    bind_vars["search_term"] = f"%{search.lower()}%"
+
+                if record_types:
+                    record_conditions.append("record.recordType IN @record_types")
+                    bind_vars["record_types"] = record_types
+
+                if origins:
+                    record_conditions.append("record.origin IN @origins")
+                    bind_vars["origins"] = origins
+
+                if connectors:
+                    record_conditions.append("record.connectorName IN @connectors")
+                    bind_vars["connectors"] = connectors
+
+                if indexing_status:
+                    record_conditions.append("record.indexingStatus IN @indexing_status")
+                    bind_vars["indexing_status"] = indexing_status
+
+                folder_filter = " AND " + " AND ".join(folder_conditions) if folder_conditions else ""
+                record_filter = " AND " + " AND ".join(record_conditions) if record_conditions else ""
+
+                return folder_filter, record_filter, bind_vars
+
+            folder_filter, record_filter, filter_vars = build_filters()
+
+            # Sort field mapping for records (folders always sorted by name)
+            record_sort_map = {
+                "name": "record.recordName",
+                "created_at": "record.createdAtTimestamp",
+                "updated_at": "record.updatedAtTimestamp",
+                "size": "fileRecord.sizeInBytes"
+            }
+            record_sort_field = record_sort_map.get(sort_by, "record.recordName")
+            sort_direction = sort_order.upper()
+
+            main_query = f"""
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            // Get ALL folders with level traversal (sorted by name)
+            LET allFolders = (
+                FOR v, e, p IN 1..@level OUTBOUND kb._id @@record_relations
+                    FILTER e.relationshipType == "PARENT_CHILD"
+                    FILTER v.isFile == false
+                    LET folder = v
+                    LET current_level = LENGTH(p.edges)
+                    {folder_filter}
+                    // Get counts for this folder
+                    LET direct_subfolders = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == folder._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET subfolder = DOCUMENT(relEdge._to)
+                            FILTER subfolder != null AND subfolder.isFile == false
+                            RETURN 1
+                    )
+                    LET direct_records = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == folder._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET record = DOCUMENT(relEdge._to)
+                            FILTER record != null AND record.isDeleted != true AND record.isFile != false
+                            RETURN 1
+                    )
+                    SORT folder.name ASC
+                    RETURN {{
+                        id: folder._key,
+                        name: folder.name,
+                        path: folder.path,
+                        level: current_level,
+                        parent_id: p.edges[-1] ? PARSE_IDENTIFIER(p.edges[-1]._from).key : null,
+                        webUrl: folder.webUrl,
+                        recordGroupId: folder.recordGroupId,
+                        type: "folder",
+                        createdAtTimestamp: folder.createdAtTimestamp,
+                        updatedAtTimestamp: folder.updatedAtTimestamp,
+                        counts: {{
+                            subfolders: direct_subfolders,
+                            records: direct_records,
+                            totalItems: direct_subfolders + direct_records
+                        }},
+                        hasChildren: direct_subfolders > 0 OR direct_records > 0
+                    }}
+            )
+            // Get ALL records directly in KB root
+            LET allRecords = (
+                FOR edge IN @@record_relations
+                    FILTER edge._from == kb._id
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.isFile != false
+                    {record_filter}
+                    // Get associated file record
+                    LET fileEdge = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            RETURN isEdge
+                    )
+                    LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
+                    SORT {record_sort_field} {sort_direction}
+                    RETURN {{
+                        id: record._key,
+                        recordName: record.recordName,
+                        name: record.recordName,
+                        recordType: record.recordType,
+                        externalRecordId: record.externalRecordId,
+                        origin: record.origin,
+                        connectorName: record.connectorName || "KNOWLEDGE_BASE",
+                        indexingStatus: record.indexingStatus,
+                        version: record.version,
+                        isLatestVersion: record.isLatestVersion,
+                        createdAtTimestamp: record.createdAtTimestamp,
+                        updatedAtTimestamp: record.updatedAtTimestamp,
+                        sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                        sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                        webUrl: record.webUrl,
+                        orgId: record.orgId,
+                        type: "record",
+                        fileRecord: fileRecord ? {{
+                            id: fileRecord._key,
+                            name: fileRecord.name,
+                            extension: fileRecord.extension,
+                            mimeType: fileRecord.mimeType,
+                            sizeInBytes: fileRecord.sizeInBytes,
+                            webUrl: fileRecord.webUrl,
+                            path: fileRecord.path,
+                            isFile: fileRecord.isFile
+                        }} : null
+                    }}
+            )
+            LET totalFolders = LENGTH(allFolders)
+            LET totalRecords = LENGTH(allRecords)
+            LET totalCount = totalFolders + totalRecords
+            // Pagination Logic for Folders First:
+            // 1. If skip < totalFolders: Show folders from skip position
+            // 2. Fill remaining limit with records
+            // 3. If skip >= totalFolders: Show only records (skip folders entirely)
+            LET paginatedFolders = (
+                @skip < totalFolders ?
+                    SLICE(allFolders, @skip, @limit)
+                : []
+            )
+            LET foldersShown = LENGTH(paginatedFolders)
+            LET remainingLimit = @limit - foldersShown
+            LET recordSkip = @skip >= totalFolders ? (@skip - totalFolders) : 0
+            LET recordLimit = @skip >= totalFolders ? @limit : remainingLimit
+            LET paginatedRecords = (
+                recordLimit > 0 ?
+                    SLICE(allRecords, recordSkip, recordLimit)
+                : []
+            )
+            // Available filter values from all records (not just paginated)
+            LET availableFilters = {{
+                recordTypes: UNIQUE(allRecords[*].recordType) || [],
+                origins: UNIQUE(allRecords[*].origin) || [],
+                connectors: UNIQUE(allRecords[*].connectorName) || [],
+                indexingStatus: UNIQUE(allRecords[*].indexingStatus) || []
+            }}
+            RETURN {{
+                success: true,
+                container: {{
+                    id: kb._key,
+                    name: kb.groupName,
+                    path: "/",
+                    type: "kb",
+                    webUrl: CONCAT("/kb/", kb._key),
+                    recordGroupId: kb._key
+                }},
+                folders: paginatedFolders,
+                records: paginatedRecords,
+                level: @level,
+                totalCount: totalCount,
+                counts: {{
+                    folders: LENGTH(paginatedFolders),
+                    records: LENGTH(paginatedRecords),
+                    totalItems: LENGTH(paginatedFolders) + LENGTH(paginatedRecords),
+                    totalFolders: totalFolders,
+                    totalRecords: totalRecords
+                }},
+                availableFilters: availableFilters,
+                paginationMode: "folders_first"
+            }}
+            """
+
+            bind_vars = {
+                "kb_id": kb_id,
+                "skip": skip,
+                "limit": limit,
+                "level": level,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_vars
+            }
+
+            cursor = db.aql.execute(main_query, bind_vars=bind_vars)
+            result = next(cursor, None)
+
+            if not result:
+                return {"success": False, "reason": "Knowledge base not found"}
+
+            self.logger.info(f"✅ Retrieved KB children with folders_first pagination: {result['counts']['totalItems']} items")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get KB children with folders_first pagination: {str(e)}")
+            return {"success": False, "reason": str(e)}
+
+    async def get_folder_children(
+        self,
+        kb_id: str,
+        folder_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: Optional[str] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict:
+        """
+        Get folder contents with folders_first pagination and level order traversal
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            # Build filter conditions (same as KB version)
+            def build_filters() -> Tuple[str, str, Dict]:
+                folder_conditions = []
+                record_conditions = []
+                bind_vars = {}
+
+                if search:
+                    folder_conditions.append("LIKE(LOWER(subfolder.name), @search_term)")
+                    record_conditions.append("(LIKE(LOWER(record.recordName), @search_term) OR LIKE(LOWER(record.externalRecordId), @search_term))")
+                    bind_vars["search_term"] = f"%{search.lower()}%"
+
+                if record_types:
+                    record_conditions.append("record.recordType IN @record_types")
+                    bind_vars["record_types"] = record_types
+
+                if origins:
+                    record_conditions.append("record.origin IN @origins")
+                    bind_vars["origins"] = origins
+
+                if connectors:
+                    record_conditions.append("record.connectorName IN @connectors")
+                    bind_vars["connectors"] = connectors
+
+                if indexing_status:
+                    record_conditions.append("record.indexingStatus IN @indexing_status")
+                    bind_vars["indexing_status"] = indexing_status
+
+                folder_filter = " AND " + " AND ".join(folder_conditions) if folder_conditions else ""
+                record_filter = " AND " + " AND ".join(record_conditions) if record_conditions else ""
+
+                return folder_filter, record_filter, bind_vars
+
+            folder_filter, record_filter, filter_vars = build_filters()
+
+            # Sort field mapping for records
+            record_sort_map = {
+                "name": "record.recordName",
+                "created_at": "record.createdAtTimestamp",
+                "updated_at": "record.updatedAtTimestamp",
+                "size": "fileRecord.sizeInBytes"
+            }
+            record_sort_field = record_sort_map.get(sort_by, "record.recordName")
+            sort_direction = sort_order.upper()
+
+            main_query = f"""
+            LET folder = DOCUMENT("files", @folder_id)
+            FILTER folder != null
+            FILTER folder.isFile == false
+            FILTER folder.recordGroupId == @kb_id
+            // Get ALL subfolders with level traversal
+            LET allSubfolders = (
+                FOR v, e, p IN 1..@level OUTBOUND folder._id @@record_relations
+                    FILTER e.relationshipType == "PARENT_CHILD"
+                    FILTER v.isFile == false
+                    LET subfolder = v
+                    LET current_level = LENGTH(p.edges)
+                    {folder_filter}
+                    LET direct_subfolders = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == subfolder._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET subsubfolder = DOCUMENT(relEdge._to)
+                            FILTER subsubfolder != null AND subsubfolder.isFile == false
+                            RETURN 1
+                    )
+                    LET direct_records = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == subfolder._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET record = DOCUMENT(relEdge._to)
+                            FILTER record != null AND record.isDeleted != true AND record.isFile != false
+                            RETURN 1
+                    )
+                    SORT subfolder.name ASC
+                    RETURN {{
+                        id: subfolder._key,
+                        name: subfolder.name,
+                        path: subfolder.path,
+                        level: current_level,
+                        parentId: p.edges[-1] ? PARSE_IDENTIFIER(p.edges[-1]._from).key : null,
+                        webUrl: subfolder.webUrl,
+                        recordGroupId: subfolder.recordGroupId,
+                        type: "folder",
+                        createdAtTimestamp: subfolder.createdAtTimestamp,
+                        updatedAtTimestamp: subfolder.updatedAtTimestamp,
+                        counts: {{
+                            subfolders: direct_subfolders,
+                            records: direct_records,
+                            totalItems: direct_subfolders + direct_records
+                        }},
+                        hasChildren: direct_subfolders > 0 OR direct_records > 0
+                    }}
+            )
+            // Get ALL records in this folder
+            LET allRecords = (
+                FOR edge IN @@record_relations
+                    FILTER edge._from == folder._id
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.isFile != false
+                    {record_filter}
+                    LET fileEdge = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            RETURN isEdge
+                    )
+                    LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
+                    SORT {record_sort_field} {sort_direction}
+                    RETURN {{
+                        id: record._key,
+                        recordName: record.recordName,
+                        name: record.recordName,
+                        recordType: record.recordType,
+                        externalRecordId: record.externalRecordId,
+                        origin: record.origin,
+                        connectorName: record.connectorName || "KNOWLEDGE_BASE",
+                        indexingStatus: record.indexingStatus,
+                        version: record.version,
+                        isLatestVersion: record.isLatestVersion,
+                        createdAtTimestamp: record.createdAtTimestamp,
+                        updatedAtTimestamp: record.updatedAtTimestamp,
+                        sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                        sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                        webUrl: record.webUrl,
+                        orgId: record.orgId,
+                        type: "record",
+                        parent_folder_id: @folder_id,
+                        sizeInBytes: fileRecord ? fileRecord.sizeInBytes : 0,
+                        fileRecord: fileRecord ? {{
+                            id: fileRecord._key,
+                            name: fileRecord.name,
+                            extension: fileRecord.extension,
+                            mimeType: fileRecord.mimeType,
+                            sizeInBytes: fileRecord.sizeInBytes,
+                            webUrl: fileRecord.webUrl,
+                            path: fileRecord.path,
+                            isFile: fileRecord.isFile
+                        }} : null
+                    }}
+            )
+            LET totalSubfolders = LENGTH(allSubfolders)
+            LET totalRecords = LENGTH(allRecords)
+            LET totalCount = totalSubfolders + totalRecords
+            // Folders First Pagination Logic
+            LET paginatedSubfolders = (
+                @skip < totalSubfolders ?
+                    SLICE(allSubfolders, @skip, @limit)
+                : []
+            )
+            LET subfoldersShown = LENGTH(paginatedSubfolders)
+            LET remainingLimit = @limit - subfoldersShown
+            LET recordSkip = @skip >= totalSubfolders ? (@skip - totalSubfolders) : 0
+            LET recordLimit = @skip >= totalSubfolders ? @limit : remainingLimit
+            LET paginatedRecords = (
+                recordLimit > 0 ?
+                    SLICE(allRecords, recordSkip, recordLimit)
+                : []
+            )
+            LET availableFilters = {{
+                recordTypes: UNIQUE(allRecords[*].recordType) || [],
+                origins: UNIQUE(allRecords[*].origin) || [],
+                connectors: UNIQUE(allRecords[*].connectorName) || [],
+                indexingStatus: UNIQUE(allRecords[*].indexingStatus) || []
+            }}
+            RETURN {{
+                success: true,
+                container: {{
+                    id: folder._key,
+                    name: folder.name,
+                    path: folder.path,
+                    type: "folder",
+                    webUrl: folder.webUrl,
+                    recordGroupId: folder.recordGroupId
+                }},
+                folders: paginatedSubfolders,
+                records: paginatedRecords,
+                level: @level,
+                totalCount: totalCount,
+                counts: {{
+                    folders: LENGTH(paginatedSubfolders),
+                    records: LENGTH(paginatedRecords),
+                    totalItems: LENGTH(paginatedSubfolders) + LENGTH(paginatedRecords),
+                    totalFolders: totalSubfolders,
+                    totalRecords: totalRecords
+                }},
+                available_filters: availableFilters,
+                pagination_mode: "folders_first"
+            }}
+            """
+
+            bind_vars = {
+                "kb_id": kb_id,
+                "folder_id": folder_id,
+                "skip": skip,
+                "limit": limit,
+                "level": level,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_vars
+            }
+
+            cursor = db.aql.execute(main_query, bind_vars=bind_vars)
+            result = next(cursor, None)
+
+            if not result:
+                return {"success": False, "reason": "Folder not found"}
+
+            self.logger.info(f"✅ Retrieved folder children with folders_first pagination: {result['counts']['totalItems']} items")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get folder children with folders_first pagination: {str(e)}")
+            return {"success": False, "reason": str(e)}
+
+    async def delete_knowledge_base(
+        self,
+        kb_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool:
+        """
+        Delete a knowledge base with ALL nested content
+        - All folders (recursive, any depth)
+        - All records in all folders
+        - All file records
+        - All edges (belongs_to_kb, record_relations, is_of_type, permissions)
+        - The KB document itself
+        """
+        try:
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                try:
+                    transaction = self.db.begin_transaction(
+                        write=[
+                            CollectionNames.RECORD_GROUPS.value,
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.BELONGS_TO.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                            CollectionNames.PERMISSIONS_TO_KB.value,
+                        ]
+                    )
+                    self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
+                except Exception as tx_error:
+                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    return False
+
+            try:
+                # Step 1: Get complete inventory of what we're deleting
+                inventory_query = """
+                LET kb = DOCUMENT("recordGroups", @kb_id)
+                FILTER kb != null
+                LET all_folders = (
+                    FOR folder IN @@files_collection
+                        FILTER folder.recordGroupId == @kb_id AND folder.isFile == false
+                        RETURN folder._key
+                )
+                LET all_kb_records_with_details = (
+                    FOR edge IN @@belongs_to_kb
+                        FILTER edge._to == CONCAT('recordGroups/', @kb_id)
+                        LET record = DOCUMENT(edge._from)
+                        FILTER record != null AND record.isFile != false
+                        // Get associated file record for each record
+                        LET file_record = FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == record._id
+                                LET fileRecord = DOCUMENT(isEdge._to)
+                                FILTER fileRecord != null
+                                RETURN fileRecord
+                        )
+                        RETURN {
+                            record: record,
+                            file_record: file_record
+                        }
+                )
+                LET all_file_records = (
+                    FOR record_data IN all_kb_records_with_details
+                        FILTER record_data.file_record != null
+                        RETURN record_data.file_record._key
+                )
+                RETURN {
+                    kb_exists: kb != null,
+                    folders: all_folders,
+                    records_with_details: all_kb_records_with_details,
+                    file_records: all_file_records,
+                    total_folders: LENGTH(all_folders),
+                    total_records: LENGTH(all_kb_records_with_details),
+                    total_file_records: LENGTH(all_file_records)
+                }
+                """
+
+                cursor = transaction.aql.execute(inventory_query, bind_vars={
+                    "kb_id": kb_id,
+                    "@files_collection": CollectionNames.FILES.value,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                })
+
+                inventory = next(cursor, {})
+
+                if not inventory.get("kb_exists"):
+                    self.logger.warning(f"⚠️ KB {kb_id} not found, deletion considered successful.")
+                    if should_commit:
+                        # No need to abort, just commit the empty transaction
+                        await asyncio.to_thread(lambda: transaction.commit_transaction())
+                    return True
+
+                records_with_details = inventory.get("records_with_details", [])
+
+                self.logger.info(f"📋 KB {kb_id} deletion inventory:")
+                self.logger.info(f"   📁 Folders: {inventory['total_folders']}")
+                self.logger.info(f"   📄 Records: {inventory['total_records']}")
+                self.logger.info(f"   🗂️ File records: {inventory['total_file_records']}")
+
+                # Step 2: Delete ALL edges first (prevents foreign key issues)
+                self.logger.info("🗑️ Step 1: Deleting all edges...")
+
+                all_record_keys = [rd["record"]["_key"] for rd in records_with_details]
+                edges_cleanup_query = """
+                LET btk_keys_to_delete = (FOR e IN @@belongs_to_kb FILTER e._to == CONCAT('recordGroups/', @kb_id) RETURN e._key)
+                LET perm_keys_to_delete = (FOR e IN @@permissions_to_kb FILTER e._to == CONCAT('recordGroups/', @kb_id) RETURN e._key)
+                LET iot_keys_to_delete = (FOR rk IN @all_records FOR e IN @@is_of_type FILTER e._from == CONCAT('records/', rk) RETURN e._key)
+                LET all_related_doc_ids = APPEND((FOR f IN @all_folders RETURN CONCAT('files/', f)), (FOR r IN @all_records RETURN CONCAT('records/', r)))
+                LET relation_keys_to_delete = (FOR e IN @@record_relations FILTER e._from IN all_related_doc_ids OR e._to IN all_related_doc_ids COLLECT k = e._key RETURN k)
+                FOR btk_key IN btk_keys_to_delete REMOVE btk_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
+                FOR perm_key IN perm_keys_to_delete REMOVE perm_key IN @@permissions_to_kb OPTIONS { ignoreErrors: true }
+                FOR iot_key IN iot_keys_to_delete REMOVE iot_key IN @@is_of_type OPTIONS { ignoreErrors: true }
+                FOR relation_key IN relation_keys_to_delete REMOVE relation_key IN @@record_relations OPTIONS { ignoreErrors: true }
+                """
+                transaction.aql.execute(edges_cleanup_query, bind_vars={
+                    "kb_id": kb_id,
+                    "all_folders": inventory["folders"],
+                    "all_records": all_record_keys,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                })
+                self.logger.info(f"✅ All edges deleted for KB {kb_id}")
+
+                # Step 3: Delete all file records
+                if inventory["file_records"]:
+                    self.logger.info(f"🗑️ Step 2: Deleting {len(inventory['file_records'])} file records...")
+                    transaction.aql.execute(
+                        "FOR k IN @keys REMOVE k IN @@files_collection OPTIONS { ignoreErrors: true }",
+                        bind_vars={
+                            "keys": inventory["file_records"],
+                            "@files_collection": CollectionNames.FILES.value
+                        }
+                    )
+                    self.logger.info(f"✅ Deleted {len(inventory['file_records'])} file records")
+
+                # Step 4: Delete all records
+                if all_record_keys:
+                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_record_keys)} records...")
+                    transaction.aql.execute(
+                        "FOR k IN @keys REMOVE k IN @@records_collection OPTIONS { ignoreErrors: true }",
+                        bind_vars={
+                            "keys": all_record_keys,
+                            "@records_collection": CollectionNames.RECORDS.value
+                        }
+                    )
+                    self.logger.info(f"✅ Deleted {len(all_record_keys)} records")
+
+                # Step 5: Delete all folders
+                if inventory["folders"]:
+                    self.logger.info(f"🗑️ Step 4: Deleting {len(inventory['folders'])} folders...")
+                    transaction.aql.execute(
+                        "FOR k IN @keys REMOVE k IN @@files_collection OPTIONS { ignoreErrors: true }",
+                        bind_vars={
+                            "keys": inventory["folders"],
+                            "@files_collection": CollectionNames.FILES.value
+                        }
+                    )
+                    self.logger.info(f"✅ Deleted {len(inventory['folders'])} folders")
+
+                # Step 6: Delete the KB document itself
+                self.logger.info(f"🗑️ Step 5: Deleting KB document {kb_id}...")
+                transaction.aql.execute(
+                    "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true }",
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value
+                    }
+                )
+
+                # Step 7: Commit transaction
+                if should_commit:
+                    self.logger.info("💾 Committing complete deletion transaction...")
+                    await asyncio.to_thread(lambda: transaction.commit_transaction())
+                    self.logger.info("✅ Transaction committed successfully!")
+
+                # Step 8: Publish delete events for all records (after successful transaction)
+                try:
+                    delete_event_tasks = []
+                    for record_data in records_with_details:
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data["file_record"]
+                        )
+                        if delete_payload:
+                            delete_event_tasks.append(
+                                self._publish_record_event("deleteRecord", delete_payload)
+                            )
+
+                    if delete_event_tasks:
+                        await asyncio.gather(*delete_event_tasks, return_exceptions=True)
+                        self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records from KB deletion")
+
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish KB deletion events: {str(event_error)}")
+                    # Don't fail the main operation for event publishing errors
+
+                self.logger.info(f"🎉 KB {kb_id} and ALL contents deleted successfully.")
+                return True
+
+            except Exception as db_error:
+                self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
+                if should_commit and transaction:
+                    await asyncio.to_thread(lambda: transaction.abort_transaction())
+                    self.logger.info("🔄 Transaction aborted due to error")
+                raise db_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete KB {kb_id} completely: {str(e)}")
+            return False
+
+    async def delete_folder(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool:
+        """
+        Delete a folder with ALL nested content and publish delete events for all records
+        Fixed to handle edge deletion properly and avoid "document not found" errors
+        """
+        try:
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                try:
+                    transaction = self.db.begin_transaction(
+                        write=[
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.BELONGS_TO.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                        ]
+                    )
+                    self.logger.info(f"🔄 Transaction created for complete folder {folder_id} deletion")
+                except Exception as tx_error:
+                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    return False
+
+            try:
+                # Step 1: Get complete inventory including all records for event publishing
+                inventory_query = """
+                LET target_folder = DOCUMENT("files", @folder_id)
+                FILTER target_folder != null
+                FILTER target_folder.isFile == false
+                FILTER target_folder.recordGroupId == @kb_id
+                // Get ALL subfolders recursively using traversal
+                LET all_subfolders = (
+                    FOR v, e, p IN 1..20 OUTBOUND target_folder._id @@record_relations
+                        FILTER e.relationshipType == "PARENT_CHILD"
+                        FILTER v.isFile == false
+                        RETURN v._key
+                )
+                // All folders to delete (target + subfolders)
+                LET all_folders = APPEND([target_folder._key], all_subfolders)
+                // Get ALL records in target folder and all subfolders with their file records
+                LET all_folder_records_with_details = (
+                    FOR folder_key IN all_folders
+                        FOR folder_record_edge IN @@record_relations
+                            FILTER folder_record_edge._from == CONCAT('files/', folder_key)
+                            FILTER folder_record_edge.relationshipType == "PARENT_CHILD"
+                            LET record = DOCUMENT(folder_record_edge._to)
+                            FILTER record != null
+                            FILTER record.isFile != false  // Ensure it's a record
+                            // Get associated file record
+                            LET file_record = FIRST(
+                                FOR record_file_edge IN @@is_of_type
+                                    FILTER record_file_edge._from == record._id
+                                    LET fileRecord = DOCUMENT(record_file_edge._to)
+                                    FILTER fileRecord != null
+                                    RETURN fileRecord
+                            )
+                            RETURN {
+                                record: record,
+                                file_record: file_record
+                            }
+                )
+                // Get file records associated with all these records
+                LET all_file_records = (
+                    FOR record_data IN all_folder_records_with_details
+                        FILTER record_data.file_record != null
+                        RETURN record_data.file_record._key
+                )
+                RETURN {
+                    folder_exists: target_folder != null,
+                    target_folder: target_folder._key,
+                    all_folders: all_folders,
+                    subfolders: all_subfolders,
+                    records_with_details: all_folder_records_with_details,
+                    file_records: all_file_records,
+                    total_folders: LENGTH(all_folders),
+                    total_subfolders: LENGTH(all_subfolders),
+                    total_records: LENGTH(all_folder_records_with_details),
+                    total_file_records: LENGTH(all_file_records)
+                }
+                """
+
+                cursor = transaction.aql.execute(inventory_query, bind_vars={
+                    "folder_id": folder_id,
+                    "kb_id": kb_id,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                })
+
+                inventory = next(cursor, {})
+
+                if not inventory.get("folder_exists"):
+                    self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
+                    if should_commit:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                    return False
+
+                records_with_details = inventory.get("records_with_details", [])
+                self.logger.info(f"📋 Folder {folder_id} deletion inventory:")
+                self.logger.info(f"   📁 Total folders (including target): {inventory['total_folders']}")
+                self.logger.info(f"   📄 Records: {inventory['total_records']}")
+                self.logger.info(f"   🗂️ File records: {inventory['total_file_records']}")
+
+                # Step 2: Delete ALL edges in separate queries to avoid "access after data-modification" error
+                self.logger.info("🗑️ Step 1: Deleting all edges...")
+
+                all_record_keys = [rd["record"]["_key"] for rd in records_with_details]
+
+                # Delete record relation edges
+                if all_record_keys or inventory["all_folders"]:
+                    record_relations_delete = """
+                    LET record_edges = (
+                        FOR record_key IN @all_records
+                            FOR rec_edge IN @@record_relations
+                                FILTER rec_edge._from == CONCAT('records/', record_key) OR rec_edge._to == CONCAT('records/', record_key)
+                                RETURN rec_edge._key
+                    )
+                    LET folder_edges = (
+                        FOR folder_key IN @all_folders
+                            FOR folder_edge IN @@record_relations
+                                FILTER folder_edge._from == CONCAT('files/', folder_key) OR folder_edge._to == CONCAT('files/', folder_key)
+                                RETURN folder_edge._key
+                    )
+                    LET all_relation_edges = APPEND(record_edges, folder_edges)
+                    FOR edge_key IN all_relation_edges
+                        REMOVE edge_key IN @@record_relations OPTIONS { ignoreErrors: true }
+                    """
+
+                    transaction.aql.execute(record_relations_delete, bind_vars={
+                        "all_records": all_record_keys,
+                        "all_folders": inventory["all_folders"],
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    })
+                    self.logger.info("✅ Deleted record relation edges")
+
+                # Delete is_of_type edges
+                if all_record_keys:
+                    is_of_type_delete = """
+                    LET type_edges = (
+                        FOR record_key IN @all_records
+                            FOR type_edge IN @@is_of_type
+                                FILTER type_edge._from == CONCAT('records/', record_key)
+                                RETURN type_edge._key
+                    )
+                    FOR edge_key IN type_edges
+                        REMOVE edge_key IN @@is_of_type OPTIONS { ignoreErrors: true }
+                    """
+
+                    transaction.aql.execute(is_of_type_delete, bind_vars={
+                        "all_records": all_record_keys,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    })
+                    self.logger.info("✅ Deleted is_of_type edges")
+
+                # Delete belongs_to_kb edges
+                if all_record_keys or inventory["all_folders"]:
+                    belongs_to_kb_delete = """
+                    LET record_kb_edges = (
+                        FOR record_key IN @all_records
+                            FOR record_kb_edge IN @@belongs_to_kb
+                                FILTER record_kb_edge._from == CONCAT('records/', record_key)
+                                RETURN record_kb_edge._key
+                    )
+                    LET folder_kb_edges = (
+                        FOR folder_key IN @all_folders
+                            FOR folder_kb_edge IN @@belongs_to_kb
+                                FILTER folder_kb_edge._from == CONCAT('files/', folder_key)
+                                RETURN folder_kb_edge._key
+                    )
+                    LET all_kb_edges = APPEND(record_kb_edges, folder_kb_edges)
+                    FOR edge_key IN all_kb_edges
+                        REMOVE edge_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
+                    """
+
+                    transaction.aql.execute(belongs_to_kb_delete, bind_vars={
+                        "all_records": all_record_keys,
+                        "all_folders": inventory["all_folders"],
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    })
+                    self.logger.info("✅ Deleted belongs_to_kb edges")
+
+                # Step 3: Delete all file records with error handling
+                if inventory["file_records"]:
+                    self.logger.info(f"🗑️ Step 2: Deleting {len(inventory['file_records'])} file records...")
+
+                    file_records_delete_query = """
+                    FOR file_key IN @file_keys
+                        REMOVE file_key IN @@files_collection OPTIONS { ignoreErrors: true }
+                    """
+
+                    transaction.aql.execute(file_records_delete_query, bind_vars={
+                        "file_keys": inventory["file_records"],
+                        "@files_collection": CollectionNames.FILES.value,
+                    })
+
+                    self.logger.info(f"✅ Deleted {len(inventory['file_records'])} file records")
+
+                # Step 4: Delete all records with error handling
+                if all_record_keys:
+                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_record_keys)} records...")
+
+                    records_delete_query = """
+                    FOR record_key IN @record_keys
+                        REMOVE record_key IN @@records_collection OPTIONS { ignoreErrors: true }
+                    """
+
+                    transaction.aql.execute(records_delete_query, bind_vars={
+                        "record_keys": all_record_keys,
+                        "@records_collection": CollectionNames.RECORDS.value,
+                    })
+
+                    self.logger.info(f"✅ Deleted {len(all_record_keys)} records")
+
+                # Step 5: Delete all folders with error handling (deepest first)
+                if inventory["all_folders"]:
+                    self.logger.info(f"🗑️ Step 4: Deleting {len(inventory['all_folders'])} folders...")
+
+                    # Sort folders by depth (deepest first) to avoid dependency issues
+                    folders_delete_query = """
+                    FOR folder_key IN @folder_keys
+                        REMOVE folder_key IN @@files_collection OPTIONS { ignoreErrors: true }
+                    """
+
+                    # Reverse the folder list to delete children before parents
+                    reversed_folders = list(reversed(inventory["all_folders"]))
+
+                    transaction.aql.execute(folders_delete_query, bind_vars={
+                        "folder_keys": reversed_folders,
+                        "@files_collection": CollectionNames.FILES.value,
+                    })
+
+                    self.logger.info(f"✅ Deleted {len(inventory['all_folders'])} folders")
+
+                # Step 6: Commit transaction
+                if should_commit:
+                    self.logger.info("💾 Committing complete folder deletion transaction...")
+                    try:
+                        await asyncio.to_thread(lambda: transaction.commit_transaction())
+                        self.logger.info("✅ Transaction committed successfully!")
+                    except Exception as commit_error:
+                        self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                        try:
+                            await asyncio.to_thread(lambda: transaction.abort_transaction())
+                            self.logger.info("🔄 Transaction aborted after commit failure")
+                        except Exception as abort_error:
+                            self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        return False
+
+                # Step 7: Publish delete events for all records (after successful transaction)
+                try:
+                    delete_event_tasks = []
+                    for record_data in records_with_details:
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data["file_record"]
+                        )
+                        if delete_payload:
+                            delete_event_tasks.append(
+                                self._publish_record_event("deleteRecord", delete_payload)
+                            )
+
+                    if delete_event_tasks:
+                        await asyncio.gather(*delete_event_tasks, return_exceptions=True)
+                        self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records from folder deletion")
+
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish folder deletion events: {str(event_error)}")
+                    # Don't fail the main operation for event publishing errors
+
+                self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully:")
+                self.logger.info(f"   📁 {inventory['total_folders']} folders (including target)")
+                self.logger.info(f"   📄 {inventory['total_records']} records")
+                self.logger.info(f"   🗂️ {inventory['total_file_records']} file records")
+                self.logger.info("   🔗 All associated edges")
+
+                return True
+
+            except Exception as db_error:
+                self.logger.error(f"❌ Database error during folder deletion: {str(db_error)}")
+                if should_commit and transaction:
+                    try:
+                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        self.logger.info("🔄 Transaction aborted due to error")
+                    except Exception as abort_error:
+                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                raise db_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete folder {folder_id} completely: {str(e)}")
+            return False
+
+    async def _check_name_conflict_in_parent(
+        self,
+        kb_id: str,
+        parent_folder_id: Optional[str],
+        item_name: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict:
+        """
+        Check if an item (folder or file) name already exists in the target parent location
+        Handles different field names: folders have 'name', records have 'recordName'
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            if parent_folder_id:
+                # Check siblings in folder
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET child = DOCUMENT(edge._to)
+                    FILTER child != null
+                    // Get the appropriate name field based on document type
+                    LET child_name = child.isFile == false ? child.name : child.recordName
+                    FILTER LOWER(child_name) == LOWER(@item_name)
+                    RETURN {
+                        id: child._key,
+                        name: child_name,
+                        type: child.isFile == false ? "folder" : "record",
+                        document_type: child.isFile == false ? "files" : "records"
+                    }
+                """
+
+                cursor = db.aql.execute(query, bind_vars={
+                    "parent_from": f"files/{parent_folder_id}",
+                    "item_name": item_name,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                })
+            else:
+                # Check siblings in KB root
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @kb_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET child = DOCUMENT(edge._to)
+                    FILTER child != null
+                    // Get the appropriate name field based on document type
+                    LET child_name = child.isFile == false ? child.name : child.recordName
+                    FILTER LOWER(child_name) == LOWER(@item_name)
+                    RETURN {
+                        id: child._key,
+                        name: child_name,
+                        type: child.isFile == false ? "folder" : "record",
+                        document_type: child.isFile == false ? "files" : "records"
+                    }
+                """
+
+                cursor = db.aql.execute(query, bind_vars={
+                    "kb_from": f"recordGroups/{kb_id}",
+                    "item_name": item_name,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                })
+
+            conflicts = list(cursor)
+
+            return {
+                "has_conflict": len(conflicts) > 0,
+                "conflicts": conflicts
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
+            return {"has_conflict": False, "conflicts": []}
+
+    async def get_folder_by_kb_and_path(
+        self,
+        kb_id: str,
+        folder_path: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """
+        Get folder by KB ID + path (much faster than edge traversal)
+        Uses the kbId field stored directly in folder records
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            # Direct query using KB ID + path - very fast with proper indexing
+            query = """
+            FOR folder IN @@files_collection
+                FILTER folder.recordGroupId == @kb_id
+                FILTER folder.path == @folder_path
+                FILTER folder.isFile == false
+                RETURN folder
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "kb_id": kb_id,
+                "folder_path": folder_path,
+                "@files_collection": CollectionNames.FILES.value,
+            })
+
+            result = next(cursor, None)
+
+            if result:
+                self.logger.debug(f"✅ Found folder: {folder_path} in KB {kb_id}")
+            else:
+                self.logger.debug(f"❌ Folder not found: {folder_path} in KB {kb_id}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get folder by KB and path: {str(e)}")
+            return None
+
+    async def validate_folder_exists_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """
+        Validate folder exists in specific KB
+        Uses direct KB ID check instead of edge traversal
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            FOR folder IN @@files_collection
+                FILTER folder._key == @folder_id
+                FILTER folder.recordGroupId == @kb_id
+                FILTER folder.isFile == false
+                RETURN true
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_id": folder_id,
+                "kb_id": kb_id,
+                "@files_collection": CollectionNames.FILES.value,
+            })
+
+            return next(cursor, False)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            return False
+
+    async def upload_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+        parent_folder_id: Optional[str] = None,  # None = KB root, str = specific folder
+    ) -> Dict:
+        """
+        - KB root upload (parent_folder_id=None)
+        - Folder upload (parent_folder_id=folder_id)
+        """
+        try:
+            upload_type = "folder" if parent_folder_id else "KB root"
+            self.logger.info(f"🚀 Starting unified upload to {upload_type} in KB {kb_id}")
+            self.logger.info(f"📊 Processing {len(files)} files")
+
+            # Step 1: Validate user permissions and target location
+            validation_result = await self._validate_upload_context(
+                kb_id=kb_id,
+                user_id=user_id,
+                org_id=org_id,
+                parent_folder_id=parent_folder_id
+            )
+            if not validation_result["valid"]:
+                return validation_result
+
+            # Step 2: Analyze folder structure relative to upload target
+            folder_analysis = self._analyze_upload_structure(files, validation_result)
+            self.logger.info(f"📁 Structure analysis: {folder_analysis['summary']}")
+
+            # Step 3: Execute upload in single transaction
+            result = await self._execute_upload_transaction(
+                kb_id=kb_id,
+                user_id=user_id,
+                org_id=org_id,
+                files=files,
+                folder_analysis=folder_analysis,
+                validation_result=validation_result
+            )
+
+            if result["success"]:
+                return {
+                    "success": True,
+                    "message": self._generate_upload_message(result, upload_type),
+                    "totalCreated": result["total_created"],
+                    "foldersCreated": result["folders_created"],
+                    "createdFolders": result["created_folders"],
+                    "failedFiles": result["failed_files"],
+                    "kbId": kb_id,
+                    "parentFolderId": parent_folder_id,
+                }
+            else:
+                return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Unified upload failed: {str(e)}")
+            return {"success": False, "reason": f"Upload failed: {str(e)}", "code": 500}
+
+    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
+        """Get user by user ID"""
+        try:
+            query = f"""
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user.userId == @user_id
+                    RETURN user
+            """
+            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
+            result = next(cursor, None)
+            return result
+        except Exception as e:
+            self.logger.error(f"Error getting user by user ID: {str(e)}")
+            return None
+
+    async def copy_document_relationships(self, source_key: str, target_key: str) -> None:
+        """
+        Copy all relationships (edges) from source document to target document.
+        This includes departments, categories, subcategories, languages, and topics.
+
+        Args:
+            source_key (str): Key of the source document
+            target_key (str): Key of the target document
+        """
+        try:
+            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
+
+            # Define collections to copy relationships from
+            edge_collections = [
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value
+            ]
+
+            for collection in edge_collections:
+                # Find all edges from source document
+                query = f"""
+                FOR edge IN {collection}
+                    FILTER edge._from == @source_doc
+                    RETURN {{
+                        from: edge._from,
+                        to: edge._to,
+                        timestamp: edge.createdAtTimestamp
+                    }}
+                """
+
+                cursor = self.db.aql.execute(
+                    query,
+                    bind_vars={
+                        "source_doc": f"{CollectionNames.RECORDS.value}/{source_key}"
+                    }
+                )
+
+                edges = list(cursor)
+
+                if edges:
+                    # Create new edges for target document
+                    new_edges = []
+                    for edge in edges:
+                        new_edge = {
+                            "_from": f"{CollectionNames.RECORDS.value}/{target_key}",
+                            "_to": edge["to"],
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                        }
+                        new_edges.append(new_edge)
+
+                    # Batch create the new edges
+                    await self.batch_create_edges(new_edges, collection)
+                    self.logger.info(
+                        f"✅ Copied {len(new_edges)} relationships from collection {collection}"
+                    )
+
+            self.logger.info(f"✅ Successfully copied all relationships to {target_key}")
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
+            )
+            raise
+
+
+    async def get_key_by_external_message_id(
+        self,
+        external_message_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[str]:
+        """
+        Get internal message key using the external message ID
+
+        Args:
+            external_message_id (str): External message ID to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[str]: Internal message key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for external message ID %s",
+                external_message_id,
+            )
+
+            query = f"""
+            FOR doc IN {CollectionNames.RECORDS.value}
+                FILTER doc.externalRecordId == @external_message_id
+                RETURN doc._key
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_message_id": external_message_id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for external message ID %s",
+                    external_message_id,
+                )
+                return result
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for external message ID %s",
+                    external_message_id,
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for external message ID %s: %s",
+                external_message_id,
+                str(e),
+            )
+            return None
+
+    async def get_departments(self, org_id: Optional[str] = None) -> List[str]:
+        """
+        Get all departments that either have no org_id or match the given org_id
+
+        Args:
+            org_id (Optional[str]): Organization ID to filter departments
+
+        Returns:
+            List[str]: List of department names
+        """
+        query = f"""
+            FOR department IN {CollectionNames.DEPARTMENTS.value}
+                FILTER department.orgId == null OR department.orgId == '{org_id}'
+                RETURN department.departmentName
+        """
+        cursor = self.db.aql.execute(query)
+        return list(cursor)
+
+    async def find_duplicate_files(
+        self,
+        file_key: str,
+        md5_checksum: str,
+        size_in_bytes: int,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> List[str]:
+        """
+        Find duplicate files based on MD5 checksum and file size
+
+        Args:
+            md5_checksum (str): MD5 checksum of the file
+            size_in_bytes (int): Size of the file in bytes
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            List[str]: List of file keys that match both criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
+                md5_checksum,
+                size_in_bytes,
+            )
+
+            query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file.md5Checksum == @md5_checksum
+                AND file.sizeInBytes == @size_in_bytes
+                AND file._key != @file_key
+                LET record = (
+                    FOR r IN {CollectionNames.RECORDS.value}
+                        FILTER r._key == file._key
+                        RETURN r
+                )[0]
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "md5_checksum": md5_checksum,
+                    "size_in_bytes": size_in_bytes,
+                    "file_key": file_key
+                }
+            )
+
+            duplicate_records = list(cursor)
+
+            if duplicate_records:
+                self.logger.info(
+                    "✅ Found %d duplicate record(s) matching criteria",
+                    len(duplicate_records)
+                )
+                self.logger.info(f"Duplicate records: {[record['_key'] for record in duplicate_records]}")
+            else:
+                self.logger.info("✅ No duplicate records found")
+
+            return duplicate_records
+
+        except Exception as e:
+            self.logger.error(
+                "Failed to find duplicate files: %s",
+                str(e)
+            )
+            if transaction:
+                raise
+            return []
+
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: Optional[List[str]] = None
+    ) -> List[str]:
+        """
+        Get all record keys that have the given virtualRecordId.
+        Optionally filter by a list of record IDs.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to look up
+            record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+
+        Returns:
+            List[str]: List of record keys that match the criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Base query
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.virtualRecordId == @virtual_record_id
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+                AND record._key IN @accessible_record_ids
+                """
+
+            query += """
+                RETURN record._key
+            """
+
+            bind_vars = {"virtual_record_id": virtual_record_id}
+            if accessible_record_ids:
+                bind_vars["accessible_record_ids"] = accessible_record_ids
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            self.logger.info(
+                "✅ Found %d records with virtualRecordId %s",
+                len(results),
+                virtual_record_id
+            )
+            return results
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error finding records with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return []
+
+    async def get_documents_by_status(self, collection: str, status: str) -> List[Dict]:
+        """
+        Get all documents with a specific indexing status
+
+        Args:
+            collection (str): Collection name
+            status (str): Status to filter by
+
+        Returns:
+            List[Dict]: List of matching documents
+        """
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.indexingStatus == @status
+            RETURN doc
+        """
+
+        bind_vars = {
+            "@collection": collection,
+            "status": status
+        }
+
+        cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+        return list(cursor)
+
+    async def get_accessible_records(
+        self, user_id: str, org_id: str, filters: dict = None
+    ) -> list:
+        """
+        Get all records accessible to a user based on their permissions and apply filters
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (dict): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [app_names]
+                }
+        """
+        self.logger.info(
+            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
+        )
+
+        try:
+            # Extract filters
+            kb_ids = filters.get("kb") if filters else None
+            app_names = filters.get("apps") if filters else None
+
+            # Process app names
+            has_local = False
+            non_local_apps = []
+            if app_names:
+                apps_lower = [app.lower() for app in app_names]
+                has_local = "local" in apps_lower
+                non_local_apps = [app for app in apps_lower if app != "local"]
+
+            self.logger.info(f"🔍 Filter analysis - KB IDs: {kb_ids}, Apps: {app_names}, Has local: {has_local}, Non-local apps: {non_local_apps}")
+
+            # Build base query
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            LET directRecords = (
+                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET groupRecords = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER edge.entityType == 'GROUP'
+                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET orgRecords = (
+                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER edge.entityType == 'ORGANIZATION'
+                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords)
+
+            LET anyoneRecords = (
+                FOR records IN @@anyone
+                    FILTER records.organization == @orgId
+                    FOR record IN @@records
+                        FILTER record != null AND record._key == records.file_key
+                        RETURN record
+            )
+            """
+
+            unions = []
+            if has_local:
+                self.logger.info("🔍 Getting all KB records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+                """
+                unions.append("kbRecords")
+                if non_local_apps:
+                    self.logger.info("🔍 Getting app filtered records, filter applied : local + apps")
+                    query += """
+                    LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                    LET appFilteredRecords = (
+                        FOR record IN baseAccessible
+                            FILTER LOWER(record.connectorName) IN @non_local_apps
+                            RETURN DISTINCT record
+                    )
+                    """
+                    unions.append("appFilteredRecords")
+
+            elif kb_ids or non_local_apps:
+
+                # KB records - conditional based on whether KB filtering is applied
+                if kb_ids:
+                    self.logger.info(f"🔍 Applying KB filtering for specific KBs: {kb_ids}")
+                    query += f"""
+                    LET kbRecords = (
+                        FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                        FILTER kb._key IN @kb_ids
+                        FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                        RETURN DISTINCT records
+                    )
+                    """
+                    unions.append("kbRecords")
+                if non_local_apps:
+                    self.logger.info("🔍 Getting app filtered records, filter applied : kb + apps")
+                    query += """
+                        LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                        LET appFilteredRecords = (
+                            FOR record IN baseAccessible
+                                FILTER LOWER(record.connectorName) IN @non_local_apps
+                                RETURN DISTINCT record
+                        )
+                    """
+                    unions.append("appFilteredRecords")
+            else:
+                self.logger.info("🔍 Getting all accessible records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
+                """
+
+                unions.append("baseAccessible")
+
+
+            if unions and len(unions) > 0:
+                if len(unions) == 1 :
+                    query += f"""
+                    LET allAccessibleRecords = {unions[0]}
+                    """
+                else:
+                    query += f"""
+                    LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
+                    """
+            else:
+                self.logger.info("🔍 Fallback logic to all accessible records")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+                LET allAccessibleRecords = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
+                """
+
+            # Add additional filter conditions (departments, categories, etc.)
+            filter_conditions = []
+            if filters:
+                if filters.get("departments"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                        FILTER dept.departmentName IN @departmentNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("categories"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER cat.name IN @categoryNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories1"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat1Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories2"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat2Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories3"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat3Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("languages"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                        FILTER lang.name IN @languageNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("topics"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                        FILTER topic.name IN @topicNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+            # Apply additional filters if any
+            if filter_conditions:
+                query += (
+                    """
+                FOR record IN allAccessibleRecords
+                    FILTER """
+                    + " AND ".join(filter_conditions)
+                    + """
+                    RETURN DISTINCT record
+                """
+                )
+            else:
+                query += """
+                RETURN allAccessibleRecords
+                """
+
+            # Prepare bind variables
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            # Add conditional bind variables
+            if kb_ids and not has_local:
+                bind_vars["kb_ids"] = kb_ids
+
+            if non_local_apps:
+                bind_vars["non_local_apps"] = non_local_apps
+
+            # Add filter bind variables
+            if filters:
+                if filters.get("departments"):
+                    bind_vars["departmentNames"] = filters["departments"]
+                if filters.get("categories"):
+                    bind_vars["categoryNames"] = filters["categories"]
+                if filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = filters["subcategories1"]
+                if filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = filters["subcategories2"]
+                if filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = filters["subcategories3"]
+                if filters.get("languages"):
+                    bind_vars["languageNames"] = filters["languages"]
+                if filters.get("topics"):
+                    bind_vars["topicNames"] = filters["topics"]
+
+            # Execute query
+            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars=bind_vars,
+                profile=2,
+                fail_on_warning=False,
+                stream=True
+            )
+            result = list(cursor)
+
+            # Log results
+            record_count = 0
+            if result:
+                if isinstance(result[0], list):
+                    record_count = len(result[0])
+                    result = result[0]
+                else:
+                    record_count = len(result)
+
+            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
+
+            if kb_ids:
+                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
+            if non_local_apps:
+                self.logger.info(f"✅ App filtering applied for apps: {non_local_apps}")
+            if has_local:
+                self.logger.info("✅ 'local' app included - returning broader record set")
+
+            return result if result else []
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
+            raise
+
+    async def validate_user_kb_access(
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """
+        OPTIMIZED: Validate which KB IDs the user has access to using fast lookups
+        Args:
+            user_id: External user ID
+            org_id: Organization ID
+            kb_ids: List of KB IDs to check access for
+
+        Returns:
+            Dict with 'accessible' and 'inaccessible' KB IDs
+        """
+        try:
+            self.logger.info(f"🚀 Fast KB access validation for user {user_id} on {len(kb_ids)} KBs")
+
+            if not kb_ids:
+                return {"accessible": [], "inaccessible": [], "total_user_kbs": 0}
+
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                self.logger.warning(f"⚠️ User not found: {user_id}")
+                return {
+                    "accessible": [],
+                    "inaccessible": kb_ids,
+                    "error": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            validation_query = """
+            // Convert requested KB list to a set for fast lookup
+            LET requested_kb_set = @kb_ids
+            LET user_from = @user_from
+            LET org_id = @org_id
+
+            // Get user's accessible KBs in this org with direct filtering
+            // Using FILTER early to reduce data processing
+            LET user_accessible_kbs = (
+                FOR perm IN @@permissions_to_kb
+                    FILTER perm._from == user_from
+                    FILTER perm.type == "USER"
+                    // Fast role check using IN operator
+                    FILTER perm.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
+                    // Extract KB key directly from _to field (faster than DOCUMENT lookup)
+                    LET kb_key = PARSE_IDENTIFIER(perm._to).key
+                    // Early filter: only check KBs that were requested OR get all for org validation
+                    LET kb_doc = DOCUMENT(CONCAT("recordGroups/", kb_key))
+                    FILTER kb_doc != null
+                    FILTER kb_doc.orgId == org_id
+                    FILTER kb_doc.groupType == "KB"
+                    FILTER kb_doc.connectorName == "KB"
+                    RETURN kb_key
+            )
+
+            // Convert to sets for O(1) lookup complexity
+            LET accessible_set = user_accessible_kbs
+            LET accessible_requested = (
+                FOR kb_id IN requested_kb_set
+                    FILTER kb_id IN accessible_set
+                    RETURN kb_id
+            )
+
+            LET inaccessible_requested = (
+                FOR kb_id IN requested_kb_set
+                    FILTER kb_id NOT IN accessible_set
+                    RETURN kb_id
+            )
+
+            // Return minimal result set
+            RETURN {
+                accessible: accessible_requested,
+                inaccessible: inaccessible_requested,
+                total_user_kbs: LENGTH(accessible_set)
+            }
+            """
+
+            bind_vars = {
+                "user_from": f"users/{user_key}",
+                "org_id": org_id,
+                "kb_ids": kb_ids,
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            cursor = self.db.aql.execute(
+                validation_query,
+                bind_vars=bind_vars,
+                count=False,           # Don't count results
+                batch_size=1000,       # Larger batch size for faster transfer
+                cache=True,            # Enable query result caching
+                memory_limit=0,        # No memory limit for faster execution
+                max_runtime=30.0,      # 30 second timeout
+                fail_on_warning=False, # Don't fail on warnings
+                profile=False,         # Disable profiling for speed
+                stream=True            # Stream results for memory efficiency
+            )
+
+            result = next(cursor, {})
+
+            accessible = result.get("accessible", [])
+            inaccessible = result.get("inaccessible", [])
+
+
+            self.logger.info(f"KB validation complete: {len(accessible)}/{len(kb_ids)} accessible")
+
+            if inaccessible:
+                self.logger.warning(f"⚠️ User {user_id} lacks access to {len(inaccessible)} KBs")
+
+            return {
+                "accessible": accessible,
+                "inaccessible": inaccessible,
+                "total_user_kbs": result.get("total_user_kbs", 0)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ KB access validation error: {str(e)}")
+            return {
+                "accessible": [],
+                "inaccessible": kb_ids,
+                "error": str(e)
+            }
+
+
+    async def get_all_agent_templates(self, user_id: str) -> List[Dict]:
+        """Get all agent templates accessible to a user via individual or team access"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+
+            // Get user's teams
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Get templates with individual access
+            LET individual_templates = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                    LET template = DOCUMENT(perm._to)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: perm.type,
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Get templates with team access (excluding those already found via individual access)
+            LET individual_template_ids = (FOR ind_template IN individual_templates RETURN ind_template._id)
+
+            LET team_templates = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                    FILTER perm._to NOT IN individual_template_ids
+                    LET template = DOCUMENT(perm._to)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: perm.type,
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Flatten and return all templates
+            FOR template_result IN APPEND(individual_templates, team_templates)
+                RETURN template_result
+            """
+
+            bind_vars = {
+                "user_id": user_id,
+            }
+
+            self.logger.info(f"Getting all agent templates accessible by user {user_id}")
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get all agent templates: %s", str(e))
+            return []
+
+
+    async def get_template(self, template_id: str, user_id: str) -> Optional[Dict]:
+        """Get a template by ID with user permissions"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+            LET template_path = CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+
+            // Get user's teams first
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Check individual user permissions on the template
+            LET individual_access = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == template_path
+                    FILTER perm.type == "USER"
+                    LET template = DOCUMENT(template_path)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Check team permissions on the template (only if no individual access)
+            LET team_access = LENGTH(individual_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == template_path
+                    FILTER perm.type == "TEAM"
+                    LET template = DOCUMENT(template_path)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Return individual access first, then team access
+            LET final_result = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+
+            RETURN final_result
+            """
+
+            bind_vars = {
+                "template_id": template_id,
+                "user_id": user_id,
+            }
+
+            self.logger.info(f"Getting template {template_id} accessible by user {user_id}")
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if len(result) == 0 or result[0] is None:
+                return None
+
+            return result[0]
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get template access: %s", str(e))
+            return None
+
+    async def share_agent_template(self, template_id: str, user_id: str, user_ids: Optional[List[str]] = None, team_ids: Optional[List[str]] = None) -> Optional[bool]:
+        """Share an agent template with users"""
+        try:
+            self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
+
+            user_owner_access_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                FILTER DOCUMENT(perm._to).isDeleted == false
+                LIMIT 1
+                RETURN DOCUMENT(perm._to)
+            """
+            bind_vars = {
+                "template_id": template_id,
+                "user_id": user_id,
+            }
+            cursor = self.db.aql.execute(user_owner_access_query, bind_vars=bind_vars)
+            user_owner_access = list(cursor)
+            if len(user_owner_access) == 0:
+                return False
+            user_owner_access = user_owner_access[0]
+            if user_owner_access.get("role") != "OWNER":
+                return False
+
+            if user_ids is None and team_ids is None:
+                return False
+
+            #  users to be given access
+            user_template_accesses = []
+            if user_ids:
+                for user_id in user_ids:
+                    user = await self.get_user_by_user_id(user_id)
+                    if user is None:
+                        return False
+                    edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
+                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                        "type": "USER",
+                        "role": "READER",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_template_accesses.append(edge)
+
+            if team_ids:
+                for team_id in team_ids:
+                    edge = {
+                        "_from": f"{CollectionNames.TEAMS.value}/{team_id}",
+                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                        "type": "TEAM",
+                        "role": "READER",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_template_accesses.append(edge)
+
+            result = await self.batch_create_edges(user_template_accesses, CollectionNames.PERMISSION.value)
+            if not result:
+                return False
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent template: %s", str(e))
+            return False
+
+    async def clone_agent_template(self, template_id: str) -> Optional[str]:
+        """Clone an agent template"""
+        try:
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
+            if template is None:
+                return None
+            template_key = str(uuid.uuid4())
+            template["_key"] = template_key
+            template["isActive"] = True
+            template["isDeleted"] = False
+            template["deletedAtTimestamp"] = None
+            template["deletedByUserId"] = None
+            template["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["updatedByUserId"] = None
+            template["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["createdBy"] = None
+            template["deletedByUserId"] = None
+            template["deletedAtTimestamp"] = None
+            template["isDeleted"] = False
+            result = await self.batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+            if not result:
+                return None
+            return template_key
+        except Exception as e:
+            self.logger.error("❌ Failed to close agent template: %s", str(e))
+            return False
+
+
+    async def delete_agent_template(self, template_id: str, user_id: str) -> Optional[bool]:
+        """Delete an agent template"""
+        try:
+            template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
+            user_document_id = f"{CollectionNames.USERS.value}/{user_id}"
+
+            permission_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == @template_document_id
+                FILTER perm._from == @user_document_id
+                FILTER perm.role == "OWNER"
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                FILTER DOCUMENT(perm._to).isDeleted == false
+                LIMIT 1
+                RETURN perm
+            """
+
+            bind_vars = {
+                "template_document_id": template_document_id,
+                "user_document_id": user_document_id,
+            }
+
+            cursor = self.db.aql.execute(permission_query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            if len(permissions) == 0:
+                self.logger.warning(f"No permission found for user {user_id} on template {template_id}")
+                return False
+            permission = permissions[0]
+            if permission.get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the owner of template {template_id}")
+                return False
+
+            # Check if template exists
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
+            if template is None:
+                self.logger.warning(f"Template {template_id} not found")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the template using AQL UPDATE
+            update_query = f"""
+            UPDATE @template_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_TEMPLATES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "template_key": template_id,
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to delete template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete agent template: %s", str(e), exc_info=True)
+            return False
+
+
+    async def update_agent_template(self, template_id: str, template_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+        """Update an agent template"""
+        try:
+            # Check if user is the owner of the template
+            template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
+            user_document_id = f"{CollectionNames.USERS.value}/{user_id}"
+
+            permission_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == @template_document_id
+                FILTER perm._from == @user_document_id
+                FILTER perm.role == "OWNER"
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                FILTER DOCUMENT(perm._to).isDeleted == false
+                LIMIT 1
+                RETURN perm
+            """
+
+            bind_vars = {
+                "template_document_id": template_document_id,
+                "user_document_id": user_document_id,
+            }
+
+            cursor = self.db.aql.execute(permission_query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            if len(permissions) == 0:
+                self.logger.warning(f"No permission found for user {user_id} on template {template_id}")
+                return False
+            permission = permissions[0]
+            if permission.get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the owner of template {template_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags"]
+            for field in allowed_fields:
+                if field in template_updates:
+                    update_data[field] = template_updates[field]
+
+            # Update the template - use the collection and document key
+            update_query = f"""
+            UPDATE @template_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_TEMPLATES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "template_key": template_id,  # Use just the key, not the full document ID
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to update template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully updated template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update agent template: %s", str(e), exc_info=True)
+            return False
+
+
+    async def get_agent(self, agent_id: str, user_id: str) -> Optional[Dict]:
+        """Get an agent by ID with user permissions - flattened response"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+            LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+
+            // Get user's teams first
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Check individual user permissions on the agent
+            LET individual_access = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "USER"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Check team permissions on the agent (only if no individual access)
+            LET team_access = LENGTH(individual_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Return individual access first, then team access
+            LET final_result = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+
+            RETURN final_result
+            """
+
+            bind_vars = {
+                "agent_id": agent_id,
+                "user_id": user_id,
+            }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if len(result) == 0 or result[0] is None:
+                self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
+                return None
+
+            return result[0]
+
+        except Exception as e:
+            self.logger.error(f"Failed to get agent: {str(e)}")
+            return None
+
+
+    async def get_all_agents(self, user_id: str) -> List[Dict]:
+        """Get all agents accessible to a user via individual or team access - flattened response"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+
+            // Get user's teams
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Get agents with individual access
+            LET individual_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET agent = DOCUMENT(perm._to)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Get agents with team access (excluding those already found via individual access)
+            LET individual_agent_ids = (FOR ind_agent IN individual_agents RETURN ind_agent._id)
+
+            LET team_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    FILTER perm._to NOT IN individual_agent_ids
+                    LET agent = DOCUMENT(perm._to)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Flatten and return all agents
+            FOR agent_result IN APPEND(individual_agents, team_agents)
+                RETURN agent_result
+            """
+
+            bind_vars = {
+                "user_id": user_id,
+            }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error(f"Failed to get all agents: {str(e)}")
+            return []
+
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+        """Update an agent"""
+        try:
+            # Check if user has permission to update the agent using the new method
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can edit the agent
+            if not agent_with_permission.get("can_edit", False):
+                self.logger.warning(f"User {user_id} does not have edit permission on agent {agent_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided in agent_updates
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "apps", "kb", "vectorDBs", "tags"]
+            for field in allowed_fields:
+                if field in agent_updates:
+                    update_data[field] = agent_updates[field]
+
+            # Update the agent using AQL UPDATE statement - Fixed to use proper collection name
+            update_query = f"""
+            UPDATE @agent_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_INSTANCES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "agent_key": agent_id,  # Use just the key, not the full document ID
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to update agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully updated agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to update agent: {str(e)}")
+            return False
+
+    async def delete_agent(self, agent_id: str, user_id: str) -> Optional[bool]:
+        """Delete an agent"""
+        try:
+            # Check if agent exists
+            agent = await self.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+            if agent is None:
+                self.logger.warning(f"Agent {agent_id} not found")
+                return False
+
+            # Check if user has permission to delete the agent using the new method
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can delete the agent
+            if not agent_with_permission.get("can_delete", False):
+                self.logger.warning(f"User {user_id} does not have delete permission on agent {agent_id}")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the agent using AQL UPDATE - Fixed to use f-string
+            update_query = f"""
+            UPDATE @agent_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_INSTANCES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "agent_key": agent_id,
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to delete agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete agent: {str(e)}")
+            return False
+
+    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[bool]:
+        """Share an agent to users and teams"""
+        try:
+            # Check if agent exists and user has permission to share it
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can share the agent
+            if not agent_with_permission.get("can_share", False):
+                self.logger.warning(f"User {user_id} does not have share permission on agent {agent_id}")
+                return False
+
+            # Share the agent to users
+            user_agent_edges = []
+            if user_ids:
+                for user_id_to_share in user_ids:
+                    user = await self.get_user_by_user_id(user_id_to_share)
+                    if user is None:
+                        self.logger.warning(f"User {user_id_to_share} not found")
+                        continue
+                    edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                        "role": "READER",
+                        "type": "USER",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_agent_edges.append(edge)
+
+                result = await self.batch_create_edges(user_agent_edges, CollectionNames.PERMISSION.value)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to user {user_id_to_share}")
+                    return False
+
+            # Share the agent to teams
+            team_agent_edges = []
+            if team_ids:
+                for team_id in team_ids:
+                    team = await self.get_document(team_id, CollectionNames.TEAMS.value)
+                    if team is None:
+                        self.logger.warning(f"Team {team_id} not found")
+                        continue
+                    edge = {
+                        "_from": f"{CollectionNames.TEAMS.value}/{team.get('_key')}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                        "role": "READER",
+                        "type": "TEAM",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    team_agent_edges.append(edge)
+                result = await self.batch_create_edges(team_agent_edges, CollectionNames.PERMISSION.value)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to team {team_id}")
+                    return False
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
+            return False
+
+    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[Dict]:
+        """Unshare an agent from users and teams - direct deletion without validation"""
+        try:
+            # Check if user has permission to unshare the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None or not agent_with_permission.get("can_share", False):
+                return {"success": False, "reason": "Insufficient permissions to unshare agent"}
+
+            # Build conditions for batch delete
+            conditions = []
+            bind_vars = {"agent_id": agent_id}
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"success": False, "reason": "No users or teams provided"}
+
+            # Single batch delete query
+            batch_delete_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER ({' OR '.join(conditions)})
+                REMOVE perm IN {CollectionNames.PERMISSION.value}
+                RETURN OLD._key
+            """
+
+            cursor = self.db.aql.execute(batch_delete_query, bind_vars=bind_vars)
+            deleted_permissions = list(cursor)
+
+            self.logger.info(f"Unshared agent {agent_id}: removed {len(deleted_permissions)} permissions")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "deleted_permissions": len(deleted_permissions)
+            }
+
+        except Exception as e:
+            self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str) -> Optional[Dict]:
+        """Update permission role for users and teams on an agent (only OWNER can do this)"""
+        try:
+            # Check if the requesting user is the OWNER of the agent
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
+                return {"success": False, "reason": "Agent not found or no permission"}
+
+            # Only OWNER can update permissions - Fixed to use the flattened structure
+            if agent_with_permission.get("user_role") != "OWNER":
+                self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
+                return {"success": False, "reason": "Only OWNER can update permissions"}
+
+            # Build conditions for batch update
+            conditions = []
+            bind_vars = {
+                "agent_id": agent_id,
+                "new_role": role,
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"success": False, "reason": "No users or teams provided"}
+
+            # Single batch update query
+            batch_update_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER ({' OR '.join(conditions)})
+                UPDATE perm WITH {{
+                    role: @new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    type: NEW.type,
+                    role: NEW.role
+                }}
+            """
+
+            cursor = self.db.aql.execute(batch_update_query, bind_vars=bind_vars)
+            updated_permissions = list(cursor)
+
+            if not updated_permissions:
+                self.logger.warning(f"No permission edges found to update for agent {agent_id}")
+                return {"success": False, "reason": "No permissions found to update"}
+
+            # Count updates by type
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
+
+            self.logger.info(f"Successfully updated {len(updated_permissions)} permissions for agent {agent_id} to role {role}")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "new_role": role,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to update agent permission: {str(e)}")
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+    async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
+        """Get all permissions for an agent (only OWNER can view all permissions)"""
+        try:
+            # Check if user has access to the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return None
+
+            # Only OWNER can view all permissions - Fixed to use the flattened structure
+            if agent_with_permission.get("user_role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
+                return None
+
+            # Get all permissions for the agent
+            query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                LET entity = DOCUMENT(perm._from)
+                FILTER entity != null
+                RETURN {{
+                    id: entity._key,
+                    name: entity.fullName || entity.name || entity.userName,
+                    userId: entity.userId,
+                    email: entity.email,
+                    role: perm.role,
+                    type: perm.type,
+                    createdAtTimestamp: perm.createdAtTimestamp,
+                    updatedAtTimestamp: perm.updatedAtTimestamp
+                }}
+            """
+
+            bind_vars = {
+                "agent_id": agent_id,
+            }
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to get agent permissions: {str(e)}")
+            return None

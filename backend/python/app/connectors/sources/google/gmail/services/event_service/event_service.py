@@ -5,7 +5,9 @@ from typing import Any, Dict
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.event_service.event_service import BaseEventService
-from app.connectors.sources.google.common.arango_service import ArangoService
+from app.connectors.services.base_arango_service import (
+    BaseArangoService as ArangoService,
+)
 from app.connectors.sources.google.gmail.services.sync_service.sync_tasks import (
     GmailSyncTasks,
 )

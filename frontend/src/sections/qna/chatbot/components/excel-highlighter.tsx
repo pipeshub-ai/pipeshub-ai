@@ -1348,7 +1348,7 @@ const ExcelViewer = ({
                         </MetaLabel>
                       )}
 
-                      {citation.metadata.blockNum[0] && (
+                      {citation.metadata.blockNum && citation.metadata.blockNum[0] && (
                         <MetaLabel>
                           <Icon
                             icon={tableRowIcon}

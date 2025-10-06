@@ -8,7 +8,9 @@ from inspect import isclass
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.sources.google.common.arango_service import ArangoService
+from app.connectors.services.base_arango_service import (
+    BaseArangoService as ArangoService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -167,6 +169,7 @@ class ConnectorRegistry:
                 return {
                     'isActive': doc.get('isActive', False),
                     'isConfigured': doc.get('isConfigured', False),
+                    'isAuthenticated': doc.get('isAuthenticated', False),
                     'appGroupId': doc.get('appGroupId'),
                     'appDescription': doc.get('appDescription', ''),
                     'appCategories': doc.get('appCategories', []),
@@ -184,6 +187,7 @@ class ConnectorRegistry:
         return {
             'isActive': False,
             'isConfigured': False,
+            'isAuthenticated': False,
             'appDescription': '',
             'appCategories': [],
             'supportsRealtime': False,
@@ -434,6 +438,7 @@ class ConnectorRegistry:
                 'config': metadata.get('config', {}),
                 'isActive': False,
                 'isConfigured': False,
+                'isAuthenticated': False,
                 'createdAtTimestamp': None,
                 'updatedAtTimestamp': None
             }
@@ -445,6 +450,7 @@ class ConnectorRegistry:
                     connector_info.update({
                         'isActive': db_status.get('isActive', False),
                         'isConfigured': db_status.get('isConfigured', False),
+                        'isAuthenticated': db_status.get('isAuthenticated', False),
                         'createdAtTimestamp': db_status.get('createdAtTimestamp'),
                         'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
                         'appGroupId': db_status.get('appGroupId'),

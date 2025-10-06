@@ -2085,6 +2085,7 @@ async def get_connector_config(
             "config": config,
             "isActive": registry_entry.get("isActive", False),
             "isConfigured": registry_entry.get("isConfigured", False),
+            "isAuthenticated": registry_entry.get("isAuthenticated", False),
         }
 
         return {"success": True, "config": response_dict}
@@ -2323,6 +2324,7 @@ async def handle_oauth_callback(
     container = request.app.container
     logger = container.logger()
     config_service = container.config_service()
+    connector_registry = request.app.state.connector_registry
 
     try:
 
@@ -2461,6 +2463,13 @@ async def handle_oauth_callback(
         logger.info("app name: " + app_name)
         logger.info("connector name: " + connector_name)
         # Return appropriate response based on caller
+        updates = {
+            "isAuthenticated": True,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        await connector_registry.update_connector(app_name, updates)
+        logger.info(f"Connector 'isAuthenticated' status for {app_name} set to True.")
+
         return {"success": True, "redirect_url": redirect_url}
 
     except Exception as e:
@@ -2480,7 +2489,12 @@ async def handle_oauth_callback(
         except Exception:
             settings_base_path = "/account/individual/settings/connector"
         error_url = f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=server_error"
-
+        updates = {
+            "isAuthenticated": False,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        await connector_registry.update_connector(app_name, updates)
+        logger.info(f"Connector 'isAuthenticated' status for {app_name} set to False due to an error.")
         return {"success": False, "error": "server_error", "redirect_url": error_url}
 
 
