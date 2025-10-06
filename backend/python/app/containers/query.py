@@ -64,7 +64,6 @@ class QueryAppContainer(BaseAppContainer):
         modules=[
             "app.api.routes.search",
             "app.api.routes.chatbot",
-            "app.modules.retrieval.retrieval_service",
-            "app.modules.retrieval.retrieval_arango",
+            "app.modules.retrieval.retrieval_service"
         ]
     )

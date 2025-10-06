@@ -59,8 +59,7 @@ async def get_initialized_container() -> QueryAppContainer:
             modules=[
                 "app.api.routes.search",
                 "app.api.routes.chatbot",
-                "app.modules.retrieval.retrieval_service",
-                "app.modules.retrieval.retrieval_arango",
+                "app.modules.retrieval.retrieval_service"
             ]
         )
         get_initialized_container.initialized = True
