@@ -32,6 +32,14 @@
     <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub Repo stars">
   </a>
   &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/actions/workflows/p0-integration.yml">
+    <img src="https://github.com/pipeshub-ai/pipeshub-ai/actions/workflows/p0-integration.yml/badge.svg" alt="P0 Integration Tests">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/actions/workflows/integration-tests.yml">
+    <img src="https://github.com/pipeshub-ai/pipeshub-ai/actions/workflows/integration-tests.yml/badge.svg" alt="Integration Tests">
+  </a>
+  &nbsp;
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/network/members">
     <img src="https://img.shields.io/github/forks/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub forks">
   </a>

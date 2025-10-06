@@ -1,0 +1,115 @@
+name: P0 Integration Tests
+
+on:
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Run P0 integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      # Start docker-in-docker for optional docker SDK usage
+      docker:
+        image: docker:24.0-dind
+        options: --privileged
+
+    env:
+      PYTHON_VERSION: '3.11'
+      TEST_USE_DOCKER: '1'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+          # Extra deps used by tests/conftest.py when TEST_USE_DOCKER=1
+          pip install docker pymongo redis httpx qdrant-client
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/nodejs/apps/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install Node dependencies (backend)
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Build backend
+        working-directory: backend/nodejs/apps
+        run: npm run build --if-present
+
+      - name: Install Node dependencies (frontend)
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Generate test env files
+        run: |
+          cp deployment/docker-compose/env.template deployment/docker-compose/.env
+          cp backend/nodejs/apps/env.template backend/nodejs/apps/.env
+          cp backend/python/env.template backend/python/.env
+
+      - name: Start services with docker-compose
+        run: |
+          docker compose -f deployment/docker-compose/docker-compose.dev.yml up -d --quiet-pull
+
+      - name: Wait for core services to be healthy
+        run: |
+          echo "Waiting for services..."
+          ATTEMPTS=60
+          until curl -fsS http://localhost:3000/api/v1/health >/dev/null 2>&1 || [ $ATTEMPTS -eq 0 ]; do
+            ATTEMPTS=$((ATTEMPTS-1))
+            sleep 2
+          done
+          # Python services
+          ATTEMPTS=60
+          until curl -fsS http://localhost:8000/health >/dev/null 2>&1 || [ $ATTEMPTS -eq 0 ]; do
+            ATTEMPTS=$((ATTEMPTS-1))
+            sleep 2
+          done
+
+      - name: Run P0 tests
+        env:
+          TEST_USE_DOCKER: '1'
+          PYTHONPATH: backend/python
+        run: |
+          pytest -m "P0 or health" --maxfail=1 --disable-warnings -q
+
+      - name: Show docker logs on failure
+        if: ${{ failure() }}
+        run: |
+          docker ps -a
+          docker compose -f deployment/docker-compose/docker-compose.dev.yml logs --no-color --tail=200 || true
+
+      - name: Stop services
+        if: ${{ always() }}
+        run: |
+          docker compose -f deployment/docker-compose/docker-compose.dev.yml down -v --remove-orphans
+
+      - name: Docker cleanup
+        if: ${{ always() }}
+        run: |
+          docker system prune -af || true
+          docker volume prune -f || true
+          docker network prune -f || true
+
+
