@@ -65,6 +65,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_user_by_email(self, email: str) -> Optional[User]:
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
+    async def get_record_owner_source_user_id(self, record_id: str) -> Optional[str]:
+        return await self.arango_service.get_record_owner_source_user_id(record_id, transaction=self.txn)
+
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
 
@@ -80,8 +83,8 @@ class ArangoTransactionStore(TransactionStore):
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
 
-    async def get_mail_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_email: str) -> Optional[Record]:
-        return await self.arango_service.get_mail_record_by_conversation_index(connector_name, conversation_index, thread_id, org_id, user_email, transaction=self.txn)
+    async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_conversation_index(connector_name, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
 
 
     async def batch_upsert_records(self, records: List[Record]) -> None:

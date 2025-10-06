@@ -60,9 +60,7 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsResponse,
 )
 
-# Constants for folder ID parsing
-FOLDER_ID_MIN_PARTS = 2  # Minimum parts in folder ID format "folder_folderid"
-FOLDER_ID_WITH_EMAIL_PARTS = 3  # Parts in folder ID with email format "folder_folderid_email"
+# Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
 
 
@@ -296,14 +294,19 @@ class OutlookConnector(BaseConnector):
             all_enterprise_users = await self._get_all_users_external()
             all_active_users = await self.data_entities_processor.get_all_active_users()
 
-            # Create a set of active user emails for efficient lookup
-            active_user_emails = {user.email.lower() for user in all_active_users if user.email}
+            # Create a mapping of email to source_user_id from enterprise users
+            email_to_source_id = {
+                user.email.lower(): user.source_user_id
+                for user in all_enterprise_users
+                if user.email
+            }
 
-            # Filter enterprise users to only include those that are active
-            users_to_sync = [
-                user for user in all_enterprise_users
-                if user.email and user.email.lower() in active_user_emails
-            ]
+            # Get active users that exist in enterprise users and add source_user_id
+            users_to_sync = []
+            for user in all_active_users:
+                if user.email and user.email.lower() in email_to_source_id:
+                    user.source_user_id = email_to_source_id[user.email.lower()]
+                    users_to_sync.append(user)
 
             # Populate user cache during sync for better performance
             await self._populate_user_cache()
@@ -413,7 +416,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing all folders for user {user.email}: {e}")
             return f"Failed to process folders for {user.email}: {str(e)}"
 
-    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user_email: str) -> Optional[str]:
+    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user: AppUser) -> Optional[str]:
         """Find parent message ID using conversation index by searching ArangoDB."""
         if not conversation_index:
             self.logger.debug(f"No conversation_index provided for thread {thread_id}")
@@ -435,12 +438,12 @@ class OutlookConnector(BaseConnector):
 
             # Search in ArangoDB for parent message
             async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_mail_record_by_conversation_index(
+                parent_record = await tx_store.get_record_by_conversation_index(
                     connector_name=Connectors.OUTLOOK,
                     conversation_index=parent_index,
                     thread_id=thread_id,
                     org_id=org_id,
-                    user_email=user_email
+                    user_id=user.user_id
                 )
 
                 if parent_record:
@@ -472,7 +475,7 @@ class OutlookConnector(BaseConnector):
                         record.conversation_index,
                         record.thread_id,
                         org_id,
-                        user.email
+                        user
                     )
 
                     if parent_id:
@@ -648,11 +651,11 @@ class OutlookConnector(BaseConnector):
             is_deleted = (additional_data.get('@removed', {}).get('reason') == 'deleted')
 
             if is_deleted:
-                self.logger.info(f"Removing user access for deleted message: {message_id} from folder {folder_name}")
+                self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
                 async with self.data_store_provider.transaction() as tx_store:
                     db_user = await tx_store.get_user_by_email(user.email)
                     if db_user:
-                        await tx_store.remove_user_access_to_record(Connectors.OUTLOOK, message_id, db_user.id)
+                        await tx_store.delete_record_by_external_id(Connectors.OUTLOOK, message_id, db_user.user_id)
                     else:
                         self.logger.error(f"Could not find database user for email {user.email}")
                 return updates
@@ -693,13 +696,7 @@ class OutlookConnector(BaseConnector):
             if not is_new:
                 # Check if email moved to a different folder
                 current_folder_id = folder_id
-                # Extract folder ID from existing record's external_record_group_id
-                # Format: "folder_{folder_id}_{user.email}"
-                existing_folder_id = None
-                if hasattr(existing_record, 'external_record_group_id') and existing_record.external_record_group_id:
-                    group_id_parts = existing_record.external_record_group_id.split('_', 2)
-                    if len(group_id_parts) >= FOLDER_ID_MIN_PARTS and group_id_parts[0] == 'folder':
-                        existing_folder_id = group_id_parts[1]
+                existing_folder_id = existing_record.external_record_group_id
 
                 if existing_folder_id and current_folder_id != existing_folder_id:
                     metadata_changed = True
@@ -712,7 +709,7 @@ class OutlookConnector(BaseConnector):
             email_record = MailRecord(
                 id=record_id,
                 org_id=org_id,
-                record_name=self._safe_get_attr(message, 'subject', 'No Subject'),
+                record_name=self._safe_get_attr(message, 'subject', 'No Subject') or 'No Subject',
                 record_type=RecordType.MAIL,
                 external_record_id=message_id,
                 external_revision_id=None,
@@ -724,20 +721,16 @@ class OutlookConnector(BaseConnector):
                 weburl=self._safe_get_attr(message, 'web_link', ''),
                 mime_type=MimeTypes.HTML.value,
                 parent_external_record_id=None,
-                external_record_group_id=f"folder_{folder_id}_{user.email}",  # Include folder in group ID
+                external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
-                subject=self._safe_get_attr(message, 'subject', 'No Subject'),
+                subject=self._safe_get_attr(message, 'subject', 'No Subject') or 'No Subject',
                 from_email=self._extract_email_from_recipient(self._safe_get_attr(message, 'from_', None)),
                 to_emails=[self._extract_email_from_recipient(r) for r in self._safe_get_attr(message, 'to_recipients', [])],
                 cc_emails=[self._extract_email_from_recipient(r) for r in self._safe_get_attr(message, 'cc_recipients', [])],
                 bcc_emails=[self._extract_email_from_recipient(r) for r in self._safe_get_attr(message, 'bcc_recipients', [])],
                 thread_id=self._safe_get_attr(message, 'conversation_id', ''),
                 is_parent=False,
-                internal_date=self._format_datetime_string(self._safe_get_attr(message, 'received_date_time')),
-                date=self._format_datetime_string(self._safe_get_attr(message, 'sent_date_time')),
-                message_id_header=self._safe_get_attr(message, 'internet_message_id', ''),
-                history_id='',
-                label_ids=self._safe_get_attr(message, 'categories', []),
+                internet_message_id=self._safe_get_attr(message, 'internet_message_id', ''),
                 conversation_index=self._safe_get_attr(message, 'conversation_index', ''),
             )
 
@@ -848,7 +841,7 @@ class OutlookConnector(BaseConnector):
                     mime_type=mime_type,
                     parent_external_record_id=message_id,
                     parent_record_type=RecordType.MAIL,
-                    external_record_group_id=f"folder_{folder_id}_{user.email}",  # Include folder in group ID
+                    external_record_group_id=folder_id,
                     record_group_type=RecordGroupType.MAILBOX,
                     weburl="",
                     is_file=True,
@@ -916,29 +909,19 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise HTTPException(status_code=500, detail="External Outlook client not initialized")
 
-            # Get the user ID from the record's mailbox group ID
-            # Format: "folder_{folder_id}_{email}" -> need to find the actual Graph user ID
+            # Get the mailbox owner's Graph User ID from permission edges
             user_id = None
 
-            # Try to get user ID from the record context
-            if hasattr(record, 'external_record_group_id') and record.external_record_group_id:
-                # Extract email from "folder_{folder_id}_{email}" format
-                if record.external_record_group_id.startswith('folder_'):
-                    parts = record.external_record_group_id.split('_', 2)
-                    if len(parts) >= FOLDER_ID_WITH_EMAIL_PARTS:
-                        user_email = parts[2]  # Extract email from folder_folderid_email
+            async with self.data_store_provider.transaction() as tx_store:
+                user_id = await tx_store.get_record_owner_source_user_id(record.id)
 
-                        # Use cached user lookup instead of fetching all users
-                        user_id = await self._get_user_id_from_email(user_email)
+                if user_id:
+                    self.logger.debug(f"Found Graph user ID {user_id} for record {record.id} from permission edges")
+                else:
+                    self.logger.warning(f"Could not find owner for record {record.id} in permission edges")
 
-                        if user_id:
-                            self.logger.debug(f"Found user ID {user_id} for email {user_email} from cache")
-                        else:
-                            self.logger.warning(f"Could not find user ID for email {user_email} in cache")
-
-            # Fallback to "me"
             if not user_id:
-                user_id = "me"
+                raise HTTPException(status_code=400, detail="Could not determine user context for this record.")
 
             if record.record_type == RecordType.MAIL:
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
@@ -1024,7 +1007,8 @@ class OutlookConnector(BaseConnector):
             # Decode base64 content
             return base64.b64decode(content_bytes)
 
-        except Exception:
+        except Exception as e:
+            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
             return b''
 
 

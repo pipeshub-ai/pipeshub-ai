@@ -1,4 +1,3 @@
-import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -183,7 +182,7 @@ class DataSourceEntitiesProcessor:
 
     async def _create_external_user(self, email: str, connector_name: str, tx_store) -> AppUser:
         """Create an external user record."""
-        external_source_id = f"external_{hashlib.md5(email.encode()).hexdigest()[:12]}"
+        external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
 
         # Create external user record
         external_user = AppUser(
@@ -230,7 +229,10 @@ class DataSourceEntitiesProcessor:
         # Create record if it doesn't exist
         # Record download function
         # Create a permission edge between the record and the app with sync status if it doesn't exist
-        return record
+        if existing_record is None:
+            return record
+
+        return None
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:

@@ -217,8 +217,6 @@ class OutlookCalendarContactsDataSource:
 
                     folders_data["value"].append(folder_dict)
 
-            print(f"Folders data {folders_data}")
-
             return OutlookMailFoldersResponse(
                 success=success,
                 data=folders_data,

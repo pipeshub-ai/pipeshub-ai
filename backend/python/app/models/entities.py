@@ -244,11 +244,7 @@ class MailRecord(Record):
     bcc_emails: Optional[List[str]] = None
     thread_id: Optional[str] = None
     is_parent: bool = False
-    internal_date: Optional[str] = None
-    date: Optional[str] = None
-    message_id_header: Optional[str] = None
-    history_id: Optional[str] = None
-    label_ids: Optional[List[str]] = None
+    internet_message_id: Optional[str] = None
     conversation_index: Optional[str] = None
 
 
@@ -257,17 +253,13 @@ class MailRecord(Record):
             "_key": self.id,
             "threadId": self.thread_id or "",
             "isParent": self.is_parent,
-            "internalDate": self.internal_date or "",
             "subject": self.subject or "",
-            "date": self.date or "",
             "from": self.from_email or "",
             "to": self.to_emails or [],
             "cc": self.cc_emails or [],
             "bcc": self.bcc_emails or [],
-            "messageIdHeader": self.message_id_header,
-            "historyId": self.history_id or "",
+            "messageIdHeader": self.internet_message_id,
             "webUrl": self.weburl or "",
-            "labelIds": self.label_ids or [],
             "conversationIndex": self.conversation_index,
         }
 
@@ -648,6 +640,7 @@ class AppUser(BaseModel):
             "orgId": self.org_id,
             "email": self.email,
             "fullName": self.full_name,
+            "userId": self.source_user_id,
             "isActive": self.is_active,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,

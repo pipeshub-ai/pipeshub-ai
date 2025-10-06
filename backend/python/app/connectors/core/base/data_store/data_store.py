@@ -94,6 +94,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_owner_source_user_id(self, record_id: str) -> Optional[str]:
+        pass
+
+    @abstractmethod
     async def batch_upsert_records(self, records: List[Record]) -> None:
         pass
 
