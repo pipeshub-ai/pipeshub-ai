@@ -1,6 +1,7 @@
 ﻿import asyncio
 import time
-from typing import Any, Callable, Coroutine, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, TypeVar
+from typing import Awaitable as _Awaitable
 
 import httpx
 import pytest
@@ -62,19 +63,19 @@ class BaseTest:
     # -----------------------------
     # JSON convenience helpers
     # -----------------------------
-    async def get_json(self, client: httpx.AsyncClient, url: str, *, params: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None, expect_status: Optional[int] = None) -> Tuple[httpx.Response, Any]:
+    async def get_json(self, client: httpx.AsyncClient, url: str, *, params: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None, expect_status: Optional[int] = None) -> Tuple[httpx.Response, object | None]:
         response = await self.get(client, url, params=params, timeout=timeout)
         if expect_status is not None:
             self.assert_status(response, expect_status)
         return response, self._safe_json(response)
 
-    async def post_json(self, client: httpx.AsyncClient, url: str, *, json: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None, expect_status: Optional[int] = None) -> Tuple[httpx.Response, Any]:
+    async def post_json(self, client: httpx.AsyncClient, url: str, *, json: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None, expect_status: Optional[int] = None) -> Tuple[httpx.Response, object | None]:
         response = await self.post(client, url, json=json, timeout=timeout)
         if expect_status is not None:
             self.assert_status(response, expect_status)
         return response, self._safe_json(response)
 
-    def _safe_json(self, response: httpx.Response) -> Any:
+    def _safe_json(self, response: httpx.Response) -> object | None:
         content_type = response.headers.get("content-type", "")
         if "application/json" in content_type:
             return response.json()
@@ -83,13 +84,15 @@ class BaseTest:
     # -----------------------------
     # Retry helper
     # -----------------------------
+    T = TypeVar("T")
+
     async def retry(
         self,
-        func: Callable[[], Coroutine[Any, Any, Any]],
+        func: Callable[[], _Awaitable[T]],
         *,
         attempts: Optional[int] = None,
         delay_seconds: Optional[float] = None,
-    ) -> Any:
+    ) -> T:
         total_attempts = attempts or self.RETRY_ATTEMPTS
         delay = delay_seconds or self.RETRY_DELAY_SECONDS
         last_err: Optional[BaseException] = None
