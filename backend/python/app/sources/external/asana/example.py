@@ -1,185 +1,169 @@
-# ruff: noqa
 """
-Asana API Usage Example v2 (Updated)
+Example usage of AsanaClient and AsanaDataSource
 
-Demonstrates using the updated AsanaDataSource from asana_datasource.py across multiple entities:
-- Projects CRUD
-- Tasks CRUD
-- Tags CRUD (and attach to task)
-- Sections CRUD
-- Custom Fields CRUD
-- Stories (comments) CRUD
-- Attachments CRUD
-
-Prerequisites:
-- Set ASANA_ACCESS_TOKEN environment variable
-- Set ASANA_WORKSPACE_GID environment variable
-- Set ASANA_ASSIGNEE_GID environment variable (for tasks)
+This demonstrates how to:
+1. Create an Asana client with token authentication
+2. Initialize the datasource with the client
+3. Make API calls using the datasource methods
 """
 
 import asyncio
+import json
 import os
-from pprint import pprint
 
-from app.sources.client.asana.asana import AsanaTokenConfig, AsanaClient
+from app.sources.client.asana.asana import AsanaClient, AsanaResponse, AsanaTokenConfig
 from app.sources.external.asana.asana_ import AsanaDataSource
 
 
-TOKEN = os.getenv("ASANA_ACCESS_TOKEN")
-WORKSPACE = os.getenv("ASANA_WORKSPACE_GID")
-ASSIGNEE = os.getenv("ASANA_ASSIGNEE_GID")
+def _print_response(title: str, response: AsanaResponse, max_items: int = 25) -> None:
+    """Print an AsanaResponse in a simple format."""
+    print(title)
+
+    if not response.success:
+        print(f"✗ Error: {response.error}")
+        return
+
+    data = response.data
+    if not data:
+        print("(no data)")
+        return
+
+    # Handle generator (convert to list for display)
+    if hasattr(data, '__iter__') and not isinstance(data, (dict, str)):
+        # This handles both generators and lists
+        try:
+            data_list = list(data) if not isinstance(data, list) else data
+            print(f"✓ Found {len(data_list)} items:")
+            for i, item in enumerate(data_list[:max_items], 1):
+                print(f"  {i}. {json.dumps(item, indent=4, default=str)}")
+            if len(data_list) > max_items:
+                print(f"  ... and {len(data_list) - max_items} more items")
+            return
+        except Exception as e:
+            print(f"✗ Error converting data to list: {e}")
+            return
+
+    # Handle single object
+    print("✓ Result:")
+    print(json.dumps(data, indent=2, default=str))
 
 
-async def main() -> None:
-    if not TOKEN:
-        raise Exception("ASANA_ACCESS_TOKEN is not set")
-    if not WORKSPACE:
+async def example_with_token() -> None:
+    """Example using Personal Access Token authentication"""
+
+    # Get token from environment
+    token = os.getenv("ASANA_TOKEN")
+    workspace_gid = os.getenv("ASANA_WORKSPACE_GID")
+    project_gid = os.getenv("ASANA_PROJECT_GID")
+    if not token:
+        raise Exception("ASANA_TOKEN is not set")
+    if not workspace_gid:
         raise Exception("ASANA_WORKSPACE_GID is not set")
-    if not ASSIGNEE:
-        raise Exception("ASANA_ASSIGNEE_GID is not set")
+    if not project_gid:
+        raise Exception("ASANA_PROJECT_GID is not set")
 
-    # Create client using the new v2 pattern
-    config = AsanaTokenConfig(token=TOKEN)
-    client = AsanaClient.build_with_config(config)
-    api_client = client.get_api_client()
-
-    # Create data source with the new AsanaDataSource
-    data_source = AsanaDataSource(api_client, return_iterators=False)
-
-    print(f"Workspace: {WORKSPACE}")
-    print(f"Assignee: {ASSIGNEE}")
-    print()
-
-    # --- Project ---
-    print("Creating project...")
-    project = data_source.create_project(
-        body={"data": {"name": "Demo Project v2", "workspace": WORKSPACE}}, opts={}
+    # Create Asana client with token config
+    asana_client = AsanaClient.build_with_config(
+        AsanaTokenConfig(
+            access_token=token,
+            return_page_iterator=True,
+            max_retries=5,
+        ),
     )
-    pprint(project)
-    project_gid = project["gid"]
 
-    print("Reading project...")
-    pprint(data_source.get_project(project_gid=project_gid, opts={}))
-
-    print("Updating project...")
-    pprint(
-        data_source.update_project(
-            body={"data": {"notes": "Updated project v2"}},
-            project_gid=project_gid,
-            opts={},
+    print(f"✓ Created Asana client: {asana_client}")
+    try:
+        pagination_mode = (
+            "iterator"
+            if asana_client.get_client().return_page_iterator
+            else "single-page"
         )
-    )
+        print(f"✓ Pagination mode: {pagination_mode}")
+    except Exception as e:
+        print(e)
+        print("✗ Error: Failed to get pagination mode")
 
-    # --- Task ---
-    print("Creating task...")
-    task = data_source.create_task(
-        body={
-            "data": {
-                "name": "Demo Task v2",
-                "projects": [project_gid],
-                "assignee": ASSIGNEE,
-                "workspace": WORKSPACE,
-            }
+    # Create datasource with the client
+    asana_datasource = AsanaDataSource(asana_client)
+    print(f"✓ Created Asana datasource: {asana_datasource}")
+
+    # Example 1: Get current user
+    print("\n--- Getting current user ---")
+    user_response = await asana_datasource.get_user(user_gid="me")
+    _print_response("Current user:", user_response)
+
+    # Example 2: Get workspaces
+    print("\n--- Getting workspaces ---")
+    workspaces_response = await asana_datasource.get_workspaces(
+        opts={"opt_fields": "gid,name,resource_type"}
+    )
+    _print_response("Workspaces:", workspaces_response)
+
+    # Example 3: Get tasks for a project
+    # Replace with your actual project GID
+    if not project_gid:
+        raise Exception("ASANA_PROJECT_GID is not set")
+    print(f"\n--- Getting tasks for project {project_gid} ---")
+    tasks_response = await asana_datasource.get_tasks_for_project(
+        project_gid=project_gid,
+        opts={"limit": 25, "opt_fields": "gid,name,resource_type,created_at"},
+    )
+    _print_response("Project tasks (first page or iterator sample):", tasks_response)
+
+    # Example 4: Create a task
+    print("\n--- Creating a task ---")
+    task_data = {
+        "data": {
+            "name": "Test task from API",
+            "notes": "This task was created via the Asana API",
+            "workspace": workspace_gid,
+        }
+    }
+    create_response = await asana_datasource.create_task(
+        body=task_data, opts={"opt_fields": "gid,name,created_at,resource_type"}
+    )
+    _print_response("Created task:", create_response)
+    if getattr(create_response, "success", False) and isinstance(
+        create_response.data, dict
+    ):
+        task_gid = create_response.data.get("gid")
+
+        # Example 5: Update the task
+        print(f"\n--- Updating task {task_gid} ---")
+        update_data = {"data": {"completed": True}}
+        update_response = await asana_datasource.update_task(
+            body=update_data, task_gid=task_gid
+        )
+        _print_response("Updated task:", update_response)
+
+    # Example 6: Search for tasks
+    print("\n--- Searching for tasks ---")
+    search_response = await asana_datasource.search_tasks_for_workspace(
+        workspace_gid=workspace_gid,
+        opts={
+            "text": "test",
+            "limit": 10,
+            "opt_fields": "gid,name,resource_type,created_at",
         },
-        opts={},
     )
-    pprint(task)
-    task_gid = task["gid"]
+    _print_response("Search results:", search_response)
 
-    print("Reading task...")
-    pprint(data_source.get_task(task_gid=task_gid, opts={}))
 
-    print("Updating task...")
-    pprint(
-        data_source.update_task(
-            body={"data": {"completed": True}}, task_gid=task_gid, opts={}
-        )
-    )
+def main() -> None:
+    """Main entry point"""
+    print("=" * 70)
+    print("Asana API Client Examples")
+    print("=" * 70)
 
-    # --- Tag ---
-    print("Creating tag...")
-    tag = data_source.create_tag(
-        body={"data": {"name": "Demo Tag v2", "workspace": WORKSPACE}}, opts={}
-    )
-    pprint(tag)
-    tag_gid = tag["gid"]
+    # Run token authentication example
+    print("\n🔐 Example 1: Token Authentication")
+    print("-" * 70)
+    asyncio.run(example_with_token())
 
-    print("Attaching tag to task...")
-    pprint(
-        data_source.add_tag_for_task(body={"data": {"tag": tag_gid}}, task_gid=task_gid)
-    )
-
-    # --- Section ---
-    print("Creating section...")
-    section = data_source.create_section_for_project(
-        project_gid=project_gid, opts={"body": {"data": {"name": "Demo Section v2"}}}
-    )
-    pprint(section)
-    section_gid = section["gid"]
-
-    print("Updating section...")
-    pprint(
-        data_source.update_section(
-            section_gid=section_gid,
-            opts={"body": {"data": {"name": "Updated Section v2"}}},
-        )
-    )
-
-    # --- Custom Field (Read existing) ---
-    print("Getting custom field settings for project...")
-    pprint(
-        data_source.get_custom_field_settings_for_project(
-            project_gid=project_gid, opts={}
-        )
-    )
-
-    # --- Story (Comment) ---
-    print("Creating story (comment)...")
-    story = data_source.create_story_for_task(
-        task_gid=task_gid, body={"data": {"text": "This is a demo comment v2"}}, opts={}
-    )
-    pprint(story)
-    story_gid = story["gid"]
-
-    print("Reading stories for task...")
-    pprint(data_source.get_stories_for_task(task_gid=task_gid, opts={}))
-
-    print("Updating story...")
-    pprint(
-        data_source.update_story(
-            story_gid=story_gid,
-            body={"data": {"text": "Updated comment v2"}},
-            opts={}
-        )
-    )
-
-    # --- Workspace and Users ---
-    print("Getting workspaces...")
-    pprint(data_source.get_workspaces(
-        opts={}
-    ))
-
-    print("Getting users for workspace...")
-    pprint(data_source.get_users_for_workspace(workspace_gid=WORKSPACE, opts={}))
-
-    # --- Cleanup ---
-    print("Deleting story...")
-    pprint(data_source.delete_story(story_gid=story_gid))
-
-    print("Deleting section...")
-    pprint(data_source.delete_section(section_gid=section_gid))
-
-    print("Deleting tag...")
-    pprint(data_source.delete_tag(tag_gid=tag_gid))
-
-    print("Deleting task...")
-    pprint(data_source.delete_task(task_gid=task_gid))
-
-    print("Deleting project...")
-    pprint(data_source.delete_project(project_gid=project_gid))
-
-    print("=== Example completed successfully! ===")
+    print("\n" + "=" * 70)
+    print("✓ Examples completed")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
