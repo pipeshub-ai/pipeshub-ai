@@ -170,7 +170,7 @@ async def process_chat_query(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
-    arango_service: ArangoService,
+    arango_service: BaseArangoService,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger
