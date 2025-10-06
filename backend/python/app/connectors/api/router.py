@@ -2469,7 +2469,7 @@ async def handle_oauth_callback(
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
         await connector_registry.update_connector(app_name, updates)
-        logger.info(f"Connector updated in database for {app_name}")
+        logger.info(f"Connector 'isAuthenticated' status for {app_name} set to True.")
 
         return {"success": True, "redirect_url": redirect_url}
 
@@ -2495,7 +2495,7 @@ async def handle_oauth_callback(
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
         await connector_registry.update_connector(app_name, updates)
-        logger.info(f"Connector updated in database for {app_name}")
+        logger.info(f"Connector 'isAuthenticated' status for {app_name} set to False due to an error.")
         return {"success": False, "error": "server_error", "redirect_url": error_url}
 
 
