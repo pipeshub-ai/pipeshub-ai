@@ -1,11 +1,23 @@
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-select = ["E", "F", "W", "I", "F401", "PLW0603"]
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "PL"]
 ignore = [
     "E501",  # Line too long
 ]
-src = ["."]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**.py" = [
+    "ANN201",  # missing return type on tests
+    "ANN204",  # missing return type on __init__ in tests utilities
+    "ANN205",  # missing return type on staticmethods
+    "PLR2004", # magic values in tests
+    "SIM118",  # dict.keys() membership in tests
+    "I001",    # import sorting in tests
+]
 
 
 [project]

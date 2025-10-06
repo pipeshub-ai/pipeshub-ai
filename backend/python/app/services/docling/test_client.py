@@ -4,9 +4,10 @@ Test script for the Docling service client (not part of pytest suite).
 """
 
 import asyncio
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add the backend/python directory to Python path
 backend_python_path = Path(__file__).parent.parent.parent

@@ -3,13 +3,16 @@
 Test runner script for PipesHub AI integration tests.
 """
 import argparse
+import os
 import subprocess
 import sys
-import os
 from pathlib import Path
 
 
-def run_command(command: list[str], cwd=None):
+from typing import Tuple
+
+
+def run_command(command: list[str], cwd: str | None = None) -> Tuple[bool, str, str]:
     """Run a command and return the result."""
     try:
         result = subprocess.run(
@@ -24,7 +27,7 @@ def run_command(command: list[str], cwd=None):
         return False, e.stdout, e.stderr
 
 
-def check_dependencies():
+def check_dependencies() -> bool:
     """Check if required dependencies are installed."""
     print("Checking dependencies...")
     
@@ -49,7 +52,7 @@ def check_dependencies():
     return True
 
 
-def setup_test_environment():
+def setup_test_environment() -> None:
     """Set up the test environment."""
     print("Setting up test environment...")
     
@@ -64,7 +67,7 @@ def setup_test_environment():
     print("Test environment setup completed")
 
 
-def run_health_tests():
+def run_health_tests() -> bool:
     """Run health check tests."""
     print("Running health check tests")
     
@@ -81,7 +84,7 @@ def run_health_tests():
         return False
 
 
-def run_indexing_tests():
+def run_indexing_tests() -> bool:
     """Run indexing tests."""
     print("Running indexing tests...")
     
@@ -98,7 +101,7 @@ def run_indexing_tests():
         return False
 
 
-def run_search_tests():
+def run_search_tests() -> bool:
     """Run search tests."""
     print("Running search tests...")
     
@@ -115,7 +118,7 @@ def run_search_tests():
         return False
 
 
-def run_integration_tests():
+def run_integration_tests() -> bool:
     """Run integration tests."""
     print("🔗 Running integration tests...")
     
@@ -132,7 +135,7 @@ def run_integration_tests():
         return False
 
 
-def run_all_tests():
+def run_all_tests() -> bool:
     """Run all tests."""
     print("🧪 Running all tests...")
     
@@ -149,7 +152,7 @@ def run_all_tests():
         return False
 
 
-def run_specific_tests(test_pattern):
+def run_specific_tests(test_pattern: str) -> bool:
     """Run tests matching a specific pattern."""
     print(f"Running tests matching: {test_pattern}")
     
@@ -166,7 +169,7 @@ def run_specific_tests(test_pattern):
         return False
 
 
-def main():
+def main() -> None:
     """Main test runner function."""
     parser = argparse.ArgumentParser(description="PipesHub AI Integration Test Runner")
     parser.add_argument(
