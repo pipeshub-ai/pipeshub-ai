@@ -6,7 +6,7 @@ import datetime
 import json
 import uuid
 from io import BytesIO
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import aiohttp  # type: ignore
 from arango import ArangoClient  # type: ignore
@@ -9815,7 +9815,7 @@ class BaseArangoService:
                 has_local = "local" in apps_lower
                 non_local_apps = [app for app in apps_lower if app != "local"]
 
-            self.logger.info(f":mag: Filter analysis - KB IDs: {kb_ids}, Apps: {app_names}, Has local: {has_local}, Non-local apps: {non_local_apps}")
+            self.logger.info(f"🔍 Filter analysis - KB IDs: {kb_ids}, Apps: {app_names}, Has local: {has_local}, Non-local apps: {non_local_apps}")
 
             # Build base query
             query = f"""
@@ -9857,7 +9857,7 @@ class BaseArangoService:
 
             unions = []
             if has_local:
-                self.logger.info(":mag: Getting all KB records")
+                self.logger.info("🔍 Getting all KB records")
                 query += f"""
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
@@ -9867,7 +9867,7 @@ class BaseArangoService:
                 """
                 unions.append("kbRecords")
                 if non_local_apps:
-                    self.logger.info(":mag: Getting app filtered records, filter applied : local + apps")
+                    self.logger.info("🔍 Getting app filtered records, filter applied : local + apps")
                     query += """
                     LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
                     LET appFilteredRecords = (
@@ -9882,7 +9882,7 @@ class BaseArangoService:
 
                 # KB records - conditional based on whether KB filtering is applied
                 if kb_ids:
-                    self.logger.info(f":mag: Applying KB filtering for specific KBs: {kb_ids}")
+                    self.logger.info(f"🔍 Applying KB filtering for specific KBs: {kb_ids}")
                     query += f"""
                     LET kbRecords = (
                         FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
@@ -9893,7 +9893,7 @@ class BaseArangoService:
                     """
                     unions.append("kbRecords")
                 if non_local_apps:
-                    self.logger.info(":mag: Getting app filtered records, filter applied : kb + apps")
+                    self.logger.info("🔍 Getting app filtered records, filter applied : kb + apps")
                     query += """
                         LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
                         LET appFilteredRecords = (
@@ -9904,7 +9904,7 @@ class BaseArangoService:
                     """
                     unions.append("appFilteredRecords")
             else:
-                self.logger.info(":mag: Getting all accessible records")
+                self.logger.info("🔍 Getting all accessible records")
                 query += f"""
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
@@ -9928,7 +9928,7 @@ class BaseArangoService:
                     LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
                     """
             else:
-                self.logger.info(":mag: Fallback logic to all accessible records")
+                self.logger.info("🔍 Fallback logic to all accessible records")
                 query += f"""
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
@@ -10075,7 +10075,7 @@ class BaseArangoService:
                     bind_vars["topicNames"] = filters["topics"]
 
             # Execute query
-            self.logger.debug(f":mag: Executing query with bind_vars keys: {list(bind_vars.keys())}")
+            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
             cursor = self.db.aql.execute(
                 query,
                 bind_vars=bind_vars,
@@ -10094,17 +10094,1049 @@ class BaseArangoService:
                 else:
                     record_count = len(result)
 
-            self.logger.info(f":white_check_mark: Query completed - found {record_count} accessible records")
+            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
 
             if kb_ids:
-                self.logger.info(f":white_check_mark: KB filtering applied for {len(kb_ids)} KBs")
+                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
             if non_local_apps:
-                self.logger.info(f":white_check_mark: App filtering applied for apps: {non_local_apps}")
+                self.logger.info(f"✅ App filtering applied for apps: {non_local_apps}")
             if has_local:
-                self.logger.info(":white_check_mark: 'local' app included - returning broader record set")
+                self.logger.info("✅ 'local' app included - returning broader record set")
 
             return result if result else []
 
         except Exception as e:
-            self.logger.error(f":x: Failed to get accessible records: {str(e)}")
+            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
             raise
+
+    async def validate_user_kb_access(
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """
+        OPTIMIZED: Validate which KB IDs the user has access to using fast lookups
+        Args:
+            user_id: External user ID
+            org_id: Organization ID
+            kb_ids: List of KB IDs to check access for
+
+        Returns:
+            Dict with 'accessible' and 'inaccessible' KB IDs
+        """
+        try:
+            self.logger.info(f"🚀 Fast KB access validation for user {user_id} on {len(kb_ids)} KBs")
+
+            if not kb_ids:
+                return {"accessible": [], "inaccessible": [], "total_user_kbs": 0}
+
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                self.logger.warning(f"⚠️ User not found: {user_id}")
+                return {
+                    "accessible": [],
+                    "inaccessible": kb_ids,
+                    "error": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            validation_query = """
+            // Convert requested KB list to a set for fast lookup
+            LET requested_kb_set = @kb_ids
+            LET user_from = @user_from
+            LET org_id = @org_id
+
+            // Get user's accessible KBs in this org with direct filtering
+            // Using FILTER early to reduce data processing
+            LET user_accessible_kbs = (
+                FOR perm IN @@permissions_to_kb
+                    FILTER perm._from == user_from
+                    FILTER perm.type == "USER"
+                    // Fast role check using IN operator
+                    FILTER perm.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
+                    // Extract KB key directly from _to field (faster than DOCUMENT lookup)
+                    LET kb_key = PARSE_IDENTIFIER(perm._to).key
+                    // Early filter: only check KBs that were requested OR get all for org validation
+                    LET kb_doc = DOCUMENT(CONCAT("recordGroups/", kb_key))
+                    FILTER kb_doc != null
+                    FILTER kb_doc.orgId == org_id
+                    FILTER kb_doc.groupType == "KB"
+                    FILTER kb_doc.connectorName == "KB"
+                    RETURN kb_key
+            )
+
+            // Convert to sets for O(1) lookup complexity
+            LET accessible_set = user_accessible_kbs
+            LET accessible_requested = (
+                FOR kb_id IN requested_kb_set
+                    FILTER kb_id IN accessible_set
+                    RETURN kb_id
+            )
+
+            LET inaccessible_requested = (
+                FOR kb_id IN requested_kb_set
+                    FILTER kb_id NOT IN accessible_set
+                    RETURN kb_id
+            )
+
+            // Return minimal result set
+            RETURN {
+                accessible: accessible_requested,
+                inaccessible: inaccessible_requested,
+                total_user_kbs: LENGTH(accessible_set)
+            }
+            """
+
+            bind_vars = {
+                "user_from": f"users/{user_key}",
+                "org_id": org_id,
+                "kb_ids": kb_ids,
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            cursor = self.db.aql.execute(
+                validation_query,
+                bind_vars=bind_vars,
+                count=False,           # Don't count results
+                batch_size=1000,       # Larger batch size for faster transfer
+                cache=True,            # Enable query result caching
+                memory_limit=0,        # No memory limit for faster execution
+                max_runtime=30.0,      # 30 second timeout
+                fail_on_warning=False, # Don't fail on warnings
+                profile=False,         # Disable profiling for speed
+                stream=True            # Stream results for memory efficiency
+            )
+
+            result = next(cursor, {})
+
+            accessible = result.get("accessible", [])
+            inaccessible = result.get("inaccessible", [])
+
+
+            self.logger.info(f"KB validation complete: {len(accessible)}/{len(kb_ids)} accessible")
+
+            if inaccessible:
+                self.logger.warning(f"⚠️ User {user_id} lacks access to {len(inaccessible)} KBs")
+
+            return {
+                "accessible": accessible,
+                "inaccessible": inaccessible,
+                "total_user_kbs": result.get("total_user_kbs", 0)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ KB access validation error: {str(e)}")
+            return {
+                "accessible": [],
+                "inaccessible": kb_ids,
+                "error": str(e)
+            }
+
+
+    async def get_all_agent_templates(self, user_id: str) -> List[Dict]:
+        """Get all agent templates accessible to a user via individual or team access"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+
+            // Get user's teams
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Get templates with individual access
+            LET individual_templates = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                    LET template = DOCUMENT(perm._to)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: perm.type,
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Get templates with team access (excluding those already found via individual access)
+            LET individual_template_ids = (FOR ind_template IN individual_templates RETURN ind_template._id)
+
+            LET team_templates = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                    FILTER perm._to NOT IN individual_template_ids
+                    LET template = DOCUMENT(perm._to)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: perm.type,
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Flatten and return all templates
+            FOR template_result IN APPEND(individual_templates, team_templates)
+                RETURN template_result
+            """
+
+            bind_vars = {
+                "user_id": user_id,
+            }
+
+            self.logger.info(f"Getting all agent templates accessible by user {user_id}")
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get all agent templates: %s", str(e))
+            return []
+
+
+    async def get_template(self, template_id: str, user_id: str) -> Optional[Dict]:
+        """Get a template by ID with user permissions"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+            LET template_path = CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+
+            // Get user's teams first
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Check individual user permissions on the template
+            LET individual_access = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == template_path
+                    FILTER perm.type == "USER"
+                    LET template = DOCUMENT(template_path)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Check team permissions on the template (only if no individual access)
+            LET team_access = LENGTH(individual_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == template_path
+                    FILTER perm.type == "TEAM"
+                    LET template = DOCUMENT(template_path)
+                    FILTER template != null
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Return individual access first, then team access
+            LET final_result = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+
+            RETURN final_result
+            """
+
+            bind_vars = {
+                "template_id": template_id,
+                "user_id": user_id,
+            }
+
+            self.logger.info(f"Getting template {template_id} accessible by user {user_id}")
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if len(result) == 0 or result[0] is None:
+                return None
+
+            return result[0]
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get template access: %s", str(e))
+            return None
+
+    async def share_agent_template(self, template_id: str, user_id: str, user_ids: Optional[List[str]] = None, team_ids: Optional[List[str]] = None) -> Optional[bool]:
+        """Share an agent template with users"""
+        try:
+            self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
+
+            user_owner_access_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                FILTER DOCUMENT(perm._to).isDeleted == false
+                LIMIT 1
+                RETURN DOCUMENT(perm._to)
+            """
+            bind_vars = {
+                "template_id": template_id,
+                "user_id": user_id,
+            }
+            cursor = self.db.aql.execute(user_owner_access_query, bind_vars=bind_vars)
+            user_owner_access = list(cursor)
+            if len(user_owner_access) == 0:
+                return False
+            user_owner_access = user_owner_access[0]
+            if user_owner_access.get("role") != "OWNER":
+                return False
+
+            if user_ids is None and team_ids is None:
+                return False
+
+            #  users to be given access
+            user_template_accesses = []
+            if user_ids:
+                for user_id in user_ids:
+                    user = await self.get_user_by_user_id(user_id)
+                    if user is None:
+                        return False
+                    edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
+                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                        "type": "USER",
+                        "role": "READER",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_template_accesses.append(edge)
+
+            if team_ids:
+                for team_id in team_ids:
+                    edge = {
+                        "_from": f"{CollectionNames.TEAMS.value}/{team_id}",
+                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                        "type": "TEAM",
+                        "role": "READER",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_template_accesses.append(edge)
+
+            result = await self.batch_create_edges(user_template_accesses, CollectionNames.PERMISSION.value)
+            if not result:
+                return False
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent template: %s", str(e))
+            return False
+
+    async def clone_agent_template(self, template_id: str) -> Optional[str]:
+        """Clone an agent template"""
+        try:
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
+            if template is None:
+                return None
+            template_key = str(uuid.uuid4())
+            template["_key"] = template_key
+            template["isActive"] = True
+            template["isDeleted"] = False
+            template["deletedAtTimestamp"] = None
+            template["deletedByUserId"] = None
+            template["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["updatedByUserId"] = None
+            template["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["createdBy"] = None
+            template["deletedByUserId"] = None
+            template["deletedAtTimestamp"] = None
+            template["isDeleted"] = False
+            result = await self.batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+            if not result:
+                return None
+            return template_key
+        except Exception as e:
+            self.logger.error("❌ Failed to close agent template: %s", str(e))
+            return False
+
+
+    async def delete_agent_template(self, template_id: str, user_id: str) -> Optional[bool]:
+        """Delete an agent template"""
+        try:
+            template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
+            user_document_id = f"{CollectionNames.USERS.value}/{user_id}"
+
+            permission_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == @template_document_id
+                FILTER perm._from == @user_document_id
+                FILTER perm.role == "OWNER"
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                FILTER DOCUMENT(perm._to).isDeleted == false
+                LIMIT 1
+                RETURN perm
+            """
+
+            bind_vars = {
+                "template_document_id": template_document_id,
+                "user_document_id": user_document_id,
+            }
+
+            cursor = self.db.aql.execute(permission_query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            if len(permissions) == 0:
+                self.logger.warning(f"No permission found for user {user_id} on template {template_id}")
+                return False
+            permission = permissions[0]
+            if permission.get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the owner of template {template_id}")
+                return False
+
+            # Check if template exists
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
+            if template is None:
+                self.logger.warning(f"Template {template_id} not found")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the template using AQL UPDATE
+            update_query = f"""
+            UPDATE @template_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_TEMPLATES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "template_key": template_id,
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to delete template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete agent template: %s", str(e), exc_info=True)
+            return False
+
+
+    async def update_agent_template(self, template_id: str, template_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+        """Update an agent template"""
+        try:
+            # Check if user is the owner of the template
+            template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
+            user_document_id = f"{CollectionNames.USERS.value}/{user_id}"
+
+            permission_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == @template_document_id
+                FILTER perm._from == @user_document_id
+                FILTER perm.role == "OWNER"
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                FILTER DOCUMENT(perm._to).isDeleted == false
+                LIMIT 1
+                RETURN perm
+            """
+
+            bind_vars = {
+                "template_document_id": template_document_id,
+                "user_document_id": user_document_id,
+            }
+
+            cursor = self.db.aql.execute(permission_query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            if len(permissions) == 0:
+                self.logger.warning(f"No permission found for user {user_id} on template {template_id}")
+                return False
+            permission = permissions[0]
+            if permission.get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the owner of template {template_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags"]
+            for field in allowed_fields:
+                if field in template_updates:
+                    update_data[field] = template_updates[field]
+
+            # Update the template - use the collection and document key
+            update_query = f"""
+            UPDATE @template_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_TEMPLATES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "template_key": template_id,  # Use just the key, not the full document ID
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to update template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully updated template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update agent template: %s", str(e), exc_info=True)
+            return False
+
+
+    async def get_agent(self, agent_id: str, user_id: str) -> Optional[Dict]:
+        """Get an agent by ID with user permissions - flattened response"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+            LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+
+            // Get user's teams first
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Check individual user permissions on the agent
+            LET individual_access = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "USER"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Check team permissions on the agent (only if no individual access)
+            LET team_access = LENGTH(individual_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Return individual access first, then team access
+            LET final_result = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+
+            RETURN final_result
+            """
+
+            bind_vars = {
+                "agent_id": agent_id,
+                "user_id": user_id,
+            }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if len(result) == 0 or result[0] is None:
+                self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
+                return None
+
+            return result[0]
+
+        except Exception as e:
+            self.logger.error(f"Failed to get agent: {str(e)}")
+            return None
+
+
+    async def get_all_agents(self, user_id: str) -> List[Dict]:
+        """Get all agents accessible to a user via individual or team access - flattened response"""
+        try:
+            query = f"""
+            LET user_key = @user_id
+
+            // Get user's teams
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Get agents with individual access
+            LET individual_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET agent = DOCUMENT(perm._to)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Get agents with team access (excluding those already found via individual access)
+            LET individual_agent_ids = (FOR ind_agent IN individual_agents RETURN ind_agent._id)
+
+            LET team_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    FILTER perm._to NOT IN individual_agent_ids
+                    LET agent = DOCUMENT(perm._to)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            )
+
+            // Flatten and return all agents
+            FOR agent_result IN APPEND(individual_agents, team_agents)
+                RETURN agent_result
+            """
+
+            bind_vars = {
+                "user_id": user_id,
+            }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error(f"Failed to get all agents: {str(e)}")
+            return []
+
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+        """Update an agent"""
+        try:
+            # Check if user has permission to update the agent using the new method
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can edit the agent
+            if not agent_with_permission.get("can_edit", False):
+                self.logger.warning(f"User {user_id} does not have edit permission on agent {agent_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided in agent_updates
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "apps", "kb", "vectorDBs", "tags"]
+            for field in allowed_fields:
+                if field in agent_updates:
+                    update_data[field] = agent_updates[field]
+
+            # Update the agent using AQL UPDATE statement - Fixed to use proper collection name
+            update_query = f"""
+            UPDATE @agent_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_INSTANCES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "agent_key": agent_id,  # Use just the key, not the full document ID
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to update agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully updated agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to update agent: {str(e)}")
+            return False
+
+    async def delete_agent(self, agent_id: str, user_id: str) -> Optional[bool]:
+        """Delete an agent"""
+        try:
+            # Check if agent exists
+            agent = await self.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+            if agent is None:
+                self.logger.warning(f"Agent {agent_id} not found")
+                return False
+
+            # Check if user has permission to delete the agent using the new method
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can delete the agent
+            if not agent_with_permission.get("can_delete", False):
+                self.logger.warning(f"User {user_id} does not have delete permission on agent {agent_id}")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the agent using AQL UPDATE - Fixed to use f-string
+            update_query = f"""
+            UPDATE @agent_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_INSTANCES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "agent_key": agent_id,
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to delete agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete agent: {str(e)}")
+            return False
+
+    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[bool]:
+        """Share an agent to users and teams"""
+        try:
+            # Check if agent exists and user has permission to share it
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can share the agent
+            if not agent_with_permission.get("can_share", False):
+                self.logger.warning(f"User {user_id} does not have share permission on agent {agent_id}")
+                return False
+
+            # Share the agent to users
+            user_agent_edges = []
+            if user_ids:
+                for user_id_to_share in user_ids:
+                    user = await self.get_user_by_user_id(user_id_to_share)
+                    if user is None:
+                        self.logger.warning(f"User {user_id_to_share} not found")
+                        continue
+                    edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                        "role": "READER",
+                        "type": "USER",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_agent_edges.append(edge)
+
+                result = await self.batch_create_edges(user_agent_edges, CollectionNames.PERMISSION.value)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to user {user_id_to_share}")
+                    return False
+
+            # Share the agent to teams
+            team_agent_edges = []
+            if team_ids:
+                for team_id in team_ids:
+                    team = await self.get_document(team_id, CollectionNames.TEAMS.value)
+                    if team is None:
+                        self.logger.warning(f"Team {team_id} not found")
+                        continue
+                    edge = {
+                        "_from": f"{CollectionNames.TEAMS.value}/{team.get('_key')}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                        "role": "READER",
+                        "type": "TEAM",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    team_agent_edges.append(edge)
+                result = await self.batch_create_edges(team_agent_edges, CollectionNames.PERMISSION.value)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to team {team_id}")
+                    return False
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
+            return False
+
+    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[Dict]:
+        """Unshare an agent from users and teams - direct deletion without validation"""
+        try:
+            # Check if user has permission to unshare the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None or not agent_with_permission.get("can_share", False):
+                return {"success": False, "reason": "Insufficient permissions to unshare agent"}
+
+            # Build conditions for batch delete
+            conditions = []
+            bind_vars = {"agent_id": agent_id}
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"success": False, "reason": "No users or teams provided"}
+
+            # Single batch delete query
+            batch_delete_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER ({' OR '.join(conditions)})
+                REMOVE perm IN {CollectionNames.PERMISSION.value}
+                RETURN OLD._key
+            """
+
+            cursor = self.db.aql.execute(batch_delete_query, bind_vars=bind_vars)
+            deleted_permissions = list(cursor)
+
+            self.logger.info(f"Unshared agent {agent_id}: removed {len(deleted_permissions)} permissions")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "deleted_permissions": len(deleted_permissions)
+            }
+
+        except Exception as e:
+            self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str) -> Optional[Dict]:
+        """Update permission role for users and teams on an agent (only OWNER can do this)"""
+        try:
+            # Check if the requesting user is the OWNER of the agent
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
+                return {"success": False, "reason": "Agent not found or no permission"}
+
+            # Only OWNER can update permissions - Fixed to use the flattened structure
+            if agent_with_permission.get("user_role") != "OWNER":
+                self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
+                return {"success": False, "reason": "Only OWNER can update permissions"}
+
+            # Build conditions for batch update
+            conditions = []
+            bind_vars = {
+                "agent_id": agent_id,
+                "new_role": role,
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"success": False, "reason": "No users or teams provided"}
+
+            # Single batch update query
+            batch_update_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER ({' OR '.join(conditions)})
+                UPDATE perm WITH {{
+                    role: @new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    type: NEW.type,
+                    role: NEW.role
+                }}
+            """
+
+            cursor = self.db.aql.execute(batch_update_query, bind_vars=bind_vars)
+            updated_permissions = list(cursor)
+
+            if not updated_permissions:
+                self.logger.warning(f"No permission edges found to update for agent {agent_id}")
+                return {"success": False, "reason": "No permissions found to update"}
+
+            # Count updates by type
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
+
+            self.logger.info(f"Successfully updated {len(updated_permissions)} permissions for agent {agent_id} to role {role}")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "new_role": role,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to update agent permission: {str(e)}")
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+    async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
+        """Get all permissions for an agent (only OWNER can view all permissions)"""
+        try:
+            # Check if user has access to the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return None
+
+            # Only OWNER can view all permissions - Fixed to use the flattened structure
+            if agent_with_permission.get("user_role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
+                return None
+
+            # Get all permissions for the agent
+            query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                LET entity = DOCUMENT(perm._from)
+                FILTER entity != null
+                RETURN {{
+                    id: entity._key,
+                    name: entity.fullName || entity.name || entity.userName,
+                    userId: entity.userId,
+                    email: entity.email,
+                    role: perm.role,
+                    type: perm.type,
+                    createdAtTimestamp: perm.createdAtTimestamp,
+                    updatedAtTimestamp: perm.updatedAtTimestamp
+                }}
+            """
+
+            bind_vars = {
+                "agent_id": agent_id,
+            }
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to get agent permissions: {str(e)}")
+            return None
