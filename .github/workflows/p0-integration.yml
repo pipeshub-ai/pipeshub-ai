@@ -68,9 +68,9 @@ jobs:
           cp backend/nodejs/apps/env.template backend/nodejs/apps/.env
           cp backend/python/env.template backend/python/.env
 
-      - name: Start services with docker-compose
+      - name: Start CI infra services
         run: |
-          docker compose -f deployment/docker-compose/docker-compose.dev.yml up -d --quiet-pull
+          docker compose -f deployment/docker-compose/docker-compose.ci.yml up -d --quiet-pull
 
       - name: Wait for core services to be healthy
         run: |
@@ -98,12 +98,12 @@ jobs:
         if: ${{ failure() }}
         run: |
           docker ps -a
-          docker compose -f deployment/docker-compose/docker-compose.dev.yml logs --no-color --tail=200 || true
+          docker compose -f deployment/docker-compose/docker-compose.ci.yml logs --no-color --tail=200 || true
 
       - name: Stop services
         if: ${{ always() }}
         run: |
-          docker compose -f deployment/docker-compose/docker-compose.dev.yml down -v --remove-orphans
+          docker compose -f deployment/docker-compose/docker-compose.ci.yml down -v --remove-orphans
 
       - name: Docker cleanup
         if: ${{ always() }}
