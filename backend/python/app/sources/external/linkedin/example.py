@@ -290,7 +290,8 @@ def main() -> None:
     print("="*60)
     print("\nSDK: linkedin-api-client (RestliClient)")
     print(f"API Version: {api_version}")
-    print(f"Access token: {access_token[:20]}...{access_token[-5:]}" if len(access_token) > 25 else "***")
+    MIN_TOKEN_LENGTH = 25
+    print(f"Access token: {access_token[:20]}...{access_token[-5:]}" if len(access_token) > MIN_TOKEN_LENGTH else "***")
 
     # Create LinkedIn client with official SDK
     linkedin_config = LinkedInOAuth2Config(

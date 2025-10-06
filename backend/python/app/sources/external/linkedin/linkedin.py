@@ -15,6 +15,7 @@ Reference: https://github.com/linkedin-developers/linkedin-api-python-client
 
 import logging
 from typing import Dict, List, Optional
+
 from app.sources.client.linkedin.linkedin import LinkedInClient
 
 # Set up logger
