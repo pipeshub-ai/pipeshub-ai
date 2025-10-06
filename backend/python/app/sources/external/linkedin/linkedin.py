@@ -56,14 +56,41 @@ class LinkedInDataSource:
         self._restli_client = client.get_client()
 
     # ========================================================================
-    # PROFILE & IDENTITY APIs (6 methods)
+    # PROFILE & IDENTITY APIs (7 methods)
     # ========================================================================
 
+    def get_userinfo(self) -> object:
+        """Get current user info using OpenID Connect
+
+        LinkedIn API: GET /userinfo
+        Required scopes: openid, profile, email
+
+        This is the NEW OpenID Connect endpoint that works with current LinkedIn tokens.
+        Use this instead of get_profile() for modern authentication.
+
+        Returns:
+            GetResponse with .entity containing: name, email, sub (user ID), picture
+
+        Example:
+            >>> response = ds.get_userinfo()
+            >>> user_data = response.entity
+            >>> print(user_data['name'], user_data['email'])
+            >>> user_id = user_data['sub']  # Use this as person ID
+        """
+        return self._restli_client.get(
+            resource_path="/userinfo",
+            access_token=self.client.access_token,
+            version_string=self.client.version_string
+        )
+
     def get_profile(self, query_params: Optional[Dict[str, object]] = None) -> object:
-        """Get current authenticated member's profile
+        """Get current authenticated member's profile (LEGACY - use get_userinfo instead)
 
         LinkedIn API: GET /me
-        Required scopes: r_liteprofile, r_basicprofile
+        Required scopes: r_liteprofile (NO LONGER AVAILABLE)
+
+        ⚠️  WARNING: This endpoint requires the old r_liteprofile scope which is
+        no longer available with OpenID Connect tokens. Use get_userinfo() instead.
 
         Args:
             query_params: Optional query parameters (e.g., {"fields": "id,firstName"})
@@ -72,13 +99,9 @@ class LinkedInDataSource:
             GetResponse with .entity property containing profile data
 
         Example:
+            >>> # DEPRECATED - Use get_userinfo() instead
             >>> response = ds.get_profile()
             >>> print(response.entity['id'])
-
-            >>> # With field projection
-            >>> response = ds.get_profile(
-            ...     query_params={"fields": "id,firstName,lastName"}
-            ... )
         """
         return self._restli_client.get(
             resource_path="/me",
@@ -717,17 +740,7 @@ class LinkedInDataSource:
             >>> stats = response.entity
             >>> print(stats.get('followerCountsByCountry'))
         """
-        final_params = {"q": "organizationalEntity", "organizationalEntity": org_urn}
-        if query_params:
-            final_params.update(query_params)
-
-        return self._restli_client.finder(
-            resource_path="/organizationalEntityFollowerStatistics",
-            finder_name="organizationalEntity",
-            access_token=self.client.access_token,
-            query_params=final_params,
-            version_string=self.client.version_string
-        )
+        return self.get_follower_statistics(org_urn=org_urn, query_params=query_params)
 
     def get_organization_page_statistics(
         self,
@@ -757,20 +770,8 @@ class LinkedInDataSource:
             ...     }]
             ... )
         """
-        final_params = {
-            "q": "organization",
-            "organization": org_urn,
-            "timeIntervals": time_ranges
-        }
-        if query_params:
-            final_params.update(query_params)
-
-        return self._restli_client.finder(
-            resource_path="/organizationPageStatistics",
-            finder_name="organization",
-            access_token=self.client.access_token,
-            query_params=final_params,
-            version_string=self.client.version_string
+        return self.get_page_statistics(
+            org_urn=org_urn, time_ranges=time_ranges, query_params=query_params
         )
 
     def get_organization_brands(
