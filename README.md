@@ -13,9 +13,9 @@
     <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
 
-<div align="center">⭐ Star Us on GitHub!</div>
+<div align="center">⭐ Star Us on GitHub! It helps the platform reach more developers and grow the community.</div>
 <p align="center">
-  <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub">
+  <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub", style="width:50%;>
 </p>
 
 </div>
