@@ -246,7 +246,7 @@ Want to join our community of developers? Please check out our [Contributing Gui
 
 ---
 
-## star⭐ us on GitHub!
+## Star ⭐ us on GitHub!
 <p align="center">
   <a href="https://github.com/pipeshub-ai/pipeshub-ai" target="_blank">
     <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub" style="width:80%;">
