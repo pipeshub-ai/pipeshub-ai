@@ -115,6 +115,33 @@ class ArangoService:
             self.logger.error("❌ Error getting document: %s", str(e))
             return None
 
+    async def get_documents_batch(self, document_keys: List[str], collection: str) -> Dict[str, Optional[Dict]]:
+        """Get multiple documents by their keys in a single query"""
+        try:
+            if not document_keys:
+                return {}
+
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @document_keys
+                RETURN {key: doc._key, document: doc}
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"document_keys": document_keys, "@collection": collection},
+            )
+            result = list(cursor)
+
+            # Create a mapping from key to document
+            found_docs = {item["key"]: item["document"] for item in result}
+            documents_map = {key: found_docs.get(key) for key in document_keys}
+
+            return documents_map
+        except Exception as e:
+            self.logger.error("❌ Error getting documents batch: %s", str(e))
+            return {key: None for key in document_keys}
+
+
     async def get_accessible_records(
         self, user_id: str, org_id: str, filters: dict = None
     ) -> list:
