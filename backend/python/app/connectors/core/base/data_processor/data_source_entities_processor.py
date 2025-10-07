@@ -642,7 +642,7 @@ class DataSourceEntitiesProcessor:
                     self.logger.info(f"Permission edge already exists between {user_email} and group {user_group.name}")
                     return False
                 
-                # 4. Create the permission object
+                # 4. Create the permission object (external_id is not used when storing in arango)
                 permission = Permission(
                     external_id=user.id,  
                     email=user_email,

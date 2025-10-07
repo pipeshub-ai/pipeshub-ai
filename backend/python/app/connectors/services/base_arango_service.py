@@ -3323,7 +3323,7 @@ class BaseArangoService:
 
     async def get_record_by_path(
         self, connector_name: Connectors, path: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Record]:
+    ) -> Dict:
         """
         Get a record from the FILES collection using its path.
 

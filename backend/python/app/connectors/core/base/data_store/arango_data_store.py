@@ -158,7 +158,7 @@ class ArangoTransactionStore(TransactionStore):
                 record_type = record.record_type
                 if record_type not in record_type_config:
                     self.logger.error(f"❌ Unsupported record type: {record_type}")
-                    return
+                    continue
 
                 config = record_type_config[record_type]
 
