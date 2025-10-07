@@ -119,6 +119,24 @@ pytest tests/ -k "health" -v
 pytest tests/ --cov=backend --cov-report=html
 ```
 
+### Strict Mode (service availability enforcement)
+
+By default, tests may skip when dependent services are unavailable (P0 flexibility). Enable strict mode to FAIL if services are down:
+
+```bash
+# Unix/macOS
+export TEST_STRICT_SERVICES=1
+pytest -q
+
+# Windows PowerShell
+$env:TEST_STRICT_SERVICES = "1"
+pytest -q
+
+# Windows cmd
+set TEST_STRICT_SERVICES=1
+pytest -q
+```
+
 ## Test Categories
 
 ### Health Check Tests (`test_health_checks.py`)
@@ -154,6 +172,7 @@ The tests use the following environment variables:
 - `INDEXING_SERVICE_URL`: http://localhost:8091
 - `CONNECTOR_SERVICE_URL`: http://localhost:8088
 - `DOCLING_SERVICE_URL`: http://localhost:8092
+- `TEST_STRICT_SERVICES`: set to `1` to fail tests when services are unavailable; default is non-strict (skips allowed)
 
 ### Test Configuration
 Modify `tests/fixtures/test_configs.py` to adjust:

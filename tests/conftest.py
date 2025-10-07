@@ -15,6 +15,10 @@ import pytest_asyncio
 # Docker is optional for tests; enable with TEST_USE_DOCKER=1
 USE_DOCKER = os.getenv("TEST_USE_DOCKER", "0") == "1"
 
+# Strict mode: when enabled, tests will FAIL if dependent services are unavailable
+# Enable with TEST_STRICT_SERVICES=1
+STRICT_MODE = os.getenv("TEST_STRICT_SERVICES", "0") == "1"
+
 # Test configuration
 TEST_CONFIG = {
     "nodejs_backend_url": "http://localhost:3000",
@@ -312,6 +316,12 @@ def health_checker():
         retry_attempts=TEST_CONFIG["retry_attempts"],
         retry_delay=TEST_CONFIG["retry_delay"],
     )
+
+
+@pytest.fixture(scope="session")
+def strict_mode() -> bool:
+    """Whether strict service availability is required for tests."""
+    return STRICT_MODE
 
 
 # Test markers

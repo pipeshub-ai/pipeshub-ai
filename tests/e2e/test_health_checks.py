@@ -12,7 +12,7 @@ class TestHealthChecks:
     """Test health check endpoints for all services."""
     
     @pytest.mark.asyncio
-    async def test_nodejs_backend_health(self, http_client, test_config, health_checker):
+    async def test_nodejs_backend_health(self, http_client, test_config, health_checker, strict_mode):
         """Test Node.js backend health check endpoint."""
         result = await health_checker.check_nodejs_backend(test_config["nodejs_backend_url"])
         
@@ -24,13 +24,14 @@ class TestHealthChecks:
                 assert result["response"]["status"] == "healthy", "Health status is not 'healthy'"
                 assert "timestamp" in result["response"], "Health response missing 'timestamp' field"
         else:
-            # Service is not running - this is acceptable for P0 testing
             assert "error" in result, "Error response should contain error details"
+            if strict_mode:
+                pytest.fail(f"Node.js backend unavailable in strict mode: {result['error']}")
             print(f"Node.js backend not available: {result['error']}")
             pytest.skip("Node.js backend not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
-    async def test_query_service_health(self, http_client, test_config, health_checker):
+    async def test_query_service_health(self, http_client, test_config, health_checker, strict_mode):
         """Test Query service health check endpoint."""
         result = await health_checker.check_python_service(
             test_config["query_service_url"], 
@@ -44,11 +45,13 @@ class TestHealthChecks:
                 assert result["response"]["status"] in ["healthy", "ok"], f"Unexpected health status: {result['response']['status']}"
         else:
             assert "error" in result, "Error response should contain error details"
+            if strict_mode:
+                pytest.fail(f"Query service unavailable in strict mode: {result['error']}")
             print(f"Query service not available: {result['error']}")
             pytest.skip("Query service not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
-    async def test_indexing_service_health(self, http_client, test_config, health_checker):
+    async def test_indexing_service_health(self, http_client, test_config, health_checker, strict_mode):
         """Test Indexing service health check endpoint."""
         result = await health_checker.check_python_service(
             test_config["indexing_service_url"], 
@@ -62,11 +65,13 @@ class TestHealthChecks:
                 assert result["response"]["status"] in ["healthy", "ok"], f"Unexpected health status: {result['response']['status']}"
         else:
             assert "error" in result, "Error response should contain error details"
+            if strict_mode:
+                pytest.fail(f"Indexing service unavailable in strict mode: {result['error']}")
             print(f"Indexing service not available: {result['error']}")
             pytest.skip("Indexing service not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
-    async def test_connector_service_health(self, http_client, test_config, health_checker):
+    async def test_connector_service_health(self, http_client, test_config, health_checker, strict_mode):
         """Test Connector service health check endpoint."""
         result = await health_checker.check_python_service(
             test_config["connector_service_url"], 
@@ -80,6 +85,8 @@ class TestHealthChecks:
                 assert result["response"]["status"] in ["healthy", "ok"], f"Unexpected health status: {result['response']['status']}"
         else:
             assert "error" in result, "Error response should contain error details"
+            if strict_mode:
+                pytest.fail(f"Connector service unavailable in strict mode: {result['error']}")
             print(f"Connector service not available: {result['error']}")
             pytest.skip("Connector service not running - acceptable for P0 testing")
     
@@ -101,7 +108,7 @@ class TestHealthChecks:
             assert result["status_code"] is None or result["status_code"] >= 500, "Expected connection error or server error"
     
     @pytest.mark.asyncio
-    async def test_all_services_health(self, http_client, test_config, health_checker):
+    async def test_all_services_health(self, http_client, test_config, health_checker, strict_mode):
         """Test health of all services together."""
         services = [
             ("nodejs_backend", test_config["nodejs_backend_url"]),
@@ -136,8 +143,10 @@ class TestHealthChecks:
         assert len(health_results) == len(services), "Not all services were checked"
         
         # For P0, we just verify the health checker is working
-        # Services not running is acceptable
+        # Services not running is acceptable unless strict mode
         if len(healthy_services) == 0:
+            if strict_mode:
+                pytest.fail("No services running in strict mode")
             print("No services are running - this is acceptable for P0 testing")
             pytest.skip("No services running - acceptable for P0 testing")
     

@@ -11,7 +11,7 @@ class TestAPIIntegration:
     """Test API integration and service communication."""
     
     @pytest.mark.asyncio
-    async def test_service_to_service_communication(self, http_client, test_config):
+    async def test_service_to_service_communication(self, http_client, test_config, strict_mode):
         """Test that services can communicate with each other."""
         # Test that query service can reach connector service
         try:
@@ -37,10 +37,12 @@ class TestAPIIntegration:
                     print("Indexing service health doesn't include connector status")
                     
         except httpx.RequestError as e:
+            if strict_mode:
+                pytest.fail(f"Service communication failed in strict mode: {e}")
             print(f"Service communication test not available: {e}")
     
     @pytest.mark.asyncio
-    async def test_api_response_consistency(self, http_client, test_config):
+    async def test_api_response_consistency(self, http_client, test_config, strict_mode):
         """Test that API responses are consistent across services."""
         services = [
             ("query", test_config["query_service_url"]),
@@ -64,6 +66,8 @@ class TestAPIIntegration:
         available_services = {name: resp for name, resp in health_responses.items() if resp["status_code"] == 200}
         
         if len(available_services) == 0:
+            if strict_mode:
+                pytest.fail("No services available for consistency testing in strict mode")
             pytest.skip("No services available for consistency testing")
 
         # Check for consistent response format
@@ -73,7 +77,7 @@ class TestAPIIntegration:
             assert "status" in data, f"{service_name} health response missing 'status'"
     
     @pytest.mark.asyncio
-    async def test_api_error_handling(self, http_client, test_config):
+    async def test_api_error_handling(self, http_client, test_config, strict_mode):
         """Test API error handling across services."""
         # Test with invalid endpoints
         invalid_endpoints = [
@@ -91,10 +95,12 @@ class TestAPIIntegration:
                 print(f"Error handling working for {endpoint}")
                 
             except httpx.RequestError:
+                if strict_mode:
+                    pytest.fail(f"Service not available for error testing in strict mode: {endpoint}")
                 print(f"Service not available for error testing: {endpoint}")
     
     @pytest.mark.asyncio
-    async def test_api_timeout_handling(self, http_client, test_config):
+    async def test_api_timeout_handling(self, http_client, test_config, strict_mode):
         """Test API timeout handling."""
         # Test with very short timeout
         short_timeout = httpx.Timeout(0.1)  # 100ms timeout
@@ -112,11 +118,13 @@ class TestAPIIntegration:
             except httpx.TimeoutException:
                 pass
             except httpx.RequestError:
+                if strict_mode:
+                    pytest.fail(f"{service_name} not available for timeout testing in strict mode")
                 pytest.skip(f"{service_name} not available for timeout testing")
     
     @pytest.mark.asyncio
     @pytest.mark.parametrize("service_name_key", ["query_service_url", "indexing_service_url", "connector_service_url"]) 
-    async def test_api_cors_headers(self, http_client, test_config, service_name_key):
+    async def test_api_cors_headers(self, http_client, test_config, service_name_key, strict_mode):
         """Test CORS headers in API responses."""
         name = service_name_key.split("_")[0]
         url = test_config[service_name_key]
@@ -131,11 +139,13 @@ class TestAPIIntegration:
             }
             assert any(cors_headers.values()), f"{name} missing CORS headers"
         except httpx.RequestError:
+            if strict_mode:
+                pytest.fail(f"{name} not available for CORS testing in strict mode")
             pytest.skip(f"{name} not available for CORS testing")
     
     @pytest.mark.asyncio
     @pytest.mark.parametrize("service_name_key", ["query_service_url", "indexing_service_url", "connector_service_url"]) 
-    async def test_api_content_type_headers(self, http_client, test_config, service_name_key):
+    async def test_api_content_type_headers(self, http_client, test_config, service_name_key, strict_mode):
         """Test content type headers in API responses."""
         name = service_name_key.split("_")[0]
         url = test_config[service_name_key]
@@ -146,6 +156,8 @@ class TestAPIIntegration:
             content_type = response.headers.get("content-type", "")
             assert "application/json" in content_type, f"{name} content-type should be JSON"
         except httpx.RequestError:
+            if strict_mode:
+                pytest.fail(f"{name} not available for content type testing in strict mode")
             pytest.skip(f"{name} not available for content type testing")
 
 
@@ -204,7 +216,7 @@ class TestAPIPerformance:
     """Test API performance and load handling."""
     
     @pytest.mark.asyncio
-    async def test_concurrent_requests(self, http_client, test_config):
+    async def test_concurrent_requests(self, http_client, test_config, strict_mode):
         """Test handling of concurrent requests."""
         import asyncio
         
@@ -221,10 +233,12 @@ class TestAPIPerformance:
             print(f"Concurrent requests: {len(successful_responses)}/{len(tasks)} successful")
             
         except Exception as e:
+            if strict_mode:
+                pytest.fail(f"Concurrent request test failed in strict mode: {e}")
             print(f"Concurrent request test failed: {e}")
     
     @pytest.mark.asyncio
-    async def test_api_response_times(self, http_client, test_config):
+    async def test_api_response_times(self, http_client, test_config, strict_mode):
         """Test API response times."""
         import time
         
@@ -248,10 +262,12 @@ class TestAPIPerformance:
                     print(f"{service_name} returned status {response.status_code} in {response_time:.2f}s")
                     
             except httpx.RequestError:
+                if strict_mode:
+                    pytest.fail(f"{service_name} not available for performance testing in strict mode")
                 print(f"{service_name} not available for performance testing")
     
     @pytest.mark.asyncio
-    async def test_api_memory_usage(self, http_client, test_config):
+    async def test_api_memory_usage(self, http_client, test_config, strict_mode):
         """Test API memory usage with large requests."""
         # Test with large search query
         large_query = {
@@ -275,5 +291,7 @@ class TestAPIPerformance:
                 print(f"API returned status {response.status_code} for large request")
                 
         except httpx.RequestError:
+            if strict_mode:
+                pytest.fail("Search endpoint not available for memory testing in strict mode")
             print("Search endpoint not available for memory testing")
 
