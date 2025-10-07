@@ -363,11 +363,22 @@ class RetrievalService:
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
-                        result["metadata"]["mimeType"] = record.get("mimeType")
                         result["metadata"]["recordName"] = record.get("recordName")
-                        ext =  get_extension_from_mimetype(record.get("mimeType"))
-                        if ext:
-                            result["metadata"]["extension"] = ext
+
+                        mime_type = record.get("mimeType")
+                        if not mime_type:
+                            if record.get("recordType", "") == RecordTypes.FILE.value:
+                                file_record_ids_to_fetch.append(record_id)
+                                result_to_record_map[idx] = (record_id, "file")
+                            elif record.get("recordType", "") == RecordTypes.MAIL.value:
+                                mail_record_ids_to_fetch.append(record_id)
+                                result_to_record_map[idx] = (record_id, "mail")
+                            continue
+                        else:
+                            result["metadata"]["mimeType"] = record.get("mimeType")
+                            ext =  get_extension_from_mimetype(record.get("mimeType"))
+                            if ext:
+                                result["metadata"]["extension"] = ext
 
                         # Collect IDs that need additional fetching (instead of fetching immediately)
                         if not weburl:
@@ -444,6 +455,7 @@ class RetrievalService:
                     continue
 
                 weburl = None
+                fallback_mimetype= None
                 if record_type == "file" and record_id in files_map:
                     files = files_map[record_id]
                     weburl = files.get("webUrl")
@@ -451,6 +463,7 @@ class RetrievalService:
                         user_email = user.get("email") if user else None
                         if user_email:
                             weburl = weburl.replace("{user.email}", user_email)
+                    fallback_mimetype = files.get("mimeType")
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
@@ -458,9 +471,17 @@ class RetrievalService:
                         user_email = user.get("email") if user else None
                         if user_email:
                             weburl = weburl.replace("{user.email}", user_email)
+                    fallback_mimetype = "text/html"
 
                 if weburl:
                     result["metadata"]["webUrl"] = weburl
+
+                if fallback_mimetype:
+                    result["metadata"]["mimeType"] = fallback_mimetype
+                    fallback_ext =  get_extension_from_mimetype(fallback_mimetype)
+                    if fallback_ext:
+                        result["metadata"]["extension"] = fallback_ext
+
                 final_search_results.append(result)
 
             # OPTIMIZATION: Get full record documents from Arango using list comprehension

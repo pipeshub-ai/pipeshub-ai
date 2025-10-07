@@ -110,6 +110,7 @@ export interface SearchFilters {
 export interface KnowledgeSearchProps {
   searchResults: SearchResult[];
   loading: boolean;
+  canLoadMore: boolean;
   onSearchQueryChange: (query: string) => void;
   onTopKChange: (callback: (prevTopK: number) => number) => void;
   onViewCitations: (recordId: string, extension: string, recordCitation?: SearchResult) => Promise<void>;

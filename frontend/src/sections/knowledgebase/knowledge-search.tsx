@@ -34,7 +34,7 @@ import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scro
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
 
-// Helper function to get file icon based on extension
+const VIEWABLE_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'mdx'];
 
 // Helper function to get file icon color based on extension
 export const getFileIconColor = (extension: string): string => {
@@ -95,8 +95,8 @@ export const getSourceIcon = (result: SearchResult, allConnectors: any[]): strin
       c.name === result.metadata.connector
   );
 
-  // If connector found, use its iconPath and color
-  if (connector && connector.iconPath) {
+  // If connector found, use its iconPath
+  if (connector?.iconPath) {
     return connector.iconPath;
   }
 
@@ -132,9 +132,8 @@ export const highlightText = (text: string, query: string, theme: any) => {
   }
 };
 
-function isDocViewable(extension: string) {
-  const viewableExtensions = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md','mdx'];
-  return viewableExtensions.includes(extension);
+function isDocViewable(extension: string): boolean {
+  return VIEWABLE_EXTENSIONS.includes(extension?.toLowerCase());
 }
 
 interface ActionButtonProps {
@@ -165,6 +164,7 @@ const ActionButton: React.FC<ActionButtonProps> = ({ icon, label, onClick }) => 
 const KnowledgeSearch = ({
   searchResults,
   loading,
+  canLoadMore = true,
   onSearchQueryChange,
   onTopKChange,
   onViewCitations,
@@ -175,41 +175,46 @@ const KnowledgeSearch = ({
   const scrollableStyles = createScrollableContainerStyle(theme);
   const [searchInputValue, setSearchInputValue] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<number>(0);
   const [selectedRecord, setSelectedRecord] = useState<SearchResult | null>(null);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
   const navigate = useNavigate();
   const observer = useRef<IntersectionObserver | null>(null);
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [loadingRecordId, setLoadingRecordId] = useState<string | null>(null);
-
+  const previousQueryRef = useRef<string>('');
+  const resultsContainerRef = useRef<HTMLDivElement | null>(null);
   // Synchronize searchQuery with parent component's state
   useEffect(() => {
-    // Update the input value when the parent's query changes
     if (searchQuery !== searchInputValue) {
       setSearchInputValue(searchQuery);
     }
     // eslint-disable-next-line
   }, [searchQuery]);
 
+  // Scroll to top when search results change due to query change
+  useEffect(() => {
+    // Only scroll if the query changed (not due to loading more results)
+    if (searchQuery && searchQuery !== previousQueryRef.current && searchResults.length > 0) {
+      if (resultsContainerRef.current) {
+        resultsContainerRef.current.scrollTo({
+          top: 0,
+          behavior: 'smooth',
+        });
+      }
+      previousQueryRef.current = searchQuery;
+    }
+  }, [searchResults, searchQuery]);
+
   const handleViewCitations = (record: SearchResult, event: React.MouseEvent) => {
-    // Prevent event bubbling to card click handler
     event.stopPropagation();
 
     const recordId = record.metadata?.recordId || '';
     const extension = record.metadata?.extension || '';
     setLoadingRecordId(recordId);
 
-    const isPdf = extension.toLowerCase() === 'pdf';
-    const isExcel = ['xlsx', 'xls', 'csv'].includes(extension.toLowerCase());
-    const isDocx = ['docx'].includes(extension.toLowerCase());
-    const isHtml = ['html'].includes(extension.toLowerCase());
-    const isTextFile = ['txt'].includes(extension.toLowerCase());
-    const isMarkdown = ['mdx', 'md'].includes(extension.toLowerCase());
-    if (isPdf || isExcel || isDocx || isHtml || isTextFile || isMarkdown) {
+    if (isDocViewable(extension)) {
       if (onViewCitations) {
         onViewCitations(recordId, extension, record).finally(() => {
-          // Reset loading state when complete (whether success or error)
           setLoadingRecordId(null);
         });
       }
@@ -218,16 +223,23 @@ const KnowledgeSearch = ({
 
   const lastResultElementRef = useCallback(
     (node: Element | null) => {
-      if (loading) return;
+      // Stop if:
+      // 1. Currently loading
+      // 2. Can't load more (reached limit or got fewer results than requested)
+      // 3. Have fewer than 10 results (likely all available results shown)
+      if (loading || !canLoadMore || searchResults.length < 10) return;
+
       if (observer.current) observer.current.disconnect();
+
       observer.current = new IntersectionObserver((entries) => {
         if (entries[0].isIntersecting && onTopKChange) {
           onTopKChange((prevTopK: number) => prevTopK + 10);
         }
       });
+
       if (node) observer.current.observe(node);
     },
-    [loading, onTopKChange]
+    [loading, onTopKChange, canLoadMore, searchResults.length]
   );
 
   const handleSearch = () => {
@@ -251,6 +263,8 @@ const KnowledgeSearch = ({
   const clearSearch = () => {
     setSearchInputValue('');
     setSearchQuery('');
+    setHasSearched(false);
+    previousQueryRef.current = '';
     if (onSearchQueryChange) {
       onSearchQueryChange('');
     }
@@ -259,65 +273,18 @@ const KnowledgeSearch = ({
   const handleRecordClick = (record: SearchResult): void => {
     const { recordId } = record.metadata;
     const recordMeta = recordsMap[recordId];
-    const { webUrl } = recordMeta;
+
+    if (!recordMeta?.webUrl) return;
+
+    let { webUrl } = recordMeta;
+
     if (recordMeta.origin === 'UPLOAD' && !webUrl.startsWith('http')) {
       const baseUrl = `${window.location.protocol}//${window.location.host}`;
-      const newWebUrl = baseUrl + webUrl;
-      window.open(newWebUrl, '_blank');
-    } else {
-      window.open(webUrl, '_blank'); // Opens in a new tab/window
+      webUrl = baseUrl + webUrl;
     }
+
+    window.open(webUrl, '_blank', 'noopener,noreferrer');
   };
-
-  // Function to get record details for metadata display
-  // const getRecordDetails = (recordId: string): any => {
-  //   try {
-  //     const record = recordsMap[recordId];
-  //     if (!record) return null;
-
-  //     const fullRecord = searchResults?.records?.find((r: Record) => r._id === recordId);
-  //     const fileRecord = searchResults?.fileRecords?.find(
-  //       (fr: FileRecord) => fr._id === record.metadata?.fileRecordId
-  //     );
-
-  //     return {
-  //       modules: fullRecord?.modules || [],
-  //       searchTags: fullRecord?.searchTags || [],
-  //       version: fullRecord?.version,
-  //       uploadedBy: fileRecord?.uploadedBy,
-  //     };
-  //   } catch (error) {
-  //     console.error('Error getting record details:', error);
-  //     return null;
-  //   }
-  // };
-
-  // Get the number of records by type
-  const getRecordTypeCount = (type: string): number =>
-    searchResults.filter((r) => r.metadata?.recordType === type).length;
-
-  // Get categories by record type for the tabs
-  const documentCount = getRecordTypeCount('FILE');
-  const faqCount = getRecordTypeCount('FAQ');
-  const emailCount = getRecordTypeCount('MAIL');
-
-  // Helper function to render uploaded by information
-  // const renderUploadedBy = (recordId: string): React.ReactNode => {
-  //   const details = getRecordDetails(recordId);
-  //   if (!details) return <Typography variant="body2">N/A</Typography>;
-
-  //   const uploadedById = details.uploadedBy;
-  //   const user = users.find((u) => u._id === uploadedById);
-
-  //   if (!user) return <Typography variant="body2">N/A</Typography>;
-
-  //   return (
-  //     <>
-  //       <Avatar sx={{ width: 24, height: 24 }}>{user.fullName.charAt(0)}</Avatar>
-  //       <Typography variant="body2">{user.fullName}</Typography>
-  //     </>
-  //   );
-  // };
 
   // Show different UI states based on search state
   const showInitialState = !hasSearched && searchResults.length === 0;
@@ -352,14 +319,12 @@ const KnowledgeSearch = ({
               p: 1,
               mb: 2,
               boxShadow: 'none',
-              borderRadius: 1, // More minimalistic border radius (4px)
-              border: `1px solid ${theme.palette.divider}`, // Direct use of divider color
+              borderRadius: 1,
+              border: `1px solid ${theme.palette.divider}`,
               backgroundColor: theme.palette.background.paper,
             }}
           >
             <Box sx={{ display: 'flex', gap: 1 }}>
-              {' '}
-              {/* Reduced gap for tighter layout */}
               <TextField
                 fullWidth
                 value={searchInputValue}
@@ -370,14 +335,14 @@ const KnowledgeSearch = ({
                 size="small"
                 sx={{
                   '& .MuiOutlinedInput-root': {
-                    borderRadius: 1, // Match the Paper border radius
-                    fontSize: '0.9rem', // Slightly smaller font size
+                    borderRadius: 1,
+                    fontSize: '0.9rem',
                   },
                   '& .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme.palette.divider, // Consistent border color
+                    borderColor: theme.palette.divider,
                   },
                   '& .MuiInputBase-input': {
-                    py: 1.25, // Better vertical padding
+                    py: 1.25,
                   },
                 }}
                 InputProps={{
@@ -387,7 +352,7 @@ const KnowledgeSearch = ({
                         icon={magnifyIcon}
                         style={{
                           color: theme.palette.text.secondary,
-                          fontSize: '1.25rem', // Slightly larger for visibility
+                          fontSize: '1.25rem',
                         }}
                       />
                     </InputAdornment>
@@ -399,13 +364,13 @@ const KnowledgeSearch = ({
                         onClick={() => setSearchInputValue('')}
                         sx={{
                           color: theme.palette.text.secondary,
-                          padding: '2px', // Smaller padding for better fit
+                          padding: '2px',
                         }}
                       >
                         <Icon
                           icon={closeIcon}
                           style={{
-                            fontSize: '1rem', // Slightly smaller for better fit
+                            fontSize: '1rem',
                           }}
                         />
                       </IconButton>
@@ -418,20 +383,20 @@ const KnowledgeSearch = ({
                 onClick={handleSearch}
                 disabled={!searchInputValue.trim() || loading}
                 sx={{
-                  minWidth: '90px', // Slightly narrower
-                  borderRadius: 1, // Match the Paper border radius
+                  minWidth: '90px',
+                  borderRadius: 1,
                   boxShadow: 'none',
                   textTransform: 'none',
                   fontWeight: 500,
-                  fontSize: '0.875rem', // Consistent font size
-                  py: 0.75, // Better vertical padding
-                  px: 2, // Better horizontal padding
+                  fontSize: '0.875rem',
+                  py: 0.75,
+                  px: 2,
                   '&:hover': {
                     boxShadow: 'none',
-                    backgroundColor: theme.palette.primary.dark, // Darker on hover
+                    backgroundColor: theme.palette.primary.dark,
                   },
                   '&:disabled': {
-                    opacity: 0.7, // More subtle disabled state
+                    opacity: 0.7,
                   },
                 }}
               >
@@ -456,6 +421,7 @@ const KnowledgeSearch = ({
         >
           {/* Results Column */}
           <Box
+            ref={resultsContainerRef}
             sx={{
               width: detailsOpen ? '55%' : '100%',
               overflow: 'auto',
@@ -592,11 +558,6 @@ const KnowledgeSearch = ({
                   Enter a search term above to discover documents, FAQs, and other resources from
                   your organization&apos;s knowledge base.
                 </Typography>
-
-                {/* <Box sx={{ display: 'flex', gap: 2 }}>
-                  <ActionButton icon={starIcon} label="Popular topics" />
-                  <ActionButton icon={historyIcon} label="Recent searches" />
-                </Box> */}
               </Box>
             )}
 
@@ -609,8 +570,6 @@ const KnowledgeSearch = ({
                   const iconPath = getSourceIcon(result, allConnectors);
                   const fileType = result.metadata.extension?.toUpperCase() || 'DOC';
                   const isViewable = isDocViewable(result.metadata.extension);
-                  // result.metadata.extension === 'pdf' ||
-                  // ['xlsx', 'xls', 'csv'].includes(result.metadata.extension?.toLowerCase() || '');
 
                   return (
                     <Card
@@ -644,10 +603,6 @@ const KnowledgeSearch = ({
                               width: 40,
                               height: 40,
                               borderRadius: '6px',
-                              // bgcolor: alpha(
-                              //   getFileIconColor(result.metadata.extension || ''),
-                              //   0.1
-                              // ),
                               flexShrink: 0,
                             }}
                           >
@@ -670,7 +625,6 @@ const KnowledgeSearch = ({
                                     objectFit: 'contain',
                                   }}
                                   onError={(e) => {
-                                    // Fallback to database icon if image fails to load
                                     e.currentTarget.style.display = 'none';
                                     e.currentTarget.nextElementSibling?.setAttribute(
                                       'style',
@@ -689,9 +643,9 @@ const KnowledgeSearch = ({
                               sx={{
                                 display: 'flex',
                                 justifyContent: 'space-between',
-                                alignItems: 'center', // Center align items vertically
+                                alignItems: 'center',
                                 width: '100%',
-                                gap: 1, // Ensure some gap between elements
+                                gap: 1,
                               }}
                             >
                               {/* Record name with ellipsis for overflow */}
@@ -699,11 +653,11 @@ const KnowledgeSearch = ({
                                 variant="subtitle1"
                                 fontWeight={500}
                                 sx={{
-                                  flexGrow: 1, // Allow text to take available space
+                                  flexGrow: 1,
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap', // Prevent text wrapping
-                                  minWidth: 0, // Allow text to shrink below its content size
+                                  whiteSpace: 'nowrap',
+                                  minWidth: 0,
                                 }}
                               >
                                 {result.metadata.recordName || 'Untitled Document'}
@@ -715,7 +669,7 @@ const KnowledgeSearch = ({
                                   display: 'flex',
                                   gap: 1,
                                   alignItems: 'center',
-                                  flexShrink: 0, // Prevent shrinking
+                                  flexShrink: 0,
                                 }}
                               >
                                 {isViewable && (
@@ -734,7 +688,7 @@ const KnowledgeSearch = ({
                                       fontSize: '0.75rem',
                                       py: 0.5,
                                       height: 24,
-                                      whiteSpace: 'nowrap', // Prevent button text wrapping
+                                      whiteSpace: 'nowrap',
                                       textTransform: 'none',
                                       borderRadius: '4px',
                                     }}
@@ -851,7 +805,7 @@ const KnowledgeSearch = ({
                 })}
 
                 {/* Loading Indicator at Bottom */}
-                {loading && searchResults.length > 0 && (
+                {loading && searchResults.length > 0 && canLoadMore && (
                   <Box
                     sx={{
                       display: 'flex',
@@ -867,11 +821,25 @@ const KnowledgeSearch = ({
                     </Typography>
                   </Box>
                 )}
+
+                {/* End of Results Indicator */}
+                {!loading && searchResults.length >= 10 && !canLoadMore && (
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      p: 2,
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      No more results to load
+                    </Typography>
+                  </Box>
+                )}
               </Box>
             )}
           </Box>
-
-          {/* Details Column - This would be where DetailPanel is rendered */}
         </Box>
       </Box>
     </Box>
