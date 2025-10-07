@@ -1089,40 +1089,58 @@ class PostHogDataSourceGenerator:
         docstring += '        """'
         return docstring
     
+    async def _execute_operation(
+        self,
+        query: str,
+        variables: Dict[str, Any],
+        operation_name: str,
+        operation_type: str,
+    ) -> PostHogResponse:
+        """Execute a GraphQL operation and handle exceptions."""
+        try:
+            return await self._posthog_client.execute_query(
+                query=query,
+                variables=variables,
+                operation_name=operation_name,
+            )
+        except Exception as e:
+            return PostHogResponse(
+                success=False,
+                error=str(e),
+                message=f"Failed to execute {operation_type} {operation_name}: {str(e)}",
+            )
+
+    
     def _generate_method_body(self, operation_name: str, operation_data: Dict[str, Any], operation_type: str) -> str:
         """Generate method body."""
-        parameters = operation_data.get('parameters', {})
-        query = operation_data.get('query', '').strip()
-        
+        parameters = operation_data.get("parameters", {})
+        query = operation_data.get("query", "").strip()
+
+        # Build variable setup
         if parameters:
             variables_lines = ['        variables = {}']
             for param_name in parameters.keys():
                 variables_lines.append(f'        if {param_name} is not None:')
                 variables_lines.append(f'            variables["{param_name}"] = {param_name}')
-            variables_setup = '\n'.join(variables_lines)
+            variables_setup = "\n".join(variables_lines)
         else:
-            variables_setup = '        variables = {}'
-        
+            variables_setup = "        variables = {}"
+
         # Use the actual GraphQL query from the operation definition
         query_str = query.replace('"""', '\\"\\"\\"')
-        
+
+        # Generate body that calls the new helper function
         return f"""{variables_setup}
-        
-        query = '''{query}'''
-        
-        try:
-            response = await self._posthog_client.execute_query(
+            
+            query = '''{query}'''
+
+            return await self._execute_operation(
                 query=query,
                 variables=variables,
-                operation_name="{operation_name}"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute {operation_type} {operation_name}: {{str(e)}}"
+                operation_name="{operation_name}",
+                operation_type="{operation_type}"
             )"""
+
     
     def generate_datasource(self) -> str:
         """Generate complete PostHog data source class."""

@@ -1,6 +1,5 @@
 import json
 import logging
-from dataclasses import asdict
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
@@ -20,7 +19,7 @@ class PostHogResponse(BaseModel):
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
-        return asdict(self)
+        return self.dict()
 
     def to_json(self) -> str:
         """Convert to JSON string"""
@@ -154,7 +153,7 @@ class PostHogTokenConfig(BaseModel):
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
-        return asdict(self)
+        return self.dict()
 
 
 class PostHogClient(IClient):
