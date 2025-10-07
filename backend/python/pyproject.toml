@@ -61,6 +61,7 @@ dependencies = [
     "langchain==0.3.19",
     "langgraph==0.3.34",
     "layoutparser==0.3.4",
+    "linkedin-api-client>=0.3.0",
     "litellm==1.72.4",
     "markdown==3.8",
     "msgraph-sdk==1.16.0",
