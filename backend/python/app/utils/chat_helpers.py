@@ -546,6 +546,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
     try:
         content = []
+        record_string = ""
         record_id = record.get("id", "")
         record_name = record.get("record_name", "")
         content.append({
@@ -556,6 +557,9 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
             * Record content:
             """
         })
+        record_string += f"""* Record Id: {record_id}
+        * Record Name: {record_name}
+        * Record content:\n\n"""
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
@@ -600,6 +604,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
                 })
+                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
             elif block_type == BlockType.TABLE_ROW.value:
                 # Group table rows by their parent_index for block group processing
                 block_group_index = block.get("parent_index")
@@ -632,6 +637,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                     "content": row_text,
                                     "block_index": row_index,
                                 })
+                                
 
                         if child_results:
                             template = Template(table_prompt)
@@ -645,16 +651,19 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                 "type": "text",
                                 "text": f"{rendered_form}\n\n"
                             })
+                            record_string += f"{rendered_form}\n\n"
                         else:
                             content.append({
                                 "type": "text",
                                 "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
                             })
+                            record_string += f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
             else:
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
                 })
+                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
 
         # Add closing tags
         content.append({
@@ -662,7 +671,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
             "text": "</record>"
         })
 
-        return content
+        return record_string
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
@@ -773,7 +782,6 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
         "text": f"</record>\n</context>\n\n{qna_prompt_instructions_2}"
     })
 
-    logger.debug(f"content: {content}")
     return content
 
 def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> str:
@@ -788,11 +796,12 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
             virtual_record_id_to_record_number[virtual_record_id] = record_number
             record_number = record_number + 1
     all_contents = []
+    all_record_strings = []
     content = []
     seen_blocks = set()
     seen_virtual_record_ids.clear()
     record_ids =[]
-
+    record_string = ""
     for i,result in enumerate(flattened_results):
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
@@ -802,6 +811,8 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                     "text": "</record>"
                 })
                 all_contents.append(content)
+                all_record_strings.append(record_string)
+                record_string = ""
                 content = []
             seen_virtual_record_ids.add(virtual_record_id)
             record = virtual_record_id_to_result[virtual_record_id]
@@ -817,6 +828,10 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                 "type": "text",
                 "text": rendered_form
             })
+            record_string += f"""* Record Id: {record.get("id","Not available")}
+            * Record Name: {record.get("record_name","Not available")}
+            * Record blocks (sorted):\n\n
+            """
             record_ids.append(record.get("id"))
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
@@ -857,36 +872,42 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                         "type": "text",
                         "text": f"{rendered_form}\n\n"
                     })
+                    record_string += f"{rendered_form}\n\n"
                 else:
                     content.append({
                         "type": "text",
                         "text": f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
                     })
+                    record_string += f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
+                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
             elif block_type == BlockType.TABLE_ROW.value:
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
                 })
+                record_string += f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
             elif block_type != BlockType.IMAGE.value:
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
+                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
         else:
             continue
 
     content.append({
         "type": "text",
-        "text": "</record>"
+        "text": "</record>\n\n"
     })
     all_contents.append(content)
+    all_record_strings.append(record_string)
 
-    return all_contents,record_ids
+    return all_record_strings,record_ids
 
 def block_group_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     content = []

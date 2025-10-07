@@ -88,7 +88,7 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     Factory function to create the tool with runtime dependencies injected.
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
-    async def fetch_full_record_tool(record_id: str, reason: str) -> str:
+    async def fetch_full_record_tool(record_id: str, reason: str) -> Dict[str, Any]:
         """
         Retrieve the complete content of a record (all blocks/groups) for better answering.
         Returns a JSON string: {"ok": true, "record": {...}} or {"ok": false, "error": "..."}.
@@ -107,7 +107,7 @@ def create_fetch_block_group_tool(blob_store: BlobStorage,final_results: List[Di
     async def fetch_block_group_tool(block_group_number: str, reason: str) -> str:
         record_number = block_group_number.split("-")[0]
         number = int(re.findall(r'\d+', record_number)[0])
-        count =0
+        count = 0
         seen = set()
         record = None
         vrid = None
