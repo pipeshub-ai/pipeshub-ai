@@ -10,6 +10,10 @@ the PostHog GraphQL API, covering:
 - Dashboard and insight management
 - Feature flags and experiments
 - Cohort management
+- Actions
+- Session recordings
+- Plugins
+- Annotations
 
 Prerequisites:
 - Set POSTHOG_API_KEY environment variable (Personal API Key)
@@ -20,7 +24,6 @@ import asyncio
 import os
 import traceback
 from datetime import datetime, timedelta
-from typing import Optional
 
 from app.sources.client.posthog.posthog import (
     PostHogTokenConfig,
@@ -65,13 +68,21 @@ async def example_events(data_source: PostHogDataSource) -> None:
     )
     print(f"   Success: {events_response.success}")
     if events_response.success and events_response.data:
-        print(f"   Found events: {len(events_response.data.get('results', []))}")
+        results = events_response.data.get('events', {}).get('results', [])
+        print(f"   Found {len(results)} events")
+        for event in results[:3]:
+            print(f"   - Event: {event.get('event')}, Time: {event.get('timestamp')}")
     
-    # Get specific event
-    print("\n3. Getting a specific event:")
-    # Note: You would need an actual event ID here
-    # event_response = await data_source.event(id="event-uuid-here")
-    # print(f"   Success: {event_response.success}")
+    # Query events by distinct_id
+    print("\n3. Querying events for a specific user:")
+    user_events = await data_source.events(
+        distinct_id="user_12345",
+        limit=5
+    )
+    print(f"   Success: {user_events.success}")
+    if user_events.success and user_events.data:
+        results = user_events.data.get('events', {}).get('results', [])
+        print(f"   Found {len(results)} events for user")
 
 
 async def example_persons(data_source: PostHogDataSource) -> None:
@@ -88,22 +99,22 @@ async def example_persons(data_source: PostHogDataSource) -> None:
     )
     print(f"   Success: {persons_response.success}")
     if persons_response.success and persons_response.data:
-        results = persons_response.data.get('results', [])
+        results = persons_response.data.get('persons', {}).get('results', [])
         print(f"   Found {len(results)} persons")
         for person in results[:3]:
-            print(f"   - {person.get('distinct_ids', ['Unknown'])[0]}")
+            distinct_ids = person.get('distinct_ids', ['Unknown'])
+            name = person.get('name', 'Unnamed')
+            print(f"   - {name} ({distinct_ids[0] if distinct_ids else 'No ID'})")
     
-    # Update person properties
-    print("\n2. Updating person properties:")
-    # Note: You would need an actual person ID here
-    # update_response = await data_source.person_update(
-    #     id="person-id-here",
-    #     properties={
-    #         "plan": "premium",
-    #         "signup_date": "2024-01-15"
-    #     }
-    # )
-    # print(f"   Success: {update_response.success}")
+    # Query persons with property filters
+    print("\n2. Querying persons with filters:")
+    filtered_persons = await data_source.persons(
+        limit=10,
+        properties={"email": {"operator": "is_set"}}
+    )
+    print(f"   Success: {filtered_persons.success}")
+    if filtered_persons.success:
+        print(f"   Filtered persons query executed")
 
 
 async def example_analytics(data_source: PostHogDataSource) -> None:
@@ -130,8 +141,13 @@ async def example_analytics(data_source: PostHogDataSource) -> None:
         interval="day"
     )
     print(f"   Success: {trend_response.success}")
-    if trend_response.success:
-        print(f"   Trend calculated for date range: {date_from} to {date_to}")
+    if trend_response.success and trend_response.data:
+        result = trend_response.data.get('trend', {}).get('result', {})
+        print(f"   Trend data retrieved for {date_from} to {date_to}")
+        if result.get('labels'):
+            print(f"   Days: {len(result.get('labels', []))}")
+    else:
+        print(f"   Error: {trend_response.error}")
     
     # Calculate funnel
     print("\n2. Calculating funnel conversion:")
@@ -147,8 +163,14 @@ async def example_analytics(data_source: PostHogDataSource) -> None:
         funnel_window_interval_unit="day"
     )
     print(f"   Success: {funnel_response.success}")
-    if funnel_response.success:
-        print(f"   Funnel calculated successfully")
+    if funnel_response.success and funnel_response.data:
+        result = funnel_response.data.get('funnel', {}).get('result', {})
+        steps = result.get('steps', [])
+        print(f"   Funnel calculated with {len(steps)} steps")
+        for step in steps:
+            print(f"   - {step.get('name')}: {step.get('count')} users")
+    else:
+        print(f"   Error: {funnel_response.error}")
 
 
 async def example_dashboards_insights(data_source: PostHogDataSource) -> None:
@@ -162,7 +184,7 @@ async def example_dashboards_insights(data_source: PostHogDataSource) -> None:
     dashboards_response = await data_source.dashboards(limit=5)
     print(f"   Success: {dashboards_response.success}")
     if dashboards_response.success and dashboards_response.data:
-        results = dashboards_response.data.get('results', [])
+        results = dashboards_response.data.get('dashboards', {}).get('results', [])
         print(f"   Found {len(results)} dashboards")
         for dashboard in results[:3]:
             print(f"   - {dashboard.get('name', 'Unnamed')} (ID: {dashboard.get('id')})")
@@ -170,23 +192,36 @@ async def example_dashboards_insights(data_source: PostHogDataSource) -> None:
     # Create a new dashboard
     print("\n2. Creating a new dashboard:")
     create_dashboard_response = await data_source.dashboard_create(
-        name="Weekly Metrics Dashboard",
+        name=f"Weekly Metrics Dashboard {datetime.now().strftime('%Y%m%d_%H%M%S')}",
         description="Key metrics for weekly review",
         pinned=True
     )
     print(f"   Success: {create_dashboard_response.success}")
-    if create_dashboard_response.success:
-        print(f"   Dashboard created successfully")
+    if create_dashboard_response.success and create_dashboard_response.data:
+        dashboard = create_dashboard_response.data.get('dashboardCreate', {}).get('dashboard', {})
+        print(f"   Dashboard created: {dashboard.get('name')} (ID: {dashboard.get('id')})")
+        created_dashboard_id = dashboard.get('id')
+        
+        # Update the dashboard
+        if created_dashboard_id:
+            print("\n3. Updating the dashboard:")
+            update_response = await data_source.dashboard_update(
+                id=created_dashboard_id,
+                description="Updated description for weekly metrics"
+            )
+            print(f"   Update success: {update_response.success}")
+    else:
+        print(f"   Error: {create_dashboard_response.error}")
     
     # List insights
-    print("\n3. Listing insights:")
+    print("\n4. Listing insights:")
     insights_response = await data_source.insights(
         saved=True,
         limit=5
     )
     print(f"   Success: {insights_response.success}")
     if insights_response.success and insights_response.data:
-        results = insights_response.data.get('results', [])
+        results = insights_response.data.get('insights', {}).get('results', [])
         print(f"   Found {len(results)} saved insights")
 
 
@@ -201,15 +236,15 @@ async def example_cohorts(data_source: PostHogDataSource) -> None:
     cohorts_response = await data_source.cohorts(limit=5)
     print(f"   Success: {cohorts_response.success}")
     if cohorts_response.success and cohorts_response.data:
-        results = cohorts_response.data.get('results', [])
+        results = cohorts_response.data.get('cohorts', {}).get('results', [])
         print(f"   Found {len(results)} cohorts")
         for cohort in results[:3]:
-            print(f"   - {cohort.get('name', 'Unnamed')} (ID: {cohort.get('id')})")
+            print(f"   - {cohort.get('name', 'Unnamed')} (ID: {cohort.get('id')}, Count: {cohort.get('count', 0)})")
     
     # Create a cohort
     print("\n2. Creating a new cohort:")
     create_cohort_response = await data_source.cohort_create(
-        name="Active Users - Last 7 Days",
+        name=f"Active Users - Last 7 Days {datetime.now().strftime('%Y%m%d_%H%M%S')}",
         filters={
             "properties": {
                 "type": "OR",
@@ -228,8 +263,11 @@ async def example_cohorts(data_source: PostHogDataSource) -> None:
         is_static=False
     )
     print(f"   Success: {create_cohort_response.success}")
-    if create_cohort_response.success:
-        print(f"   Cohort created successfully")
+    if create_cohort_response.success and create_cohort_response.data:
+        cohort = create_cohort_response.data.get('cohortCreate', {}).get('cohort', {})
+        print(f"   Cohort created: {cohort.get('name')} (ID: {cohort.get('id')})")
+    else:
+        print(f"   Error: {create_cohort_response.error}")
 
 
 async def example_feature_flags(data_source: PostHogDataSource) -> None:
@@ -243,7 +281,7 @@ async def example_feature_flags(data_source: PostHogDataSource) -> None:
     flags_response = await data_source.feature_flags(limit=5)
     print(f"   Success: {flags_response.success}")
     if flags_response.success and flags_response.data:
-        results = flags_response.data.get('results', [])
+        results = flags_response.data.get('featureFlags', {}).get('results', [])
         print(f"   Found {len(results)} feature flags")
         for flag in results[:3]:
             active = flag.get('active', False)
@@ -252,8 +290,9 @@ async def example_feature_flags(data_source: PostHogDataSource) -> None:
     
     # Create a feature flag
     print("\n2. Creating a new feature flag:")
+    flag_key = f"new_ui_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     create_flag_response = await data_source.feature_flag_create(
-        key="new_dashboard_ui",
+        key=flag_key,
         name="New Dashboard UI",
         filters={
             "groups": [
@@ -266,8 +305,11 @@ async def example_feature_flags(data_source: PostHogDataSource) -> None:
         active=True
     )
     print(f"   Success: {create_flag_response.success}")
-    if create_flag_response.success:
-        print(f"   Feature flag created successfully")
+    if create_flag_response.success and create_flag_response.data:
+        flag = create_flag_response.data.get('featureFlagCreate', {}).get('featureFlag', {})
+        print(f"   Feature flag created: {flag.get('key')} (ID: {flag.get('id')})")
+    else:
+        print(f"   Error: {create_flag_response.error}")
 
 
 async def example_experiments(data_source: PostHogDataSource) -> None:
@@ -281,10 +323,13 @@ async def example_experiments(data_source: PostHogDataSource) -> None:
     experiments_response = await data_source.experiments(limit=5)
     print(f"   Success: {experiments_response.success}")
     if experiments_response.success and experiments_response.data:
-        results = experiments_response.data.get('results', [])
+        results = experiments_response.data.get('experiments', {}).get('results', [])
         print(f"   Found {len(results)} experiments")
         for exp in results[:3]:
             print(f"   - {exp.get('name', 'Unnamed')} (ID: {exp.get('id')})")
+            print(f"     Feature Flag: {exp.get('feature_flag')}")
+    else:
+        print(f"   Note: {experiments_response.error or 'No experiments found'}")
 
 
 async def example_actions(data_source: PostHogDataSource) -> None:
@@ -298,15 +343,17 @@ async def example_actions(data_source: PostHogDataSource) -> None:
     actions_response = await data_source.actions(limit=5)
     print(f"   Success: {actions_response.success}")
     if actions_response.success and actions_response.data:
-        results = actions_response.data.get('results', [])
+        results = actions_response.data.get('actions', {}).get('results', [])
         print(f"   Found {len(results)} actions")
         for action in results[:3]:
             print(f"   - {action.get('name', 'Unnamed')} (ID: {action.get('id')})")
+            steps = action.get('steps', [])
+            print(f"     Steps: {len(steps)}")
     
     # Create an action
     print("\n2. Creating a new action:")
     create_action_response = await data_source.action_create(
-        name="Signup Completed",
+        name=f"Signup Completed {datetime.now().strftime('%Y%m%d_%H%M%S')}",
         steps=[
             {
                 "event": "account_created",
@@ -316,8 +363,79 @@ async def example_actions(data_source: PostHogDataSource) -> None:
         description="User successfully completed signup flow"
     )
     print(f"   Success: {create_action_response.success}")
-    if create_action_response.success:
-        print(f"   Action created successfully")
+    if create_action_response.success and create_action_response.data:
+        action = create_action_response.data.get('actionCreate', {}).get('action', {})
+        print(f"   Action created: {action.get('name')} (ID: {action.get('id')})")
+    else:
+        print(f"   Error: {create_action_response.error}")
+
+
+async def example_session_recordings(data_source: PostHogDataSource) -> None:
+    """Example: Working with session recordings."""
+    print("\n" + "="*80)
+    print("SESSION RECORDINGS EXAMPLES")
+    print("="*80)
+    
+    # List session recordings
+    print("\n1. Listing session recordings:")
+    date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    date_to = datetime.now().strftime("%Y-%m-%d")
+    
+    recordings_response = await data_source.session_recordings(
+        date_from=date_from,
+        date_to=date_to,
+        limit=5
+    )
+    print(f"   Success: {recordings_response.success}")
+    if recordings_response.success and recordings_response.data:
+        results = recordings_response.data.get('sessionRecordings', {}).get('results', [])
+        print(f"   Found {len(results)} session recordings")
+        for recording in results[:3]:
+            duration = recording.get('recording_duration', 0)
+            print(f"   - ID: {recording.get('id')}, Duration: {duration}s")
+    else:
+        print(f"   Note: {recordings_response.error or 'No recordings found'}")
+
+
+async def example_plugins(data_source: PostHogDataSource) -> None:
+    """Example: Working with plugins."""
+    print("\n" + "="*80)
+    print("PLUGINS EXAMPLES")
+    print("="*80)
+    
+    # List plugins
+    print("\n1. Listing plugins:")
+    plugins_response = await data_source.plugins(limit=5)
+    print(f"   Success: {plugins_response.success}")
+    if plugins_response.success and plugins_response.data:
+        results = plugins_response.data.get('plugins', {}).get('results', [])
+        print(f"   Found {len(results)} plugins")
+        for plugin in results[:3]:
+            enabled = plugin.get('enabled', False)
+            status = "Enabled" if enabled else "Disabled"
+            print(f"   - {plugin.get('name', 'Unnamed')} ({status})")
+    else:
+        print(f"   Note: {plugins_response.error or 'No plugins found'}")
+
+
+async def example_annotations(data_source: PostHogDataSource) -> None:
+    """Example: Working with annotations."""
+    print("\n" + "="*80)
+    print("ANNOTATIONS EXAMPLES")
+    print("="*80)
+    
+    # Create an annotation
+    print("\n1. Creating a new annotation:")
+    create_annotation_response = await data_source.annotation_create(
+        content="Product launch milestone",
+        date_marker=datetime.now().strftime("%Y-%m-%d")
+    )
+    print(f"   Success: {create_annotation_response.success}")
+    if create_annotation_response.success and create_annotation_response.data:
+        annotation = create_annotation_response.data.get('annotationCreate', {}).get('annotation', {})
+        print(f"   Annotation created: {annotation.get('content')} (ID: {annotation.get('id')})")
+    else:
+        print(f"   Error: {create_annotation_response.error}")
 
 
 async def example_organization_team(data_source: PostHogDataSource) -> None:
@@ -331,14 +449,23 @@ async def example_organization_team(data_source: PostHogDataSource) -> None:
     org_response = await data_source.organization()
     print(f"   Success: {org_response.success}")
     if org_response.success and org_response.data:
-        print(f"   Organization: {org_response.data.get('name', 'Unknown')}")
+        org = org_response.data.get('organization', {})
+        print(f"   Organization: {org.get('name', 'Unknown')}")
+        print(f"   ID: {org.get('id')}")
+        print(f"   Membership Level: {org.get('membership_level', 'N/A')}")
+    else:
+        print(f"   Error: {org_response.error}")
     
     # Get team
     print("\n2. Getting team info:")
     team_response = await data_source.team()
     print(f"   Success: {team_response.success}")
     if team_response.success and team_response.data:
-        print(f"   Team: {team_response.data.get('name', 'Unknown')}")
+        team = team_response.data.get('team', {})
+        print(f"   Team: {team.get('name', 'Unknown')}")
+        print(f"   ID: {team.get('id')}")
+    else:
+        print(f"   Error: {team_response.error}")
 
 
 async def main() -> None:
@@ -357,7 +484,9 @@ async def main() -> None:
     # Configure and build the PostHog client
     config = PostHogTokenConfig(
         api_key=API_KEY,
-        endpoint=f"{POSTHOG_HOST}/api/graphql"
+        endpoint=f"{POSTHOG_HOST}/api/graphql",
+        timeout=30,
+        use_header_auth=True
     )
     client = PostHogClient.build_with_config(config)
     
@@ -393,16 +522,28 @@ async def main() -> None:
         # Actions
         await example_actions(data_source)
         
+        # Session Recordings
+        await example_session_recordings(data_source)
+        
+        # Plugins
+        await example_plugins(data_source)
+        
+        # Annotations
+        await example_annotations(data_source)
+        
     except Exception as e:
         print(f"\n❌ Error during examples: {e}")
         traceback.print_exc()
+    finally:
+        # Always close the client
+        print("\n" + "="*80)
+        print("Closing client connection...")
+        await client.close()
+        print("="*80)
     
     print("\n" + "="*80)
     print("Examples completed!")
     print("="*80)
-    
-    # Close the client
-    await client.close()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
+from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.interface.graph_db import IGraphService
@@ -9,8 +10,7 @@ from app.sources.client.graphql.client import GraphQLClient
 from app.sources.client.iclient import IClient
 
 
-@dataclass
-class PostHogResponse:
+class PostHogResponse(BaseModel):
     """Standardized PostHog API response wrapper"""
     success: bool
     data: Optional[Dict[str, Any]] = None
@@ -28,7 +28,6 @@ class PostHogResponse:
 
 class PostHogGraphQLClientViaToken:
     """PostHog GraphQL client via Personal API Key
-    
     Args:
         api_key: The PostHog personal API key
         endpoint: The GraphQL endpoint URL (default: PostHog Cloud)
@@ -52,11 +51,11 @@ class PostHogGraphQLClientViaToken:
     def create_client(self) -> GraphQLClient:
         """Create and configure the GraphQL client"""
         headers = {}
-        
+
         if self.use_header_auth:
             # Option 1: Use Authorization header with Bearer token
             headers["Authorization"] = f"Bearer {self.api_key}"
-        
+
         self._client = GraphQLClient(
             endpoint=self.endpoint,
             headers=headers,
@@ -81,12 +80,10 @@ class PostHogGraphQLClientViaToken:
         operation_name: Optional[str] = None
     ) -> PostHogResponse:
         """Execute a GraphQL query with PostHog authentication
-        
         Args:
             query: GraphQL query string
             variables: Optional query variables
             operation_name: Optional operation name
-            
         Returns:
             PostHogResponse object
         """
@@ -131,10 +128,8 @@ class PostHogGraphQLClientViaToken:
             await self._client.close()
 
 
-@dataclass
-class PostHogTokenConfig:
+class PostHogTokenConfig(BaseModel):
     """Configuration for PostHog GraphQL client via Personal API Key
-    
     Args:
         api_key: The PostHog personal API key
         endpoint: The GraphQL endpoint URL
@@ -183,12 +178,10 @@ class PostHogClient(IClient):
         operation_name: Optional[str] = None
     ) -> PostHogResponse:
         """Execute a GraphQL query
-        
         Args:
             query: GraphQL query string
             variables: Optional query variables
             operation_name: Optional operation name
-            
         Returns:
             PostHogResponse object
         """
@@ -197,10 +190,8 @@ class PostHogClient(IClient):
     @classmethod
     def build_with_config(cls, config: PostHogTokenConfig) -> "PostHogClient":
         """Build PostHogClient with configuration
-        
         Args:
             config: PostHogTokenConfig instance
-            
         Returns:
             PostHogClient instance
         """
@@ -216,12 +207,10 @@ class PostHogClient(IClient):
         graph_db_service: IGraphService,
     ) -> "PostHogClient":
         """Build PostHogClient using configuration service and graph database service
-        
         Args:
             logger: Logger instance
             config_service: Configuration service instance
             graph_db_service: Graph database service instance
-            
         Returns:
             PostHogClient instance
         """

@@ -1,16 +1,13 @@
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
-from app.sources.client.posthog.posthog import (
-    PostHogClient,
-    PostHogResponse
-)
+from app.sources.client.posthog.posthog import PostHogClient, PostHogResponse
 
 
 class PostHogDataSource:
     """
     Complete PostHog GraphQL API client wrapper.
     Auto-generated wrapper for PostHog analytics and product analytics operations.
-    
+
     Coverage:
     - Events: Query and capture events
     - Persons: Query and update person data
@@ -22,19 +19,13 @@ class PostHogDataSource:
     - Experiments: A/B testing and experiments
     - Session Recordings: Access session recordings
     """
-    
+
     def __init__(self, posthog_client: PostHogClient) -> None:
         """Initialize PostHog data source.
-        
         Args:
             posthog_client: PostHogClient instance
         """
         self._posthog_client = posthog_client
-    
-    def _get_query(self, operation_type: str, operation_name: str) -> str:
-        """Get GraphQL query for operation."""
-        # Implementation would return actual GraphQL queries
-        return f"{operation_type} {operation_name}"
 
     # =============================================================================
     # QUERY OPERATIONS
@@ -77,13 +68,39 @@ class PostHogDataSource:
             variables["properties"] = properties
         if limit is not None:
             variables["limit"] = limit
-        
 
-        return await self._posthog_client.execute_query(
-            query=self._get_query("query", "events"),
-            variables=variables,
-            operation_name="events"
-        )
+        query = '''query Events($after: String, $before: String, $distinct_id: String, $event: String, $properties: JSON, $limit: Int) {
+                            events(after: $after, before: $before, distinct_id: $distinct_id, event: $event, properties: $properties, limit: $limit) {
+                                results {
+                                    id
+                                    event
+                                    timestamp
+                                    distinct_id
+                                    properties
+                                    person {
+                                        id
+                                        name
+                                        properties
+                                    }
+                                }
+                                next
+                                previous
+                            }
+                        }'''
+
+        try:
+            response = await self._posthog_client.execute_query(
+                query=query,
+                variables=variables,
+                operation_name="events"
+            )
+            return response
+        except Exception as e:
+            return PostHogResponse(
+                success=False,
+                error=str(e),
+                message=f"Failed to execute query events: {str(e)}"
+            )
 
     async def event(
         self,
@@ -102,10 +119,25 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Event($id: ID!) {
+                            event(id: $id) {
+                                id
+                                event
+                                timestamp
+                                distinct_id
+                                properties
+                                person {
+                                    id
+                                    name
+                                    properties
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "event"),
+                query=query,
                 variables=variables,
                 operation_name="event"
             )
@@ -150,10 +182,25 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Persons($search: String, $properties: JSON, $cohort: Int, $limit: Int, $offset: Int) {
+                            persons(search: $search, properties: $properties, cohort: $cohort, limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    distinct_ids
+                                    properties
+                                    created_at
+                                    updated_at
+                                }
+                                next
+                                previous
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "persons"),
+                query=query,
                 variables=variables,
                 operation_name="persons"
             )
@@ -182,10 +229,21 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Person($id: ID!) {
+                            person(id: $id) {
+                                id
+                                name
+                                distinct_ids
+                                properties
+                                created_at
+                                updated_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "person"),
+                query=query,
                 variables=variables,
                 operation_name="person"
             )
@@ -218,10 +276,28 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Actions($limit: Int, $offset: Int) {
+                            actions(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    steps {
+                                        event
+                                        url
+                                        selector
+                                        properties
+                                    }
+                                    created_at
+                                    updated_at
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "actions"),
+                query=query,
                 variables=variables,
                 operation_name="actions"
             )
@@ -250,10 +326,26 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Action($id: Int!) {
+                            action(id: $id) {
+                                id
+                                name
+                                description
+                                steps {
+                                    event
+                                    url
+                                    selector
+                                    properties
+                                }
+                                created_at
+                                updated_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "action"),
+                query=query,
                 variables=variables,
                 operation_name="action"
             )
@@ -286,10 +378,24 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Cohorts($limit: Int, $offset: Int) {
+                            cohorts(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    is_static
+                                    filters
+                                    count
+                                    created_at
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "cohorts"),
+                query=query,
                 variables=variables,
                 operation_name="cohorts"
             )
@@ -318,10 +424,22 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Cohort($id: Int!) {
+                            cohort(id: $id) {
+                                id
+                                name
+                                description
+                                is_static
+                                filters
+                                count
+                                created_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "cohort"),
+                query=query,
                 variables=variables,
                 operation_name="cohort"
             )
@@ -354,10 +472,27 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Dashboards($limit: Int, $offset: Int) {
+                            dashboards(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    pinned
+                                    items {
+                                        id
+                                        name
+                                        filters
+                                    }
+                                    created_at
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "dashboards"),
+                query=query,
                 variables=variables,
                 operation_name="dashboards"
             )
@@ -386,10 +521,25 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Dashboard($id: Int!) {
+                            dashboard(id: $id) {
+                                id
+                                name
+                                description
+                                pinned
+                                items {
+                                    id
+                                    name
+                                    filters
+                                }
+                                created_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "dashboard"),
+                query=query,
                 variables=variables,
                 operation_name="dashboard"
             )
@@ -430,10 +580,22 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Insights($dashboard: Int, $saved: Boolean, $limit: Int, $offset: Int) {
+                            insights(dashboard: $dashboard, saved: $saved, limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    filters
+                                    result
+                                    created_at
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "insights"),
+                query=query,
                 variables=variables,
                 operation_name="insights"
             )
@@ -462,10 +624,20 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Insight($id: Int!) {
+                            insight(id: $id) {
+                                id
+                                name
+                                filters
+                                result
+                                created_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "insight"),
+                query=query,
                 variables=variables,
                 operation_name="insight"
             )
@@ -510,10 +682,20 @@ class PostHogDataSource:
             variables["interval"] = interval
         if properties is not None:
             variables["properties"] = properties
-        
+
+        query = '''query Trend($events: [JSON!]!, $date_from: String, $date_to: String, $interval: String, $properties: JSON) {
+                            trend(events: $events, date_from: $date_from, date_to: $date_to, interval: $interval, properties: $properties) {
+                                result {
+                                    labels
+                                    data
+                                    count
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "trend"),
+                query=query,
                 variables=variables,
                 operation_name="trend"
             )
@@ -558,10 +740,22 @@ class PostHogDataSource:
             variables["funnel_window_interval"] = funnel_window_interval
         if funnel_window_interval_unit is not None:
             variables["funnel_window_interval_unit"] = funnel_window_interval_unit
-        
+
+        query = '''query Funnel($events: [JSON!]!, $date_from: String, $date_to: String, $funnel_window_interval: Int, $funnel_window_interval_unit: String) {
+                            funnel(events: $events, date_from: $date_from, date_to: $date_to, funnel_window_interval: $funnel_window_interval, funnel_window_interval_unit: $funnel_window_interval_unit) {
+                                result {
+                                    steps {
+                                        name
+                                        count
+                                        average_conversion_time
+                                    }
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "funnel"),
+                query=query,
                 variables=variables,
                 operation_name="funnel"
             )
@@ -594,10 +788,23 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query FeatureFlags($limit: Int, $offset: Int) {
+                            featureFlags(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    key
+                                    name
+                                    filters
+                                    active
+                                    created_at
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "feature_flags"),
+                query=query,
                 variables=variables,
                 operation_name="feature_flags"
             )
@@ -626,10 +833,21 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query FeatureFlag($id: Int!) {
+                            featureFlag(id: $id) {
+                                id
+                                key
+                                name
+                                filters
+                                active
+                                created_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "feature_flag"),
+                query=query,
                 variables=variables,
                 operation_name="feature_flag"
             )
@@ -662,10 +880,23 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Experiments($limit: Int, $offset: Int) {
+                            experiments(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    feature_flag
+                                    parameters
+                                    start_date
+                                    end_date
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "experiments"),
+                query=query,
                 variables=variables,
                 operation_name="experiments"
             )
@@ -694,10 +925,21 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Experiment($id: Int!) {
+                            experiment(id: $id) {
+                                id
+                                name
+                                feature_flag
+                                parameters
+                                start_date
+                                end_date
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "experiment"),
+                query=query,
                 variables=variables,
                 operation_name="experiment"
             )
@@ -742,10 +984,23 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query SessionRecordings($person_id: String, $date_from: String, $date_to: String, $limit: Int, $offset: Int) {
+                            sessionRecordings(person_id: $person_id, date_from: $date_from, date_to: $date_to, limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    distinct_id
+                                    viewed
+                                    recording_duration
+                                    start_time
+                                    end_time
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "session_recordings"),
+                query=query,
                 variables=variables,
                 operation_name="session_recordings"
             )
@@ -774,10 +1029,22 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query SessionRecording($id: ID!) {
+                            sessionRecording(id: $id) {
+                                id
+                                distinct_id
+                                viewed
+                                recording_duration
+                                start_time
+                                end_time
+                                snapshot_data
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "session_recording"),
+                query=query,
                 variables=variables,
                 operation_name="session_recording"
             )
@@ -798,10 +1065,20 @@ class PostHogDataSource:
             PostHogResponse: The GraphQL response
         """
         variables = {}
-        
+
+        query = '''query Organization {
+                            organization {
+                                id
+                                name
+                                created_at
+                                updated_at
+                                membership_level
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "organization"),
+                query=query,
                 variables=variables,
                 operation_name="organization"
             )
@@ -822,10 +1099,19 @@ class PostHogDataSource:
             PostHogResponse: The GraphQL response
         """
         variables = {}
-        
+
+        query = '''query Team {
+                            team {
+                                id
+                                name
+                                created_at
+                                updated_at
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "team"),
+                query=query,
                 variables=variables,
                 operation_name="team"
             )
@@ -858,10 +1144,23 @@ class PostHogDataSource:
             variables["limit"] = limit
         if offset is not None:
             variables["offset"] = offset
-        
+
+        query = '''query Plugins($limit: Int, $offset: Int) {
+                            plugins(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    url
+                                    config_schema
+                                    enabled
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "plugins"),
+                query=query,
                 variables=variables,
                 operation_name="plugins"
             )
@@ -890,10 +1189,21 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''query Plugin($id: Int!) {
+                            plugin(id: $id) {
+                                id
+                                name
+                                description
+                                url
+                                config_schema
+                                enabled
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("query", "plugin"),
+                query=query,
                 variables=variables,
                 operation_name="plugin"
             )
@@ -938,10 +1248,16 @@ class PostHogDataSource:
             variables["properties"] = properties
         if timestamp is not None:
             variables["timestamp"] = timestamp
-        
+
+        query = '''mutation CaptureEvent($event: String!, $distinct_id: String!, $properties: JSON, $timestamp: String) {
+                            captureEvent(event: $event, distinct_id: $distinct_id, properties: $properties, timestamp: $timestamp) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "capture_event"),
+                query=query,
                 variables=variables,
                 operation_name="capture_event"
             )
@@ -974,10 +1290,20 @@ class PostHogDataSource:
             variables["id"] = id
         if properties is not None:
             variables["properties"] = properties
-        
+
+        query = '''mutation PersonUpdate($id: ID!, $properties: JSON!) {
+                            personUpdate(id: $id, properties: $properties) {
+                                person {
+                                    id
+                                    name
+                                    properties
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "person_update"),
+                query=query,
                 variables=variables,
                 operation_name="person_update"
             )
@@ -1006,10 +1332,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation PersonDelete($id: ID!) {
+                            personDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "person_delete"),
+                query=query,
                 variables=variables,
                 operation_name="person_delete"
             )
@@ -1046,10 +1378,25 @@ class PostHogDataSource:
             variables["steps"] = steps
         if description is not None:
             variables["description"] = description
-        
+
+        query = '''mutation ActionCreate($name: String!, $steps: [JSON!]!, $description: String) {
+                            actionCreate(name: $name, steps: $steps, description: $description) {
+                                action {
+                                    id
+                                    name
+                                    description
+                                    steps {
+                                        event
+                                        url
+                                        selector
+                                    }
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "action_create"),
+                query=query,
                 variables=variables,
                 operation_name="action_create"
             )
@@ -1090,10 +1437,20 @@ class PostHogDataSource:
             variables["steps"] = steps
         if description is not None:
             variables["description"] = description
-        
+
+        query = '''mutation ActionUpdate($id: Int!, $name: String, $steps: [JSON!], $description: String) {
+                            actionUpdate(id: $id, name: $name, steps: $steps, description: $description) {
+                                action {
+                                    id
+                                    name
+                                    description
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "action_update"),
+                query=query,
                 variables=variables,
                 operation_name="action_update"
             )
@@ -1122,10 +1479,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation ActionDelete($id: Int!) {
+                            actionDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "action_delete"),
+                query=query,
                 variables=variables,
                 operation_name="action_delete"
             )
@@ -1162,10 +1525,21 @@ class PostHogDataSource:
             variables["filters"] = filters
         if is_static is not None:
             variables["is_static"] = is_static
-        
+
+        query = '''mutation CohortCreate($name: String!, $filters: JSON!, $is_static: Boolean) {
+                            cohortCreate(name: $name, filters: $filters, is_static: $is_static) {
+                                cohort {
+                                    id
+                                    name
+                                    filters
+                                    is_static
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "cohort_create"),
+                query=query,
                 variables=variables,
                 operation_name="cohort_create"
             )
@@ -1202,10 +1576,20 @@ class PostHogDataSource:
             variables["name"] = name
         if filters is not None:
             variables["filters"] = filters
-        
+
+        query = '''mutation CohortUpdate($id: Int!, $name: String, $filters: JSON) {
+                            cohortUpdate(id: $id, name: $name, filters: $filters) {
+                                cohort {
+                                    id
+                                    name
+                                    filters
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "cohort_update"),
+                query=query,
                 variables=variables,
                 operation_name="cohort_update"
             )
@@ -1234,10 +1618,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation CohortDelete($id: Int!) {
+                            cohortDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "cohort_delete"),
+                query=query,
                 variables=variables,
                 operation_name="cohort_delete"
             )
@@ -1274,10 +1664,21 @@ class PostHogDataSource:
             variables["description"] = description
         if pinned is not None:
             variables["pinned"] = pinned
-        
+
+        query = '''mutation DashboardCreate($name: String!, $description: String, $pinned: Boolean) {
+                            dashboardCreate(name: $name, description: $description, pinned: $pinned) {
+                                dashboard {
+                                    id
+                                    name
+                                    description
+                                    pinned
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "dashboard_create"),
+                query=query,
                 variables=variables,
                 operation_name="dashboard_create"
             )
@@ -1318,10 +1719,20 @@ class PostHogDataSource:
             variables["description"] = description
         if pinned is not None:
             variables["pinned"] = pinned
-        
+
+        query = '''mutation DashboardUpdate($id: Int!, $name: String, $description: String, $pinned: Boolean) {
+                            dashboardUpdate(id: $id, name: $name, description: $description, pinned: $pinned) {
+                                dashboard {
+                                    id
+                                    name
+                                    description
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "dashboard_update"),
+                query=query,
                 variables=variables,
                 operation_name="dashboard_update"
             )
@@ -1350,10 +1761,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation DashboardDelete($id: Int!) {
+                            dashboardDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "dashboard_delete"),
+                query=query,
                 variables=variables,
                 operation_name="dashboard_delete"
             )
@@ -1394,10 +1811,20 @@ class PostHogDataSource:
             variables["dashboard"] = dashboard
         if description is not None:
             variables["description"] = description
-        
+
+        query = '''mutation InsightCreate($name: String!, $filters: JSON!, $dashboard: Int, $description: String) {
+                            insightCreate(name: $name, filters: $filters, dashboard: $dashboard, description: $description) {
+                                insight {
+                                    id
+                                    name
+                                    filters
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "insight_create"),
+                query=query,
                 variables=variables,
                 operation_name="insight_create"
             )
@@ -1438,10 +1865,20 @@ class PostHogDataSource:
             variables["filters"] = filters
         if description is not None:
             variables["description"] = description
-        
+
+        query = '''mutation InsightUpdate($id: Int!, $name: String, $filters: JSON, $description: String) {
+                            insightUpdate(id: $id, name: $name, filters: $filters, description: $description) {
+                                insight {
+                                    id
+                                    name
+                                    filters
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "insight_update"),
+                query=query,
                 variables=variables,
                 operation_name="insight_update"
             )
@@ -1470,10 +1907,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation InsightDelete($id: Int!) {
+                            insightDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "insight_delete"),
+                query=query,
                 variables=variables,
                 operation_name="insight_delete"
             )
@@ -1514,10 +1957,22 @@ class PostHogDataSource:
             variables["filters"] = filters
         if active is not None:
             variables["active"] = active
-        
+
+        query = '''mutation FeatureFlagCreate($key: String!, $name: String!, $filters: JSON!, $active: Boolean) {
+                            featureFlagCreate(key: $key, name: $name, filters: $filters, active: $active) {
+                                featureFlag {
+                                    id
+                                    key
+                                    name
+                                    filters
+                                    active
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "feature_flag_create"),
+                query=query,
                 variables=variables,
                 operation_name="feature_flag_create"
             )
@@ -1558,10 +2013,21 @@ class PostHogDataSource:
             variables["filters"] = filters
         if active is not None:
             variables["active"] = active
-        
+
+        query = '''mutation FeatureFlagUpdate($id: Int!, $name: String, $filters: JSON, $active: Boolean) {
+                            featureFlagUpdate(id: $id, name: $name, filters: $filters, active: $active) {
+                                featureFlag {
+                                    id
+                                    name
+                                    filters
+                                    active
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "feature_flag_update"),
+                query=query,
                 variables=variables,
                 operation_name="feature_flag_update"
             )
@@ -1590,10 +2056,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation FeatureFlagDelete($id: Int!) {
+                            featureFlagDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "feature_flag_delete"),
+                query=query,
                 variables=variables,
                 operation_name="feature_flag_delete"
             )
@@ -1630,10 +2102,21 @@ class PostHogDataSource:
             variables["feature_flag"] = feature_flag
         if parameters is not None:
             variables["parameters"] = parameters
-        
+
+        query = '''mutation ExperimentCreate($name: String!, $feature_flag: Int!, $parameters: JSON!) {
+                            experimentCreate(name: $name, feature_flag: $feature_flag, parameters: $parameters) {
+                                experiment {
+                                    id
+                                    name
+                                    feature_flag
+                                    parameters
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "experiment_create"),
+                query=query,
                 variables=variables,
                 operation_name="experiment_create"
             )
@@ -1670,10 +2153,20 @@ class PostHogDataSource:
             variables["name"] = name
         if parameters is not None:
             variables["parameters"] = parameters
-        
+
+        query = '''mutation ExperimentUpdate($id: Int!, $name: String, $parameters: JSON) {
+                            experimentUpdate(id: $id, name: $name, parameters: $parameters) {
+                                experiment {
+                                    id
+                                    name
+                                    parameters
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "experiment_update"),
+                query=query,
                 variables=variables,
                 operation_name="experiment_update"
             )
@@ -1702,10 +2195,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation ExperimentDelete($id: Int!) {
+                            experimentDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "experiment_delete"),
+                query=query,
                 variables=variables,
                 operation_name="experiment_delete"
             )
@@ -1742,10 +2241,20 @@ class PostHogDataSource:
             variables["date_marker"] = date_marker
         if dashboard_item is not None:
             variables["dashboard_item"] = dashboard_item
-        
+
+        query = '''mutation AnnotationCreate($content: String!, $date_marker: String!, $dashboard_item: Int) {
+                            annotationCreate(content: $content, date_marker: $date_marker, dashboard_item: $dashboard_item) {
+                                annotation {
+                                    id
+                                    content
+                                    date_marker
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "annotation_create"),
+                query=query,
                 variables=variables,
                 operation_name="annotation_create"
             )
@@ -1778,10 +2287,19 @@ class PostHogDataSource:
             variables["id"] = id
         if content is not None:
             variables["content"] = content
-        
+
+        query = '''mutation AnnotationUpdate($id: Int!, $content: String) {
+                            annotationUpdate(id: $id, content: $content) {
+                                annotation {
+                                    id
+                                    content
+                                }
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "annotation_update"),
+                query=query,
                 variables=variables,
                 operation_name="annotation_update"
             )
@@ -1810,10 +2328,16 @@ class PostHogDataSource:
         variables = {}
         if id is not None:
             variables["id"] = id
-        
+
+        query = '''mutation AnnotationDelete($id: Int!) {
+                            annotationDelete(id: $id) {
+                                success
+                            }
+                        }'''
+
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("mutation", "annotation_delete"),
+                query=query,
                 variables=variables,
                 operation_name="annotation_delete"
             )

@@ -68,7 +68,7 @@ class PostHogDataSourceGenerator:
         }
 
     def _define_comprehensive_operations(self) -> Dict[str, Dict[str, Any]]:
-        """Define comprehensive PostHog operations based on actual API."""
+        """Define comprehensive PostHog operations based on actual API with GraphQL queries."""
         return {
             # ================= QUERY OPERATIONS =================
             'queries': {
@@ -82,13 +82,49 @@ class PostHogDataSourceGenerator:
                         'event': {'type': 'str', 'required': False},
                         'properties': {'type': 'Dict[str, Any]', 'required': False},
                         'limit': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Events($after: String, $before: String, $distinct_id: String, $event: String, $properties: JSON, $limit: Int) {
+                            events(after: $after, before: $before, distinct_id: $distinct_id, event: $event, properties: $properties, limit: $limit) {
+                                results {
+                                    id
+                                    event
+                                    timestamp
+                                    distinct_id
+                                    properties
+                                    person {
+                                        id
+                                        name
+                                        properties
+                                    }
+                                }
+                                next
+                                previous
+                            }
+                        }
+                    '''
                 },
                 'event': {
                     'description': 'Get single event by ID',
                     'parameters': {
                         'id': {'type': 'str', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Event($id: ID!) {
+                            event(id: $id) {
+                                id
+                                event
+                                timestamp
+                                distinct_id
+                                properties
+                                person {
+                                    id
+                                    name
+                                    properties
+                                }
+                            }
+                        }
+                    '''
                 },
                 
                 # Person Queries
@@ -100,13 +136,41 @@ class PostHogDataSourceGenerator:
                         'cohort': {'type': 'int', 'required': False},
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Persons($search: String, $properties: JSON, $cohort: Int, $limit: Int, $offset: Int) {
+                            persons(search: $search, properties: $properties, cohort: $cohort, limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    distinct_ids
+                                    properties
+                                    created_at
+                                    updated_at
+                                }
+                                next
+                                previous
+                            }
+                        }
+                    '''
                 },
                 'person': {
                     'description': 'Get person by ID',
                     'parameters': {
                         'id': {'type': 'str', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Person($id: ID!) {
+                            person(id: $id) {
+                                id
+                                name
+                                distinct_ids
+                                properties
+                                created_at
+                                updated_at
+                            }
+                        }
+                    '''
                 },
                 
                 # Action Queries
@@ -115,13 +179,49 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Actions($limit: Int, $offset: Int) {
+                            actions(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    steps {
+                                        event
+                                        url
+                                        selector
+                                        properties
+                                    }
+                                    created_at
+                                    updated_at
+                                }
+                            }
+                        }
+                    '''
                 },
                 'action': {
                     'description': 'Get action by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Action($id: Int!) {
+                            action(id: $id) {
+                                id
+                                name
+                                description
+                                steps {
+                                    event
+                                    url
+                                    selector
+                                    properties
+                                }
+                                created_at
+                                updated_at
+                            }
+                        }
+                    '''
                 },
                 
                 # Cohort Queries
@@ -130,13 +230,41 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Cohorts($limit: Int, $offset: Int) {
+                            cohorts(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    is_static
+                                    filters
+                                    count
+                                    created_at
+                                }
+                            }
+                        }
+                    '''
                 },
                 'cohort': {
                     'description': 'Get cohort by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Cohort($id: Int!) {
+                            cohort(id: $id) {
+                                id
+                                name
+                                description
+                                is_static
+                                filters
+                                count
+                                created_at
+                            }
+                        }
+                    '''
                 },
                 
                 # Dashboard Queries
@@ -145,13 +273,47 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Dashboards($limit: Int, $offset: Int) {
+                            dashboards(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    pinned
+                                    items {
+                                        id
+                                        name
+                                        filters
+                                    }
+                                    created_at
+                                }
+                            }
+                        }
+                    '''
                 },
                 'dashboard': {
                     'description': 'Get dashboard by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Dashboard($id: Int!) {
+                            dashboard(id: $id) {
+                                id
+                                name
+                                description
+                                pinned
+                                items {
+                                    id
+                                    name
+                                    filters
+                                }
+                                created_at
+                            }
+                        }
+                    '''
                 },
                 
                 # Insight Queries
@@ -162,13 +324,37 @@ class PostHogDataSourceGenerator:
                         'saved': {'type': 'bool', 'required': False},
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Insights($dashboard: Int, $saved: Boolean, $limit: Int, $offset: Int) {
+                            insights(dashboard: $dashboard, saved: $saved, limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    filters
+                                    result
+                                    created_at
+                                }
+                            }
+                        }
+                    '''
                 },
                 'insight': {
                     'description': 'Get insight by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Insight($id: Int!) {
+                            insight(id: $id) {
+                                id
+                                name
+                                filters
+                                result
+                                created_at
+                            }
+                        }
+                    '''
                 },
                 'trend': {
                     'description': 'Calculate trends for events',
@@ -178,7 +364,18 @@ class PostHogDataSourceGenerator:
                         'date_to': {'type': 'str', 'required': False},
                         'interval': {'type': 'str', 'required': False},
                         'properties': {'type': 'Dict[str, Any]', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Trend($events: [JSON!]!, $date_from: String, $date_to: String, $interval: String, $properties: JSON) {
+                            trend(events: $events, date_from: $date_from, date_to: $date_to, interval: $interval, properties: $properties) {
+                                result {
+                                    labels
+                                    data
+                                    count
+                                }
+                            }
+                        }
+                    '''
                 },
                 'funnel': {
                     'description': 'Calculate funnel for event sequence',
@@ -188,7 +385,20 @@ class PostHogDataSourceGenerator:
                         'date_to': {'type': 'str', 'required': False},
                         'funnel_window_interval': {'type': 'int', 'required': False},
                         'funnel_window_interval_unit': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Funnel($events: [JSON!]!, $date_from: String, $date_to: String, $funnel_window_interval: Int, $funnel_window_interval_unit: String) {
+                            funnel(events: $events, date_from: $date_from, date_to: $date_to, funnel_window_interval: $funnel_window_interval, funnel_window_interval_unit: $funnel_window_interval_unit) {
+                                result {
+                                    steps {
+                                        name
+                                        count
+                                        average_conversion_time
+                                    }
+                                }
+                            }
+                        }
+                    '''
                 },
                 
                 # Feature Flag Queries
@@ -197,13 +407,39 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query FeatureFlags($limit: Int, $offset: Int) {
+                            featureFlags(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    key
+                                    name
+                                    filters
+                                    active
+                                    created_at
+                                }
+                            }
+                        }
+                    '''
                 },
                 'feature_flag': {
                     'description': 'Get feature flag by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query FeatureFlag($id: Int!) {
+                            featureFlag(id: $id) {
+                                id
+                                key
+                                name
+                                filters
+                                active
+                                created_at
+                            }
+                        }
+                    '''
                 },
                 
                 # Experiment Queries
@@ -212,13 +448,39 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Experiments($limit: Int, $offset: Int) {
+                            experiments(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    feature_flag
+                                    parameters
+                                    start_date
+                                    end_date
+                                }
+                            }
+                        }
+                    '''
                 },
                 'experiment': {
                     'description': 'Get experiment by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Experiment($id: Int!) {
+                            experiment(id: $id) {
+                                id
+                                name
+                                feature_flag
+                                parameters
+                                start_date
+                                end_date
+                            }
+                        }
+                    '''
                 },
                 
                 # Session Recording Queries
@@ -230,23 +492,71 @@ class PostHogDataSourceGenerator:
                         'date_to': {'type': 'str', 'required': False},
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query SessionRecordings($person_id: String, $date_from: String, $date_to: String, $limit: Int, $offset: Int) {
+                            sessionRecordings(person_id: $person_id, date_from: $date_from, date_to: $date_to, limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    distinct_id
+                                    viewed
+                                    recording_duration
+                                    start_time
+                                    end_time
+                                }
+                            }
+                        }
+                    '''
                 },
                 'session_recording': {
                     'description': 'Get session recording by ID',
                     'parameters': {
                         'id': {'type': 'str', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query SessionRecording($id: ID!) {
+                            sessionRecording(id: $id) {
+                                id
+                                distinct_id
+                                viewed
+                                recording_duration
+                                start_time
+                                end_time
+                                snapshot_data
+                            }
+                        }
+                    '''
                 },
                 
                 # Organization & Team Queries
                 'organization': {
                     'description': 'Get current organization',
-                    'parameters': {}
+                    'parameters': {},
+                    'query': '''
+                        query Organization {
+                            organization {
+                                id
+                                name
+                                created_at
+                                updated_at
+                                membership_level
+                            }
+                        }
+                    '''
                 },
                 'team': {
                     'description': 'Get current team',
-                    'parameters': {}
+                    'parameters': {},
+                    'query': '''
+                        query Team {
+                            team {
+                                id
+                                name
+                                created_at
+                                updated_at
+                            }
+                        }
+                    '''
                 },
                 
                 # Plugin Queries
@@ -255,13 +565,39 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'limit': {'type': 'int', 'required': False},
                         'offset': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        query Plugins($limit: Int, $offset: Int) {
+                            plugins(limit: $limit, offset: $offset) {
+                                results {
+                                    id
+                                    name
+                                    description
+                                    url
+                                    config_schema
+                                    enabled
+                                }
+                            }
+                        }
+                    '''
                 },
                 'plugin': {
                     'description': 'Get plugin by ID',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        query Plugin($id: Int!) {
+                            plugin(id: $id) {
+                                id
+                                name
+                                description
+                                url
+                                config_schema
+                                enabled
+                            }
+                        }
+                    '''
                 }
             },
             
@@ -275,7 +611,14 @@ class PostHogDataSourceGenerator:
                         'distinct_id': {'type': 'str', 'required': True},
                         'properties': {'type': 'Dict[str, Any]', 'required': False},
                         'timestamp': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation CaptureEvent($event: String!, $distinct_id: String!, $properties: JSON, $timestamp: String) {
+                            captureEvent(event: $event, distinct_id: $distinct_id, properties: $properties, timestamp: $timestamp) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Person Mutations
@@ -284,13 +627,31 @@ class PostHogDataSourceGenerator:
                     'parameters': {
                         'id': {'type': 'str', 'required': True},
                         'properties': {'type': 'Dict[str, Any]', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation PersonUpdate($id: ID!, $properties: JSON!) {
+                            personUpdate(id: $id, properties: $properties) {
+                                person {
+                                    id
+                                    name
+                                    properties
+                                }
+                            }
+                        }
+                    '''
                 },
                 'person_delete': {
                     'description': 'Delete a person',
                     'parameters': {
                         'id': {'type': 'str', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation PersonDelete($id: ID!) {
+                            personDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Action Mutations
@@ -300,7 +661,23 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': True},
                         'steps': {'type': 'List[Dict[str, Any]]', 'required': True},
                         'description': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation ActionCreate($name: String!, $steps: [JSON!]!, $description: String) {
+                            actionCreate(name: $name, steps: $steps, description: $description) {
+                                action {
+                                    id
+                                    name
+                                    description
+                                    steps {
+                                        event
+                                        url
+                                        selector
+                                    }
+                                }
+                            }
+                        }
+                    '''
                 },
                 'action_update': {
                     'description': 'Update an action',
@@ -309,13 +686,31 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': False},
                         'steps': {'type': 'List[Dict[str, Any]]', 'required': False},
                         'description': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation ActionUpdate($id: Int!, $name: String, $steps: [JSON!], $description: String) {
+                            actionUpdate(id: $id, name: $name, steps: $steps, description: $description) {
+                                action {
+                                    id
+                                    name
+                                    description
+                                }
+                            }
+                        }
+                    '''
                 },
                 'action_delete': {
                     'description': 'Delete an action',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation ActionDelete($id: Int!) {
+                            actionDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Cohort Mutations
@@ -325,7 +720,19 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': True},
                         'filters': {'type': 'Dict[str, Any]', 'required': True},
                         'is_static': {'type': 'bool', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation CohortCreate($name: String!, $filters: JSON!, $is_static: Boolean) {
+                            cohortCreate(name: $name, filters: $filters, is_static: $is_static) {
+                                cohort {
+                                    id
+                                    name
+                                    filters
+                                    is_static
+                                }
+                            }
+                        }
+                    '''
                 },
                 'cohort_update': {
                     'description': 'Update a cohort',
@@ -333,13 +740,31 @@ class PostHogDataSourceGenerator:
                         'id': {'type': 'int', 'required': True},
                         'name': {'type': 'str', 'required': False},
                         'filters': {'type': 'Dict[str, Any]', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation CohortUpdate($id: Int!, $name: String, $filters: JSON) {
+                            cohortUpdate(id: $id, name: $name, filters: $filters) {
+                                cohort {
+                                    id
+                                    name
+                                    filters
+                                }
+                            }
+                        }
+                    '''
                 },
                 'cohort_delete': {
                     'description': 'Delete a cohort',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation CohortDelete($id: Int!) {
+                            cohortDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Dashboard Mutations
@@ -349,7 +774,19 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': True},
                         'description': {'type': 'str', 'required': False},
                         'pinned': {'type': 'bool', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation DashboardCreate($name: String!, $description: String, $pinned: Boolean) {
+                            dashboardCreate(name: $name, description: $description, pinned: $pinned) {
+                                dashboard {
+                                    id
+                                    name
+                                    description
+                                    pinned
+                                }
+                            }
+                        }
+                    '''
                 },
                 'dashboard_update': {
                     'description': 'Update a dashboard',
@@ -358,13 +795,31 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': False},
                         'description': {'type': 'str', 'required': False},
                         'pinned': {'type': 'bool', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation DashboardUpdate($id: Int!, $name: String, $description: String, $pinned: Boolean) {
+                            dashboardUpdate(id: $id, name: $name, description: $description, pinned: $pinned) {
+                                dashboard {
+                                    id
+                                    name
+                                    description
+                                }
+                            }
+                        }
+                    '''
                 },
                 'dashboard_delete': {
                     'description': 'Delete a dashboard',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation DashboardDelete($id: Int!) {
+                            dashboardDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Insight Mutations
@@ -375,7 +830,18 @@ class PostHogDataSourceGenerator:
                         'filters': {'type': 'Dict[str, Any]', 'required': True},
                         'dashboard': {'type': 'int', 'required': False},
                         'description': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation InsightCreate($name: String!, $filters: JSON!, $dashboard: Int, $description: String) {
+                            insightCreate(name: $name, filters: $filters, dashboard: $dashboard, description: $description) {
+                                insight {
+                                    id
+                                    name
+                                    filters
+                                }
+                            }
+                        }
+                    '''
                 },
                 'insight_update': {
                     'description': 'Update an insight',
@@ -384,13 +850,31 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': False},
                         'filters': {'type': 'Dict[str, Any]', 'required': False},
                         'description': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation InsightUpdate($id: Int!, $name: String, $filters: JSON, $description: String) {
+                            insightUpdate(id: $id, name: $name, filters: $filters, description: $description) {
+                                insight {
+                                    id
+                                    name
+                                    filters
+                                }
+                            }
+                        }
+                    '''
                 },
                 'insight_delete': {
                     'description': 'Delete an insight',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation InsightDelete($id: Int!) {
+                            insightDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Feature Flag Mutations
@@ -401,7 +885,20 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': True},
                         'filters': {'type': 'Dict[str, Any]', 'required': True},
                         'active': {'type': 'bool', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation FeatureFlagCreate($key: String!, $name: String!, $filters: JSON!, $active: Boolean) {
+                            featureFlagCreate(key: $key, name: $name, filters: $filters, active: $active) {
+                                featureFlag {
+                                    id
+                                    key
+                                    name
+                                    filters
+                                    active
+                                }
+                            }
+                        }
+                    '''
                 },
                 'feature_flag_update': {
                     'description': 'Update a feature flag',
@@ -410,13 +907,32 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': False},
                         'filters': {'type': 'Dict[str, Any]', 'required': False},
                         'active': {'type': 'bool', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation FeatureFlagUpdate($id: Int!, $name: String, $filters: JSON, $active: Boolean) {
+                            featureFlagUpdate(id: $id, name: $name, filters: $filters, active: $active) {
+                                featureFlag {
+                                    id
+                                    name
+                                    filters
+                                    active
+                                }
+                            }
+                        }
+                    '''
                 },
                 'feature_flag_delete': {
                     'description': 'Delete a feature flag',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation FeatureFlagDelete($id: Int!) {
+                            featureFlagDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Experiment Mutations
@@ -426,7 +942,19 @@ class PostHogDataSourceGenerator:
                         'name': {'type': 'str', 'required': True},
                         'feature_flag': {'type': 'int', 'required': True},
                         'parameters': {'type': 'Dict[str, Any]', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation ExperimentCreate($name: String!, $feature_flag: Int!, $parameters: JSON!) {
+                            experimentCreate(name: $name, feature_flag: $feature_flag, parameters: $parameters) {
+                                experiment {
+                                    id
+                                    name
+                                    feature_flag
+                                    parameters
+                                }
+                            }
+                        }
+                    '''
                 },
                 'experiment_update': {
                     'description': 'Update an experiment',
@@ -434,13 +962,31 @@ class PostHogDataSourceGenerator:
                         'id': {'type': 'int', 'required': True},
                         'name': {'type': 'str', 'required': False},
                         'parameters': {'type': 'Dict[str, Any]', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation ExperimentUpdate($id: Int!, $name: String, $parameters: JSON) {
+                            experimentUpdate(id: $id, name: $name, parameters: $parameters) {
+                                experiment {
+                                    id
+                                    name
+                                    parameters
+                                }
+                            }
+                        }
+                    '''
                 },
                 'experiment_delete': {
                     'description': 'Delete an experiment',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation ExperimentDelete($id: Int!) {
+                            experimentDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 },
                 
                 # Annotation Mutations
@@ -450,20 +996,48 @@ class PostHogDataSourceGenerator:
                         'content': {'type': 'str', 'required': True},
                         'date_marker': {'type': 'str', 'required': True},
                         'dashboard_item': {'type': 'int', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation AnnotationCreate($content: String!, $date_marker: String!, $dashboard_item: Int) {
+                            annotationCreate(content: $content, date_marker: $date_marker, dashboard_item: $dashboard_item) {
+                                annotation {
+                                    id
+                                    content
+                                    date_marker
+                                }
+                            }
+                        }
+                    '''
                 },
                 'annotation_update': {
                     'description': 'Update an annotation',
                     'parameters': {
                         'id': {'type': 'int', 'required': True},
                         'content': {'type': 'str', 'required': False}
-                    }
+                    },
+                    'query': '''
+                        mutation AnnotationUpdate($id: Int!, $content: String) {
+                            annotationUpdate(id: $id, content: $content) {
+                                annotation {
+                                    id
+                                    content
+                                }
+                            }
+                        }
+                    '''
                 },
                 'annotation_delete': {
                     'description': 'Delete an annotation',
                     'parameters': {
                         'id': {'type': 'int', 'required': True}
-                    }
+                    },
+                    'query': '''
+                        mutation AnnotationDelete($id: Int!) {
+                            annotationDelete(id: $id) {
+                                success
+                            }
+                        }
+                    '''
                 }
             }
         }
@@ -518,6 +1092,7 @@ class PostHogDataSourceGenerator:
     def _generate_method_body(self, operation_name: str, operation_data: Dict[str, Any], operation_type: str) -> str:
         """Generate method body."""
         parameters = operation_data.get('parameters', {})
+        query = operation_data.get('query', '').strip()
         
         if parameters:
             variables_lines = ['        variables = {}']
@@ -528,11 +1103,16 @@ class PostHogDataSourceGenerator:
         else:
             variables_setup = '        variables = {}'
         
+        # Use the actual GraphQL query from the operation definition
+        query_str = query.replace('"""', '\\"\\"\\"')
+        
         return f"""{variables_setup}
+        
+        query = '''{query}'''
         
         try:
             response = await self._posthog_client.execute_query(
-                query=self._get_query("{operation_type}", "{operation_name}"),
+                query=query,
                 variables=variables,
                 operation_name="{operation_name}"
             )
@@ -582,11 +1162,6 @@ class PostHogDataSource:
             posthog_client: PostHogClient instance
         """
         self._posthog_client = posthog_client
-    
-    def _get_query(self, operation_type: str, operation_name: str) -> str:
-        """Get GraphQL query for operation."""
-        # Implementation would return actual GraphQL queries
-        return f"{operation_type} {operation_name}"
 
     # =============================================================================
     # QUERY OPERATIONS
