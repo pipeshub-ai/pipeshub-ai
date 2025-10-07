@@ -71,7 +71,7 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
         "quick": {
             "temperature": 0.1,
             "max_tokens": 4096,
-            "system_prompt": "You are a assistant. Provide brief, accurate answers."
+            "system_prompt": "You are an assistant. Provide brief, accurate answers."
         },
         "analysis": {
             "temperature": 0.3,

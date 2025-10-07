@@ -637,7 +637,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                     "content": row_text,
                                     "block_index": row_index,
                                 })
-                                
+
 
                         if child_results:
                             template = Template(table_prompt)
@@ -784,7 +784,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
 
     return content
 
-def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> str:
+def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> Tuple[List[str], List[Any]]:
     virtual_record_id_to_record_number = {}
     seen_virtual_record_ids = set()
     record_number = 1

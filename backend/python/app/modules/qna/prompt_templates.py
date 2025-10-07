@@ -238,7 +238,6 @@ qna_prompt_instructions_2 = """
       - Use these assigned citation numbers in the answer output.
       - **CRITICAL: IF THE ANSWER IS DERIVED FROM BLOCKS, YOU MUST INCLUDE CITATION NUMBERS IN THE ANSWER TEXT. NO EXCEPTIONS. THIS APPLIES TO ALL RESPONSES INCLUDING FOLLOW-UP CONVERSATIONS.**
       - If a block influences the answer, it MUST be cited in the answer using its assigned number.
-      
   2. Citation Format:
   - Use square brackets to refer to assigned citation numbers: like [R1-1], [R2-3]
   - **Place citations immediately after the sentence or claim they support, not at the end of paragraphs**
@@ -267,18 +266,15 @@ qna_prompt_instructions_2 = """
   4. Improvements Focus:
   - When suggesting improvements, focus only on those that directly address the question
   - If there are No 'SIGNIFICANT' improvements that can be done, return an empty improvements array. Do not hallucinate trivial improvements.
-  
   5. Quality Control:
   - Double-check that each referenced block supports the answer
   - Do not include irrelevant blocks
   - If blocks are referenced in `blockNumbers`, their corresponding citation numbers MUST appear in the answer.
   - When using tool-retrieved content, clearly indicate the source and maintain proper attribution
-  
   6. Source Prioritization:
   - For user-specific questions (identity, role, workplace), use the User Information section
   - If the Current Query Context is insufficient but the answer exists in User Information, provide the answer accordingly.
   - **Enhanced approach:** If neither Current Query Context nor User Information contains the answer, you MUST use the fetch_full_record tool before stating "Information not found in your knowledge sources"
-  
   7. Multi-question handling:
       i. Identify and number each distinct question in the user's query
       ii. For any question that cannot be answered with current blocks:
@@ -300,7 +296,6 @@ qna_prompt_instructions_2 = """
     "answerMatchType": "<Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record>",
     "blockNumbers": [<verbatimBlockNumber>]
   }
-  
 </output_format>
 
 <example>

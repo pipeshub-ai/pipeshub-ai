@@ -746,7 +746,7 @@ async def stream_llm_response_with_tools(
             )
             return
 
-        # Re-bind tools for the final response
+        # Re-bind tools for the final response | Commented out to avoid further tool calls
         # if tools:
         #     llm = llm.bind_tools(tools)
 
