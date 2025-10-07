@@ -1,7 +1,8 @@
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from typing import Any, Dict, Optional
+
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
