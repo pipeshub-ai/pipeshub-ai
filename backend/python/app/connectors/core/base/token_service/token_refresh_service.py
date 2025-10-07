@@ -79,22 +79,17 @@ class TokenRefreshService:
             if not credentials.get('refresh_token'):
                 return
 
-            # Get connector config for OAuth URLs
-            connector_config = await self.arango_service.get_app_by_name(connector_name)
-            if not connector_config:
-                return
-
             auth_config = config.get('auth', {})
-            connector_auth_config = connector_config.get('config', {}).get('auth', {})
+
 
             # Create OAuth config
             oauth_config = OAuthConfig(
                 client_id=auth_config['clientId'],
                 client_secret=auth_config['clientSecret'],
-                redirect_uri=auth_config.get('redirectUri', connector_auth_config.get('redirectUri', '')),
-                authorize_url=connector_auth_config.get('authorizeUrl', ''),
-                token_url=connector_auth_config.get('tokenUrl', ''),
-                scope=' '.join(connector_auth_config.get('scopes', [])) if connector_auth_config.get('scopes') else ''
+                redirect_uri=auth_config.get('redirectUri', ''),
+                authorize_url=auth_config.get('authorizeUrl', ''),
+                token_url=auth_config.get('tokenUrl', ''),
+                scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
             )
 
             # Create OAuth provider

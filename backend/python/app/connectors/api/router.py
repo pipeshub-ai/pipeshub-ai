@@ -2957,6 +2957,13 @@ async def update_connector_config(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
+        # Ensure OAuth static metadata from registry is present in etcd config
+        auth_meta = connector_config.get('auth', {})
+        if 'auth' not in merged_config or not isinstance(merged_config['auth'], dict):
+            merged_config['auth'] = {}
+        merged_config['auth']['authorizeUrl'] = auth_meta.get('authorizeUrl', '')
+        merged_config['auth']['tokenUrl'] = auth_meta.get('tokenUrl', '')
+        merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
         merged_config["auth"]["redirectUri"] = redirect_uri
 
         await config_service.set_config(config_key, merged_config)
@@ -3039,7 +3046,7 @@ async def toggle_connector(
                 custom_google_business_logic = org_account_type == "enterprise" and app_name.upper() in ["GMAIL", "DRIVE"]
                 if auth_type == "OAUTH":
                     if custom_google_business_logic:
-                        auth_creds = cfg.get("auth")
+                        auth_creds = cfg.get("auth", {})
                         if not auth_creds or not (auth_creds.get("client_id") and auth_creds.get("adminEmail")):
                             logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
                             raise HTTPException(
