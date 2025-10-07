@@ -303,6 +303,10 @@ class ConnectorBuilder:
 
         config = self.config_builder.build()
 
+        # Validate OAuth requirements when applicable
+        if self.auth_type and self.auth_type.upper() == "OAUTH":
+            self._validate_oauth_requirements(config)
+
         return Connector(
             name=self.name,
             app_group=self.app_group,
@@ -311,6 +315,43 @@ class ConnectorBuilder:
             app_categories=self.app_categories,
             config=config
         )
+
+    def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:
+        """Ensure required OAuth fields are provided for OAuth connectors.
+
+        Required:
+        - authorizeUrl
+        - tokenUrl
+        - redirectUri
+        - scopes (non-empty list)
+        - auth schema includes fields: clientId, clientSecret
+        """
+        auth_config = config.get("auth", {})
+
+        missing_items = []
+
+        required_urls = ["authorizeUrl", "tokenUrl", "redirectUri"]
+        for url_key in required_urls:
+            if not auth_config.get(url_key):
+                missing_items.append(url_key)
+
+        scopes = auth_config.get("scopes")
+        if not isinstance(scopes, list) or not scopes:
+            missing_items.append("scopes")
+
+        # Validate presence of clientId and clientSecret in auth schema fields
+        schema_fields = auth_config.get("schema", {}).get("fields", [])
+        field_names = {f.get("name") for f in schema_fields if isinstance(f, dict)}
+        required_schema_fields = {"clientId", "clientSecret"}
+        missing_fields = required_schema_fields - field_names
+        for field_name in sorted(list(missing_fields)):
+            missing_items.append(f"auth.schema.fields: {field_name}")
+
+        if missing_items:
+            details = ", ".join(missing_items)
+            raise ValueError(
+                f"OAuth configuration incomplete for connector '{self.name}': missing {details}"
+            )
 
 
 # Common field definitions that can be reused
