@@ -227,7 +227,7 @@ const KnowledgeSearch = ({
       // 1. Currently loading
       // 2. Can't load more (reached limit or got fewer results than requested)
       // 3. Have fewer than 10 results (likely all available results shown)
-      if (loading || !canLoadMore || searchResults.length < 10) return;
+      if (loading || !canLoadMore) return;
 
       if (observer.current) observer.current.disconnect();
 
