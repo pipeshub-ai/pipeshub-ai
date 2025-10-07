@@ -1,5 +1,4 @@
 import asyncio
-from typing import Optional
 
 import httpx
 import uvicorn
@@ -114,7 +113,7 @@ async def get_outlook_record(org_id: str, record_id: str) -> Response:
     """Get Outlook record content directly"""
     try:
         # Use connector's arango_service method
-        arango_service = await app.connector.arango_service()
+        arango_service = app.connector.data_store_provider.arango_service
         record = await arango_service.get_record_by_id(record_id)
 
         if not record:
@@ -123,49 +122,6 @@ async def get_outlook_record(org_id: str, record_id: str) -> Response:
 
     except Exception as e:
         raise HTTPException(500, detail=f"Failed to stream record: {str(e)}")
-
-@router.get("/api/v1/org/{org_id}/outlook/records")
-async def list_outlook_records(org_id: str, user_id: Optional[str] = None, limit: int = 10, record_type: Optional[str] = None) -> dict:
-    """List Outlook records for testing"""
-    try:
-        # Build filter conditions
-        filter_conditions = [
-            "record.orgId == @org_id",
-            "record.connectorName == \"OUTLOOK\""
-        ]
-        bind_vars = {"org_id": org_id, "limit": limit}
-
-        if record_type:
-            filter_conditions.append("record.recordType == @record_type")
-            bind_vars["record_type"] = record_type
-
-        aql_query = f"""
-        FOR record IN records
-            FILTER {" AND ".join(filter_conditions)}
-            LIMIT @limit
-            RETURN {{
-                id: record.id,
-                recordId: record._key,
-                recordName: record.recordName,
-                recordType: record.recordType,
-                createdAt: record.createdAtTimestamp,
-                externalRecordId: record.externalRecordId,
-                mimeType: record.mimeType
-            }}
-        """
-
-        cursor = app.arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-        records = list(cursor)
-
-        return {
-            "records": records,
-            "count": len(records),
-            "org_id": org_id,
-            "filter": record_type or "all"
-        }
-
-    except Exception as e:
-        raise HTTPException(500, detail=f"Failed to list records: {str(e)}")
 
 # Test endpoint to verify session-based access
 @router.get("/test/outlook/session/{org_id}/{record_id}")

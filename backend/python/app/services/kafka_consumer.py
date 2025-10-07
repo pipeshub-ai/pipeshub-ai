@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
+    DefaultEndpoints,
     KafkaConfig,
     config_node_constants,
 )
@@ -378,8 +379,11 @@ class KafkaConsumerManager:
                     token = await self.generate_jwt(payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
 
+                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+                    connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+
                     response = await make_api_call(
-                        f"http://localhost:8088/api/v1/internal/stream/record/{record_id}", token
+                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token
                     )
                     self.logger.debug(
                         f"Received signed URL response for message {message_id}"

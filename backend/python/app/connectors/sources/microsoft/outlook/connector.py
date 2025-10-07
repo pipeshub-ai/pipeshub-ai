@@ -197,7 +197,7 @@ class OutlookConnector(BaseConnector):
 
 
             # Test connection
-            if not self.test_connection_and_access():
+            if not await self.test_connection_and_access():
                 self.logger.error("Outlook connector connection test failed")
                 return False
 
@@ -207,18 +207,35 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Outlook connector: {e}")
             return False
 
-    def test_connection_and_access(self) -> bool:
+    async def test_connection_and_access(self) -> bool:
         """Test connection and access to external APIs."""
         try:
             if not self.external_outlook_client or not self.external_users_client or not self.credentials:
                 return False
 
-            # Simple test - validate credentials are present
-            return (
-                self.credentials.tenant_id is not None and
-                self.credentials.client_id is not None and
-                self.credentials.client_secret is not None
-            )
+            if not (self.credentials.tenant_id and
+                    self.credentials.client_id and
+                    self.credentials.client_secret):
+                return False
+
+            try:
+                # Get just 1 user with minimal fields to test connection
+                response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                    top=1,
+                    select=["id"]
+                )
+
+                if not response.success:
+                    self.logger.error(f"Connection test failed: {response.error}")
+                    return False
+
+                self.logger.info("✅ Outlook connector connection test passed")
+                return True
+
+            except Exception as api_error:
+                self.logger.error(f"API connection test failed: {api_error}")
+                return False
+
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
             return False
@@ -425,7 +442,6 @@ class OutlookConnector(BaseConnector):
         try:
             # Decode conversation index
             index_bytes = base64.b64decode(conversation_index)
-            self.logger.debug(f"Thread {thread_id}: conversation_index decoded, length={len(index_bytes)} bytes")
 
             # Root message (22 bytes) has no parent
             if len(index_bytes) <= THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH:
@@ -653,11 +669,7 @@ class OutlookConnector(BaseConnector):
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
                 async with self.data_store_provider.transaction() as tx_store:
-                    db_user = await tx_store.get_user_by_email(user.email)
-                    if db_user:
-                        await tx_store.delete_record_by_external_id(Connectors.OUTLOOK, message_id, db_user.user_id)
-                    else:
-                        self.logger.error(f"Could not find database user for email {user.email}")
+                    await tx_store.delete_record_by_external_id(Connectors.OUTLOOK, message_id, user.user_id)
                 return updates
 
             # Process email with attachments
@@ -712,7 +724,7 @@ class OutlookConnector(BaseConnector):
                 record_name=self._safe_get_attr(message, 'subject', 'No Subject') or 'No Subject',
                 record_type=RecordType.MAIL,
                 external_record_id=message_id,
-                external_revision_id=None,
+                external_revision_id=self._safe_get_attr(message, 'e_tag'),
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.OUTLOOK,
@@ -832,7 +844,7 @@ class OutlookConnector(BaseConnector):
                     record_name=file_name,
                     record_type=RecordType.FILE,
                     external_record_id=attachment_id,
-                    external_revision_id=None,
+                    external_revision_id=self._safe_get_attr(attachment, 'e_tag'),
                     version=0 if is_new else existing_record.version + 1,
                     origin=OriginTypes.CONNECTOR,
                     connector_name=Connectors.OUTLOOK,

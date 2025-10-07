@@ -2232,14 +2232,8 @@ class BaseArangoService:
                 # Delete the email itself
                 await self._delete_outlook_edges(transaction, record_id)
 
-                # Delete mail record - FIX HERE
-                query = f"""
-                    RETURN DOCUMENT({CollectionNames.MAILS.value}, @record_id)
-                """
-                cursor = transaction.aql.execute(query, bind_vars={"record_id": record_id})
-                mail_record = next(cursor, None)
-                if mail_record:
-                    await self._delete_mail_record(transaction, record_id)
+                # Delete mail record
+                await self._delete_mail_record(transaction, record_id)
 
                 # Delete main record
                 await self._delete_main_record(transaction, record_id)
