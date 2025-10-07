@@ -109,8 +109,8 @@ const AuthSection: React.FC<AuthSectionProps> = ({
       </Alert>
 
       {/* Redirect URI Info - Conditionally displayed */}
-      {((auth.displayRedirectUri && auth.redirectUri) ||
-        (auth.conditionalDisplay &&
+      {((auth.displayRedirectUri && auth.redirectUri!=="") ||
+        (auth.conditionalDisplay && Object.keys(auth.conditionalDisplay).length>0 &&
           shouldShowElement(auth.conditionalDisplay, 'redirectUri', formData))) && (
         <Paper
           variant="outlined"

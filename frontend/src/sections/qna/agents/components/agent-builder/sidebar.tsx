@@ -103,6 +103,9 @@ import jiraIcon from '@iconify-icons/logos/jira';
 import slackIcon from '@iconify-icons/logos/slack-icon';
 import cogOutlineIcon from '@iconify-icons/mdi/cog-outline';
 import calculatorIcon from '@iconify-icons/mdi/calculator';
+import googleDocsIcon from '@iconify-icons/logos/google';
+import googleMeetIcon from '@iconify-icons/logos/google-meet';
+import notionIcon from '@iconify-icons/logos/notion';
 import { useConnectors } from '../../../../accountdetails/connectors/context';
 
 // Utility functions
@@ -175,6 +178,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       jira: 'Jira',
       slack: 'Slack',
       google_drive_enterprise: 'Google Drive Enterprise',
+      clalendar: 'Calendar',
     };
 
     return (
@@ -277,10 +281,18 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
         );
         itemIcon = connector?.iconPath || '/assets/icons/connectors/default.svg';
       } else {
+        if (typeof appIcon === 'string' || appIcon.toString().includes('/assets/icons/connectors/')) {
+          isDynamicIcon = true;
+        }
         itemIcon = appIcon;
       }
     } else if (sectionType === 'tools' && template.defaultConfig?.appName) {
       itemIcon = getToolIcon(template.type, template.defaultConfig.appName);
+    }
+
+    // Generic string-path icon support
+    if (!isDynamicIcon && typeof itemIcon === 'string') {
+      isDynamicIcon = true;
     }
 
     // Get appropriate hover color based on section
@@ -402,12 +414,25 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
           height={14}
           style={{ color: theme.palette.text.secondary }}
         />
-        <Icon
-          icon={groupIcon}
-          width={18}
-          height={18}
-          style={{ color: theme.palette.text.secondary }}
-        />
+        {typeof groupIcon === 'string' && groupIcon.toString().includes('assets/icons/connectors/') ? (
+          <img
+            src={groupIcon}
+            alt={groupLabel}
+            width={18}
+            height={18}
+            style={{ objectFit: 'contain' }}
+            onError={(e) => {
+              e.currentTarget.src = '/assets/icons/connectors/default.svg';
+            }}
+          />
+        ) : (
+          <Icon
+            icon={groupIcon}
+            width={18}
+            height={18}
+            style={{ color: theme.palette.text.secondary }}
+          />
+        )}
         <Typography
           variant="body2"
           sx={{
@@ -507,6 +532,14 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       Jira: jiraIcon,
       Slack: slackIcon,
       'Google Drive Enterprise': googleDriveIcon,
+      Calendar: googleCalendarIcon,
+      Drive: googleDriveIcon,
+      Docs: googleDocsIcon,
+      Meet: googleMeetIcon,
+      Notion: '/assets/icons/connectors/notion.svg',
+      Onedrive: microsoftOnedriveIcon,
+      Sharepointonline: '/assets/icons/connectors/sharepoint.svg',
+      Outlook: '/assets/icons/connectors/outlook.svg',
     };
     return iconMap[appName] || applicationIcon;
   };
@@ -541,7 +574,16 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       Calculator: calculatorIcon,
       'Google Drive': googleDriveIcon,
       'Google Workspace': googleWorkspaceIcon,
+      Calendar: googleCalendarIcon,
+      Drive: googleDriveIcon,
+      Docs: googleDocsIcon,
+      Meet: googleMeetIcon,
+      Notion: notionIcon,
+      Onedrive: microsoftOnedriveIcon,
+      Sharepoint: 'assets/icons/connectors/sharepoint.svg',
+      Outlook: 'assets/icons/connectors/outlook.svg',
     };
+
     return iconMap[appName] || cloudIcon;
   };
 

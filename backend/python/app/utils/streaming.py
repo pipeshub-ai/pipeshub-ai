@@ -17,7 +17,10 @@ from app.utils.chat_helpers import (
     get_message_content_for_tool,
     record_to_message_content,
 )
-from app.utils.citations import normalize_citations_and_chunks
+from app.utils.citations import (
+    normalize_citations_and_chunks,
+    normalize_citations_and_chunks_for_agent,
+)
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
@@ -445,7 +448,7 @@ async def stream_llm_response(
                 reason = None
                 confidence = None
 
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results)
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -522,7 +525,7 @@ async def stream_llm_response(
                         if INCOMPLETE_CITE_RE.search(current_raw):
                             continue
 
-                        normalized, cites = normalize_citations_and_chunks(
+                        normalized, cites = normalize_citations_and_chunks_for_agent(
                             current_raw, final_results
                         )
 
@@ -543,7 +546,7 @@ async def stream_llm_response(
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
 
-            normalized, c = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results)
             yield {
                 "event": "complete",
                 "data": {
@@ -555,7 +558,7 @@ async def stream_llm_response(
             }
         except Exception:
             # Fallback if JSON parsing fails
-            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
+            normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results)
             yield {
                 "event": "complete",
                 "data": {
