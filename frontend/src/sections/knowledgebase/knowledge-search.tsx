@@ -239,7 +239,7 @@ const KnowledgeSearch = ({
 
       if (node) observer.current.observe(node);
     },
-    [loading, onTopKChange, canLoadMore, searchResults.length]
+    [loading, onTopKChange, canLoadMore]
   );
 
   const handleSearch = () => {
