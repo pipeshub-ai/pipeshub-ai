@@ -7,8 +7,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
-from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.query_transform import setup_query_transformation
 
@@ -40,7 +40,7 @@ async def get_retrieval_service(request: Request) -> RetrievalService:
     return retrieval_service
 
 
-async def get_arango_service(request: Request) -> ArangoService:
+async def get_arango_service(request: Request) -> BaseArangoService:
     container: QueryAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
@@ -58,7 +58,7 @@ async def search(
     request: Request,
     body: SearchQuery,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 )-> JSONResponse :
     """Perform semantic search across documents"""
     try:

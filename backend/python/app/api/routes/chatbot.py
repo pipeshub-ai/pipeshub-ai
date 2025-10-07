@@ -11,9 +11,9 @@ from pydantic import BaseModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
-from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import get_generator_model
@@ -47,7 +47,7 @@ async def get_retrieval_service(request: Request) -> RetrievalService:
     return retrieval_service
 
 
-async def get_arango_service(request: Request) -> ArangoService:
+async def get_arango_service(request: Request) -> BaseArangoService:
     container: QueryAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
@@ -170,7 +170,7 @@ async def process_chat_query(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
-    arango_service: ArangoService,
+    arango_service: BaseArangoService,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger
@@ -358,7 +358,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 async def askAIStream(
     request: Request,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
     reranker_service: RerankerService = Depends(get_reranker_service),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> StreamingResponse:
@@ -432,7 +432,7 @@ async def askAI(
     request: Request,
     query_info: ChatQuery,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
     reranker_service: RerankerService = Depends(get_reranker_service),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> JSONResponse:

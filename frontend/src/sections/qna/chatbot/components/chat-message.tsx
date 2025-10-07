@@ -211,7 +211,7 @@ const StreamingContent = React.memo(
         const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
         const citation = citationMap[citationNumber];
 
-        if (!citation?.metadata?.extension || citation?.metadata?.mimeType === 'text/html') {
+        if (!citation?.metadata?.extension) {
           window.open(citation?.metadata?.webUrl, '_blank');
           return;
         }

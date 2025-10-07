@@ -5,8 +5,8 @@ from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.reranker.reranker import RerankerService
-from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 
 
@@ -19,7 +19,7 @@ class ChatState(TypedDict):
     llm: BaseChatModel
 
     retrieval_service: RetrievalService
-    arango_service: ArangoService
+    arango_service: BaseArangoService
     reranker_service: RerankerService
 
     query: str
@@ -74,7 +74,7 @@ class ChatState(TypedDict):
     registry_tool_instances: Optional[Dict[str, Any]]  # Cached tool instances
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
-                        logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
+                        logger: Logger, retrieval_service: RetrievalService, arango_service: BaseArangoService,
                         reranker_service: RerankerService) -> ChatState:
     """Build the initial state from the chat query and user info"""
 

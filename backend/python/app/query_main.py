@@ -15,7 +15,6 @@ from app.api.middlewares.auth import authMiddleware
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
-from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -60,8 +59,7 @@ async def get_initialized_container() -> QueryAppContainer:
             modules=[
                 "app.api.routes.search",
                 "app.api.routes.chatbot",
-                "app.modules.retrieval.retrieval_service",
-                "app.modules.retrieval.retrieval_arango",
+                "app.modules.retrieval.retrieval_service"
             ]
         )
         get_initialized_container.initialized = True
@@ -320,7 +318,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
-app.include_router(records_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(tools_router, prefix="/api/v1")
