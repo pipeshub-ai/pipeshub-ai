@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Freshservice API Code Generator
+Freshservice Product FreshDesk API Code Generator
 
-Generates a `FreshserviceDataSource` class from Freshservice API documentation.
-Since Freshservice doesn't provide OpenAPI/Swagger specs, we manually define
+Generates a `FreshdeskDataSource` class from FreshDesk API documentation.
+Since FreshDesk doesn't provide OpenAPI/Swagger specs, we manually define
 the API endpoints based on official documentation.
 
-This generator creates async wrapper methods for the Freshservice REST API.
+This generator creates async wrapper methods for the FreshDesk REST API.
 """
 
 import argparse
@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUT = "freshdesk.py"
-DEFAULT_CLASS = "FreshserviceDataSource"
+DEFAULT_CLASS = "FreshdeskDataSource"
 
 
 @dataclass
@@ -37,7 +37,7 @@ class Parameter:
 
 @dataclass
 class Endpoint:
-    """Represents a Freshservice API endpoint"""
+    """Represents a FreshDesk API endpoint"""
     name: str
     method: str
     path: str
@@ -48,8 +48,8 @@ class Endpoint:
     example: Optional[str] = None
 
 
-class FreshserviceAPIDefinition:
-    """Define Freshservice API endpoints based on official documentation"""
+class FreshdeskAPIDefinition:
+    """Define FreshDesk API endpoints based on official documentation"""
 
     @staticmethod
     def get_ticket_endpoints() -> List[Endpoint]:
@@ -60,7 +60,7 @@ class FreshserviceAPIDefinition:
                 name="create_ticket",
                 method="POST",
                 path="/api/v2/tickets",
-                description="Create a new ticket in Freshservice",
+                description="Create a new ticket in FreshDesk",
                 namespace="tickets",
                 parameters=[
                     Parameter("subject", "str", True, "Subject of the ticket"),
@@ -284,7 +284,7 @@ class FreshserviceAPIDefinition:
                 name="create_problem",
                 method="POST",
                 path="/api/v2/problems",
-                description="Create a new problem in Freshservice",
+                description="Create a new problem in FreshDesk",
                 namespace="problems",
                 parameters=[
                     Parameter("subject", "str", True, "Subject of the problem"),
@@ -516,7 +516,7 @@ class FreshserviceAPIDefinition:
                 name="create_agent",
                 method="POST",
                 path="/api/v2/agents",
-                description="Create a new agent in Freshservice",
+                description="Create a new agent in FreshDesk",
                 namespace="agents",
                 parameters=[
                     Parameter("first_name", "str", True, "First name of the agent"),
@@ -695,7 +695,7 @@ class FreshserviceAPIDefinition:
                 name="create_software",
                 method="POST",
                 path="/api/v2/applications",
-                description="Create a new software/application in Freshservice",
+                description="Create a new software/application in FreshDesk",
                 namespace="software",
                 parameters=[
                     Parameter("name", "str", True, "Name of the software"),
@@ -710,7 +710,7 @@ class FreshserviceAPIDefinition:
                     Parameter("workspace_id", "int", False, "Workspace ID"),
                 ],
                 returns="Software",
-                example='software = await ds.create_software(name="Freshservice", application_type="saas")'
+                example='software = await ds.create_software(name="FreshDesk", application_type="saas")'
             ),
 
             # View Software
@@ -936,8 +936,8 @@ class FreshserviceAPIDefinition:
         ]
 
 
-class FreshserviceCodeGenerator:
-    """Generate Freshservice DataSource class"""
+class FreshdeskCodeGenerator:
+    """Generate FreshDesk DataSource class"""
 
     def __init__(self) -> None:
         self.generated_methods: List[Dict[str, Any]] = []
@@ -975,10 +975,10 @@ class FreshserviceCodeGenerator:
         all_params = ['self'] + required_params + optional_params
 
         if len(all_params) == 1:
-            signature = f"async def {endpoint.name}(self) -> FreshserviceResponse:"
+            signature = f"async def {endpoint.name}(self) -> FreshDeskResponse:"
         else:
             params_formatted = ',\n        '.join(all_params)
-            signature = f"async def {endpoint.name}(\n        {params_formatted}\n    ) -> FreshserviceResponse:"
+            signature = f"async def {endpoint.name}(\n        {params_formatted}\n    ) -> FreshDeskResponse:"
 
         return signature, all_params[1:]  # Return params without 'self'
 
@@ -994,7 +994,7 @@ class FreshserviceCodeGenerator:
                 required_text = 'required' if param.required else 'optional'
                 docstring += f'            {py_name} ({param.type}, {required_text}): {param.description}\n'
 
-        docstring += '\n        Returns:\n            FreshserviceResponse: Standardized response wrapper\n'
+        docstring += '\n        Returns:\n            FreshDeskResponse: Standardized response wrapper\n'
 
         if endpoint.example:
             docstring += f'\n        Example:\n            {endpoint.example}\n'
@@ -1025,7 +1025,7 @@ class FreshserviceCodeGenerator:
 
         # Build URL construction
         url_parts = []
-        url_parts.append("        url = self._freshservice_client.get_base_url()")
+        url_parts.append("        url = self._freshdesk_client.get_base_url()")
 
         # Replace path parameters and strip /api/v2 since it's already in base_url
         path = endpoint.path
@@ -1079,14 +1079,14 @@ class FreshserviceCodeGenerator:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"{endpoint.name}: Status={{response.status}}, Response={{response_text[:200] if response_text else 'Empty'}}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message=f"Successfully executed {endpoint.name}" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {{response.status}}"
             )
         except Exception as e:
             logger.debug(f"Error in {endpoint.name}: {{e}}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message=f"Failed to execute {endpoint.name}"
@@ -1114,19 +1114,18 @@ class FreshserviceCodeGenerator:
         """Generate complete DataSource class"""
 
         header = f'''"""
-Freshservice DataSource - Auto-generated API wrapper
+FreshDesk DataSource - Auto-generated API wrapper
 
-Generated from Freshservice API documentation.
+Generated from FreshDesk API documentation.
 Uses HTTP client for direct REST API interactions.
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.sources.client.freshservice.freshdesk import (
-    FreshserviceClient,
-    FreshserviceResponse,
+from app.sources.client.freshdesk.freshdesk import (
+    FreshDeskClient,
+    FreshDeskResponse,
 )
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -1138,26 +1137,26 @@ HTTP_ERROR_THRESHOLD = 400
 
 
 class {class_name}:
-    """Freshservice API DataSource
+    """FreshDesk API DataSource
 
-    Provides async wrapper methods for Freshservice API operations.
-    All methods return standardized FreshserviceResponse objects.
+    Provides async wrapper methods for FreshDesk API operations.
+    All methods return standardized FreshDeskResponse objects.
 
     Generated methods: {len(endpoints)}
     """
 
-    def __init__(self, freshserviceClient: FreshserviceClient) -> None:
-        """Initialize Freshservice DataSource
+    def __init__(self, freshdeskClient: FreshDeskClient) -> None:
+        """Initialize FreshDesk DataSource
 
         Args:
-            freshserviceClient: FreshserviceClient instance
+            freshdeskClient: FreshDeskClient instance
         """
-        self.http_client = freshserviceClient.get_client()
-        self._freshservice_client = freshserviceClient
+        self.http_client = freshdeskClient.get_client()
+        self._freshdesk_client = freshdeskClient
 
-    def get_client(self) -> FreshserviceClient:
-        """Get the underlying FreshserviceClient"""
-        return self._freshservice_client
+    def get_client(self) -> FreshDeskClient:
+        """Get the underlying FreshDeskClient"""
+        return self._freshdesk_client
 
 '''
 
@@ -1166,55 +1165,34 @@ class {class_name}:
         for endpoint in endpoints:
             methods_code += self.generate_method(endpoint)
 
-        # Add utility methods
-        utility_methods = '''    def get_sdk_info(self) -> Dict[str, Any]:
-        """Get information about available SDK methods"""
-        namespaces: Dict[str, int] = {}
-        for method in self.generated_methods:
-            ns = method.get('namespace', 'root')
-            namespaces[ns] = namespaces.get(ns, 0) + 1
+        return header + methods_code
 
-        return {
-            "total_methods": len(self.generated_methods),
-            "namespaces": namespaces,
-            "methods": self.generated_methods
-        }
-
-    generated_methods = ''' + str(self.generated_methods) + '''
-
-'''
-
-        return header + methods_code + utility_methods + f"\n__all__ = ['{class_name}', 'FreshserviceResponse']\n"
-
-
-def generate_freshservice_client(
+def generate_freshdesk_client(
     *,
     out_path: str = DEFAULT_OUT,
     class_name: str = DEFAULT_CLASS,
 ) -> str:
-    """Generate the Freshservice DataSource Python file"""
+    """Generate the FreshDesk DataSource Python file"""
 
-    print("Generating Freshservice DataSource...")
+    print("Generating FreshDesk DataSource...")
 
 
     # Get all endpoints
-    endpoints = FreshserviceAPIDefinition.get_ticket_endpoints()
-    endpoints.extend(FreshserviceAPIDefinition.get_problem_endpoints())
-    endpoints.extend(FreshserviceAPIDefinition.get_agent_endpoints())
-    endpoints.extend(FreshserviceAPIDefinition.get_software_endpoints())
+    endpoints = FreshdeskAPIDefinition.get_ticket_endpoints()
+    endpoints.extend(FreshdeskAPIDefinition.get_problem_endpoints())
+    endpoints.extend(FreshdeskAPIDefinition.get_agent_endpoints())
+    endpoints.extend(FreshdeskAPIDefinition.get_software_endpoints())
 
     # Generate code
-    generator = FreshserviceCodeGenerator()
+    generator = FreshdeskCodeGenerator()
     code = generator.generate_class(class_name, endpoints)
 
-    # Create external/freshservice directory in app/sources
+    # Write file in freshdesk subdirectory of the generator script directory
     script_dir = Path(__file__).parent if __file__ else Path('.')
-    # Navigate to python/app/sources/external/freshservice
-    freshservice_dir = script_dir.parent / 'app' / 'sources' / 'external' / 'freshservice'
-    freshservice_dir.mkdir(parents=True, exist_ok=True)
+    freshdesk_dir = script_dir / 'freshdesk'
+    freshdesk_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write file
-    full_path = freshservice_dir / out_path
+    full_path = freshdesk_dir / out_path
     full_path.write_text(code, encoding='utf-8')
 
     return str(full_path)
@@ -1223,7 +1201,7 @@ def generate_freshservice_client(
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description="Generate Freshservice DataSource class"
+        description="Generate FreshDesk DataSource class"
     )
     parser.add_argument(
         "--out",
@@ -1233,13 +1211,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument(
         "--class-name",
         default=DEFAULT_CLASS,
-        help="Generated class name (default: FreshserviceDataSource)"
+        help="Generated class name (default: FreshDeskDataSource)"
     )
 
     args = parser.parse_args(argv)
 
     try:
-        out_path = generate_freshservice_client(
+        out_path = generate_freshdesk_client(
             out_path=args.out,
             class_name=args.class_name
         )
@@ -1248,10 +1226,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f"Files saved in: {Path(out_path).parent}")
 
         # Print summary
-        ticket_endpoints = FreshserviceAPIDefinition.get_ticket_endpoints()
-        problem_endpoints = FreshserviceAPIDefinition.get_problem_endpoints()
-        agent_endpoints = FreshserviceAPIDefinition.get_agent_endpoints()
-        software_endpoints = FreshserviceAPIDefinition.get_software_endpoints()
+        ticket_endpoints = FreshdeskAPIDefinition.get_ticket_endpoints()
+        problem_endpoints = FreshdeskAPIDefinition.get_problem_endpoints()
+        agent_endpoints = FreshdeskAPIDefinition.get_agent_endpoints()
+        software_endpoints = FreshdeskAPIDefinition.get_software_endpoints()
         all_endpoints = ticket_endpoints + problem_endpoints + agent_endpoints + software_endpoints
 
         print(f"\nGenerated {len(all_endpoints)} total endpoint methods:")

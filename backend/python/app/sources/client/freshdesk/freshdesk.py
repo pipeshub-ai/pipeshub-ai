@@ -9,15 +9,15 @@ from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
 
-class FreshserviceConfigurationError(Exception):
-    """Custom exception for Freshservice configuration errors"""
+class FreshDeskConfigurationError(Exception):
+    """Custom exception for FreshDesk configuration errors"""
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(message)
         self.details = details or {}
 
 
-class FreshserviceResponse(BaseModel):
-    """Standardized Freshservice API response wrapper"""
+class FreshDeskResponse(BaseModel):
+    """Standardized FreshDesk API response wrapper"""
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -32,18 +32,18 @@ class FreshserviceResponse(BaseModel):
         return self.model_dump_json()
 
 
-class FreshserviceRESTClientViaApiKey(HTTPClient):
-    """Freshservice REST client via API key
+class FreshDeskRESTClientViaApiKey(HTTPClient):
+    """FreshDesk REST client via API key
 
-    Freshservice uses Basic Authentication with API Key as username and 'X' as password
+    FreshDesk uses Basic Authentication with API Key as username and 'X' as password
 
     Args:
-        domain: The Freshservice domain (e.g., 'company.freshservice.com')
+        domain: The FreshDesk domain (e.g., 'company.FreshDesk.com')
         api_key: The API key to use for authentication
     """
 
     def __init__(self, domain: str, api_key: str) -> None:
-        # Freshservice uses Basic auth with API key as username, 'X' as password
+        # FreshDesk uses Basic auth with API key as username, 'X' as password
         # Encode as base64 for Basic auth
         credentials = f"{api_key}:X"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
@@ -59,15 +59,15 @@ class FreshserviceRESTClientViaApiKey(HTTPClient):
         return self.base_url
 
     def get_domain(self) -> str:
-        """Get the Freshservice domain"""
+        """Get the FreshDesk domain"""
         return self.domain
 
 
-class FreshserviceApiKeyConfig(BaseModel):
-    """Configuration for Freshservice REST client via API Key
+class FreshDeskApiKeyConfig(BaseModel):
+    """Configuration for FreshDesk REST client via API Key
 
     Args:
-        domain: The Freshservice domain (e.g., 'company.freshservice.com')
+        domain: The FreshDesk domain (e.g., 'company.FreshDesk.com')
         api_key: The API key for authentication
         ssl: Whether to use SSL (default: True)
     """
@@ -97,9 +97,9 @@ class FreshserviceApiKeyConfig(BaseModel):
 
         return v
 
-    def create_client(self) -> FreshserviceRESTClientViaApiKey:
-        """Create Freshservice REST client"""
-        return FreshserviceRESTClientViaApiKey(self.domain, self.api_key)
+    def create_client(self) -> FreshDeskRESTClientViaApiKey:
+        """Create FreshDesk REST client"""
+        return FreshDeskRESTClientViaApiKey(self.domain, self.api_key)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -110,15 +110,15 @@ class FreshserviceApiKeyConfig(BaseModel):
         }
 
 
-class FreshserviceClient(IClient):
-    """Builder class for Freshservice clients"""
+class FreshDeskClient(IClient):
+    """Builder class for FreshDesk clients"""
 
-    def __init__(self, client: FreshserviceRESTClientViaApiKey) -> None:
-        """Initialize with a Freshservice client object"""
+    def __init__(self, client: FreshDeskRESTClientViaApiKey) -> None:
+        """Initialize with a FreshDesk client object"""
         self.client = client
 
-    def get_client(self) -> FreshserviceRESTClientViaApiKey:
-        """Return the Freshservice REST client object"""
+    def get_client(self) -> FreshDeskRESTClientViaApiKey:
+        """Return the FreshDesk REST client object"""
         return self.client
 
     def get_base_url(self) -> str:
@@ -126,32 +126,32 @@ class FreshserviceClient(IClient):
         return self.client.get_base_url()
 
     def get_domain(self) -> str:
-        """Get the Freshservice domain"""
+        """Get the FreshDesk domain"""
         return self.client.get_domain()
 
     @classmethod
     def build_with_config(
         cls,
-        config: FreshserviceApiKeyConfig,
-    ) -> "FreshserviceClient":
-        """Build FreshserviceClient with configuration
+        config: FreshDeskApiKeyConfig,
+    ) -> "FreshDeskClient":
+        """Build FreshDeskClient with configuration
 
         Args:
-            config: FreshserviceApiKeyConfig instance
+            config: FreshDeskApiKeyConfig instance
         Returns:
-            FreshserviceClient instance
+            FreshDeskClient instance
         """
         return cls(config.create_client())
 
     @classmethod
-    def build_with_api_key_config(cls, config: FreshserviceApiKeyConfig) -> "FreshserviceClient":
-        """Build FreshserviceClient with API key configuration
+    def build_with_api_key_config(cls, config: FreshDeskApiKeyConfig) -> "FreshDeskClient":
+        """Build FreshDeskClient with API key configuration
 
         Args:
-            config: FreshserviceApiKeyConfig instance
+            config: FreshDeskApiKeyConfig instance
 
         Returns:
-            FreshserviceClient: Configured client instance
+            FreshDeskClient: Configured client instance
         """
         return cls.build_with_config(config)
 
@@ -161,18 +161,18 @@ class FreshserviceClient(IClient):
         domain: str,
         api_key: str,
         ssl: bool = True
-    ) -> "FreshserviceClient":
-        """Build FreshserviceClient with API key directly
+    ) -> "FreshDeskClient":
+        """Build FreshDeskClient with API key directly
 
         Args:
-            domain: The Freshservice domain (e.g., 'company.freshservice.com')
+            domain: The FreshDesk domain (e.g., 'company.FreshDesk.com')
             api_key: The API key for authentication
             ssl: Whether to use SSL (default: True)
 
         Returns:
-            FreshserviceClient: Configured client instance
+            FreshDeskClient: Configured client instance
         """
-        config = FreshserviceApiKeyConfig(
+        config = FreshDeskApiKeyConfig(
             domain=domain,
             api_key=api_key,
             ssl=ssl
@@ -185,29 +185,24 @@ class FreshserviceClient(IClient):
         logger,
         config_service: ConfigurationService,
         graph_db_service: IGraphService,
-        org_id: str,
-        user_id: str,
-    ) -> "FreshserviceClient":
-        """Build FreshserviceClient using configuration service and graphdb service
+    ) -> "FreshDeskClient":
+        """Build FreshDeskClient using configuration service and graph-db service
 
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: GraphDB service instance
-            org_id: Organization ID
-            user_id: User ID
-
+            graph_db_service: Graph-DB service instance
         Returns:
-            FreshserviceClient: Configured client instance
+            FreshDeskClient: Configured client instance
 
         Raises:
             NotImplementedError: This method needs to be implemented
         """
         # TODO: Implement - fetch config from services
         # This would typically:
-        # 1. Query graph_db_service for stored Freshservice credentials
+        # 1. Query graph_db_service for stored FreshDesk credentials
         # 2. Use config_service to get environment-specific settings
         # 3. Return appropriate client based on available credentials
         raise NotImplementedError(
-            "build_from_services is not implemented for FreshserviceClient"
+            "build_from_services is not implemented for FreshDeskClient"
         )

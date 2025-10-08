@@ -28,6 +28,8 @@
         "exactnumber",
         "exacttextsearcher",
         "freebusy",
+        "freshdesk",
+        "freshservice",
         "gcalendar",
         "grouppickersearcher",
         "htmlize",
