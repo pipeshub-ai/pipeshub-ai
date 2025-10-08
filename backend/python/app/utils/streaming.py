@@ -341,7 +341,7 @@ async def execute_tool_calls(
             if status_code in [202, 500, 503]:
                 raise HTTPException(
                     status_code=status_code,
-                    content={
+                    detail={
                         "status": result.get("status", "error"),
                         "message": result.get("message", "No results found"),
                     }
@@ -620,6 +620,7 @@ async def stream_llm_response_with_tools(
 
             messages = final_messages
         except Exception:
+            logger.error("Error in execute_tool_calls")
             pass
 
         if len(messages) > 0 and isinstance(messages[-1], AIMessage):

@@ -298,6 +298,7 @@ class RetrievalService:
             search_results = await self._execute_parallel_searches(queries, filter, limit, vector_store)
 
             if not search_results:
+                self.logger.debug("No search results found")
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
@@ -312,8 +313,6 @@ class RetrievalService:
                 and result.get("metadata")
                 and result["metadata"].get("virtualRecordId") is not None
             })
-
-
 
             virtual_record_ids = list(set(virtual_record_ids))
             self.logger.debug(f"Extracted virtual_record_ids: {virtual_record_ids}")
@@ -447,7 +446,7 @@ class RetrievalService:
             if file_record_ids_to_fetch or mail_record_ids_to_fetch:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
-        # Second pass - apply fetched URLs to results
+            # Second pass - apply fetched URLs to results
             for idx, (record_id, record_type) in result_to_record_map.items():
                 result = search_results[idx]
                 record = record_id_to_record_map.get(record_id)
@@ -544,9 +543,11 @@ class RetrievalService:
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
         except ValueError as e:
+            self.logger.error(f"ValueError: {e}")
             # Provide specific, user-friendly errors for known cases
             # Avoid string matching: detect our dedicated error by class name
             if e.__class__.__name__ == "VectorDBEmptyError":
+                self.logger.error("VectorDBEmptyError")
                 return self._create_empty_response(
                     "Vector database is not ready. Please index content and try again.",
                     Status.VECTOR_DB_EMPTY,

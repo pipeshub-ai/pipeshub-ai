@@ -228,13 +228,8 @@ async def process_chat_query(
     status_code = result.get("status_code", 500)
 
     if status_code in [202, 500, 503]:
-        raise HTTPException(
-            status_code=status_code,
-            content={
-                "status": result.get("status", "error"),
-                "message": result.get("message", "No results found"),
-            }
-        )
+        raise HTTPException(status_code=status_code, detail=result)
+
 
     blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
 
@@ -379,7 +374,11 @@ async def askAIStream(
                     query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
                 )
             except HTTPException as e:
-                yield create_sse_event("error", {"error": e.detail, "status_code": e.status_code})
+                result = e.detail
+                yield create_sse_event("error", {
+                    "status": result.get("status", "error"),
+                    "message": result.get("message", "No results found")
+                })
                 return
             except Exception as e:
                 yield create_sse_event("error", {"error": str(e)})
