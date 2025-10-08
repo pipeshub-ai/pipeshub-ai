@@ -178,7 +178,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       jira: 'Jira',
       slack: 'Slack',
       google_drive_enterprise: 'Google Drive Enterprise',
-      clalendar: 'Calendar',
+      calendar: 'Calendar',
     };
 
     return (
