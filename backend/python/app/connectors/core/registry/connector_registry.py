@@ -165,17 +165,11 @@ class ConnectorRegistry:
             doc = await arango_service.get_app_by_name(app_name)
 
             if doc:
-                config = doc.get('config', {})
                 return {
                     'isActive': doc.get('isActive', False),
                     'isConfigured': doc.get('isConfigured', False),
                     'isAuthenticated': doc.get('isAuthenticated', False),
                     'appGroupId': doc.get('appGroupId'),
-                    'appDescription': doc.get('appDescription', ''),
-                    'appCategories': doc.get('appCategories', []),
-                    'supportsRealtime': config.get('supportsRealtime', False),
-                    'supportsSync': config.get('supportsSync', False),
-                    'iconPath': config.get('iconPath', '/assets/icons/connectors/default.svg'),
                     'createdAtTimestamp': doc.get('createdAtTimestamp'),
                     'updatedAtTimestamp': doc.get('updatedAtTimestamp'),
                 }
@@ -188,11 +182,7 @@ class ConnectorRegistry:
             'isActive': False,
             'isConfigured': False,
             'isAuthenticated': False,
-            'appDescription': '',
-            'appCategories': [],
-            'supportsRealtime': False,
-            'supportsSync': False,
-            'iconPath': '/assets/icons/connectors/default.svg',
+            # Metadata (description, categories, icon, capabilities) are sourced from registry only
             'createdAtTimestamp': None,
             'updatedAtTimestamp': None,
             'config': {}
@@ -235,10 +225,7 @@ class ConnectorRegistry:
                 'type': metadata.get('type', app_name.upper().replace(' ', '_')),
                 'appGroup': metadata['appGroup'],
                 'appGroupId': app_group_id,
-                'appCategories': metadata.get('appCategories', []),
-                'appDescription': metadata.get('appDescription', ''),
                 'authType': metadata['authType'],
-                'config': metadata.get('config', {}),
                 'isActive': False,  # Always start as inactive
                 'isConfigured': False,
                 'createdAtTimestamp': get_epoch_timestamp_in_ms(),
@@ -378,6 +365,7 @@ class ConnectorRegistry:
                 # Default values for DB-specific fields
                 'isActive': False,
                 'isConfigured': False,
+                'isAuthenticated': False,
                 'createdAtTimestamp': None,
                 'updatedAtTimestamp': None
             }
@@ -389,15 +377,11 @@ class ConnectorRegistry:
                     connector_info.update({
                         'isActive': db_status.get('isActive', False),
                         'isConfigured': db_status.get('isConfigured', False),
+                        'isAuthenticated': db_status.get('isAuthenticated', False),
                         'createdAtTimestamp': db_status.get('createdAtTimestamp'),
                         'updatedAtTimestamp': db_status.get('updatedAtTimestamp')
                     })
-                    fields_to_override = [
-                        'appDescription', 'appCategories', 'iconPath',
-                        'supportsRealtime', 'supportsSync'
-                    ]
-                    for field in fields_to_override:
-                        connector_info[field] = db_status.get(field, connector_info[field])
+                    # Do not override metadata from DB; registry is source of truth
             except Exception as e:
                 self.logger.debug(f"Could not get DB status for {app_name}: {e}")
 
@@ -455,13 +439,7 @@ class ConnectorRegistry:
                         'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
                         'appGroupId': db_status.get('appGroupId'),
                     })
-                    # Override description and categories if they exist in DB
-                    fields_to_override = [
-                        'appDescription', 'appCategories', 'iconPath',
-                        'supportsRealtime', 'supportsSync', 'authType', 'config'
-                    ]
-                    for field in fields_to_override:
-                        connector_info[field] = db_status.get(field, connector_info[field])
+                    # Do not override metadata, authType or config from DB
             except Exception as e:
                 self.logger.debug(f"Could not get DB status for {app_name}: {e}")
 
