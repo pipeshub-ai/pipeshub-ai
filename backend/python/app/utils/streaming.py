@@ -620,7 +620,7 @@ async def stream_llm_response_with_tools(
 
             messages = final_messages
         except Exception:
-            logger.error("Error in execute_tool_calls")
+            logger.error("Error in execute_tool_calls",exc_info=True)
             pass
 
         if len(messages) > 0 and isinstance(messages[-1], AIMessage):

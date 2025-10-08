@@ -26,6 +26,7 @@ from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
@@ -541,17 +542,14 @@ class RetrievalService:
                 return response_data
             else:
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
-
-        except ValueError as e:
-            self.logger.error(f"ValueError: {e}")
-            # Provide specific, user-friendly errors for known cases
-            # Avoid string matching: detect our dedicated error by class name
-            if e.__class__.__name__ == "VectorDBEmptyError":
-                self.logger.error("VectorDBEmptyError")
-                return self._create_empty_response(
+        except VectorDBEmptyError:
+            self.logger.error("VectorDBEmptyError")
+            return self._create_empty_response(
                     "Vector database is not ready. Please index content and try again.",
                     Status.VECTOR_DB_EMPTY,
                 )
+        except ValueError as e:
+            self.logger.error(f"ValueError: {e}")
             return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
             import traceback
@@ -622,10 +620,6 @@ class RetrievalService:
             )
             self.logger.info(f"Collection info: {collection_info}")
             if not collection_info or collection_info.points_count == 0: # type: ignore
-                # Define a scoped custom error for clarity; safe to identify by class upstream
-                class VectorDBEmptyError(ValueError):
-                    pass
-
                 raise VectorDBEmptyError("Vector DB is empty or collection not found")
 
             # Get cached embedding model
