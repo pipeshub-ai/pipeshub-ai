@@ -167,7 +167,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Use the warmup class to import all tools automatically
     logger.info("Using tools warmup to register all available tools...")
-    from app.agents.tools.tools_discovery import discover_tools
+    from app.agents.tools.discovery import discover_tools
 
     discovery_results = discover_tools(logger)
     logger.info(f"Discovery completed: {discovery_results['total_tools']} tools registered")

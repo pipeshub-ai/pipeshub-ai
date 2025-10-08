@@ -394,6 +394,19 @@ class CommonFields:
         )
 
     @staticmethod
+    def bearer_token(token_name: str = "Bearer Token", placeholder: str = "") -> AuthField:
+        """Standard Bearer token field"""
+        return AuthField(
+            name="bearerToken",
+            display_name=token_name,
+            placeholder=placeholder or f"Enter your {token_name}",
+            description=f"The {token_name} from your application settings",
+            field_type="PASSWORD",
+            max_length=8000,
+            is_secret=True
+        )
+
+    @staticmethod
     def username() -> AuthField:
         """Standard username field"""
         return AuthField(

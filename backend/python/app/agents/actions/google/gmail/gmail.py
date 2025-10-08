@@ -1,15 +1,21 @@
+import asyncio
 import json
+import logging
 from typing import List, Optional
 
 from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.google.google import GoogleClient
+from app.sources.client.http.http_response import HTTPResponse
+from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
+logger = logging.getLogger(__name__)
 
 class Gmail:
-    """Gmail tool exposed to the agents"""
-    def __init__(self, client: object) -> None:
+    """Gmail tool exposed to the agents using GoogleGmailDataSource"""
+    def __init__(self, client: GoogleClient) -> None:
         """Initialize the Gmail tool"""
         """
         Args:
@@ -17,7 +23,20 @@ class Gmail:
         Returns:
             None
         """
-        self.client = client
+        self.client = GoogleGmailDataSource(client)
+
+    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
+        """Helper method to run async operations in sync context"""
+        try:
+            asyncio.get_running_loop()
+            # We're in an async context, use asyncio.run in a thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result()
+        except RuntimeError:
+            # No running loop, we can use asyncio.run
+            return asyncio.run(coro)
 
     @tool(
         app_name="gmail",
@@ -114,15 +133,17 @@ class Gmail:
                 message_id,
             )
 
-            message = self.client.users().messages().send( # type: ignore
+            # Use GoogleGmailDataSource method
+            message = self._run_async(self.client.users_messages_send(
                 userId="me",
-                body=message_body,
-            ).execute() # type: ignore
+                body=message_body
+            ))
             return True, json.dumps({
                 "message_id": message.get("id", ""),
-                "message" : message,
+                "message": message,
             })
         except Exception as e:
+            logger.error(f"Failed to send reply: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -202,15 +223,17 @@ class Gmail:
                 mail_attachments,
             )
 
-            draft = self.client.users().drafts().create( # type: ignore
+            # Use GoogleGmailDataSource method
+            draft = self._run_async(self.client.users_drafts_create(
                 userId="me",
-                body={"message": message_body},
-            ).execute() # type: ignore
+                body={"message": message_body}
+            ))
             return True, json.dumps({
                 "draft_id": draft.get("id", ""),
                 "draft": draft,
             })
         except Exception as e:
+            logger.error(f"Failed to create draft: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -308,15 +331,17 @@ class Gmail:
                 message_id,
             )
 
-            message = self.client.users().messages().send( # type: ignore
+            # Use GoogleGmailDataSource method
+            message = self._run_async(self.client.users_messages_send(
                 userId="me",
-                body=message_body,
-            ).execute() # type: ignore
+                body=message_body
+            ))
             return True, json.dumps({
                 "message_id": message.get("id", ""),
                 "message": message,
             })
         except Exception as e:
+            logger.error(f"Failed to send email: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -359,14 +384,16 @@ class Gmail:
             tuple[bool, str]: True if the emails are searched, False otherwise
         """
         try:
-            messages = self.client.users().messages().list( # type: ignore
+            # Use GoogleGmailDataSource method
+            messages = self._run_async(self.client.users_messages_list(
                 userId="me",
                 q=query,
                 maxResults=max_results,
                 pageToken=page_token,
-            ).execute() # type: ignore
+            ))
             return True, json.dumps(messages)
         except Exception as e:
+            logger.error(f"Failed to search emails: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -393,13 +420,15 @@ class Gmail:
             tuple[bool, str]: True if the email details are retrieved, False otherwise
         """
         try:
-            message = self.client.users().messages().get( # type: ignore
+            # Use GoogleGmailDataSource method
+            message = self._run_async(self.client.users_messages_get(
                 userId="me",
                 id=message_id,
                 format="full",
-            ).execute() # type: ignore
+            ))
             return True, json.dumps(message)
         except Exception as e:
+            logger.error(f"Failed to get email details for {message_id}: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -426,11 +455,12 @@ class Gmail:
             tuple[bool, str]: True if the email attachments are retrieved, False otherwise
         """
         try:
-            message = self.client.users().messages().get( # type: ignore
+            # Use GoogleGmailDataSource method to get message details
+            message = self._run_async(self.client.users_messages_get(
                 userId="me",
                 id=message_id,
                 format="full",
-            ).execute() # type: ignore
+            ))
 
             attachments = []
             if "payload" in message and "parts" in message["payload"]:
@@ -445,6 +475,7 @@ class Gmail:
 
             return True, json.dumps(attachments)
         except Exception as e:
+            logger.error(f"Failed to get email attachments for {message_id}: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -478,11 +509,51 @@ class Gmail:
             tuple[bool, str]: True if the attachment is downloaded, False otherwise
         """
         try:
-            attachment = self.client.users().messages().attachments().get( # type: ignore
+            # Use GoogleGmailDataSource method
+            attachment = self._run_async(self.client.users_messages_attachments_get(
                 userId="me",
                 messageId=message_id,
                 id=attachment_id,
-            ).execute() # type: ignore
+            ))
             return True, json.dumps(attachment)
         except Exception as e:
+            logger.error(f"Failed to download attachment {attachment_id} from message {message_id}: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="gmail",
+        tool_name="get_user_profile",
+        parameters=[
+            ToolParameter(
+                name="user_id",
+                type=ParameterType.STRING,
+                description="The user ID (use 'me' for authenticated user)",
+                required=False
+            )
+        ]
+    )
+    def get_user_profile(
+        self,
+        user_id: Optional[str] = "me",
+    ) -> tuple[bool, str]:
+        """Get the current user's Gmail profile"""
+        """
+        Args:
+            user_id: The user ID (defaults to 'me' for authenticated user)
+        Returns:
+            tuple[bool, str]: True if successful, False otherwise
+        """
+        try:
+            # Use GoogleGmailDataSource method
+            profile = self._run_async(self.client.users_get_profile(
+                userId=user_id
+            ))
+            return True, json.dumps({
+                "email_address": profile.get("emailAddress", ""),
+                "messages_total": profile.get("messagesTotal", 0),
+                "threads_total": profile.get("threadsTotal", 0),
+                "history_id": profile.get("historyId", "")
+            })
+        except Exception as e:
+            logger.error(f"Failed to get user profile: {e}")
             return False, json.dumps({"error": str(e)})

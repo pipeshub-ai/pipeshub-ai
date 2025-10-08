@@ -571,12 +571,17 @@ const ChatInterface = () => {
   // Filters: selected apps and knowledge base IDs (shared with ChatInput)
   const [selectedApps, setSelectedApps] = useState<string[]>([]);
   const [selectedKbIds, setSelectedKbIds] = useState<string[]>([]);
-  const [allApps, setAllApps] = useState<Array<{ id: string; name: string; iconPath?: string }>>([]);
+  const [allApps, setAllApps] = useState<Array<{ id: string; name: string; iconPath?: string }>>(
+    []
+  );
   const [allKBs, setAllKBs] = useState<Array<{ id: string; name: string }>>([]);
   const { activeConnectors } = useConnectors();
 
   // Helper to keep latest filters inline without refs
-  const currentFilters = useMemo(() => ({ apps: selectedApps, kb: selectedKbIds }), [selectedApps, selectedKbIds]);
+  const currentFilters = useMemo(
+    () => ({ apps: selectedApps, kb: selectedKbIds }),
+    [selectedApps, selectedKbIds]
+  );
 
   // Build app sources from connectors
   useEffect(() => {
@@ -990,7 +995,7 @@ const ChatInterface = () => {
 
         const createdConversationId = await handleStreamingResponse(
           streamingUrl,
-          { 
+          {
             query: trimmedInput,
             modelKey: selectedModel?.modelKey,
             modelName: selectedModel?.modelName,
@@ -1023,6 +1028,12 @@ const ChatInterface = () => {
     ]
   );
 
+  const onClosePdf = useCallback((): void => {
+    resetViewerStates();
+    setFileBuffer(null);
+    setHighlightedCitation(null);
+  }, []);
+
   const handleNewChat = useCallback(() => {
     streamingManager.clearStreaming(getConversationKey(currentConversationId));
     streamingManager.resetNavigationTracking();
@@ -1042,7 +1053,7 @@ const ChatInterface = () => {
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
       if (!chat?._id || isNavigationBlocked) return;
-
+      onClosePdf();
       try {
         const chatKey = getConversationKey(chat._id);
 
@@ -1103,9 +1114,12 @@ const ChatInterface = () => {
         if (!isCurrentlyStreaming) {
           setIsLoadingConversation(false);
         }
+        setTimeout(() => {
+          onClosePdf();
+        }, 500);
       }
     },
-    [formatMessage, navigate, streamingManager, getConversationKey, isNavigationBlocked]
+    [formatMessage, navigate, streamingManager, getConversationKey, isNavigationBlocked, onClosePdf]
   );
 
   // Update the useEffect to better handle streaming conversations
@@ -1456,11 +1470,7 @@ const ChatInterface = () => {
     }, 100);
   };
 
-  const onClosePdf = (): void => {
-    resetViewerStates();
-    setFileBuffer(null);
-    setHighlightedCitation(null);
-  };
+
 
   const handleRegenerateMessage = useCallback(
     async (messageId: string): Promise<void> => {

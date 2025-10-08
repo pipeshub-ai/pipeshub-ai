@@ -2946,6 +2946,7 @@ async def update_connector_config(
             logger.warning(f"App may already exist in database for {app_name}: {e}")
 
         app_doc = await connector_registry.get_connector_by_name(app_name)
+        auth_type = app_doc.get('authType', '')
         connector_config = app_doc.get('config', {})
 
         redirect_uri = connector_config.get('auth', {}).get('redirectUri', '')
@@ -2965,6 +2966,7 @@ async def update_connector_config(
         merged_config['auth']['tokenUrl'] = auth_meta.get('tokenUrl', '')
         merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
         merged_config["auth"]["redirectUri"] = redirect_uri
+        merged_config["auth"]["authType"] = auth_type
 
         await config_service.set_config(config_key, merged_config)
         logger.info(f"Config stored in etcd for {app_name}")
