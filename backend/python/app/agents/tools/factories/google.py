@@ -2,9 +2,8 @@
 Google client factory for creating Google service clients.
 """
 
-from typing import Any
-
 from app.agents.tools.factories.base import ClientFactory
+from app.sources.client.google.google import GoogleClient
 
 
 class GoogleClientFactory(ClientFactory):
@@ -27,7 +26,7 @@ class GoogleClientFactory(ClientFactory):
         self.service_name = service_name
         self.version = version
 
-    async def create_client(self, config_service, logger) -> Any:
+    async def create_client(self, config_service, logger) -> GoogleClient:
         """
         Create Google client instance.
 
@@ -38,7 +37,6 @@ class GoogleClientFactory(ClientFactory):
         Returns:
             Google client instance
         """
-        from app.sources.client.google.google import GoogleClient
 
         client = await GoogleClient.build_from_services(
             service_name=self.service_name,

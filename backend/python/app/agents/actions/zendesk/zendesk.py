@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import json
 import logging
 from typing import Optional, Tuple
@@ -6,6 +7,7 @@ from typing import Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
 
 logger = logging.getLogger(__name__)
@@ -23,13 +25,12 @@ class Zendesk:
         """
         self.client = ZendeskDataSource(client)
 
-    def _run_async(self, coro):
+    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # If we're already in an async context, we need to use a thread pool
-                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, coro)
                     return future.result()

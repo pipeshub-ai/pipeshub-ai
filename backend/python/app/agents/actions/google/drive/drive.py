@@ -6,6 +6,7 @@ from typing import Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ class GoogleDrive:
         """
         self.client = GoogleDriveDataSource(client)
 
-    def _run_async(self, coro):
+    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             asyncio.get_running_loop()
@@ -755,24 +756,19 @@ class GoogleDrive:
             if parent_folder_id:
                 file_metadata['parents'] = [parent_folder_id]
 
-            # Upload file with content using Google API client directly
-            import io
-
-            from googleapiclient.http import MediaIoBaseUpload
-
-            # Create a file-like object from the content
-            content_file = io.BytesIO(content_bytes)
-            media = MediaIoBaseUpload(content_file, mimetype=mime_type, resumable=True)
-
-            # Get the raw Google API client from the data source
-            raw_client = self.client.client  # Access the underlying Google API client
-
-            # Upload the file with content
-            file = raw_client.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id,name,mimeType,webViewLink,parents,size'
-            ).execute()
+            # Use GoogleDriveDataSource method for file upload with media
+            file = self._run_async(self.client.files_create_with_media(
+                file_metadata=file_metadata,
+                content=content_bytes,
+                mime_type=mime_type,
+                enforceSingleParent=True,
+                ignoreDefaultVisibility=True,
+                keepRevisionForever=False,
+                ocrLanguage=None,
+                supportsAllDrives=False,
+                supportsTeamDrives=False,
+                useContentAsIndexableText=False
+            ))
 
             return True, json.dumps({
                 "file_id": file.get("id", ""),

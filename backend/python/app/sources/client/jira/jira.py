@@ -151,7 +151,7 @@ class JiraClient(IClient):
             response = await http_client.execute(request)
 
             # Check if the response is successful
-            if response.status != HttpStatusCode.SUCCESS:
+            if response.status != HttpStatusCode.SUCCESS.value:
                 raise Exception(f"API request failed with status {response.status}: {response.text}")
 
             # Try to parse JSON response

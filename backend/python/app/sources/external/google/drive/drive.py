@@ -765,6 +765,77 @@ class GoogleDriveDataSource:
             request = self.client.files().create(**kwargs) # type: ignore
         return request.execute()
 
+    async def files_create_with_media(
+        self,
+        file_metadata: Dict[str, Any],
+        content: bytes,
+        mime_type: str,
+        enforceSingleParent: Optional[bool] = None,
+        ignoreDefaultVisibility: Optional[bool] = None,
+        keepRevisionForever: Optional[bool] = None,
+        ocrLanguage: Optional[str] = None,
+        supportsAllDrives: Optional[bool] = None,
+        supportsTeamDrives: Optional[bool] = None,
+        useContentAsIndexableText: Optional[bool] = None,
+        includePermissionsForView: Optional[str] = None,
+        includeLabels: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Google Drive API: Creates a new file with content upload.
+
+        Args:
+            file_metadata: File metadata including name, parents, etc.
+            content: File content as bytes
+            mime_type: MIME type of the file
+            enforceSingleParent: Deprecated. Creating files in multiple folders is no longer supported.
+            ignoreDefaultVisibility: Whether to ignore the domain's default visibility settings
+            keepRevisionForever: Whether to set the 'keepForever' field in the new head revision
+            ocrLanguage: A language hint for OCR processing during image import
+            supportsAllDrives: Whether the requesting application supports both My Drives and shared drives
+            supportsTeamDrives: Deprecated: Use `supportsAllDrives` instead
+            useContentAsIndexableText: Whether to use the uploaded content as indexable text
+            includePermissionsForView: Specifies which additional view's permissions to include
+            includeLabels: A comma-separated list of IDs of labels to include
+
+        Returns:
+            Dict[str, Any]: API response with uploaded file details
+        """
+        import io
+
+        from googleapiclient.http import MediaIoBaseUpload
+
+        kwargs = {}
+        if enforceSingleParent is not None:
+            kwargs['enforceSingleParent'] = enforceSingleParent
+        if ignoreDefaultVisibility is not None:
+            kwargs['ignoreDefaultVisibility'] = ignoreDefaultVisibility
+        if keepRevisionForever is not None:
+            kwargs['keepRevisionForever'] = keepRevisionForever
+        if ocrLanguage is not None:
+            kwargs['ocrLanguage'] = ocrLanguage
+        if supportsAllDrives is not None:
+            kwargs['supportsAllDrives'] = supportsAllDrives
+        if supportsTeamDrives is not None:
+            kwargs['supportsTeamDrives'] = supportsTeamDrives
+        if useContentAsIndexableText is not None:
+            kwargs['useContentAsIndexableText'] = useContentAsIndexableText
+        if includePermissionsForView is not None:
+            kwargs['includePermissionsForView'] = includePermissionsForView
+        if includeLabels is not None:
+            kwargs['includeLabels'] = includeLabels
+
+        # Create a file-like object from the content
+        content_file = io.BytesIO(content)
+        media = MediaIoBaseUpload(content_file, mimetype=mime_type, resumable=True)
+
+        # Create the file with media upload
+        request = self.client.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id,name,mimeType,webViewLink,parents,size',
+            **kwargs
+        ) # type: ignore
+        return request.execute()
+
     async def files_delete(
         self,
         fileId: str,

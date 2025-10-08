@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 from typing import Optional, Tuple
@@ -6,6 +7,7 @@ from typing import Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ class OneDrive:
         """
         self.client = OneDriveDataSource(client)
 
-    def _run_async(self, coro):
+    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             loop = asyncio.get_event_loop()
@@ -412,7 +414,7 @@ class OneDrive:
                 request_body={
                     "name": file_name,
                     "file": {},
-                    "@microsoft.graph.sourceUrl": f"data:text/plain;base64,{content}"
+                    "@microsoft.graph.sourceUrl": f"data:text/plain;base64,{base64.b64encode(content.encode('utf-8')).decode('utf-8')}"
                 }
             ))
 

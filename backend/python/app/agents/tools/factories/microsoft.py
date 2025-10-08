@@ -2,9 +2,8 @@
 Client factories for Jira, Confluence, Slack, Microsoft, and Notion.
 """
 
-from typing import Any
-
 from app.agents.tools.factories.base import ClientFactory
+from app.sources.client.microsoft.microsoft import MSGraphClient
 
 # ============================================================================
 # Microsoft Graph Client Factory
@@ -27,9 +26,9 @@ class MSGraphClientFactory(ClientFactory):
         """
         self.service_name = service_name
 
-    async def create_client(self, config_service, logger) -> Any:
+    async def create_client(self, config_service, logger) -> MSGraphClient:
         """Create Microsoft Graph client instance"""
-        from app.sources.client.microsoft.microsoft import GraphMode, MSGraphClient
+        from app.sources.client.microsoft.microsoft import GraphMode
 
         return await MSGraphClient.build_from_services(
             service_name=self.service_name,

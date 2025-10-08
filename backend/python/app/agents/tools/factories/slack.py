@@ -2,9 +2,8 @@
 Client factories for Jira, Confluence, Slack, Microsoft, and Notion.
 """
 
-from typing import Any
-
 from app.agents.tools.factories.base import ClientFactory
+from app.sources.client.slack.slack import SlackClient
 
 # ============================================================================
 # Slack Client Factory
@@ -13,9 +12,8 @@ from app.agents.tools.factories.base import ClientFactory
 class SlackClientFactory(ClientFactory):
     """Factory for creating Slack clients"""
 
-    async def create_client(self, config_service, logger) -> Any:
+    async def create_client(self, config_service, logger) -> SlackClient:
         """Create Slack client instance"""
-        from app.sources.client.slack.slack import SlackClient
 
         return await SlackClient.build_from_services(
             logger=logger,

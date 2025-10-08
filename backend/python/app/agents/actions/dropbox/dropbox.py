@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
+import threading
 from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 
 logger = logging.getLogger(__name__)
@@ -22,22 +24,20 @@ class Dropbox:
             None
         """
         self.client = DropboxDataSource(client)
+        # Dedicated background event loop for running coroutines from sync context
+        self._bg_loop = asyncio.new_event_loop()
+        self._bg_loop_thread = threading.Thread(target=self._start_background_loop, daemon=True)
+        self._bg_loop_thread.start()
 
-    def _run_async(self, coro):
-        """Helper method to run async operations in sync context"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            else:
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
+    def _start_background_loop(self) -> None:
+        """Start the background event loop"""
+        asyncio.set_event_loop(self._bg_loop)
+        self._bg_loop.run_forever()
+
+    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
+        """Run a coroutine safely from sync or async contexts via a dedicated loop."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
+        return future.result()
 
     @tool(
         app_name="dropbox",

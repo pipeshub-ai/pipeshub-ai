@@ -186,7 +186,6 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
   highlightCitation = null,
   onClosePdf
 }) => {
-  console.log('HtmlViewer', url, initialHtml, buffer, sx, citations, highlightCitation, onClosePdf);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState<boolean>(true);

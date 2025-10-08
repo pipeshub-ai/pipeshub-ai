@@ -339,7 +339,6 @@ Factories standardize how action classes receive clients (tokens, configs). The 
 
 ```python
 # File: backend/python/app/agents/tools/factories/linear.py
-from typing import Any
 
 from app.agents.tools.factories.base import ClientFactory
 from app.config.configuration_service import ConfigurationService

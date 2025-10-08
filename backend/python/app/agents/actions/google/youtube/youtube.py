@@ -6,6 +6,7 @@ from typing import Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.youtube.youtube import YouTubeDataSource
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ class YouTube:
         """
         self.client = YouTubeDataSource(client)
 
-    def _run_async(self, coro):
+    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             asyncio.get_running_loop()

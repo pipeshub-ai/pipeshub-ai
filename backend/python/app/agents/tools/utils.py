@@ -11,6 +11,8 @@ from app.agents.tools.registry import _global_tools_registry
 from app.agents.tools.wrapper import RegistryToolWrapper
 from app.modules.agents.qna.chat_state import ChatState
 
+RESULT_PREVIEW_MAX_LENGTH = 150
+MAX_TOOLS_PER_CATEGORY_DISPLAY = 5
 
 def get_agent_tools(state: 'ChatState') -> List[RegistryToolWrapper]:
     """
@@ -178,8 +180,8 @@ def get_tool_results_summary(state: 'ChatState') -> str:
         # Show last result preview
         if stats["results"]:
             last_result = stats["results"][-1]
-            result_preview = str(last_result.get("result", ""))[:150]
-            if len(result_preview) == 150:
+            result_preview = str(last_result.get("result", ""))[:RESULT_PREVIEW_MAX_LENGTH]
+            if len(result_preview) == RESULT_PREVIEW_MAX_LENGTH:
                 result_preview += "..."
             summary += f"  - Last result: {result_preview}\n"
 
@@ -253,10 +255,10 @@ TOOL CATEGORIES:
     for category, tools in sorted(by_category.items()):
         guidance += f"\n{category.upper()} ({len(tools)} tools):\n"
         # Show first 5 tools of each category
-        for tool in sorted(tools)[:5]:
+        for tool in sorted(tools)[:MAX_TOOLS_PER_CATEGORY_DISPLAY]:
             guidance += f"  - {tool}\n"
-        if len(tools) > 5:
-            guidance += f"  ... and {len(tools) - 5} more\n"
+        if len(tools) > MAX_TOOLS_PER_CATEGORY_DISPLAY:
+            guidance += f"  ... and {len(tools) - MAX_TOOLS_PER_CATEGORY_DISPLAY} more\n"
 
     guidance += """
 
