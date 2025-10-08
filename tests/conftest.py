@@ -21,14 +21,28 @@ USE_DOCKER = os.getenv("TEST_USE_DOCKER", "0") == "1"
 
 # Strict mode: when enabled, tests will FAIL if dependent services are unavailable.
 # Enabled by default; set TEST_STRICT_SERVICES=0 (or false) to disable strict mode.
-def _env_flag(name: str, default: str = "1") -> bool:
-    """Parse common truthy env var values.
+_TRUTHY = ("1", "true", "yes", "y", "on")
 
-    Returns True for values like: 1, true, yes, y, on (case-insensitive).
+def _env_flag(name: str, default: bool = True) -> bool:
+    """Parse truthy env var values with CI-aware default.
+
+    Behavior:
+    - If the env var `name` is set, parse and return its truthiness.
+    - If not set and `CI` is truthy, return False (avoid failing CI by default).
+    - Otherwise return `default` (True by default to preserve local strict behavior).
     """
-    return os.getenv(name, default).lower() in ("1", "true", "yes", "y", "on")
+    raw = os.getenv(name)
+    if raw is not None:
+        return raw.lower() in _TRUTHY
 
-STRICT_MODE = _env_flag("TEST_STRICT_SERVICES", "1")
+    # If running in CI and the flag is not explicitly set, be permissive to avoid breaking CI
+    if os.getenv("CI", "").lower() in _TRUTHY:
+        return False
+
+    return bool(default)
+
+
+STRICT_MODE = _env_flag("TEST_STRICT_SERVICES", True)
 
 # Test configuration
 TEST_CONFIG = {

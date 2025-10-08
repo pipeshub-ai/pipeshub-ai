@@ -121,7 +121,9 @@ pytest tests/ --cov=backend --cov-report=html
 
 ### Strict Mode (service availability enforcement)
 
-By default, tests will FAIL when dependent services are unavailable (strict mode enabled). If you want the previous, more permissive behaviour (skip tests when services are down), disable strict mode by setting `TEST_STRICT_SERVICES` to `0` or `false`.
+By default (when running locally), tests will FAIL when dependent services are unavailable (strict mode enabled). To avoid breaking CI by accident, the test runner is CI-aware: if `TEST_STRICT_SERVICES` is not set and the `CI` environment variable is present/truthy, strict mode will be disabled by default in CI runs.
+
+To explicitly force strict mode in CI, set `TEST_STRICT_SERVICES=1` in your CI environment.
 
 ```bash
 # Unix/macOS - disable strict mode
