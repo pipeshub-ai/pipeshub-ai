@@ -1,16 +1,16 @@
 """
-Freshservice DataSource - Auto-generated API wrapper
+FreshDesk DataSource - Auto-generated API wrapper
 
-Generated from Freshservice API documentation.
+Generated from FreshDesk API documentation.
 Uses HTTP client for direct REST API interactions.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.sources.client.freshservice.freshdesk import (
-    FreshserviceClient,
-    FreshserviceResponse,
+from app.sources.client.freshdesk.freshdesk import (
+    FreshDeskClient,
+    FreshDeskResponse,
 )
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -21,27 +21,27 @@ logger = logging.getLogger(__name__)
 HTTP_ERROR_THRESHOLD = 400
 
 
-class FreshserviceDataSource:
-    """Freshservice API DataSource
+class FreshdeskDataSource:
+    """FreshDesk API DataSource
 
-    Provides async wrapper methods for Freshservice API operations.
-    All methods return standardized FreshserviceResponse objects.
+    Provides async wrapper methods for FreshDesk API operations.
+    All methods return standardized FreshDeskResponse objects.
 
     Generated methods: 50
     """
 
-    def __init__(self, freshserviceClient: FreshserviceClient) -> None:
-        """Initialize Freshservice DataSource
+    def __init__(self, freshdeskClient: FreshDeskClient) -> None:
+        """Initialize FreshDesk DataSource
 
         Args:
-            freshserviceClient: FreshserviceClient instance
+            freshdeskClient: FreshDeskClient instance
         """
-        self.http_client = freshserviceClient.get_client()
-        self._freshservice_client = freshserviceClient
+        self.http_client = freshdeskClient.get_client()
+        self._freshdesk_client = freshdeskClient
 
-    def get_client(self) -> FreshserviceClient:
-        """Get the underlying FreshserviceClient"""
-        return self._freshservice_client
+    def get_client(self) -> FreshDeskClient:
+        """Get the underlying FreshDeskClient"""
+        return self._freshdesk_client
 
     async def create_ticket(
         self,
@@ -57,8 +57,8 @@ class FreshserviceDataSource:
         cc_emails: Optional[List[str]] = None,
         custom_fields: Optional[Dict[str, Any]] = None,
         attachments: Optional[List[str]] = None
-    ) -> FreshserviceResponse:
-        """Create a new ticket in Freshservice
+    ) -> FreshDeskResponse:
+        """Create a new ticket in FreshDesk
 
         API Endpoint: POST /api/v2/tickets
 
@@ -77,12 +77,12 @@ class FreshserviceDataSource:
             attachments (List[str], optional): File paths for attachments
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             ticket = await ds.create_ticket(subject="Issue", email="user@example.com")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/tickets"
         request_body: Dict[str, Any] = {}
         if subject is not None:
@@ -124,14 +124,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_ticket: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_ticket"
@@ -145,7 +145,7 @@ class FreshserviceDataSource:
         priority: Optional[int] = 1,
         status: Optional[int] = 5,
         custom_fields: Optional[Dict[str, Any]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Create an outbound email ticket
 
         API Endpoint: POST /api/v2/tickets/outbound_email
@@ -159,12 +159,12 @@ class FreshserviceDataSource:
             custom_fields (Dict[str, Any], optional): Custom field values
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             ticket = await ds.create_outbound_email(subject="Info", email="user@example.com")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/tickets/outbound_email"
         request_body: Dict[str, Any] = {}
         if subject is not None:
@@ -194,14 +194,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_outbound_email: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_outbound_email" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_outbound_email: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_outbound_email"
@@ -211,7 +211,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         include: Optional[str] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Retrieve a specific ticket by ID
 
         API Endpoint: GET /api/v2/tickets/[id]
@@ -221,12 +221,12 @@ class FreshserviceDataSource:
             include (str, optional): Embed additional details (conversations, requester, company, stats)
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             ticket = await ds.get_ticket(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}"
         params = {}
         if include is not None:
@@ -250,14 +250,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"get_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed get_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in get_ticket: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute get_ticket"
@@ -270,7 +270,7 @@ class FreshserviceDataSource:
         page: Optional[int] = 1,
         per_page: Optional[int] = 30,
         include: Optional[str] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all tickets with optional filters
 
         API Endpoint: GET /api/v2/tickets
@@ -283,12 +283,12 @@ class FreshserviceDataSource:
             include (str, optional): Embed additional details
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             tickets = await ds.list_tickets(filter_name="new_and_my_open", per_page=10)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/tickets"
         params = {}
         if filter_name is not None:
@@ -320,14 +320,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_tickets" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_tickets: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_tickets"
@@ -337,7 +337,7 @@ class FreshserviceDataSource:
         self,
         query: str,
         page: Optional[int] = 1
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Filter tickets using custom query
 
         API Endpoint: GET /api/v2/search/tickets
@@ -347,12 +347,12 @@ class FreshserviceDataSource:
             page (int, optional): Page number for pagination
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             result = await ds.filter_tickets(query="priority:3 AND status:2")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/search/tickets"
         params = {}
         if query is not None:
@@ -378,14 +378,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"filter_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed filter_tickets" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in filter_tickets: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute filter_tickets"
@@ -400,7 +400,7 @@ class FreshserviceDataSource:
         status: Optional[int] = None,
         tags: Optional[List[str]] = None,
         custom_fields: Optional[Dict[str, Any]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Update an existing ticket
 
         API Endpoint: PUT /api/v2/tickets/[id]
@@ -415,12 +415,12 @@ class FreshserviceDataSource:
             custom_fields (Dict[str, Any], optional): Custom field values
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             ticket = await ds.update_ticket(ticket_id=123, priority=4, status=3)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}"
         request_body: Dict[str, Any] = {}
         if subject is not None:
@@ -450,14 +450,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"update_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed update_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in update_ticket: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute update_ticket"
@@ -466,7 +466,7 @@ class FreshserviceDataSource:
     async def delete_ticket(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Delete a ticket (moves to trash)
 
         API Endpoint: DELETE /api/v2/tickets/[id]
@@ -475,12 +475,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the ticket to delete
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.delete_ticket(ticket_id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}"
         request_body = None
 
@@ -498,14 +498,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"delete_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed delete_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in delete_ticket: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute delete_ticket"
@@ -514,7 +514,7 @@ class FreshserviceDataSource:
     async def list_ticket_fields(
         self,
         type: Optional[str] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all ticket fields including custom fields
 
         API Endpoint: GET /api/v2/ticket_fields
@@ -523,12 +523,12 @@ class FreshserviceDataSource:
             type (str, optional): Filter by field type
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             fields = await ds.list_ticket_fields()
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/ticket_fields"
         params = {}
         if type is not None:
@@ -552,14 +552,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_ticket_fields: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_ticket_fields" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_ticket_fields: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_ticket_fields"
@@ -570,7 +570,7 @@ class FreshserviceDataSource:
         id: int,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all conversations (notes/replies) for a ticket
 
         API Endpoint: GET /api/v2/tickets/[id]/conversations
@@ -581,12 +581,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of conversations per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             conversations = await ds.list_ticket_conversations(ticket_id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/conversations"
         params = {}
         if page is not None:
@@ -612,14 +612,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_ticket_conversations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_ticket_conversations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_ticket_conversations: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_ticket_conversations"
@@ -631,7 +631,7 @@ class FreshserviceDataSource:
         body: str,
         private: Optional[bool] = True,
         notify_emails: Optional[List[str]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Add a note to a ticket
 
         API Endpoint: POST /api/v2/tickets/[id]/notes
@@ -643,12 +643,12 @@ class FreshserviceDataSource:
             notify_emails (List[str], optional): Email addresses to notify
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             note = await ds.create_note(ticket_id=123, body="Internal note", private=True)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/notes"
         request_body: Dict[str, Any] = {}
         if body is not None:
@@ -672,14 +672,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_note: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_note" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_note: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_note"
@@ -691,7 +691,7 @@ class FreshserviceDataSource:
         body: str,
         cc_emails: Optional[List[str]] = None,
         bcc_emails: Optional[List[str]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Reply to a ticket
 
         API Endpoint: POST /api/v2/tickets/[id]/reply
@@ -703,12 +703,12 @@ class FreshserviceDataSource:
             bcc_emails (List[str], optional): BCC email addresses
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             reply = await ds.create_reply(ticket_id=123, body="Thank you for reporting")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/reply"
         request_body: Dict[str, Any] = {}
         if body is not None:
@@ -732,14 +732,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_reply: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_reply" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_reply: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_reply"
@@ -749,7 +749,7 @@ class FreshserviceDataSource:
         self,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all deleted tickets
 
         API Endpoint: GET /api/v2/tickets
@@ -759,12 +759,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of tickets per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             deleted = await ds.list_deleted_tickets()
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/tickets"
         params = {}
         if page is not None:
@@ -790,14 +790,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_deleted_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_deleted_tickets" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_deleted_tickets: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_deleted_tickets"
@@ -806,7 +806,7 @@ class FreshserviceDataSource:
     async def restore_ticket(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Restore a deleted ticket
 
         API Endpoint: PUT /api/v2/tickets/[id]/restore
@@ -815,12 +815,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the ticket to restore
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.restore_ticket(ticket_id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/restore"
         request_body = None
 
@@ -838,14 +838,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"restore_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed restore_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in restore_ticket: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute restore_ticket"
@@ -869,8 +869,8 @@ class FreshserviceDataSource:
         known_error: Optional[bool] = False,
         custom_fields: Optional[Dict[str, Any]] = None,
         assets: Optional[List[Dict[str, int]]] = None
-    ) -> FreshserviceResponse:
-        """Create a new problem in Freshservice
+    ) -> FreshDeskResponse:
+        """Create a new problem in FreshDesk
 
         API Endpoint: POST /api/v2/problems
 
@@ -893,12 +893,12 @@ class FreshserviceDataSource:
             assets (List[Dict[str, int]], optional): Associated assets
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             problem = await ds.create_problem(subject="Root cause", requester_id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/problems"
         request_body: Dict[str, Any] = {}
         if subject is not None:
@@ -948,14 +948,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_problem: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_problem"
@@ -964,7 +964,7 @@ class FreshserviceDataSource:
     async def get_problem(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Retrieve a specific problem by ID
 
         API Endpoint: GET /api/v2/problems/[id]
@@ -973,12 +973,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the problem to retrieve
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             problem = await ds.get_problem(id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}"
         request_body = None
 
@@ -996,14 +996,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"get_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed get_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in get_problem: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute get_problem"
@@ -1015,7 +1015,7 @@ class FreshserviceDataSource:
         requester_id: Optional[int] = None,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all problems with optional filters
 
         API Endpoint: GET /api/v2/problems
@@ -1027,12 +1027,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of problems per page (max 100)
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             problems = await ds.list_problems(per_page=10)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/problems"
         params = {}
         if predefined_filter is not None:
@@ -1062,14 +1062,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_problems: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_problems" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_problems: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_problems"
@@ -1087,7 +1087,7 @@ class FreshserviceDataSource:
         group_id: Optional[int] = None,
         agent_id: Optional[int] = None,
         custom_fields: Optional[Dict[str, Any]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Update an existing problem
 
         API Endpoint: PUT /api/v2/problems/[id]
@@ -1105,12 +1105,12 @@ class FreshserviceDataSource:
             custom_fields (Dict[str, Any], optional): Custom field values
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             problem = await ds.update_problem(id=456, status=2, priority=3)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}"
         request_body: Dict[str, Any] = {}
         if subject is not None:
@@ -1146,14 +1146,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"update_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed update_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in update_problem: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute update_problem"
@@ -1162,7 +1162,7 @@ class FreshserviceDataSource:
     async def delete_problem(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Delete a problem (moves to trash)
 
         API Endpoint: DELETE /api/v2/problems/[id]
@@ -1171,12 +1171,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the problem to delete
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.delete_problem(id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}"
         request_body = None
 
@@ -1194,14 +1194,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"delete_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed delete_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in delete_problem: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute delete_problem"
@@ -1210,7 +1210,7 @@ class FreshserviceDataSource:
     async def restore_problem(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Restore a deleted problem
 
         API Endpoint: PUT /api/v2/problems/[id]/restore
@@ -1219,12 +1219,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the problem to restore
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.restore_problem(id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/restore"
         request_body = None
 
@@ -1242,14 +1242,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"restore_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed restore_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in restore_problem: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute restore_problem"
@@ -1259,7 +1259,7 @@ class FreshserviceDataSource:
         self,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all deleted problems
 
         API Endpoint: GET /api/v2/problems/deleted
@@ -1269,12 +1269,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             deleted = await ds.list_deleted_problems()
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/problems/deleted"
         params = {}
         if page is not None:
@@ -1300,14 +1300,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_deleted_problems: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_deleted_problems" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_deleted_problems: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_deleted_problems"
@@ -1318,7 +1318,7 @@ class FreshserviceDataSource:
         id: int,
         body: str,
         notify_emails: Optional[List[str]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Add a note to a problem
 
         API Endpoint: POST /api/v2/problems/[id]/notes
@@ -1329,12 +1329,12 @@ class FreshserviceDataSource:
             notify_emails (List[str], optional): Emails to notify
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             note = await ds.create_problem_note(id=456, body="Root cause identified")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/notes"
         request_body: Dict[str, Any] = {}
         if body is not None:
@@ -1356,14 +1356,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_problem_note: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_problem_note" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_problem_note: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_problem_note"
@@ -1374,7 +1374,7 @@ class FreshserviceDataSource:
         id: int,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all tasks associated with a problem
 
         API Endpoint: GET /api/v2/problems/[id]/tasks
@@ -1385,12 +1385,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             tasks = await ds.list_problem_tasks(id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/tasks"
         params = {}
         if page is not None:
@@ -1416,14 +1416,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_problem_tasks: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_problem_tasks" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_problem_tasks: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_problem_tasks"
@@ -1439,7 +1439,7 @@ class FreshserviceDataSource:
         notify_before: Optional[int] = None,
         agent_id: Optional[int] = None,
         group_id: Optional[int] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Create a task for a problem
 
         API Endpoint: POST /api/v2/problems/[id]/tasks
@@ -1455,12 +1455,12 @@ class FreshserviceDataSource:
             group_id (int, optional): Group assigned to task
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             task = await ds.create_problem_task(id=456, title="Investigate logs")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/tasks"
         request_body: Dict[str, Any] = {}
         if title is not None:
@@ -1492,14 +1492,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_problem_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_problem_task: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_problem_task"
@@ -1513,7 +1513,7 @@ class FreshserviceDataSource:
         description: Optional[str] = None,
         status: Optional[int] = None,
         agent_id: Optional[int] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Update a problem task
 
         API Endpoint: PUT /api/v2/problems/[problem_id]/tasks/[task_id]
@@ -1527,12 +1527,12 @@ class FreshserviceDataSource:
             agent_id (int, optional): Reassign to agent
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             task = await ds.update_problem_task(problem_id=456, task_id=1, status=2)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{problem_id}/tasks/{task_id}"
         request_body: Dict[str, Any] = {}
         if title is not None:
@@ -1558,14 +1558,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"update_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed update_problem_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in update_problem_task: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute update_problem_task"
@@ -1575,7 +1575,7 @@ class FreshserviceDataSource:
         self,
         problem_id: int,
         task_id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Delete a problem task
 
         API Endpoint: DELETE /api/v2/problems/[problem_id]/tasks/[task_id]
@@ -1585,12 +1585,12 @@ class FreshserviceDataSource:
             task_id (int, required): ID of the task
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.delete_problem_task(problem_id=456, task_id=1)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{problem_id}/tasks/{task_id}"
         request_body = None
 
@@ -1608,14 +1608,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"delete_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed delete_problem_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in delete_problem_task: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute delete_problem_task"
@@ -1624,7 +1624,7 @@ class FreshserviceDataSource:
     async def list_problem_time_entries(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all time entries for a problem
 
         API Endpoint: GET /api/v2/problems/[id]/time_entries
@@ -1633,12 +1633,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the problem
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             entries = await ds.list_problem_time_entries(id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/time_entries"
         request_body = None
 
@@ -1656,14 +1656,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_problem_time_entries: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_problem_time_entries" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_problem_time_entries: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_problem_time_entries"
@@ -1692,8 +1692,8 @@ class FreshserviceDataSource:
         signature: Optional[str] = None,
         custom_fields: Optional[Dict[str, Any]] = None,
         workspace_ids: Optional[List[int]] = None
-    ) -> FreshserviceResponse:
-        """Create a new agent in Freshservice
+    ) -> FreshDeskResponse:
+        """Create a new agent in FreshDesk
 
         API Endpoint: POST /api/v2/agents
 
@@ -1721,12 +1721,12 @@ class FreshserviceDataSource:
             workspace_ids (List[int], optional): Workspace IDs
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             agent = await ds.create_agent(first_name="John", email="john@example.com")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/agents"
         request_body: Dict[str, Any] = {}
         if first_name is not None:
@@ -1786,14 +1786,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_agent: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_agent"
@@ -1802,7 +1802,7 @@ class FreshserviceDataSource:
     async def view_agent(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """View information about a specific agent
 
         API Endpoint: GET /api/v2/agents/[id]
@@ -1811,12 +1811,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the agent
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             agent = await ds.view_agent(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}"
         request_body = None
 
@@ -1834,14 +1834,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"view_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed view_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in view_agent: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute view_agent"
@@ -1856,7 +1856,7 @@ class FreshserviceDataSource:
         state: Optional[str] = None,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all agents in the account
 
         API Endpoint: GET /api/v2/agents
@@ -1871,12 +1871,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of entries per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             agents = await ds.list_agents(active=True)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/agents"
         params = {}
         if email is not None:
@@ -1912,14 +1912,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_agents: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_agents" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_agents: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_agents"
@@ -1930,7 +1930,7 @@ class FreshserviceDataSource:
         query: str,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Filter agents using query string
 
         API Endpoint: GET /api/v2/agents?query=[query]
@@ -1941,12 +1941,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of entries per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             agents = await ds.filter_agents(query="email:'john@example.com'")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/agents?query={query}"
         params = {}
         if page is not None:
@@ -1972,14 +1972,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"filter_agents: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed filter_agents" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in filter_agents: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute filter_agents"
@@ -2008,7 +2008,7 @@ class FreshserviceDataSource:
         roles: Optional[List[Dict[str, Any]]] = None,
         signature: Optional[str] = None,
         custom_fields: Optional[Dict[str, Any]] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Update an existing agent
 
         API Endpoint: PUT /api/v2/agents/[id]
@@ -2037,12 +2037,12 @@ class FreshserviceDataSource:
             custom_fields (Dict[str, Any], optional): Custom fields
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             agent = await ds.update_agent(id=123, job_title="Senior Engineer")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}"
         request_body: Dict[str, Any] = {}
         if first_name is not None:
@@ -2100,14 +2100,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"update_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed update_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in update_agent: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute update_agent"
@@ -2116,7 +2116,7 @@ class FreshserviceDataSource:
     async def deactivate_agent(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Deactivate an agent
 
         API Endpoint: DELETE /api/v2/agents/[id]
@@ -2125,12 +2125,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the agent
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.deactivate_agent(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}"
         request_body = None
 
@@ -2148,14 +2148,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"deactivate_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed deactivate_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in deactivate_agent: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute deactivate_agent"
@@ -2164,7 +2164,7 @@ class FreshserviceDataSource:
     async def forget_agent(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Permanently delete an agent and their tickets
 
         API Endpoint: DELETE /api/v2/agents/[id]/forget
@@ -2173,12 +2173,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the agent
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.forget_agent(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}/forget"
         request_body = None
 
@@ -2196,14 +2196,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"forget_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed forget_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in forget_agent: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute forget_agent"
@@ -2212,7 +2212,7 @@ class FreshserviceDataSource:
     async def reactivate_agent(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Reactivate a deactivated agent
 
         API Endpoint: PUT /api/v2/agents/[id]/reactivate
@@ -2221,12 +2221,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the agent
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             agent = await ds.reactivate_agent(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}/reactivate"
         request_body = None
 
@@ -2244,14 +2244,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"reactivate_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed reactivate_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in reactivate_agent: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute reactivate_agent"
@@ -2260,7 +2260,7 @@ class FreshserviceDataSource:
     async def list_agent_fields(
         self,
         include: Optional[str] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all built-in and custom fields for agents
 
         API Endpoint: GET /api/v2/agent_fields
@@ -2269,12 +2269,12 @@ class FreshserviceDataSource:
             include (str, optional): Include additional details (e.g., 'user_field_groups')
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             fields = await ds.list_agent_fields()
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/agent_fields"
         params = {}
         if include is not None:
@@ -2298,14 +2298,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_agent_fields: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_agent_fields" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_agent_fields: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_agent_fields"
@@ -2323,8 +2323,8 @@ class FreshserviceDataSource:
         category: Optional[str] = None,
         source: Optional[str] = None,
         workspace_id: Optional[int] = None
-    ) -> FreshserviceResponse:
-        """Create a new software/application in Freshservice
+    ) -> FreshDeskResponse:
+        """Create a new software/application in FreshDesk
 
         API Endpoint: POST /api/v2/applications
 
@@ -2341,12 +2341,12 @@ class FreshserviceDataSource:
             workspace_id (int, optional): Workspace ID
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
-            software = await ds.create_software(name="Freshservice", application_type="saas")
+            software = await ds.create_software(name="FreshDesk", application_type="saas")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/applications"
         request_body: Dict[str, Any] = {}
         if name is not None:
@@ -2384,14 +2384,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"create_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed create_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in create_software: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute create_software"
@@ -2400,7 +2400,7 @@ class FreshserviceDataSource:
     async def view_software(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """View a specific software/application by ID
 
         API Endpoint: GET /api/v2/applications/[id]
@@ -2409,12 +2409,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the software
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             software = await ds.view_software(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}"
         request_body = None
 
@@ -2432,14 +2432,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"view_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed view_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in view_software: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute view_software"
@@ -2450,7 +2450,7 @@ class FreshserviceDataSource:
         workspace_id: Optional[int] = None,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all software/applications
 
         API Endpoint: GET /api/v2/applications
@@ -2461,12 +2461,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of entries per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             software_list = await ds.list_software()
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += "/applications"
         params = {}
         if workspace_id is not None:
@@ -2494,14 +2494,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_software: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_software"
@@ -2519,7 +2519,7 @@ class FreshserviceDataSource:
         notes: Optional[str] = None,
         category: Optional[str] = None,
         source: Optional[str] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Update an existing software/application
 
         API Endpoint: PUT /api/v2/applications/[id]
@@ -2537,12 +2537,12 @@ class FreshserviceDataSource:
             source (str, optional): Source of software details
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             software = await ds.update_software(id=123, status="managed")
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}"
         request_body: Dict[str, Any] = {}
         if name is not None:
@@ -2578,14 +2578,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"update_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed update_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in update_software: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute update_software"
@@ -2594,7 +2594,7 @@ class FreshserviceDataSource:
     async def delete_software(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Delete a specific software/application
 
         API Endpoint: DELETE /api/v2/applications/[id]
@@ -2603,12 +2603,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the software to delete
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.delete_software(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}"
         request_body = None
 
@@ -2626,14 +2626,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"delete_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed delete_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in delete_software: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute delete_software"
@@ -2642,7 +2642,7 @@ class FreshserviceDataSource:
     async def list_software_licenses(
         self,
         id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all licenses of a software
 
         API Endpoint: GET /api/v2/applications/[id]/licenses
@@ -2651,12 +2651,12 @@ class FreshserviceDataSource:
             id (int, required): ID of the software
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             licenses = await ds.list_software_licenses(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/licenses"
         request_body = None
 
@@ -2674,14 +2674,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_software_licenses: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_software_licenses" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_software_licenses: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_software_licenses"
@@ -2691,7 +2691,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         application_users: List[Dict[str, Any]]
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Add users to a software in bulk
 
         API Endpoint: POST /api/v2/applications/[id]/users
@@ -2701,12 +2701,12 @@ class FreshserviceDataSource:
             application_users (List[Dict[str, Any]], required): List of application user objects
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             users = await ds.add_software_users(id=123, application_users=[{"user_id": 456}])
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
         request_body: Dict[str, Any] = {}
         if application_users is not None:
@@ -2726,14 +2726,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"add_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed add_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in add_software_users: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute add_software_users"
@@ -2743,7 +2743,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         user_id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """View a specific user of a software
 
         API Endpoint: GET /api/v2/applications/[id]/users/[user_id]
@@ -2753,12 +2753,12 @@ class FreshserviceDataSource:
             user_id (int, required): ID of the application user
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             user = await ds.view_software_user(id=123, user_id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users/{user_id}"
         request_body = None
 
@@ -2776,14 +2776,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"view_software_user: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed view_software_user" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in view_software_user: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute view_software_user"
@@ -2794,7 +2794,7 @@ class FreshserviceDataSource:
         id: int,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all users of a software
 
         API Endpoint: GET /api/v2/applications/[id]/users
@@ -2805,12 +2805,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of entries per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             users = await ds.list_software_users(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
         params = {}
         if page is not None:
@@ -2836,14 +2836,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_software_users: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_software_users"
@@ -2853,7 +2853,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         application_users: List[Dict[str, Any]]
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Update users of a software in bulk
 
         API Endpoint: PUT /api/v2/applications/[id]/users
@@ -2863,12 +2863,12 @@ class FreshserviceDataSource:
             application_users (List[Dict[str, Any]], required): List of application user objects to update
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             users = await ds.update_software_users(id=123, application_users=[{"user_id": 456, "license_id": 10}])
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
         request_body: Dict[str, Any] = {}
         if application_users is not None:
@@ -2888,14 +2888,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"update_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed update_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in update_software_users: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute update_software_users"
@@ -2905,7 +2905,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         user_ids: List[int]
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Remove users from a software in bulk
 
         API Endpoint: DELETE /api/v2/applications/[id]/users
@@ -2915,12 +2915,12 @@ class FreshserviceDataSource:
             user_ids (List[int], required): List of user IDs to remove
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.remove_software_users(id=123, user_ids=[456, 789])
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
         request_body = None
 
@@ -2938,14 +2938,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"remove_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed remove_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in remove_software_users: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute remove_software_users"
@@ -2958,7 +2958,7 @@ class FreshserviceDataSource:
         installation_path: Optional[str] = None,
         version: Optional[str] = None,
         installation_date: Optional[str] = None
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Add a device installation to a software
 
         API Endpoint: POST /api/v2/applications/[id]/installations
@@ -2971,12 +2971,12 @@ class FreshserviceDataSource:
             installation_date (str, optional): Installation date (ISO format)
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             installation = await ds.add_software_installation(id=123, installation_machine_id=456)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/installations"
         request_body: Dict[str, Any] = {}
         if installation_machine_id is not None:
@@ -3002,14 +3002,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"add_software_installation: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed add_software_installation" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in add_software_installation: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute add_software_installation"
@@ -3020,7 +3020,7 @@ class FreshserviceDataSource:
         id: int,
         page: Optional[int] = 1,
         per_page: Optional[int] = 30
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """List all installations of a software
 
         API Endpoint: GET /api/v2/applications/[id]/installations
@@ -3031,12 +3031,12 @@ class FreshserviceDataSource:
             per_page (int, optional): Number of entries per page
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             installations = await ds.list_software_installations(id=123)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/installations"
         params = {}
         if page is not None:
@@ -3062,14 +3062,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"list_software_installations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed list_software_installations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in list_software_installations: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute list_software_installations"
@@ -3079,7 +3079,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         device_ids: List[int]
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Remove device installations from a software in bulk
 
         API Endpoint: DELETE /api/v2/applications/[id]/installations
@@ -3089,12 +3089,12 @@ class FreshserviceDataSource:
             device_ids (List[int], required): List of device display IDs to remove
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             await ds.remove_software_installations(id=123, device_ids=[456, 789])
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/installations"
         request_body = None
 
@@ -3112,14 +3112,14 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"remove_software_installations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed remove_software_installations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in remove_software_installations: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute remove_software_installations"
@@ -3129,7 +3129,7 @@ class FreshserviceDataSource:
         self,
         id: int,
         workspace_id: int
-    ) -> FreshserviceResponse:
+    ) -> FreshDeskResponse:
         """Move software to a different workspace
 
         API Endpoint: PUT /api/v2/applications/[id]/move_workspace
@@ -3139,12 +3139,12 @@ class FreshserviceDataSource:
             workspace_id (int, required): ID of the target workspace
 
         Returns:
-            FreshserviceResponse: Standardized response wrapper
+            FreshDeskResponse: Standardized response wrapper
 
         Example:
             software = await ds.move_software(id=123, workspace_id=2)
         """
-        url = self._freshservice_client.get_base_url()
+        url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/move_workspace"
         request_body: Dict[str, Any] = {}
         if workspace_id is not None:
@@ -3164,33 +3164,16 @@ class FreshserviceDataSource:
             if response.status >= HTTP_ERROR_THRESHOLD:
                 logger.debug(f"move_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
 
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
                 message="Successfully executed move_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             logger.debug(f"Error in move_software: {e}")
-            return FreshserviceResponse(
+            return FreshDeskResponse(
                 success=False,
                 error=str(e),
                 message="Failed to execute move_software"
             )
 
-    def get_sdk_info(self) -> Dict[str, Any]:
-        """Get information about available SDK methods"""
-        namespaces: Dict[str, int] = {}
-        for method in self.generated_methods:
-            ns = method.get('namespace', 'root')
-            namespaces[ns] = namespaces.get(ns, 0) + 1
-
-        return {
-            "total_methods": len(self.generated_methods),
-            "namespaces": namespaces,
-            "methods": self.generated_methods
-        }
-
-    generated_methods = [{'name': 'create_ticket', 'namespace': 'tickets', 'method': 'POST', 'params': 12, 'path': '/api/v2/tickets'}, {'name': 'create_outbound_email', 'namespace': 'tickets', 'method': 'POST', 'params': 6, 'path': '/api/v2/tickets/outbound_email'}, {'name': 'get_ticket', 'namespace': 'tickets', 'method': 'GET', 'params': 2, 'path': '/api/v2/tickets/[id]'}, {'name': 'list_tickets', 'namespace': 'tickets', 'method': 'GET', 'params': 5, 'path': '/api/v2/tickets'}, {'name': 'filter_tickets', 'namespace': 'tickets', 'method': 'GET', 'params': 2, 'path': '/api/v2/search/tickets'}, {'name': 'update_ticket', 'namespace': 'tickets', 'method': 'PUT', 'params': 7, 'path': '/api/v2/tickets/[id]'}, {'name': 'delete_ticket', 'namespace': 'tickets', 'method': 'DELETE', 'params': 1, 'path': '/api/v2/tickets/[id]'}, {'name': 'list_ticket_fields', 'namespace': 'ticket_fields', 'method': 'GET', 'params': 1, 'path': '/api/v2/ticket_fields'}, {'name': 'list_ticket_conversations', 'namespace': 'comments', 'method': 'GET', 'params': 3, 'path': '/api/v2/tickets/[id]/conversations'}, {'name': 'create_note', 'namespace': 'comments', 'method': 'POST', 'params': 4, 'path': '/api/v2/tickets/[id]/notes'}, {'name': 'create_reply', 'namespace': 'comments', 'method': 'POST', 'params': 4, 'path': '/api/v2/tickets/[id]/reply'}, {'name': 'list_deleted_tickets', 'namespace': 'tickets', 'method': 'GET', 'params': 2, 'path': '/api/v2/tickets'}, {'name': 'restore_ticket', 'namespace': 'tickets', 'method': 'PUT', 'params': 1, 'path': '/api/v2/tickets/[id]/restore'}, {'name': 'create_problem', 'namespace': 'problems', 'method': 'POST', 'params': 16, 'path': '/api/v2/problems'}, {'name': 'get_problem', 'namespace': 'problems', 'method': 'GET', 'params': 1, 'path': '/api/v2/problems/[id]'}, {'name': 'list_problems', 'namespace': 'problems', 'method': 'GET', 'params': 4, 'path': '/api/v2/problems'}, {'name': 'update_problem', 'namespace': 'problems', 'method': 'PUT', 'params': 10, 'path': '/api/v2/problems/[id]'}, {'name': 'delete_problem', 'namespace': 'problems', 'method': 'DELETE', 'params': 1, 'path': '/api/v2/problems/[id]'}, {'name': 'restore_problem', 'namespace': 'problems', 'method': 'PUT', 'params': 1, 'path': '/api/v2/problems/[id]/restore'}, {'name': 'list_deleted_problems', 'namespace': 'problems', 'method': 'GET', 'params': 2, 'path': '/api/v2/problems/deleted'}, {'name': 'create_problem_note', 'namespace': 'problems', 'method': 'POST', 'params': 3, 'path': '/api/v2/problems/[id]/notes'}, {'name': 'list_problem_tasks', 'namespace': 'problems', 'method': 'GET', 'params': 3, 'path': '/api/v2/problems/[id]/tasks'}, {'name': 'create_problem_task', 'namespace': 'problems', 'method': 'POST', 'params': 8, 'path': '/api/v2/problems/[id]/tasks'}, {'name': 'update_problem_task', 'namespace': 'problems', 'method': 'PUT', 'params': 6, 'path': '/api/v2/problems/[problem_id]/tasks/[task_id]'}, {'name': 'delete_problem_task', 'namespace': 'problems', 'method': 'DELETE', 'params': 2, 'path': '/api/v2/problems/[problem_id]/tasks/[task_id]'}, {'name': 'list_problem_time_entries', 'namespace': 'problems', 'method': 'GET', 'params': 1, 'path': '/api/v2/problems/[id]/time_entries'}, {'name': 'create_agent', 'namespace': 'agents', 'method': 'POST', 'params': 21, 'path': '/api/v2/agents'}, {'name': 'view_agent', 'namespace': 'agents', 'method': 'GET', 'params': 1, 'path': '/api/v2/agents/[id]'}, {'name': 'list_agents', 'namespace': 'agents', 'method': 'GET', 'params': 7, 'path': '/api/v2/agents'}, {'name': 'filter_agents', 'namespace': 'agents', 'method': 'GET', 'params': 3, 'path': '/api/v2/agents?query=[query]'}, {'name': 'update_agent', 'namespace': 'agents', 'method': 'PUT', 'params': 21, 'path': '/api/v2/agents/[id]'}, {'name': 'deactivate_agent', 'namespace': 'agents', 'method': 'DELETE', 'params': 1, 'path': '/api/v2/agents/[id]'}, {'name': 'forget_agent', 'namespace': 'agents', 'method': 'DELETE', 'params': 1, 'path': '/api/v2/agents/[id]/forget'}, {'name': 'reactivate_agent', 'namespace': 'agents', 'method': 'PUT', 'params': 1, 'path': '/api/v2/agents/[id]/reactivate'}, {'name': 'list_agent_fields', 'namespace': 'agents', 'method': 'GET', 'params': 1, 'path': '/api/v2/agent_fields'}, {'name': 'create_software', 'namespace': 'software', 'method': 'POST', 'params': 10, 'path': '/api/v2/applications'}, {'name': 'view_software', 'namespace': 'software', 'method': 'GET', 'params': 1, 'path': '/api/v2/applications/[id]'}, {'name': 'list_software', 'namespace': 'software', 'method': 'GET', 'params': 3, 'path': '/api/v2/applications'}, {'name': 'update_software', 'namespace': 'software', 'method': 'PUT', 'params': 10, 'path': '/api/v2/applications/[id]'}, {'name': 'delete_software', 'namespace': 'software', 'method': 'DELETE', 'params': 1, 'path': '/api/v2/applications/[id]'}, {'name': 'list_software_licenses', 'namespace': 'software', 'method': 'GET', 'params': 1, 'path': '/api/v2/applications/[id]/licenses'}, {'name': 'add_software_users', 'namespace': 'software', 'method': 'POST', 'params': 2, 'path': '/api/v2/applications/[id]/users'}, {'name': 'view_software_user', 'namespace': 'software', 'method': 'GET', 'params': 2, 'path': '/api/v2/applications/[id]/users/[user_id]'}, {'name': 'list_software_users', 'namespace': 'software', 'method': 'GET', 'params': 3, 'path': '/api/v2/applications/[id]/users'}, {'name': 'update_software_users', 'namespace': 'software', 'method': 'PUT', 'params': 2, 'path': '/api/v2/applications/[id]/users'}, {'name': 'remove_software_users', 'namespace': 'software', 'method': 'DELETE', 'params': 2, 'path': '/api/v2/applications/[id]/users'}, {'name': 'add_software_installation', 'namespace': 'software', 'method': 'POST', 'params': 5, 'path': '/api/v2/applications/[id]/installations'}, {'name': 'list_software_installations', 'namespace': 'software', 'method': 'GET', 'params': 3, 'path': '/api/v2/applications/[id]/installations'}, {'name': 'remove_software_installations', 'namespace': 'software', 'method': 'DELETE', 'params': 2, 'path': '/api/v2/applications/[id]/installations'}, {'name': 'move_software', 'namespace': 'software', 'method': 'PUT', 'params': 2, 'path': '/api/v2/applications/[id]/move_workspace'}]
-
-
-__all__ = ['FreshserviceDataSource', 'FreshserviceResponse']
