@@ -1,9 +1,13 @@
 """
 Health check integration tests for PipesHub AI services.
 """
+import logging
 import time
 import pytest
 import httpx
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 @pytest.mark.health
@@ -27,7 +31,7 @@ class TestHealthChecks:
             assert "error" in result, "Error response should contain error details"
             if strict_mode:
                 pytest.fail(f"Node.js backend unavailable in strict mode: {result['error']}")
-            print(f"Node.js backend not available: {result['error']}")
+            logger.warning(f"Node.js backend not available: {result['error']}")
             pytest.skip("Node.js backend not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
@@ -47,7 +51,7 @@ class TestHealthChecks:
             assert "error" in result, "Error response should contain error details"
             if strict_mode:
                 pytest.fail(f"Query service unavailable in strict mode: {result['error']}")
-            print(f"Query service not available: {result['error']}")
+            logger.warning(f"Query service not available: {result['error']}")
             pytest.skip("Query service not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
@@ -67,7 +71,7 @@ class TestHealthChecks:
             assert "error" in result, "Error response should contain error details"
             if strict_mode:
                 pytest.fail(f"Indexing service unavailable in strict mode: {result['error']}")
-            print(f"Indexing service not available: {result['error']}")
+            logger.warning(f"Indexing service not available: {result['error']}")
             pytest.skip("Indexing service not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
@@ -87,7 +91,7 @@ class TestHealthChecks:
             assert "error" in result, "Error response should contain error details"
             if strict_mode:
                 pytest.fail(f"Connector service unavailable in strict mode: {result['error']}")
-            print(f"Connector service not available: {result['error']}")
+            logger.warning(f"Connector service not available: {result['error']}")
             pytest.skip("Connector service not running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
@@ -130,14 +134,14 @@ class TestHealthChecks:
         # Log health status for debugging
         for service_name, result in health_results.items():
             status = result["status"]
-            print(f"Service {service_name}: {status}")
+            logger.info(f"Service {service_name}: {status}")
         
         # For P0 testing, we just verify that the health checker works
         # We don't require services to be running
         healthy_services = [name for name in health_results.keys() if health_results[name]["status"] == "healthy"]
         unhealthy_services = [name for name in health_results.keys() if health_results[name]["status"] == "unhealthy"]
         
-        print(f"Health check completed: {len(healthy_services)} healthy, {len(unhealthy_services)} unhealthy")
+        logger.info(f"Health check completed: {len(healthy_services)} healthy, {len(unhealthy_services)} unhealthy")
         
         # Verify that all services were checked (either healthy or unhealthy)
         assert len(health_results) == len(services), "Not all services were checked"
@@ -147,11 +151,11 @@ class TestHealthChecks:
         if len(healthy_services) == 0:
             if strict_mode:
                 pytest.fail("No services running in strict mode")
-            print("No services are running - this is acceptable for P0 testing")
+            logger.warning("No services are running - this is acceptable for P0 testing")
             pytest.skip("No services running - acceptable for P0 testing")
     
     @pytest.mark.asyncio
-    async def test_health_endpoint_response_format(self, http_client, test_config):
+    async def test_health_endpoint_response_format(self, http_client, test_config, strict_mode):
         """Test that health endpoints return properly formatted responses."""
         # Test Node.js backend health format
         try:
@@ -161,7 +165,9 @@ class TestHealthChecks:
                 assert isinstance(data, dict), "Health response should be a JSON object"
                 assert "status" in data, "Health response should contain 'status' field"
                 assert "timestamp" in data, "Health response should contain 'timestamp' field"
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            if strict_mode:
+                pytest.fail(f"Node.js backend not available in strict mode: {e}")
             pytest.skip("Node.js backend not available")
         
         # Test Python service health format
@@ -176,11 +182,13 @@ class TestHealthChecks:
                     data = response.json()
                     assert isinstance(data, dict), f"{service_name} health response should be a JSON object"
                     assert "status" in data, f"{service_name} health response should contain 'status' field"
-            except httpx.RequestError:
-                print(f"Service {service_name} not available")
+            except httpx.RequestError as e:
+                if strict_mode:
+                    pytest.fail(f"Service {service_name} not available in strict mode: {e}")
+                logger.warning(f"Service {service_name} not available")
     
     @pytest.mark.asyncio
-    async def test_health_endpoint_timeout(self, http_client, test_config):
+    async def test_health_endpoint_timeout(self, http_client, test_config, strict_mode):
         """Test that health endpoints respond within reasonable time."""
         timeout = httpx.Timeout(5.0)  # 5 second timeout
         
@@ -201,14 +209,16 @@ class TestHealthChecks:
                 assert response_time < 5.0, f"{service_name} health check took too long: {response_time:.2f}s"
                 
                 if response.status_code == 200:
-                    print(f"{service_name} responded in {response_time:.2f}s")
+                    logger.info(f"{service_name} responded in {response_time:.2f}s")
                 else:
-                    print(f"{service_name} responded with status {response.status_code} in {response_time:.2f}s")
+                    logger.warning(f"{service_name} responded with status {response.status_code} in {response_time:.2f}s")
                     
             except httpx.TimeoutException:
                 pytest.fail(f"{service_name} health check timed out after 5 seconds")
             except httpx.RequestError as e:
-                print(f"{service_name} not available: {e}")
+                if strict_mode:
+                    pytest.fail(f"{service_name} not available in strict mode: {e}")
+                logger.warning(f"{service_name} not available: {e}")
 
 
 # Additional utility tests

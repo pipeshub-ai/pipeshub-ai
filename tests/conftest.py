@@ -2,6 +2,7 @@
 Test configuration and fixtures for PipesHub AI integration tests.
 """
 import asyncio
+import logging
 import os
 import subprocess
 import time
@@ -12,12 +13,22 @@ import httpx
 import pytest
 import pytest_asyncio
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 # Docker is optional for tests; enable with TEST_USE_DOCKER=1
 USE_DOCKER = os.getenv("TEST_USE_DOCKER", "0") == "1"
 
-# Strict mode: when enabled, tests will FAIL if dependent services are unavailable
-# Enable with TEST_STRICT_SERVICES=1
-STRICT_MODE = os.getenv("TEST_STRICT_SERVICES", "0") == "1"
+# Strict mode: when enabled, tests will FAIL if dependent services are unavailable.
+# Enabled by default; set TEST_STRICT_SERVICES=0 (or false) to disable strict mode.
+def _env_flag(name: str, default: str = "1") -> bool:
+    """Parse common truthy env var values.
+
+    Returns True for values like: 1, true, yes, y, on (case-insensitive).
+    """
+    return os.getenv(name, default).lower() in ("1", "true", "yes", "y", "on")
+
+STRICT_MODE = _env_flag("TEST_STRICT_SERVICES", "1")
 
 # Test configuration
 TEST_CONFIG = {
@@ -100,10 +111,10 @@ class DockerManager:
                 
                 self.containers[name] = container
                 results[name] = True
-                print(f"Started {name} container")
+                logger.info(f"Started {name} container")
                 
             except Exception as e:
-                print(f"Failed to start {name} container: {e}")
+                logger.error(f"Failed to start {name} container: {e}")
                 results[name] = False
         
         return results
@@ -114,7 +125,7 @@ class DockerManager:
             try:
                 container.stop(timeout=5)
             except Exception as e:
-                print(f"Warning: Failed to stop container {container.name}: {e}")
+                logger.warning(f"Failed to stop container {container.name}: {e}")
     
     def wait_for_containers(self, timeout: int = 30) -> bool:
         """Wait for containers to be ready."""
@@ -203,7 +214,7 @@ def docker_manager():
 @pytest.fixture(scope="session")
 def test_containers(docker_manager):
     """Start and manage test containers."""
-    print("Starting test containers...")
+    logger.info("Starting test containers...")
     results = docker_manager.start_containers()
     
     # Check if all required containers started
@@ -217,10 +228,10 @@ def test_containers(docker_manager):
     if not docker_manager.wait_for_containers():
         pytest.skip("Containers failed to become ready within timeout")
     
-    print("All test containers are ready")
+    logger.info("All test containers are ready")
     yield docker_manager.containers
     
-    print("Stopping test containers...")
+    logger.info("Stopping test containers...")
     docker_manager.stop_containers()
 
 

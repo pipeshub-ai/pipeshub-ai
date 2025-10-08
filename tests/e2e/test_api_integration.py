@@ -1,9 +1,13 @@
 """
 API integration tests for PipesHub AI services.
 """
+import logging
 import pytest
 import httpx
 from typing import Dict, Any
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 @pytest.mark.integration
@@ -21,9 +25,9 @@ class TestAPIIntegration:
                 
                 # Query service should check connector service health
                 if "connector_status" in query_data or "dependencies" in query_data:
-                    print("Query service reports connector service status")
+                    logger.info("Query service reports connector service status")
                 else:
-                    print("Query service health doesn't include connector status")
+                    logger.info("Query service health doesn't include connector status")
             
             # Test that indexing service can reach connector service
             indexing_health = await http_client.get(f"{test_config['indexing_service_url']}/health")
@@ -32,14 +36,14 @@ class TestAPIIntegration:
                 
                 # Indexing service should check connector service health
                 if "connector_status" in indexing_data or "dependencies" in indexing_data:
-                    print("Indexing service reports connector service status")
+                    logger.info("Indexing service reports connector service status")
                 else:
-                    print("Indexing service health doesn't include connector status")
+                    logger.info("Indexing service health doesn't include connector status")
                     
         except httpx.RequestError as e:
             if strict_mode:
                 pytest.fail(f"Service communication failed in strict mode: {e}")
-            print(f"Service communication test not available: {e}")
+            logger.warning(f"Service communication test not available: {e}")
     
     @pytest.mark.asyncio
     async def test_api_response_consistency(self, http_client, test_config, strict_mode):
@@ -92,12 +96,12 @@ class TestAPIIntegration:
                 
                 # Should return 404 for invalid endpoints
                 assert response.status_code == 404, f"Expected 404 for {endpoint}, got {response.status_code}"
-                print(f"Error handling working for {endpoint}")
+                logger.info(f"Error handling working for {endpoint}")
                 
             except httpx.RequestError:
                 if strict_mode:
                     pytest.fail(f"Service not available for error testing in strict mode: {endpoint}")
-                print(f"Service not available for error testing: {endpoint}")
+                logger.warning(f"Service not available for error testing: {endpoint}")
     
     @pytest.mark.asyncio
     async def test_api_timeout_handling(self, http_client, test_config, strict_mode):
@@ -175,14 +179,14 @@ class TestAPIAuthentication:
             response = await http_client.get(f"{test_config['nodejs_backend_url']}/api/v1/health")
             
             if response.status_code == 200:
-                print(" Health endpoint accessible without authentication")
+                logger.info(" Health endpoint accessible without authentication")
             elif response.status_code == 401:
-                print("Health endpoint requires authentication")
+                logger.info("Health endpoint requires authentication")
             else:
-                print(f"Health endpoint returned status {response.status_code}")
+                logger.warning(f"Health endpoint returned status {response.status_code}")
                 
         except httpx.RequestError as e:
-            print(f"Node.js backend not available: {e}")
+            logger.warning(f"Node.js backend not available: {e}")
     
     @pytest.mark.asyncio
     async def test_unauthorized_access(self, http_client, test_config):
@@ -199,16 +203,16 @@ class TestAPIAuthentication:
                 response = await http_client.get(endpoint, timeout=5.0)
                 
                 if response.status_code == 401:
-                    print(f"{endpoint} properly requires authentication")
+                    logger.info(f"{endpoint} properly requires authentication")
                 elif response.status_code == 403:
-                    print(f"{endpoint} properly denies access")
+                    logger.info(f"{endpoint} properly denies access")
                 elif response.status_code == 200:
-                    print(f"{endpoint} accessible without authentication")
+                    logger.warning(f"{endpoint} accessible without authentication")
                 else:
-                    print(f"{endpoint} returned status {response.status_code}")
+                    logger.warning(f"{endpoint} returned status {response.status_code}")
                     
             except httpx.RequestError:
-                print(f"{endpoint} not available for auth testing")
+                logger.warning(f"{endpoint} not available for auth testing")
 
 
 @pytest.mark.integration
@@ -230,12 +234,12 @@ class TestAPIPerformance:
             responses = await asyncio.gather(*tasks, return_exceptions=True)
             
             successful_responses = [r for r in responses if not isinstance(r, Exception) and r.status_code == 200]
-            print(f"Concurrent requests: {len(successful_responses)}/{len(tasks)} successful")
+            logger.info(f"Concurrent requests: {len(successful_responses)}/{len(tasks)} successful")
             
         except Exception as e:
             if strict_mode:
                 pytest.fail(f"Concurrent request test failed in strict mode: {e}")
-            print(f"Concurrent request test failed: {e}")
+            logger.warning(f"Concurrent request test failed: {e}")
     
     @pytest.mark.asyncio
     async def test_api_response_times(self, http_client, test_config, strict_mode):
@@ -257,14 +261,14 @@ class TestAPIPerformance:
                 response_time = end_time - start_time
                 
                 if response.status_code == 200:
-                    print(f"{service_name} responded in {response_time:.2f}s")
+                    logger.info(f"{service_name} responded in {response_time:.2f}s")
                 else:
-                    print(f"{service_name} returned status {response.status_code} in {response_time:.2f}s")
+                    logger.warning(f"{service_name} returned status {response.status_code} in {response_time:.2f}s")
                     
             except httpx.RequestError:
                 if strict_mode:
                     pytest.fail(f"{service_name} not available for performance testing in strict mode")
-                print(f"{service_name} not available for performance testing")
+                logger.warning(f"{service_name} not available for performance testing")
     
     @pytest.mark.asyncio
     async def test_api_memory_usage(self, http_client, test_config, strict_mode):
@@ -284,14 +288,14 @@ class TestAPIPerformance:
             )
             
             if response.status_code == 200:
-                print("API handled large request successfully")
+                logger.info("API handled large request successfully")
             elif response.status_code == 400:
-                print("API rejected large request (expected)")
+                logger.info("API rejected large request (expected)")
             else:
-                print(f"API returned status {response.status_code} for large request")
+                logger.warning(f"API returned status {response.status_code} for large request")
                 
         except httpx.RequestError:
             if strict_mode:
                 pytest.fail("Search endpoint not available for memory testing in strict mode")
-            print("Search endpoint not available for memory testing")
+            logger.warning("Search endpoint not available for memory testing")
 

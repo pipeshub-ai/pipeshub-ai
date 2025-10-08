@@ -121,19 +121,19 @@ pytest tests/ --cov=backend --cov-report=html
 
 ### Strict Mode (service availability enforcement)
 
-By default, tests may skip when dependent services are unavailable (P0 flexibility). Enable strict mode to FAIL if services are down:
+By default, tests will FAIL when dependent services are unavailable (strict mode enabled). If you want the previous, more permissive behaviour (skip tests when services are down), disable strict mode by setting `TEST_STRICT_SERVICES` to `0` or `false`.
 
 ```bash
-# Unix/macOS
-export TEST_STRICT_SERVICES=1
+# Unix/macOS - disable strict mode
+export TEST_STRICT_SERVICES=0
 pytest -q
 
-# Windows PowerShell
-$env:TEST_STRICT_SERVICES = "1"
+# Windows PowerShell - disable strict mode
+$env:TEST_STRICT_SERVICES = "0"
 pytest -q
 
-# Windows cmd
-set TEST_STRICT_SERVICES=1
+# Windows cmd - disable strict mode
+set TEST_STRICT_SERVICES=0
 pytest -q
 ```
 
@@ -172,7 +172,7 @@ The tests use the following environment variables:
 - `INDEXING_SERVICE_URL`: http://localhost:8091
 - `CONNECTOR_SERVICE_URL`: http://localhost:8088
 - `DOCLING_SERVICE_URL`: http://localhost:8092
-- `TEST_STRICT_SERVICES`: set to `1` to fail tests when services are unavailable; default is non-strict (skips allowed)
+- `TEST_STRICT_SERVICES`: when true (default), tests will fail if services are unavailable; set to `0` or `false` to allow skips when services are down
 
 ### Test Configuration
 Modify `tests/fixtures/test_configs.py` to adjust:

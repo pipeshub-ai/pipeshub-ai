@@ -92,12 +92,16 @@ jobs:
           TEST_USE_DOCKER: '1'
           PYTHONPATH: backend/python
         run: |
-          pytest -m "P0 or health" --maxfail=1 --disable-warnings -q
+          pytest -m "P0 or health" --maxfail=1 --disable-warnings -v --log-cli-level=INFO
 
-      - name: Show docker logs on failure
+      - name: Show test logs on failure
         if: ${{ failure() }}
         run: |
+          echo "=== Test Logs ==="
+          cat test_results/test.log || echo "No test log file found"
+          echo "=== Docker Status ==="
           docker ps -a
+          echo "=== Docker Logs ==="
           docker compose -f deployment/docker-compose/docker-compose.ci.yml logs --no-color --tail=200 || true
 
       - name: Stop services

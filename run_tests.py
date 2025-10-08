@@ -3,11 +3,20 @@
 Test runner script for PipesHub AI integration tests.
 """
 import argparse
+import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Tuple
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)8s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 def run_command(command: list[str], cwd: str | None = None) -> Tuple[bool, str, str]:
@@ -27,32 +36,32 @@ def run_command(command: list[str], cwd: str | None = None) -> Tuple[bool, str, 
 
 def check_dependencies() -> bool:
     """Check if required dependencies are installed."""
-    print("Checking dependencies...")
+    logger.info("Checking dependencies...")
     
     # Check Python version
     if sys.version_info < (3, 11):
-        print("Python 3.11+ is required")
+        logger.error("Python 3.11+ is required")
         return False
     
     # Check if pytest is installed
     success, stdout, stderr = run_command("python -m pytest --version")
     if not success:
-        print("pytest is not installed")
-        print("Install with: pip install -r requirements-test.txt")
+        logger.error("pytest is not installed")
+        logger.error("Install with: pip install -r requirements-test.txt")
         return False
     
     # Check if Docker is available
     success, stdout, stderr = run_command("docker --version")
     if not success:
-        print("Docker is not available - some tests may be skipped")
+        logger.warning("Docker is not available - some tests may be skipped")
     
-    print("Dependencies check completed")
+    logger.info("Dependencies check completed")
     return True
 
 
 def setup_test_environment() -> None:
     """Set up the test environment."""
-    print("Setting up test environment...")
+    logger.info("Setting up test environment...")
     
     # Create test directories
     test_dirs = ["tests/fixtures", "tests/utils", "test_results"]
@@ -62,108 +71,108 @@ def setup_test_environment() -> None:
     # Set environment variables
     os.environ["PYTHONPATH"] = str(Path.cwd())
     
-    print("Test environment setup completed")
+    logger.info("Test environment setup completed")
 
 
 def run_health_tests() -> bool:
     """Run health check tests."""
-    print("Running health check tests")
+    logger.info("Running health check tests")
     
     command = "python -m pytest tests/test_health_checks.py -v --tb=short"
     success, stdout, stderr = run_command(command)
     
     if success:
-        print("Health check tests passed")
+        logger.info("Health check tests passed")
         return True
     else:
-        print("Health check tests failed")
-        print("STDOUT:", stdout)
-        print("STDERR:", stderr)
+        logger.error("Health check tests failed")
+        logger.error(f"STDOUT: {stdout}")
+        logger.error(f"STDERR: {stderr}")
         return False
 
 
 def run_indexing_tests() -> bool:
     """Run indexing tests."""
-    print("Running indexing tests...")
+    logger.info("Running indexing tests...")
     
     command = "python -m pytest tests/test_indexing.py -v --tb=short"
     success, stdout, stderr = run_command(command)
     
     if success:
-        print("Indexing tests passed")
+        logger.info("Indexing tests passed")
         return True
     else:
-        print("Indexing tests failed")
-        print("STDOUT:", stdout)
-        print("STDERR:", stderr)
+        logger.error("Indexing tests failed")
+        logger.error(f"STDOUT: {stdout}")
+        logger.error(f"STDERR: {stderr}")
         return False
 
 
 def run_search_tests() -> bool:
     """Run search tests."""
-    print("Running search tests...")
+    logger.info("Running search tests...")
     
     command = "python -m pytest tests/test_search.py -v --tb=short"
     success, stdout, stderr = run_command(command)
     
     if success:
-        print("Search tests passed")
+        logger.info("Search tests passed")
         return True
     else:
-        print("Search tests failed")
-        print("STDOUT:", stdout)
-        print("STDERR:", stderr)
+        logger.error("Search tests failed")
+        logger.error(f"STDOUT: {stdout}")
+        logger.error(f"STDERR: {stderr}")
         return False
 
 
 def run_integration_tests() -> bool:
     """Run integration tests."""
-    print("🔗 Running integration tests...")
+    logger.info("🔗 Running integration tests...")
     
     command = "python -m pytest tests/test_api_integration.py -v --tb=short"
     success, stdout, stderr = run_command(command)
     
     if success:
-        print("Integration tests passed")
+        logger.info("Integration tests passed")
         return True
     else:
-        print("Integration tests failed")
-        print("STDOUT:", stdout)
-        print("STDERR:", stderr)
+        logger.error("Integration tests failed")
+        logger.error(f"STDOUT: {stdout}")
+        logger.error(f"STDERR: {stderr}")
         return False
 
 
 def run_all_tests() -> bool:
     """Run all tests."""
-    print("🧪 Running all tests...")
+    logger.info("🧪 Running all tests...")
     
     command = "python -m pytest tests/ -v --tb=short"
     success, stdout, stderr = run_command(command)
     
     if success:
-        print("All tests passed")
+        logger.info("All tests passed")
         return True
     else:
-        print("Some tests failed")
-        print("STDOUT:", stdout)
-        print("STDERR:", stderr)
+        logger.error("Some tests failed")
+        logger.error(f"STDOUT: {stdout}")
+        logger.error(f"STDERR: {stderr}")
         return False
 
 
 def run_specific_tests(test_pattern: str) -> bool:
     """Run tests matching a specific pattern."""
-    print(f"Running tests matching: {test_pattern}")
+    logger.info(f"Running tests matching: {test_pattern}")
     
     command = f"python -m pytest tests/ -k {test_pattern} -v --tb=short"
     success, stdout, stderr = run_command(command)
     
     if success:
-        print("Tests passed")
+        logger.info("Tests passed")
         return True
     else:
-        print("Tests failed")
-        print("STDOUT:", stdout)
-        print("STDERR:", stderr)
+        logger.error("Tests failed")
+        logger.error(f"STDOUT: {stdout}")
+        logger.error(f"STDERR: {stderr}")
         return False
 
 
@@ -192,8 +201,8 @@ def main() -> None:
     
     args = parser.parse_args()
     
-    print("PipesHub AI Integration Test Runner")
-    print("=" * 50)
+    logger.info("PipesHub AI Integration Test Runner")
+    logger.info("=" * 50)
     
     # Check dependencies
     if not args.skip_deps:
@@ -204,7 +213,7 @@ def main() -> None:
     setup_test_environment()
     
     if args.setup_only:
-        print("Test environment setup completed")
+        logger.info("Test environment setup completed")
         return
     
     # Run tests based on type
@@ -222,15 +231,15 @@ def main() -> None:
         success = run_all_tests()
     elif args.test_type == "specific":
         if not args.pattern:
-            print("Pattern is required for specific tests")
+            logger.error("Pattern is required for specific tests")
             sys.exit(1)
         success = run_specific_tests(args.pattern)
     
     if success:
-        print("\nAll tests completed successfully!")
+        logger.info("\nAll tests completed successfully!")
         sys.exit(0)
     else:
-        print("\nSome tests failed!")
+        logger.error("\nSome tests failed!")
         sys.exit(1)
 
 

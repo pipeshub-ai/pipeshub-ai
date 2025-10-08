@@ -1,11 +1,15 @@
 """
 Docker helper utilities for integration tests.
 """
+import logging
 import time
 import subprocess
 from typing import Dict, List, Optional, Tuple
 from docker import DockerClient
 from docker.errors import ContainerError, NotFound
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class DockerHelper:
@@ -26,7 +30,7 @@ class DockerHelper:
                 result = self._start_container(container_name)
                 results[container_name] = result
             except Exception as e:
-                print(f"Failed to start {container_name}: {e}")
+                logger.error(f"Failed to start {container_name}: {e}")
                 results[container_name] = False
         
         return results
@@ -40,18 +44,18 @@ class DockerHelper:
             if container_name in self.containers:
                 try:
                     self.containers[container_name].stop(timeout=5)
-                    print(f"Stopped {container_name}")
+                    logger.info(f"Stopped {container_name}")
                 except Exception as e:
-                    print(f"Failed to stop {container_name}: {e}")
+                    logger.error(f"Failed to stop {container_name}: {e}")
     
     def cleanup_test_containers(self):
         """Remove all test containers."""
         for container_name, container in self.containers.items():
             try:
                 container.remove(force=True)
-                print(f"Removed {container_name}")
+                logger.info(f"Removed {container_name}")
             except Exception as e:
-                print(f"Failed to remove {container_name}: {e}")
+                logger.error(f"Failed to remove {container_name}: {e}")
     
     def get_container_status(self, container_name: str) -> Optional[str]:
         """Get the status of a container."""
@@ -212,7 +216,7 @@ class ServiceManager:
                 result = self._start_service(service_name)
                 results[service_name] = result
             except Exception as e:
-                print(f"Failed to start {service_name}: {e}")
+                logger.error(f"Failed to start {service_name}: {e}")
                 results[service_name] = False
         
         return results
@@ -227,9 +231,9 @@ class ServiceManager:
                 try:
                     self.processes[service_name].terminate()
                     self.processes[service_name].wait(timeout=5)
-                    print(f"Stopped {service_name}")
+                    logger.info(f"Stopped {service_name}")
                 except Exception as e:
-                    print(f"Failed to stop {service_name}: {e}")
+                    logger.error(f"Failed to stop {service_name}: {e}")
     
     def _start_service(self, service_name: str) -> bool:
         """Start a specific service."""
@@ -256,7 +260,7 @@ class ServiceManager:
             self.processes[service_name] = process
             return True
         except Exception as e:
-            print(f"Failed to start {service_name}: {e}")
+            logger.error(f"Failed to start {service_name}: {e}")
             return False
     
     def _get_service_directory(self, service_name: str) -> str:
