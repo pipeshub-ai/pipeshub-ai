@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.forms.forms import GoogleFormsDataSource
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleForms:
     """Google Forms tool exposed to the agents using GoogleFormsDataSource"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Forms tool"""
         """
         Args:

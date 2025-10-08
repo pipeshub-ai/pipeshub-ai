@@ -3,9 +3,10 @@ Configuration module for tool discovery and management.
 Centralizes all configuration to make the system easier to maintain and extend.
 """
 
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
+
+from pydantic import BaseModel, Field
 
 
 class ToolCategory(Enum):
@@ -20,8 +21,7 @@ class ToolCategory(Enum):
     SEARCH = "search"
 
 
-@dataclass
-class ToolMetadata:
+class ToolMetadata(BaseModel):
     """
     Metadata for a tool.
 
@@ -41,12 +41,11 @@ class ToolMetadata:
     category: ToolCategory
     is_essential: bool = False
     requires_auth: bool = True
-    dependencies: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
 
 
-@dataclass
-class AppConfiguration:
+class AppConfiguration(BaseModel):
     """
     Configuration for an application and its tools.
 
@@ -59,9 +58,9 @@ class AppConfiguration:
     """
     app_name: str
     enabled: bool = True
-    subdirectories: List[str] = field(default_factory=list)
+    subdirectories: List[str] = Field(default_factory=list)
     client_builder: Optional[str] = None
-    service_configs: Dict[str, Any] = field(default_factory=dict)
+    service_configs: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolDiscoveryConfig:

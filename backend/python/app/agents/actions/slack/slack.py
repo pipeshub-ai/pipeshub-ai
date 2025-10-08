@@ -8,6 +8,7 @@ from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 class Slack:
     """Slack tool exposed to the agents using SlackDataSource"""
 
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: SlackClient) -> None:
         """Initialize the Slack tool"""
         """
         Args:

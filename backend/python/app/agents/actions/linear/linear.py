@@ -7,6 +7,7 @@ from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Linear:
     """Linear tool exposed to the agents"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: LinearClient) -> None:
         """Initialize the Linear tool"""
         """
         Args:

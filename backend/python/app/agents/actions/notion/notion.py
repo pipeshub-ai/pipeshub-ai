@@ -7,6 +7,7 @@ from typing import Coroutine, Dict, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 class Notion:
     """Notion tool exposed to the agents using NotionDataSource"""
 
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: NotionClient) -> None:
         """Initialize the Notion tool
 
         Args:

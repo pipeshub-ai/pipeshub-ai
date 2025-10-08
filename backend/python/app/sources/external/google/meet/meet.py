@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional
 
+from app.sources.client.google.google import GoogleClient
+
 
 class GoogleMeetDataSource:
     """
@@ -10,7 +12,7 @@ class GoogleMeetDataSource:
     """
     def __init__(
         self,
-        client: object
+        client: GoogleClient
     ) -> None:
         """
         Initialize with Google Meet API client.

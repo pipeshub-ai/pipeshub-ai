@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional
 
+from app.sources.client.google.google import GoogleClient
+
 
 class GoogleSheetsDataSource:
     """
@@ -10,7 +12,7 @@ class GoogleSheetsDataSource:
     """
     def __init__(
         self,
-        client: object
+        client: GoogleClient
     ) -> None:
         """
         Initialize with Google Sheets API client.

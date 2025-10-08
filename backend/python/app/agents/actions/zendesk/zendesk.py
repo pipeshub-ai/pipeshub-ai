@@ -8,6 +8,7 @@ from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.zendesk.zendesk import ZendeskClient
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Zendesk:
     """Zendesk tool exposed to the agents"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: ZendeskClient) -> None:
         """Initialize the Zendesk tool"""
         """
         Args:

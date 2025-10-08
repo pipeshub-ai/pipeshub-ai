@@ -6,6 +6,7 @@ from typing import Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.slides.slides import GoogleSlidesDataSource
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleSlides:
     """Google Slides tool exposed to the agents using GoogleSlidesDataSource"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Slides tool"""
         """
         Args:

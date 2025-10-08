@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class Jira:
     """JIRA tool exposed to the agents using JiraDataSource"""
 
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: JiraClient) -> None:
         """Initialize the JIRA tool
 
         Args:

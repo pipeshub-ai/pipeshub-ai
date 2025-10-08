@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.dropbox.dropbox_ import DropboxClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Dropbox:
     """Dropbox tool exposed to the agents"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: DropboxClient) -> None:
         """Initialize the Dropbox tool"""
         """
         Args:

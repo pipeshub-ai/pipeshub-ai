@@ -7,6 +7,7 @@ from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.teams.teams import TeamsDataSource
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Teams:
     """Microsoft Teams tool exposed to the agents"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: MSGraphClient) -> None:
         """Initialize the Teams tool"""
         """
         Args:

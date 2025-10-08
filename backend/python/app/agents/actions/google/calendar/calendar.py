@@ -6,6 +6,7 @@ from typing import List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 from app.utils.time_conversion import prepare_iso_timestamps
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleCalendar:
     """Google Calendar tool exposed to the agents using GoogleCalendarDataSource"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Calendar tool"""
         """
         Args:

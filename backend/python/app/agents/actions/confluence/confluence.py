@@ -7,6 +7,7 @@ from typing import Coroutine, Dict, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.confluence.confluence import ConfluenceDataSource
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class Confluence:
     """Confluence tool exposed to the agents using ConfluenceDataSource"""
 
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: ConfluenceClient) -> None:
         """Initialize the Confluence tool
 
         Args:

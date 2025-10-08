@@ -7,6 +7,7 @@ from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Gmail:
     """Gmail tool exposed to the agents using GoogleGmailDataSource"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: GoogleClient) -> None:
         """Initialize the Gmail tool"""
         """
         Args:

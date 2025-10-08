@@ -7,6 +7,7 @@ from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class S3:
     """S3 tool exposed to the agents"""
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: S3Client) -> None:
         """Initialize the S3 tool"""
         """
         Args:
