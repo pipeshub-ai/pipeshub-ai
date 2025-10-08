@@ -132,3 +132,6 @@ class ServiceUnavailableError(HTTPException):
     """
     def __init__(self, message: str = "Service Unavailable") -> None:
         super().__init__(HttpStatusCode.SERVICE_UNAVAILABLE.value, message)
+
+class VectorDBEmptyError(ValueError):
+    pass
