@@ -273,7 +273,7 @@ frontend/
     └── assets/
         └── icons/
             └── connectors/
-                └── your_connector.svg           # 🆕 Add connector icon
+                └── yourconnector.svg           # 🆕 Add connector icon
 ```
 
 ### Key Components Overview
@@ -283,7 +283,7 @@ frontend/
 | **[BaseConnector](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/connector/connector_service.py)**                           | `python/app/connectors/core/base/connector/connector_service.py` | Abstract base class - all connectors extend this |
 | **[ConnectorBuilder](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/registry/connector_builder.py)**                              | `python/app/connectors/core/registry/connector_builder.py`       | Decorator for connector metadata & UI schema     |
 | **[ConnectorFactory](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/factory/connector_factory.py)**                               | `python/app/connectors/core/factory/connector_factory.py`        | Registry mapping connector names to classes      |
-| **[DataEntitiesProcessor](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py)** | `python/app/connectors/core/base/data_processor/`                | Handles record/permission persistence            |
+| **[DataSourceEntitiesProcessor](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py)** | `python/app/connectors/core/base/data_processor/data_source_entities_processor.py` | Handles record/permission persistence            |
 | **[Record Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**                                                            | `python/app/models/entities.py`                                  | Data models (FileRecord, MailRecord, etc.)       |
 | **[External API Clients](https://github.com/pipeshub-ai/pipeshub-ai/tree/main/backend/python/app/sources/external)**                                                       | `python/app/sources/external/`                                   | Wrappers for external service APIs               |
 
@@ -312,7 +312,7 @@ Connector data is stored in Graph DB as a **property graph** - a network of node
 
 | Edge Type                                                                                                                        | Collection        | From → To                           | Purpose                                | Example                                      |
 | -------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------- | -------------------------------------- | -------------------------------------------- |
-| **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py#L22)**              | `permissions`     | Record → User                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
+| **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py#L22)**              | `permissions`     | User → Record                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
 | **[RecordRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py#L221)** | `recordRelations` | Record → Record                     | Record-to-record relationships         | Folder contains file, email has attachment   |
 | **IsOfType**                                                                                                                     | `isOfType`        | Record → FileRecord/MailRecord/etc. | Links base record to specific type     | Base record is a FileRecord                  |
 | **BelongsTo**                                                                                                                    | `belongsTo`       | Record/User → RecordGroup           | Membership in a container              | File belongs to a drive, user belongs to org |
@@ -577,7 +577,7 @@ See example: [OneDrive Connector](https://github.com/pipeshub-ai/pipeshub-ai/blo
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -619,10 +619,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 # from app.sources.external.{vendor}.{connector_name}.{connector_name} import YourAPIClient
 
 
-@ConnectorBuilder("YourConnector")\
+@ConnectorBuilder("YourConnector")
     .in_group("Your Vendor")  # e.g., "Microsoft 365", "Atlassian"
     .with_auth_type("OAUTH_ADMIN_CONSENT")  # or "OAUTH", "API_TOKEN"
-    .with_description("Sync data from YourConnector")\
+    .with_description("Sync data from YourConnector")
     .with_categories(["Category1", "Category2"])  # e.g., ["Email"], ["Storage"]
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/yourconnector.svg")
@@ -656,7 +656,7 @@ from app.models.permission import EntityType, Permission, PermissionType
         # Configure sync strategies
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)  # Enable scheduling, default 60 min interval
-    )\
+    )
     .build_decorator()
 class YourConnector(BaseConnector):
     """Connector for syncing data from YourService."""
@@ -723,7 +723,7 @@ class YourConnector(BaseConnector):
     async def _get_credentials(self, org_id: str) -> Dict:
         """Load connector credentials from configuration."""
         try:
-            config_path = "/services/connectors/{connector_name}/config"
+            config_path = f"/services/connectors/{self.app.get_app_name().value.lower()}/config"
             config = await self.config_service.get_config(config_path)
 
             if not config:
@@ -1521,14 +1521,14 @@ Full implementation: [`ConnectorBuilder` class](https://github.com/pipeshub-ai/p
 ### Complete Builder Method Reference
 
 ```python
-@ConnectorBuilder("ConnectorName")\
-    .in_group("Vendor Name")\
-    .with_auth_type("AUTH_TYPE")\
-    .with_description("Connector description")\
-    .with_categories(["Category1", "Category2"])\
+@ConnectorBuilder("ConnectorName")
+    .in_group("Vendor Name")
+    .with_auth_type("AUTH_TYPE")
+    .with_description("Connector description")
+    .with_categories(["Category1", "Category2"])
     .configure(lambda builder: builder
         # ... configuration methods
-    )\
+    )
     .build_decorator()
 ```
 
@@ -1801,7 +1801,7 @@ deleteRecord # Record deleted, remove embeddings
     "recordId": "record-uuid",
     "virtualRecordId": "virtual-record-uuid",
     "orgId": "org-uuid",
-    "connector": "outlook",
+    "connector": "OUTLOOK",
     "recordName": "Email Subject.eml",
     "mimeType": "text/html",
     "extension": "html",
