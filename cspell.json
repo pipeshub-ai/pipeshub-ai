@@ -25,6 +25,7 @@
         "docparser",
         "domainaliases",
         "dotenv",
+        "evernote",
         "exactnumber",
         "exacttextsearcher",
         "freebusy",
@@ -37,6 +38,7 @@
         "kiota",
         "mobiledevices",
         "msgraph",
+        "notestore",
         "onedrive",
         "Onenote",
         "orgunits",
@@ -52,6 +54,7 @@
         "Undeletes",
         "usergroup",
         "usergroups",
+        "userstore",
         "vectordb",
         "webresource"
     ],

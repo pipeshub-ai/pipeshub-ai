@@ -33,6 +33,7 @@ dependencies = [
     "docling==2.53.0",
     "docx2python==3.5.0",
     "etcd3==0.12.0",
+    "evernote3>=1.25.14",
     "fastapi==0.115.6",
     "fastembed==0.5.1",
     "PyGithub==2.8.1",
@@ -91,6 +92,7 @@ dependencies = [
     "slack-sdk==3.27.0",
     "spacy<=3.7.5",
     "tenacity==8.5.0",
+    "thrift>=0.16.0",
     "uuid==1.30",
     "uvicorn==0.30.6",
 ]
