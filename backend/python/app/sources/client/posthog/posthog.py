@@ -73,55 +73,6 @@ class PostHogGraphQLClientViaToken:
         """Get the GraphQL endpoint URL"""
         return self.endpoint
 
-    async def execute_query(
-        self,
-        query: str,
-        variables: Optional[Dict[str, Any]] = None,
-        operation_name: Optional[str] = None
-    ) -> PostHogResponse:
-        """Execute a GraphQL query with PostHog authentication
-        Args:
-            query: GraphQL query string
-            variables: Optional query variables
-            operation_name: Optional operation name
-        Returns:
-            PostHogResponse object
-        """
-        if self._client is None:
-            raise RuntimeError("Client not initialized. Call create_client() first.")
-
-        # If using body authentication, add API key to variables
-        if not self.use_header_auth:
-            variables = (variables or {}).copy()
-            variables["personal_api_key"] = self.api_key
-
-        try:
-            response = await self._client.execute(
-                query=query,
-                variables=variables,
-                operation_name=operation_name
-            )
-
-            if response.success:
-                return PostHogResponse(
-                    success=True,
-                    data=response.data,
-                    message=response.message
-                )
-            else:
-                return PostHogResponse(
-                    success=False,
-                    error=response.error,
-                    message=response.message
-                )
-        except Exception as e:
-            logging.error(f"Query execution failed: {str(e)}", exc_info=True)
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Query execution failed: {str(e)}"
-            )
-
     async def close(self) -> None:
         """Close the underlying GraphQL client"""
         if self._client:
@@ -170,22 +121,6 @@ class PostHogClient(IClient):
     def get_graphql_client(self) -> GraphQLClient:
         """Return the underlying GraphQL client"""
         return self.client.get_graphql_client()
-
-    async def execute_query(
-        self,
-        query: str,
-        variables: Optional[Dict[str, Any]] = None,
-        operation_name: Optional[str] = None
-    ) -> PostHogResponse:
-        """Execute a GraphQL query
-        Args:
-            query: GraphQL query string
-            variables: Optional query variables
-            operation_name: Optional operation name
-        Returns:
-            PostHogResponse object
-        """
-        return await self.client.execute_query(query, variables, operation_name)
 
     @classmethod
     def build_with_config(cls, config: PostHogTokenConfig) -> "PostHogClient":

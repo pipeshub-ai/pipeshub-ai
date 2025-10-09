@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Optional
 
 from app.sources.client.posthog.posthog import PostHogClient, PostHogResponse
@@ -26,6 +27,60 @@ class PostHogDataSource:
             posthog_client: PostHogClient instance
         """
         self._posthog_client = posthog_client
+
+    # =============================================================================
+    # CORE QUERY EXECUTION
+    # =============================================================================
+
+    async def execute_query(
+        self,
+        query: str,
+        variables: Optional[Dict[str, Any]] = None,
+        operation_name: Optional[str] = None
+    ) -> PostHogResponse:
+        """Execute a GraphQL query through the PostHog client
+
+        Args:
+            query: GraphQL query string
+            variables: Optional query variables
+            operation_name: Optional operation name
+        Returns:
+            PostHogResponse object
+        """
+        client = self._posthog_client.get_client()
+        graphql_client = client.get_graphql_client()
+
+        # If using body authentication, add API key to variables
+        if not client.use_header_auth:
+            variables = (variables or {}).copy()
+            variables["personal_api_key"] = client.api_key
+
+        try:
+            response = await graphql_client.execute(
+                query=query,
+                variables=variables,
+                operation_name=operation_name
+            )
+
+            if response.success:
+                return PostHogResponse(
+                    success=True,
+                    data=response.data,
+                    message=response.message
+                )
+            else:
+                return PostHogResponse(
+                    success=False,
+                    error=response.error,
+                    message=response.message
+                )
+        except Exception as e:
+            logging.error(f"Query execution failed: {str(e)}", exc_info=True)
+            return PostHogResponse(
+                success=False,
+                error=str(e),
+                message=f"Query execution failed: {str(e)}"
+            )
 
     # =============================================================================
     # QUERY OPERATIONS
@@ -88,19 +143,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="events"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query events: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="events"
+        )
 
     async def event(
         self,
@@ -135,19 +182,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="event"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query event: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="event"
+        )
 
     async def persons(
         self,
@@ -198,19 +237,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="persons"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query persons: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="persons"
+        )
 
     async def person(
         self,
@@ -241,19 +272,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="person"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query person: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="person"
+        )
 
     async def actions(
         self,
@@ -295,19 +318,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="actions"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query actions: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="actions"
+        )
 
     async def action(
         self,
@@ -343,19 +358,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="action"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query action: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="action"
+        )
 
     async def cohorts(
         self,
@@ -393,19 +400,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="cohorts"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query cohorts: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="cohorts"
+        )
 
     async def cohort(
         self,
@@ -437,19 +436,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="cohort"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query cohort: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="cohort"
+        )
 
     async def dashboards(
         self,
@@ -490,19 +481,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="dashboards"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query dashboards: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="dashboards"
+        )
 
     async def dashboard(
         self,
@@ -537,19 +520,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="dashboard"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query dashboard: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="dashboard"
+        )
 
     async def insights(
         self,
@@ -593,19 +568,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="insights"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query insights: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="insights"
+        )
 
     async def insight(
         self,
@@ -635,19 +602,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="insight"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query insight: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="insight"
+        )
 
     async def trend(
         self,
@@ -693,19 +652,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="trend"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query trend: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="trend"
+        )
 
     async def funnel(
         self,
@@ -753,19 +704,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="funnel"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query funnel: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="funnel"
+        )
 
     async def feature_flags(
         self,
@@ -802,19 +745,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="feature_flags"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query feature_flags: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="feature_flags"
+        )
 
     async def feature_flag(
         self,
@@ -845,19 +780,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="feature_flag"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query feature_flag: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="feature_flag"
+        )
 
     async def experiments(
         self,
@@ -894,19 +821,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="experiments"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query experiments: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="experiments"
+        )
 
     async def experiment(
         self,
@@ -937,19 +856,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="experiment"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query experiment: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="experiment"
+        )
 
     async def session_recordings(
         self,
@@ -998,19 +909,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="session_recordings"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query session_recordings: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="session_recordings"
+        )
 
     async def session_recording(
         self,
@@ -1042,19 +945,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="session_recording"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query session_recording: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="session_recording"
+        )
 
     async def organization(self) -> PostHogResponse:
         """Get current organization
@@ -1076,19 +971,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="organization"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query organization: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="organization"
+        )
 
     async def team(self) -> PostHogResponse:
         """Get current team
@@ -1109,19 +996,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="team"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query team: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="team"
+        )
 
     async def plugins(
         self,
@@ -1158,19 +1037,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="plugins"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query plugins: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="plugins"
+        )
 
     async def plugin(
         self,
@@ -1201,19 +1072,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="plugin"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute query plugin: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="plugin"
+        )
 
     # =============================================================================
     # MUTATION OPERATIONS
@@ -1255,19 +1118,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="capture_event"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation capture_event: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="capture_event"
+        )
 
     async def person_update(
         self,
@@ -1301,19 +1156,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="person_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation person_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="person_update"
+        )
 
     async def person_delete(
         self,
@@ -1339,19 +1186,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="person_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation person_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="person_delete"
+        )
 
     async def action_create(
         self,
@@ -1394,19 +1233,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="action_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation action_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="action_create"
+        )
 
     async def action_update(
         self,
@@ -1448,19 +1279,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="action_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation action_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="action_update"
+        )
 
     async def action_delete(
         self,
@@ -1486,19 +1309,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="action_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation action_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="action_delete"
+        )
 
     async def cohort_create(
         self,
@@ -1537,19 +1352,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="cohort_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation cohort_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="cohort_create"
+        )
 
     async def cohort_update(
         self,
@@ -1587,19 +1394,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="cohort_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation cohort_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="cohort_update"
+        )
 
     async def cohort_delete(
         self,
@@ -1625,19 +1424,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="cohort_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation cohort_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="cohort_delete"
+        )
 
     async def dashboard_create(
         self,
@@ -1676,19 +1467,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="dashboard_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation dashboard_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="dashboard_create"
+        )
 
     async def dashboard_update(
         self,
@@ -1730,19 +1513,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="dashboard_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation dashboard_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="dashboard_update"
+        )
 
     async def dashboard_delete(
         self,
@@ -1768,19 +1543,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="dashboard_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation dashboard_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="dashboard_delete"
+        )
 
     async def insight_create(
         self,
@@ -1822,19 +1589,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="insight_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation insight_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="insight_create"
+        )
 
     async def insight_update(
         self,
@@ -1876,19 +1635,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="insight_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation insight_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="insight_update"
+        )
 
     async def insight_delete(
         self,
@@ -1914,19 +1665,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="insight_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation insight_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="insight_delete"
+        )
 
     async def feature_flag_create(
         self,
@@ -1970,19 +1713,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="feature_flag_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation feature_flag_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="feature_flag_create"
+        )
 
     async def feature_flag_update(
         self,
@@ -2025,19 +1760,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="feature_flag_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation feature_flag_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="feature_flag_update"
+        )
 
     async def feature_flag_delete(
         self,
@@ -2063,19 +1790,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="feature_flag_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation feature_flag_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="feature_flag_delete"
+        )
 
     async def experiment_create(
         self,
@@ -2114,19 +1833,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="experiment_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation experiment_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="experiment_create"
+        )
 
     async def experiment_update(
         self,
@@ -2164,19 +1875,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="experiment_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation experiment_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="experiment_update"
+        )
 
     async def experiment_delete(
         self,
@@ -2202,19 +1905,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="experiment_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation experiment_delete: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="experiment_delete"
+        )
 
     async def annotation_create(
         self,
@@ -2252,19 +1947,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="annotation_create"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation annotation_create: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="annotation_create"
+        )
 
     async def annotation_update(
         self,
@@ -2297,19 +1984,11 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="annotation_update"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation annotation_update: {str(e)}"
-            )
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="annotation_update"
+        )
 
     async def annotation_delete(
         self,
@@ -2335,17 +2014,8 @@ class PostHogDataSource:
                             }
                         }'''
 
-        try:
-            response = await self._posthog_client.execute_query(
-                query=query,
-                variables=variables,
-                operation_name="annotation_delete"
-            )
-            return response
-        except Exception as e:
-            return PostHogResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to execute mutation annotation_delete: {str(e)}"
-            )
-
+        return await self.execute_query(
+            query=query,
+            variables=variables,
+            operation_name="annotation_delete"
+        )
