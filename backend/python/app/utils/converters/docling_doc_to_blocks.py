@@ -186,17 +186,18 @@ class DoclingDocToBlocksConverter():
                 block_groups.append(block_group)
 
             children = item.get("children", [])
-            print(item,"g-item")
             childBlocks = []
 
             for child in children:
-                result = await _process_item(child, doc, level + 1, block_group.index)
+                result = await _process_item(child, doc, level + 1, block_group.index if block_group else None)
                 if result:
                     if isinstance(result, Block):
                         childBlocks.append(BlockContainerIndex(block_index=result.index))
                     elif isinstance(result, BlockGroup):
                         childBlocks.append(BlockContainerIndex(block_group_index=result.index))
-            block_group.children = childBlocks
+            
+            if block_group:
+                block_group.children = childBlocks
             
             return block_group
 
