@@ -1,6 +1,5 @@
 import json
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -344,7 +343,6 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
         hops += 1
 
     return ai
-
 
 
 

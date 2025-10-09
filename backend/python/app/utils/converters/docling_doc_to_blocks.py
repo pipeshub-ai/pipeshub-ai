@@ -195,10 +195,10 @@ class DoclingDocToBlocksConverter():
                         childBlocks.append(BlockContainerIndex(block_index=result.index))
                     elif isinstance(result, BlockGroup):
                         childBlocks.append(BlockContainerIndex(block_group_index=result.index))
-            
+
             if block_group:
                 block_group.children = childBlocks
-            
+
             return block_group
 
         def _get_ref_text(ref_path: str, doc_dict: dict) -> str:
@@ -253,7 +253,7 @@ class DoclingDocToBlocksConverter():
             children = item.get("children", [])
             for child in children:
                 await _process_item(child, doc, level + 1)
-            
+
             return block
 
         async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
