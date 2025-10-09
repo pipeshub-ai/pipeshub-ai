@@ -713,7 +713,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                             
                             content.append({
                                 "type": "text",
-                                "text": f"* Block Group Number: R{record_number}-{parent_index}\n* Block Type: {label}\n* Block Content: {text_content}\n\n"
+                                "text": f"* Block Number: R{record_number}-{first_child_block_index}\n* Block Type: {label}\n* Block Content: {text_content}\n\n"
                             })
             else:
                 content.append({
@@ -843,7 +843,6 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
         "text": f"</record>\n</context>\n\n{qna_prompt_instructions_2}"
     })
 
-    logger.debug(f"content: {content}")
     return content
 
 def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> str:
