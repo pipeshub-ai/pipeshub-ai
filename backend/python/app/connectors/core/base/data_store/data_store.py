@@ -90,6 +90,14 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
+        pass
+
+    @abstractmethod
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+        pass
+
+    @abstractmethod
     async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
         pass
 
