@@ -78,7 +78,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
-        if block_type == BlockType.TEXT.value:
+        if block_type == BlockType.TEXT.value and block.get("parent_index") is None:
             result["content"] = block.get("data","")
             adjacent_chunks[virtual_record_id].append(index-1)
             adjacent_chunks[virtual_record_id].append(index+1)
@@ -157,6 +157,40 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     continue
             else:
                 continue
+        elif block.get("parent_index") is not None:
+            parent_index = block.get("parent_index")
+            if parent_index>=0 and parent_index<len(block_groups):
+                parent_block = block_groups[parent_index]
+                label = parent_block.get("type")
+                if label in [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value]:
+                    children = parent_block.get("children",[])
+                    content =""
+                    first_child_block_index = children[0].get("block_index") if children and len(children) > 0 else None
+                    if first_child_block_index is not None:
+                        for child in children:
+                            block_index = child.get("block_index")
+                            child_id = f"{virtual_record_id}-{block_index}"
+                            seen_chunks.add(child_id)
+                            if block_index>=0 and block_index<len(blocks):
+                                child_block = blocks[block_index]
+                                child_block_type = child_block.get("type")
+                                if child_block_type == BlockType.TEXT.value:
+                                    content += child_block.get("data","") + "\n"
+                        result["content"] = content
+                        result["block_type"] = label
+                        result["virtual_record_id"] = virtual_record_id
+                        result["block_index"] = first_child_block_index
+                        result["block_group_index"] = parent_index
+                        result["metadata"] = get_enhanced_metadata(record,blocks[first_child_block_index],meta)
+                        flattened_results.append(result)
+                        continue
+                    else:
+                        continue
+                else:
+                    continue
+            else:
+                continue
+
 
         result["virtual_record_id"] = virtual_record_id
         if "block_index" not in result:
@@ -600,7 +634,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
             if block_type == BlockType.IMAGE.value:
                 continue
-            elif block_type == BlockType.TEXT.value:
+            elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
@@ -654,6 +688,32 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                             content.append({
                                 "type": "text",
                                 "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
+                            })
+            elif(block.get("parent_index") is not None):
+                parent_index = block.get("parent_index")
+                block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
+                if block_group_id in seen_block_groups:
+                    continue
+                if parent_index>=0 and parent_index<len(block_groups):
+                    seen_block_groups.add(block_group_id)
+                    parent_block = block_groups[parent_index]
+                    label = parent_block.get("type")
+                    if label in [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value]:
+                        children = parent_block.get("children",[])
+                        text_content =""
+                        first_child_block_index = children[0].get("block_index") if children and len(children) > 0 else None
+                        if first_child_block_index is not None:
+                            for child in children:
+                                block_index = child.get("block_index")
+                                if block_index>=0 and block_index<len(blocks):
+                                    child_block = blocks[block_index]
+                                    child_block_type = child_block.get("type")
+                                    if child_block_type == BlockType.TEXT.value:
+                                        text_content += child_block.get("data","") + "\n"
+                            
+                            content.append({
+                                "type": "text",
+                                "text": f"* Block Group Number: R{record_number}-{parent_index}\n* Block Type: {label}\n* Block Content: {text_content}\n\n"
                             })
             else:
                 content.append({
@@ -764,6 +824,11 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
+                })
+            elif block_type == GroupType.LIST.value or block_type == GroupType.ORDERED_LIST.value or block_type == GroupType.FORM_AREA.value or block_type == GroupType.INLINE.value or block_type == GroupType.KEY_VALUE_AREA.value:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
             else:
                 content.append({
@@ -876,6 +941,11 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
+                })
+            elif block_type == GroupType.LIST.value or block_type == GroupType.ORDERED_LIST.value or block_type == GroupType.FORM_AREA.value or block_type == GroupType.INLINE.value or block_type == GroupType.KEY_VALUE_AREA.value:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
             elif block_type != BlockType.IMAGE.value:
                 content.append({
