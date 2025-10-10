@@ -1,7 +1,11 @@
+
 import os
 from typing import Dict, Optional
 
 from app.services.featureflag.interfaces.config import IConfigProvider
+from app.utils.logger import create_logger
+
+logger = create_logger(__name__) # TODO fix logger
 
 
 class EnvFileProvider(IConfigProvider):
@@ -10,7 +14,7 @@ class EnvFileProvider(IConfigProvider):
     Implements Single Responsibility Principle - only handles .env file reading
     """
 
-    def __init__(self, env_file_path: str):
+    def __init__(self, env_file_path: str) -> None:
         self.env_file_path = env_file_path
         self._flags: Dict[str, bool] = {}
         self._load_env_file()
@@ -18,7 +22,7 @@ class EnvFileProvider(IConfigProvider):
     def _load_env_file(self) -> None:
         """Load and parse .env file"""
         if not os.path.exists(self.env_file_path):
-            print(f"Warning: .env file not found at {self.env_file_path}")
+            logger.warning(f"Warning: .env file not found at {self.env_file_path}")
             return
 
         try:
@@ -38,8 +42,8 @@ class EnvFileProvider(IConfigProvider):
 
                         # Store boolean value
                         self._flags[key] = self._parse_bool(value)
-        except Exception as e:
-            print(f"Error loading .env file: {e}")
+        except IOError as e:
+            logger.error(f"Error loading .env file: {e}")
 
     def _parse_bool(self, value: str) -> bool:
         """Parse string value to boolean"""

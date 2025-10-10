@@ -17,7 +17,6 @@ Future-Ready Architecture for:
 Usage:
     from app.services.featureflag.featureflag import FeatureFlagService
     from app.services.featureflag.config.config import CONFIG
-    from config import CONFIG
 
     is_enabled = FeatureFlagService.get_service().is_feature_enabled(CONFIG.ENABLE_WORKFLOW_BUILDER)
 """
@@ -39,7 +38,7 @@ class FeatureFlagService:
     _instance: Optional['FeatureFlagService'] = None
     _lock: Lock = Lock()
 
-    def __init__(self, provider: IConfigProvider):
+    def __init__(self, provider: IConfigProvider) -> None:
         """
         Private constructor - use get_service() instead
 
