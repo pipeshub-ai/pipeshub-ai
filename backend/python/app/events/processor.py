@@ -21,6 +21,7 @@ from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.llm import get_llm
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:
@@ -86,6 +87,40 @@ class Processor:
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
+    
+    async def process_image(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
+        try:
+            # Initialize image parser
+             
+            self.logger.debug("📸 Processing image content")
+            if not content:
+                raise Exception("No image data provided")
+            
+            record = await self.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return
+            mime_type = record.get("mimeType")
+            if mime_type is None:
+                raise Exception("No mime type present in the record from graph db")
+            extension = get_extension_from_mimetype(mime_type)
+
+            parser = self.parsers[extension]
+        
+            block_containers = parser.parse_image(content,extension)
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+            self.logger.info("✅ Image processing completed successfully")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing image: {str(e)}")
+            raise
 
     async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         """Process Google Slides presentation and extract structured content

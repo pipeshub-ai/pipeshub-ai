@@ -8,10 +8,9 @@ class IndexingPipeline:
         self.document_extraction = document_extraction
         self.sink_orchestrator = sink_orchestrator
 
-    async def apply(self, ctx: TransformContext) -> TransformContext:
+    async def apply(self, ctx: TransformContext) -> None:
         try:
             await self.document_extraction.apply(ctx)
             await self.sink_orchestrator.apply(ctx)
-            return ctx
         except Exception as e:
             raise e
