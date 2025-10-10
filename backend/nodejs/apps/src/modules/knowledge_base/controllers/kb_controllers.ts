@@ -695,10 +695,7 @@ export const uploadRecordsToKB =
           : null;
         
         // Use correct MIME type mapping instead of browser detection
-        let correctMimeType = extension ? getMimeType(extension) : mimetype;
-        if (correctMimeType === '') {
-          correctMimeType = mimetype;
-        }
+        const correctMimeType = (extension && getMimeType(extension)) || mimetype;
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;

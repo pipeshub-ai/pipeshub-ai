@@ -123,6 +123,8 @@ class ContainerUtils:
 
     async def create_parsers(self, logger: Logger) -> dict:
         """Async factory for Parsers"""
+        image_parser = ImageParser(logger)
+
         parsers = {
             ExtensionTypes.DOCX.value: DocxParser(),
             ExtensionTypes.DOC.value: DocParser(),
@@ -134,13 +136,13 @@ class ContainerUtils:
             ExtensionTypes.CSV.value: CSVParser(),
             ExtensionTypes.XLSX.value: ExcelParser(logger),
             ExtensionTypes.XLS.value: XLSParser(),
-            ExtensionTypes.PNG.value: ImageParser(logger),
-            ExtensionTypes.JPG.value: ImageParser(logger),
-            ExtensionTypes.JPEG.value: ImageParser(logger),
-            ExtensionTypes.WEBP.value: ImageParser(logger),
-            ExtensionTypes.SVG.value: ImageParser(logger),
-            ExtensionTypes.HEIC.value: ImageParser(logger),
-            ExtensionTypes.HEIF.value: ImageParser(logger),
+            ExtensionTypes.PNG.value: image_parser,     
+            ExtensionTypes.JPG.value: image_parser,
+            ExtensionTypes.JPEG.value: image_parser,
+            ExtensionTypes.WEBP.value: image_parser,
+            ExtensionTypes.SVG.value: image_parser,
+            ExtensionTypes.HEIC.value: image_parser,
+            ExtensionTypes.HEIF.value: image_parser,
         }
         return parsers
 

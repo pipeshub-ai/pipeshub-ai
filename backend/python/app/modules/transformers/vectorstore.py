@@ -446,9 +446,9 @@ class VectorStore(Transformer):
                                     {
                                         "type": "image_base64",
                                         "image_base64": image_base64
-                                    } for image_base64 in image_base64s
+                                    } 
                                     ]
-                                }
+                                } for image_base64 in image_base64s
                             ]
 
                     result = vo.multimodal_embed(
@@ -535,23 +535,6 @@ class VectorStore(Transformer):
                         )
                         points.append(point)
 
-
-                    # import base64
-                    # import os
-                    # self.logger.info(f"Embedding images with Jina AI: {image_base64s}")
-                    # inputs = [{"image": img_base64} for img_base64 in image_base64s]
-                    # embeddings = self.dense_embeddings.embed_images(image_base64s)
-                    # for i, embedding in enumerate(embeddings):
-                    #     image_chunk = image_chunks[i]
-                    #     point = PointStruct(
-                    #         id=str(uuid.uuid4()),
-                    #         vector={"dense": embedding},
-                    #         payload={
-                    #             "metadata": image_chunk.get("metadata", {}),
-                    #             "page_content": image_chunk.get("image_uri", ""),
-                    #         },
-                    #     )
-                    #     points.append(point)
 
                 if points:
                         # upsert_points is a synchronous interface; do not await
