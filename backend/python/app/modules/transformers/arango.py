@@ -18,6 +18,8 @@ class Arango(Transformer):
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
         metadata = record.semantic_metadata
+        if metadata is None:
+            return
         record_id = record.id
         virtual_record_id = record.virtual_record_id
         await self.save_metadata_to_db( record_id, metadata, virtual_record_id)

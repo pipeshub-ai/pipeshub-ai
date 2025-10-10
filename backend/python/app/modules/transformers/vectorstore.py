@@ -10,7 +10,7 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, MimeTypes
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -73,9 +73,12 @@ class VectorStore(Transformer):
         self.collection_name = collection_name
         self.vector_store = None
         self.dense_embeddings = None
-        self.cohere_api_key = None
-        self.cohere_embedding_model_name = None
+        self.api_key = None
+        self.model_name = None
         self.embedding_provider = None
+        self.is_multimodal_embedding = False
+        self.region_name = None
+        
         try:
             # Initialize sparse embeddings
             try:
@@ -96,15 +99,15 @@ class VectorStore(Transformer):
                 details={"error": str(e)},
             )
 
-    async def apply(self, ctx: TransformContext) -> TransformContext:
+    async def apply(self, ctx: TransformContext) -> bool|None:
         record = ctx.record
         record_id = record.id
         virtual_record_id = record.virtual_record_id
         block_containers = record.block_containers
         org_id = record.org_id
-
-        await self.index_documents(block_containers, org_id,record_id,virtual_record_id)
-        return ctx
+        mime_type = record.mime_type
+        result = await self.index_documents(block_containers, org_id,record_id,virtual_record_id,mime_type)
+        return result
 
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
@@ -217,7 +220,6 @@ class VectorStore(Transformer):
             current_vector_size = collection_info.config.params.vectors["dense"].size
             # current_vector_size_2 = collection_info.config.params.vectors["dense-1536"].size
 
-
             if current_vector_size != embedding_size:
                 self.logger.warning(
                     f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
@@ -269,8 +271,8 @@ class VectorStore(Transformer):
         try:
             self.logger.info("Getting embedding model")
             # Return cached configuration if already initialized
-            if getattr(self, "vector_store", None) is not None and getattr(self, "dense_embeddings", None) is not None:
-                return bool(getattr(self, "_is_multimodal_embedding", False))
+            # if getattr(self, "vector_store", None) is not None and getattr(self, "dense_embeddings", None) is not None:
+                # return bool(getattr(self, "is_multimodal_embedding", False))
 
             dense_embeddings = None
             ai_models = await self.config_service.get_config(
@@ -283,6 +285,7 @@ class VectorStore(Transformer):
             configuration = None
             if not embedding_configs:
                 dense_embeddings = get_default_embedding_model()
+                self.logger.info("Using default embedding model")
             else:
                 config = embedding_configs[0]
                 provider = config["provider"]
@@ -290,7 +293,6 @@ class VectorStore(Transformer):
                 model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
                 model_name = model_names[0]
                 dense_embeddings = get_embedding_model(provider, config)
-
                 is_multimodal = config.get("isMultimodal")
             # Get the embedding dimensions from the model
             try:
@@ -332,27 +334,14 @@ class VectorStore(Transformer):
                 sparse_embedding=self.sparse_embeddings,
                 retrieval_mode=RetrievalMode.HYBRID,
             )
-            # Initialize custom semantic chunker with BGE embeddings
-            # try:
-            #     self.text_splitter = CustomChunker(
-            #         logger=self.logger,
-            #         embeddings=dense_embeddings,
-            #         breakpoint_threshold_type="percentile",
-            #         breakpoint_threshold_amount=95,
-            #     )
-            # except IndexingError as e:
-            #     raise IndexingError(
-            #         "Failed to initialize text splitter: " + str(e),
-            #         details={"error": str(e)},
-            #     )
+          
             self.dense_embeddings = dense_embeddings
             self.embedding_provider = provider
-            if provider == EmbeddingProvider.COHERE.value:
-                self.cohere_api_key = configuration["apiKey"]
-                self.cohere_embedding_model_name = model_name
-
-            self._is_multimodal_embedding = bool(is_multimodal)
-            return self._is_multimodal_embedding
+            self.api_key = configuration["apiKey"] if configuration and "apiKey" in configuration else None
+            self.model_name = model_name
+            self.region_name = configuration["region"] if configuration and "region" in configuration else None
+            self.is_multimodal_embedding = bool(is_multimodal)
+            return self.is_multimodal_embedding
         except IndexingError as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             raise IndexingError(
@@ -394,15 +383,15 @@ class VectorStore(Transformer):
             )
 
             if len(image_chunks) > 0:
-
+                image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
+                points = []
+                                
 
                 if self.embedding_provider == EmbeddingProvider.COHERE.value:
-                    points = []
-                    image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
 
                     import cohere
                     # Create client once and reuse inside this call
-                    co = cohere.ClientV2(api_key=self.cohere_api_key)
+                    co = cohere.ClientV2(api_key=self.api_key)
 
                     # Process images one at a time since Cohere API only allows max 1 image per request
                     for i, image_base64 in enumerate(image_base64s):
@@ -417,7 +406,7 @@ class VectorStore(Transformer):
 
                         try:
                             response = co.embed(
-                                model=self.cohere_embedding_model_name,
+                                model=self.model_name,
                                 input_type="image",
                                 embedding_types=["float"],
                                 inputs=[image_input],
@@ -446,8 +435,125 @@ class VectorStore(Transformer):
                             },
                         )
                         points.append(point)
+                elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
+                    from voyageai import Client
 
-                    if points:
+                    vo = Client(api_key=self.api_key)
+                    
+                    inputs =  [
+                                {
+                                    "content": [
+                                    {
+                                        "type": "image_base64",
+                                        "image_base64": image_base64
+                                    } for image_base64 in image_base64s
+                                    ]
+                                }
+                            ]
+
+                    result = vo.multimodal_embed(
+                        inputs=inputs,
+                        model=self.model_name,
+                    )       
+                  
+                    for i,embedding in enumerate(result.embeddings):
+                        image_chunk = image_chunks[i]
+                        point = PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector={"dense": embedding},
+                            payload={
+                                "metadata": image_chunk.get("metadata",{}),
+                                "page_content": image_chunk.get("image_uri",""),
+                            },
+                        )
+                        points.append(point)
+                   
+                elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
+                    import boto3
+                    import json
+                    # Initialize Bedrock client
+                    bedrock = boto3.client(
+                        service_name='bedrock-runtime',
+                        region_name=self.region_name  # Choose your region
+                    )
+                    # Prepare the request
+                    request_body = {
+                        "inputImage": "",
+                        "embeddingConfig": {
+                            "outputEmbeddingLength": 1024  # or 384 for smaller embeddings
+                        }
+                    }
+
+                    # Generate embeddings
+                    for i,image_base64 in enumerate(image_base64s):
+                        request_body["inputImage"] = image_base64
+                        response = bedrock.invoke_model(
+                            modelId=self.model_name,
+                            body=json.dumps(request_body),
+                            contentType='application/json',
+                            accept='application/json'
+                        )
+                        response_body = json.loads(response['body'].read())
+                        image_embedding = response_body['embedding']
+                        image_chunk = image_chunks[i]
+                        point = PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector={"dense": image_embedding},
+                            payload={
+                                "metadata": image_chunk.get("metadata",{}),
+                                "page_content": image_chunk.get("image_uri",""),
+                            },
+                        )
+                        points.append(point)
+                elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
+                    import requests
+
+                    url = 'https://api.jina.ai/v1/embeddings'
+                    headers = {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + self.api_key
+                    }
+                    data = {
+                        "model": self.model_name,
+                        "input": [
+                            {"image": image_base64} for image_base64 in image_base64s
+                        ]
+                    }
+                    response = requests.post(url, headers=headers, json=data)
+                    response_body = response.json()
+                    self.logger.info(f"Response body: {response_body}")
+                    embeddings = [data["embedding"] for data in response_body["data"]]
+                    for i, embedding in enumerate(embeddings):
+                        image_chunk = image_chunks[i]
+                        point = PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector={"dense": embedding},
+                            payload={
+                                "metadata": image_chunk.get("metadata", {}),
+                                "page_content": image_chunk.get("image_uri", ""),
+                            },
+                        )
+                        points.append(point)
+
+
+                    # import base64
+                    # import os
+                    # self.logger.info(f"Embedding images with Jina AI: {image_base64s}")
+                    # inputs = [{"image": img_base64} for img_base64 in image_base64s]
+                    # embeddings = self.dense_embeddings.embed_images(image_base64s)
+                    # for i, embedding in enumerate(embeddings):
+                    #     image_chunk = image_chunks[i]
+                    #     point = PointStruct(
+                    #         id=str(uuid.uuid4()),
+                    #         vector={"dense": embedding},
+                    #         payload={
+                    #             "metadata": image_chunk.get("metadata", {}),
+                    #             "page_content": image_chunk.get("image_uri", ""),
+                    #         },
+                    #     )
+                    #     points.append(point)
+
+                if points:
                         # upsert_points is a synchronous interface; do not await
                         self.vector_db_service.upsert_points(
                                 collection_name=self.collection_name, points=points
@@ -455,7 +561,7 @@ class VectorStore(Transformer):
                         self.logger.info(
                                         "✅ Successfully added image embeddings to vector store"
                                     )
-                    else:
+                else:
                         self.logger.info(
                             "No image embeddings to upsert; all images were skipped or failed to embed"
                         )
@@ -562,8 +668,9 @@ class VectorStore(Transformer):
         block_containers: BlocksContainer,
         org_id: str,
         record_id: str,
-        virtual_record_id: str = None,
-    ) -> List[Document]|None:
+        virtual_record_id: str,
+        mime_type: str,
+    ) -> List[Document]|None|bool:
         """
         Main method to index documents through the entire pipeline.
         Args:
@@ -710,6 +817,45 @@ class VectorStore(Transformer):
                                             page_content=description, metadata=metadata
                                         )
                                     )
+                        elif mime_type in [MimeTypes.PNG.value, MimeTypes.JPG.value, MimeTypes.JPEG.value, MimeTypes.WEBP.value,MimeTypes.SVG.value,MimeTypes.HEIC.value,MimeTypes.HEIF.value]:
+                            try:
+                                record = await self.arango_service.get_document(
+                                    record_id, CollectionNames.RECORDS.value
+                                )
+                                if not record:
+                                    raise DocumentProcessingError(
+                                        "Record not found in database",
+                                        doc_id=record_id,
+                                    )
+                                doc = dict(record)
+                                doc.update(
+                                    {
+                                        "indexingStatus": "ENABLE_MULTIMODAL_MODELS",
+                                        "isDirty": True,
+                                        "virtualRecordId": virtual_record_id,
+                                    }
+                                )
+
+                                docs = [doc]
+
+                                success = await self.arango_service.batch_upsert_nodes(
+                                    docs, CollectionNames.RECORDS.value
+                                )
+                                if not success:
+                                    raise DocumentProcessingError(
+                                        "Failed to update indexing status", doc_id=record_id
+                                    )
+                                
+                                return False
+
+                            except DocumentProcessingError:
+                                raise
+                            except Exception as e:
+                                raise DocumentProcessingError(
+                                    "Error updating record status: " + str(e),
+                                    doc_id=record_id,
+                                    details={"error": str(e)},
+                                )
                 except Exception as e:
                     raise DocumentProcessingError(
                         "Failed to create image document objects: " + str(e),
@@ -746,7 +892,7 @@ class VectorStore(Transformer):
                 self.logger.warning(
                     "⚠️ No documents to embed after filtering by block type"
                 )
-                return []
+                return True
 
             # Create and store embeddings
             try:
@@ -757,7 +903,7 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 )
 
-            return documents_to_embed
+            return True
 
         except IndexingError:
             # Re-raise any of our custom exceptions

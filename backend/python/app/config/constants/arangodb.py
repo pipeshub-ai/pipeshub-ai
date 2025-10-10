@@ -163,6 +163,13 @@ class ExtensionTypes(Enum):
     MD = "md"
     MDX = "mdx"
     HTML = "html"
+    PNG = "png"
+    JPG = "jpg"
+    JPEG = "jpeg"
+    WEBP = "webp"
+    SVG = "svg"
+    HEIC = "heic"
+    HEIF = "heif"
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -192,6 +199,13 @@ class MimeTypes(Enum):
     XML = "application/xml"
     YAML = "application/yaml"
     UNKNOWN = "application/unknown"
+    PNG = "image/png"
+    JPG = "image/jpg"
+    JPEG = "image/jpeg"
+    WEBP = "image/webp"
+    SVG = "image/svg+xml"
+    HEIC = "image/heic"
+    HEIF = "image/heif"
 
 
 

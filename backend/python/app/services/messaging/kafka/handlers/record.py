@@ -187,6 +187,13 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.GOOGLE_SHEETS.value,
                 MimeTypes.HTML.value,
                 MimeTypes.PLAIN_TEXT.value,
+                MimeTypes.PNG.value,
+                MimeTypes.JPG.value,
+                MimeTypes.JPEG.value,
+                MimeTypes.WEBP.value,
+                MimeTypes.SVG.value,
+                MimeTypes.HEIC.value,
+                MimeTypes.HEIF.value,
             ]
 
             supported_extensions = [
@@ -202,6 +209,13 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.MD.value,
                 ExtensionTypes.MDX.value,
                 ExtensionTypes.TXT.value,
+                ExtensionTypes.PNG.value,
+                ExtensionTypes.JPG.value,
+                ExtensionTypes.JPEG.value,
+                ExtensionTypes.WEBP.value,
+                ExtensionTypes.SVG.value,
+                ExtensionTypes.HEIC.value,
+                ExtensionTypes.HEIF.value,
             ]
 
             if (

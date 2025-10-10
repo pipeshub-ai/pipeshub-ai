@@ -35,6 +35,7 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
+from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.redis_util import build_redis_url
 
 
@@ -133,6 +134,13 @@ class ContainerUtils:
             ExtensionTypes.CSV.value: CSVParser(),
             ExtensionTypes.XLSX.value: ExcelParser(logger),
             ExtensionTypes.XLS.value: XLSParser(),
+            ExtensionTypes.PNG.value: ImageParser(logger),
+            ExtensionTypes.JPG.value: ImageParser(logger),
+            ExtensionTypes.JPEG.value: ImageParser(logger),
+            ExtensionTypes.WEBP.value: ImageParser(logger),
+            ExtensionTypes.SVG.value: ImageParser(logger),
+            ExtensionTypes.HEIC.value: ImageParser(logger),
+            ExtensionTypes.HEIF.value: ImageParser(logger),
         }
         return parsers
 

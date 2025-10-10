@@ -515,6 +515,35 @@ class EventProcessor:
                     connectorName=connector,
                     origin=origin
                 )
+            
+            elif (
+                extension in [
+                    ExtensionTypes.PNG.value,
+                    ExtensionTypes.JPG.value,
+                    ExtensionTypes.JPEG.value,
+                    ExtensionTypes.WEBP.value,
+                    # ExtensionTypes.SVG.value,
+                    # ExtensionTypes.HEIC.value,
+                    # ExtensionTypes.HEIF.value,
+                ]
+                or mime_type in [
+                    MimeTypes.PNG.value,
+                    MimeTypes.JPG.value,
+                    MimeTypes.JPEG.value,
+                    MimeTypes.WEBP.value,
+                    # MimeTypes.SVG.value,
+                    # MimeTypes.HEIC.value,
+                    # MimeTypes.HEIF.value,
+                ]
+            ):
+                # Route image files to the image processor
+                result = await self.processor.process_image(
+                    record_id,
+                    record_version,
+                    org_id,
+                    file_content,
+                    virtual_record_id,
+                )
 
             else:
                 raise Exception(f"Unsupported file extension: {extension}")

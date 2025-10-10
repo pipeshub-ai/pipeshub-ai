@@ -51,9 +51,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
 
-        if virtual_record_id not in adjacent_chunks:
-            adjacent_chunks[virtual_record_id] = []
-
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
         if is_block_group:
@@ -95,6 +92,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         if image_uri:
                             result["content"] = image_uri
                         else:
+                            continue
+                    else:
+                        if result.get("content") and result.get("content").startswith("data:image/"):
                             continue
 
                     adjacent_chunks[virtual_record_id].append(index-1)
@@ -855,7 +855,6 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
         "type": "text",
         "text": f"</record>\n</context>\n\n{qna_prompt_instructions_2}"
     })
-
     return content
 
 def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> str:
