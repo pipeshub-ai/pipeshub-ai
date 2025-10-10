@@ -520,7 +520,7 @@ class EventProcessor:
                 )
             
             elif (
-                extension in [
+                 extension in {
                     ExtensionTypes.PNG.value,
                     ExtensionTypes.JPG.value,
                     ExtensionTypes.JPEG.value,
@@ -528,8 +528,8 @@ class EventProcessor:
                     # ExtensionTypes.SVG.value,
                     # ExtensionTypes.HEIC.value,
                     # ExtensionTypes.HEIF.value,
-                ]
-                or mime_type in [
+                }
+                or mime_type in {
                     MimeTypes.PNG.value,
                     MimeTypes.JPG.value,
                     MimeTypes.JPEG.value,
@@ -537,7 +537,7 @@ class EventProcessor:
                     # MimeTypes.SVG.value,
                     # MimeTypes.HEIC.value,
                     # MimeTypes.HEIF.value,
-                ]
+                }
             ):
                 # Route image files to the image processor
                 result = await self.processor.process_image(

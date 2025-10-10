@@ -91,7 +91,6 @@ class Processor:
     async def process_image(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         try:
             # Initialize image parser
-             
             self.logger.debug("📸 Processing image content")
             if not content:
                 raise Exception("No image data provided")
@@ -107,7 +106,9 @@ class Processor:
                 raise Exception("No mime type present in the record from graph db")
             extension = get_extension_from_mimetype(mime_type)
 
-            parser = self.parsers[extension]
+            parser = self.parsers.get(extension)
+            if not parser:
+                raise Exception(f"Unsupported extension: {extension}")
         
             block_containers = parser.parse_image(content,extension)
             record = convert_record_dict_to_record(record)
