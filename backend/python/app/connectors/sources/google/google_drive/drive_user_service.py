@@ -79,7 +79,16 @@ class DriveUserService:
             self.user_id = user_id
 
             SCOPES = await self.google_token_handler.get_account_scopes(app_name="drive")
-
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
+            if not SCOPES:
+                SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+                self.logger.info(f"🚀 SCOPES not found, setting to default: {SCOPES}")
+            if not SCOPES:
+                raise GoogleAuthError(
+                    "No scopes found for drive",
+                    details={"org_id": self.org_id, "user_id": self.user_id},
+                )
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
                     org_id, user_id, app_name="drive"
@@ -171,6 +180,16 @@ class DriveUserService:
                 self.org_id, self.user_id, app_name="drive"
             )
             SCOPES = await self.google_token_handler.get_account_scopes(app_name="drive")
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
+            if not SCOPES:
+                SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+                self.logger.info(f"🚀 SCOPES not found, setting to default: {SCOPES}")
+            if not SCOPES:
+                raise GoogleAuthError(
+                    "No scopes found for drive",
+                    details={"org_id": self.org_id, "user_id": self.user_id},
+                )
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),

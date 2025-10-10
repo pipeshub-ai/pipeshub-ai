@@ -2973,6 +2973,7 @@ async def update_connector_config(
 
         updates = {
             "isConfigured": True,
+            "isAuthenticated": False,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
         await connector_registry.update_connector(app_name, updates)

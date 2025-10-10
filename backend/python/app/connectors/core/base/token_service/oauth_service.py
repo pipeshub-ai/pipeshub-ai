@@ -273,6 +273,17 @@ class OAuthProvider:
 
         # Validate state
         if not stored_state or stored_state != state:
+            # Idempotent handling: if credentials already exist, treat as success
+            existing_creds = config.get('credentials') if isinstance(config, dict) else None
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+                try:
+                    token = OAuthToken.from_dict(existing_creds)
+                except Exception:
+                    # If stored creds are malformed, fall back to error
+                    raise ValueError("Invalid or expired state")
+                self.token = token
+                return token
+            # No existing credentials -> genuine invalid/expired state
             raise ValueError("Invalid or expired state")
 
         token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))

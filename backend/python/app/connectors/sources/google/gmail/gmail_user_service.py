@@ -83,6 +83,11 @@ class GmailUserService:
             self.user_id = user_id
 
             SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
+            if not SCOPES:
+                SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+                self.logger.info(f"🚀 SCOPES not found, setting to default: {SCOPES}")
+                self.logger.info(f"🚀 SCOPES: {SCOPES}")
             if not SCOPES:
                 raise GoogleAuthError(
                     "No scopes found for gmail",
@@ -353,7 +358,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_messages(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_messages(self, query: str = "newer_than:1d") -> List[Dict]:
         """Get list of messages"""
         try:
             self.logger.info("🚀 Getting list of messages")
@@ -529,10 +534,18 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_threads(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_threads(self, query: str = "newer_than:1d") -> List[Dict]:
         """Get list of unique threads"""
         try:
             self.logger.info("🚀 Getting list of threads")
+            # Ensure service is initialized in case connect_* wasn't called yet
+            if self.service is None:
+                if not self.org_id or not self.user_id:
+                    raise GoogleAuthError(
+                        "Gmail service not initialized and no context to initialize",
+                        details={"org_id": self.org_id, "user_id": self.user_id},
+                    )
+                await self.connect_individual_user(self.org_id, self.user_id)
             threads = []
             page_token = None
 
