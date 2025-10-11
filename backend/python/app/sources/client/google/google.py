@@ -13,7 +13,7 @@ from app.connectors.sources.google.common.google_token_handler import (
     CredentialKeys,
 )
 from app.connectors.sources.google.common.scopes import (
-    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
+    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES_FULL,
     GOOGLE_PARSER_SCOPES,
 )
 from app.sources.client.iclient import IClient
@@ -145,7 +145,7 @@ class GoogleClient(IClient):
                 google_credentials = (
                         service_account.Credentials.from_service_account_info(
                             saved_credentials,
-                            scopes=merge_scopes(GOOGLE_CONNECTOR_ENTERPRISE_SCOPES + GOOGLE_PARSER_SCOPES, scopes),
+                            scopes=merge_scopes(GOOGLE_CONNECTOR_ENTERPRISE_SCOPES_FULL + GOOGLE_PARSER_SCOPES, scopes),
                             subject=admin_email
                         )
                     )

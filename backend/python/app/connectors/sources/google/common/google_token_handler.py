@@ -156,4 +156,5 @@ class GoogleTokenHandler:
     async def get_account_scopes(self, app_name: str) -> list:
         """Get account scopes for a specific connector (gmail/drive)."""
         config = await self._get_connector_config(app_name)
-        return config.get("config", {}).get("auth", {}).get("scopes", [])
+        # Try multiple paths for scopes
+        return config.get("auth", {}).get("scopes", []) or config.get("config", {}).get("auth", {}).get("scopes", [])
