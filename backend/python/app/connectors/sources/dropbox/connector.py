@@ -2587,7 +2587,7 @@ class DropboxConnector(BaseConnector):
             if record.external_record_group_id and not record.external_record_group_id.startswith("dbmid:"):
                 team_folder_id = record.external_record_group_id
 
-            response = await self.data_source.files_get_temporary_link(path=file_record["path"], team_folder_id=team_folder_id, team_member_id=team_member_id)
+            response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
             # print("!!!!!!!!!!!!!!!!!!! response:", response)
             return response.data.link
         except Exception as e:

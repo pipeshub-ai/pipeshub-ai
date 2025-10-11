@@ -164,7 +164,9 @@ class DataSourceEntitiesProcessor:
 
                     if user_group:
                         from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-
+                    else:
+                        self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
+                        continue
                 # if permission.entity_type == EntityType.ORG.value:
                 #     org = await self.data_store.get_org_by_external_id(permission.external_id)
                 #     if org:

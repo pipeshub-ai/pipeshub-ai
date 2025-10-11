@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import AppUserGroup, Record, RecordGroup, User
+from app.models.entities import AppUserGroup, Record, RecordGroup, User, FileRecord
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
@@ -12350,7 +12350,7 @@ class BaseArangoService:
 
     async def get_file_record_by_id(
         self, id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[FileRecord]:
         """
         Get file record using the id
 
@@ -12364,23 +12364,31 @@ class BaseArangoService:
         try:
             self.logger.info("🚀 Retrieving file record for id %s", id)
 
+            # Query both the file record and base record
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @id
-                RETURN file
+            LET file = DOCUMENT("{CollectionNames.FILES.value}", @id)
+            LET record = DOCUMENT("{CollectionNames.RECORDS.value}", @id)
+            FILTER file != null AND record != null
+            RETURN {{
+                file: file,
+                record: record
+            }}
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={"id": id})
             result = next(cursor, None)
-
-            if result:
+            print("!!!!!!!!!!!!!!!!!!! result:", result)
+            if result and result.get("file") and result.get("record"):
                 self.logger.info("✅ Successfully retrieved file record for id %s", id)
-                return result
-                # return FileRecord.from_arango_base_file_record(
-                #     arango_base_file_record=result,
-                #     arango_base_record=result
-                # )
+                print("!!!!!!!!!!!!!!!!!!! FileRecord.from_arango_base_file_record:", FileRecord.from_arango_base_file_record(
+                    arango_base_file_record=result["file"],
+                    arango_base_record=result["record"]
+                ))
+                return FileRecord.from_arango_base_file_record(
+                    arango_base_file_record=result["file"],
+                    arango_base_record=result["record"]
+                )
             else:
                 self.logger.warning("⚠️ No file record found for id %s", id)
                 return None
