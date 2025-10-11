@@ -213,7 +213,7 @@ class DocuSignClient:
                 # First try getting current user
                 user_info = self.users_api.get_information(self.account_id, "current")
                 return user_info.to_dict()
-            except Exception:
+            except ApiException:
                 # Fall back to get_users which returns a list of users
                 users = self.users_api.list(self.account_id)
                 # Return the first user as the current user
