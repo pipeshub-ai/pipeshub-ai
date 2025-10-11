@@ -251,8 +251,6 @@ class MailRecord(Record):
     def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
-            "orgId": self.org_id,
-            "name": self.record_name,
             "threadId": self.thread_id or "",
             "isParent": self.is_parent,
             "subject": self.subject or "",

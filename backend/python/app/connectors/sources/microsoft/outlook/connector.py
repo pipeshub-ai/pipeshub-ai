@@ -925,7 +925,8 @@ class OutlookConnector(BaseConnector):
             user_id = None
 
             async with self.data_store_provider.transaction() as tx_store:
-                user_id = await tx_store.get_record_owner_source_user_id(record.id)
+                user_email = await tx_store.get_record_owner_source_user_email(record.id)
+                user_id = await self._get_user_id_from_email(user_email)
 
                 if user_id:
                     self.logger.debug(f"Found Graph user ID {user_id} for record {record.id} from permission edges")
@@ -962,7 +963,7 @@ class OutlookConnector(BaseConnector):
                 # Set proper filename and content type
                 filename = record.record_name or "attachment"
                 headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-                media_type = record.mime_type.value if record.mime_type else 'application/octet-stream'
+                media_type = record.mime_type or 'application/octet-stream'
 
                 return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)
 

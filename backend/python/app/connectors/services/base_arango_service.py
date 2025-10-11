@@ -3188,7 +3188,7 @@ class BaseArangoService:
             )
             return None
 
-    async def get_record_owner_source_user_id(
+    async def get_record_owner_source_user_email(
         self,
         record_id: str,
         transaction: Optional[TransactionDatabase] = None
@@ -3211,8 +3211,8 @@ class BaseArangoService:
                 FILTER edge.type == 'USER'
                 LET user_key = SPLIT(edge._to, '/')[1]
                 LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
-                RETURN user.userId
-            LIMIT 1
+                LIMIT 1
+                RETURN user.email
             """
 
             db = transaction if transaction else self.db
