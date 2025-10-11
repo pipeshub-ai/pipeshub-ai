@@ -331,6 +331,8 @@ class ToolsDBManager:
             """
 
             result = await self.graph_service.execute_query(query, {"app_name": app_name})
+            if result is None:
+                return []
             return [ToolNode.from_dict(tool) for tool in result]
 
         except Exception as e:
@@ -347,6 +349,8 @@ class ToolsDBManager:
             """
 
             result = await self.graph_service.execute_query(query, {"tag": tag})
+            if result is None:
+                return []
             return [ToolNode.from_dict(tool) for tool in result]
 
         except Exception as e:
@@ -366,6 +370,8 @@ class ToolsDBManager:
             """
 
             result = await self.graph_service.execute_query(query, {"search_term": search_term})
+            if result is None:
+                return []
             return [ToolNode.from_dict(tool) for tool in result]
 
         except Exception as e:
@@ -397,6 +403,8 @@ class ToolsDBManager:
             """
 
             result = await self.graph_service.execute_query(query)
+            if result is None:
+                return []
             return [ToolNode.from_dict(tool) for tool in result]
 
         except Exception as e:
@@ -419,122 +427,3 @@ class ToolsDBManager:
         except Exception as e:
             self.logger.error(f"Failed to delete tool {app_name}.{tool_name}: {e}")
             return False
-
-    async def get_tools_for_ai(self, ai_platform: str = "openai") -> List[Dict[str, Any]]:
-        """Get tools formatted for AI consumption (OpenAI, Anthropic, etc.)"""
-        try:
-            all_tools = await self.get_all_tools()
-
-            if ai_platform.lower() == "openai":
-                return self._format_for_openai(all_tools)
-            elif ai_platform.lower() == "anthropic":
-                return self._format_for_anthropic(all_tools)
-            else:
-                # Default to OpenAI format
-                return self._format_for_openai(all_tools)
-
-        except Exception as e:
-            self.logger.error(f"Failed to get tools for AI platform {ai_platform}: {e}")
-            return []
-
-    def _format_for_openai(self, tools: List[ToolNode]) -> List[Dict[str, Any]]:
-        """Format tools for OpenAI function calling"""
-        schemas = []
-
-        for tool in tools:
-            schema = {
-                "type": "function",
-                "function": {
-                    "name": f"{tool.app_name}.{tool.tool_name}",
-                    "description": tool.description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            }
-
-            for param in tool.parameters:
-                prop = {"type": param.get("type", "string")}
-                if param.get("description"):
-                    prop["description"] = param["description"]
-                if param.get("enum"):
-                    prop["enum"] = param["enum"]
-                if param.get("type") == "array" and param.get("items"):
-                    prop["items"] = param["items"]
-
-                schema["function"]["parameters"]["properties"][param["name"]] = prop
-
-                if param.get("required", False):
-                    schema["function"]["parameters"]["required"].append(param["name"])
-
-            schemas.append(schema)
-
-        return schemas
-
-    def _format_for_anthropic(self, tools: List[ToolNode]) -> List[Dict[str, Any]]:
-        """Format tools for Anthropic Claude"""
-        schemas = []
-
-        for tool in tools:
-            schema = {
-                "name": f"{tool.app_name}.{tool.tool_name}",
-                "description": tool.description,
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-
-            for param in tool.parameters:
-                prop = {"type": param.get("type", "string")}
-                if param.get("description"):
-                    prop["description"] = param["description"]
-                if param.get("enum"):
-                    prop["enum"] = param["enum"]
-                if param.get("type") == "array" and param.get("items"):
-                    prop["items"] = param["items"]
-
-                schema["input_schema"]["properties"][param["name"]] = prop
-
-                if param.get("required", False):
-                    schema["input_schema"]["required"].append(param["name"])
-
-            schemas.append(schema)
-
-        return schemas
-
-    async def refresh_connector_tools(self, connector_name: str, tool_registry: ToolRegistry) -> None:
-        """Refresh tools for a specific connector if ctag has changed"""
-        try:
-            # Get current ctag from registry
-            connector_tools = [tool for tool in tool_registry.get_all_tools().values()
-                             if tool.app_name == connector_name]
-
-            if not connector_tools:
-                return
-
-            # Generate new ctag for connector
-            connector_content = json.dumps([
-                self._generate_ctag(tool) for tool in connector_tools
-            ], sort_keys=True)
-            new_ctag = hashlib.md5(connector_content.encode()).hexdigest()
-
-            # Check if ctag has changed
-            current_ctag = await self.get_connector_ctag(connector_name)
-
-            if current_ctag == new_ctag:
-                self.logger.debug(f"Connector {connector_name} ctag unchanged, skipping refresh")
-                return
-
-            # Refresh tools for this connector
-            for tool in connector_tools:
-                await self._sync_single_tool(tool)
-
-            self.logger.info(f"Successfully refreshed tools for connector {connector_name}")
-
-        except Exception as e:
-            self.logger.error(f"Failed to refresh connector {connector_name}: {e}")
-            raise
