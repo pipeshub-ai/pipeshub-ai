@@ -75,6 +75,15 @@ class GmailUserService:
                 details={"error": str(e)},
             )
 
+    async def _get_gmail_scopes(self) -> List[str]:
+        """Get scopes for gmail, with fallback to default readonly scope."""
+        SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
+        if not SCOPES:
+            SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+            self.logger.warning("Scopes for gmail not found in config, using default.")
+        self.logger.debug("Using scopes for gmail: %s", SCOPES)
+        return SCOPES
+
     @token_refresh
     async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
         """Connect using Oauth2 credentials for individual user"""
@@ -82,18 +91,7 @@ class GmailUserService:
             self.org_id = org_id
             self.user_id = user_id
 
-            SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
-            self.logger.info(f"🚀 SCOPES: {SCOPES}")
-            if not SCOPES:
-                SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-                self.logger.info(f"🚀 SCOPES not found, setting to default: {SCOPES}")
-                self.logger.info(f"🚀 SCOPES: {SCOPES}")
-            if not SCOPES:
-                raise GoogleAuthError(
-                    "No scopes found for gmail",
-                    details={"org_id": self.org_id, "user_id": self.user_id},
-                )
-            self.logger.info(f"🚀 SCOPES: {SCOPES}")
+            SCOPES = await self._get_gmail_scopes()
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
@@ -203,13 +201,7 @@ class GmailUserService:
             creds_data = await self.google_token_handler.get_individual_token(
                 self.org_id, self.user_id, app_name="gmail"
             )
-            SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
-            if not SCOPES:
-                raise GoogleAuthError(
-                    "No scopes found for gmail",
-                    details={"org_id": self.org_id, "user_id": self.user_id},
-                )
-            self.logger.info(f"🚀 SCOPES: {SCOPES}")
+            SCOPES = await self._get_gmail_scopes()
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),

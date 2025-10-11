@@ -157,7 +157,4 @@ class GoogleTokenHandler:
         """Get account scopes for a specific connector (gmail/drive)."""
         config = await self._get_connector_config(app_name)
         # Try multiple paths for scopes
-        scopes = config.get("auth", {}).get("scopes", [])
-        if not scopes:
-            scopes = config.get("config", {}).get("auth", {}).get("scopes", [])
-        return scopes
+        return config.get("auth", {}).get("scopes", []) or config.get("config", {}).get("auth", {}).get("scopes", [])
