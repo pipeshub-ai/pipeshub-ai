@@ -96,8 +96,13 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_upsert_records([parent_record])
 
             if parent_record and isinstance(parent_record, Record):
-                # Create a edge between the record and the parent record if it doesn't exist
-                await tx_store.create_record_relation(parent_record.id, record.id, "PARENT_CHILD")
+                if (record.record_type == RecordType.FILE and
+                    record.parent_external_record_id and
+                    record.parent_record_type == RecordType.MAIL):
+                    relation_type = 'ATTACHMENT'
+                else:
+                    relation_type = 'PARENT_CHILD'
+                await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
@@ -135,6 +140,11 @@ class DataSourceEntitiesProcessor:
                 user = None
                 if permission.email:
                     user = await tx_store.get_user_by_email(permission.email)
+
+                    # If user doesn't exist (external user), create them as inactive
+                    if not user and permission.email:
+                        user = await self._create_external_user(permission.email, record.connector_name, tx_store)
+
                 if user:
                     to_collection = f"{CollectionNames.USERS.value}/{user.id}"
             # elif permission.entity_type == EntityType.GROUP.value:
@@ -169,6 +179,28 @@ class DataSourceEntitiesProcessor:
             await tx_store.batch_create_edges(
                 record_permissions, collection=CollectionNames.PERMISSIONS.value
             )
+
+    async def _create_external_user(self, email: str, connector_name: str, tx_store) -> AppUser:
+        """Create an external user record."""
+        external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
+
+        # Create external user record
+        external_user = AppUser(
+            app_name=connector_name,
+            source_user_id=external_source_id,
+            email=email,
+            full_name=email.split('@')[0],
+            is_active=False
+        )
+
+        # Save the external user
+        await tx_store.batch_upsert_app_users([external_user])
+
+        # Fetch the created user to get the ID
+        user = await tx_store.get_user_by_email(email)
+
+        self.logger.info(f"Created external user record for: {email}")
+        return user
 
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:

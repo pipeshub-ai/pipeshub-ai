@@ -149,6 +149,20 @@ class BaseArangoService:
                     CollectionNames.FILES.value,  # For attachments
                 ]
             },
+            Connectors.OUTLOOK.value: {
+                "allowed_roles": ["OWNER", "WRITER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.FILES.value,
+                ]
+            },
             Connectors.KNOWLEDGE_BASE.value: {
                 "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
                 "edge_collections": [
@@ -1510,6 +1524,8 @@ class BaseArangoService:
                 return await self.delete_google_drive_record(record_id, user_id, record)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
                 return await self.delete_gmail_record(record_id, user_id, record)
+            elif connector_name == Connectors.OUTLOOK.value:
+                return await self.delete_outlook_record(record_id, user_id, record)
             else:
                 return {
                     "success": False,
@@ -1525,7 +1541,7 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
         """
@@ -1533,18 +1549,87 @@ class BaseArangoService:
             self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id)
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
                 return
 
-            # Delete record
-            await self.delete_record(record["key"])
+            # Delete record using the record's internal ID and user_id
+            deletion_result = await self.delete_record(record.id, user_id)
 
-            self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            # Check if deletion was successful
+            if deletion_result.get("success"):
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            else:
+                error_reason = deletion_result.get("reason", "Unknown error")
+                self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
+                raise Exception(f"Deletion failed: {error_reason}")
+
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
             raise
+
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions)
+        This removes the user's permissions and belongsTo edges without deleting the record itself
+        """
+        try:
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+
+            # Get record
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Remove user's access instead of deleting the entire record
+            result = await self._remove_user_access_from_record(record.id, user_id)
+
+            if result.get("success"):
+                self.logger.info(f"✅ User access removed: {external_id} from {connector_name}")
+            else:
+                self.logger.error(f"❌ Failed to remove user access: {result.get('reason', 'Unknown error')}")
+                raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            raise
+
+    async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
+        """Remove a specific user's access to a record"""
+        try:
+            self.logger.info(f"🚀 Removing user {user_id} access to record {record_id}")
+
+            # Remove user's permission edges
+            user_removal_query = """
+            FOR perm IN permissions
+                FILTER perm._from == @record_from
+                FILTER perm._to == @user_to
+                REMOVE perm IN permissions
+                RETURN OLD
+            """
+
+            cursor = self.db.aql.execute(user_removal_query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "user_to": f"users/{user_id}"
+            })
+
+            removed_permissions = list(cursor)
+
+            if removed_permissions:
+                self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": len(removed_permissions)}
+            else:
+                self.logger.warning(f"⚠️ No permissions found for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": 0}
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Access removal failed: {str(e)}"
+            }
 
     async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
         """
@@ -2064,6 +2149,190 @@ class BaseArangoService:
                 raise
 
         self.logger.info(f"✅ Gmail edge deletion completed: {total_deleted} total edges deleted for record {record_id}")
+
+    async def delete_outlook_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
+        """
+        Delete an Outlook record - handles email and its attachments.
+        """
+        try:
+            self.logger.info(f"📧 Deleting Outlook record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check if user has OWNER permission
+            user_role = await self._check_record_permission(record_id, user_key)
+            if user_role != "OWNER":
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Only mailbox owner can delete emails. Role: {user_role}"
+                }
+
+            # Execute deletion
+            return await self._execute_outlook_record_deletion(record_id, record)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Outlook record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Outlook record deletion failed: {str(e)}"
+            }
+
+    async def _execute_outlook_record_deletion(self, record_id: str, record: Dict) -> Dict:
+        """Execute Outlook record deletion - deletes email and all attachments"""
+        try:
+            # Define collections
+            outlook_edge_collections = [
+                CollectionNames.IS_OF_TYPE.value,
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.PERMISSIONS.value,
+                CollectionNames.BELONGS_TO.value,
+            ]
+            outlook_doc_collections = [
+                CollectionNames.RECORDS.value,
+                CollectionNames.MAILS.value,
+                CollectionNames.FILES.value,
+            ]
+
+            transaction = self.db.begin_transaction(
+                write=outlook_doc_collections + outlook_edge_collections
+            )
+
+            try:
+                # Get attachments (child records with ATTACHMENT relation)
+                attachments_query = f"""
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == @record_from
+                        AND edge.relationshipType == 'ATTACHMENT'
+                    RETURN PARSE_IDENTIFIER(edge._to).key
+                """
+
+                cursor = transaction.aql.execute(attachments_query, bind_vars={
+                    "record_from": f"records/{record_id}"
+                })
+                attachment_ids = list(cursor)
+
+                # Delete all attachments first
+                for attachment_id in attachment_ids:
+                    self.logger.info(f"Deleting attachment {attachment_id} of email {record_id}")
+                    await self._delete_outlook_edges(transaction, attachment_id)
+                    await self._delete_file_record(transaction, attachment_id)
+                    await self._delete_main_record(transaction, attachment_id)
+
+                # Delete the email itself
+                await self._delete_outlook_edges(transaction, record_id)
+
+                # Delete mail record
+                await self._delete_mail_record(transaction, record_id)
+
+                # Delete main record
+                await self._delete_main_record(transaction, record_id)
+
+                # Commit transaction
+                await asyncio.to_thread(lambda: transaction.commit_transaction())
+
+                self.logger.info(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
+
+                return {
+                    "success": True,
+                    "record_id": record_id,
+                    "attachments_deleted": len(attachment_ids)
+                }
+
+            except Exception as e:
+                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                raise e
+
+        except Exception as e:
+            self.logger.error(f"❌ Outlook deletion transaction failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _delete_outlook_edges(self, transaction, record_id: str) -> None:
+        """Delete Outlook specific edges"""
+        edge_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.RECORD_RELATIONS.value: {
+                "filter": "(edge._from == @record_from OR edge._to == @record_to)",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}",
+                },
+            },
+            CollectionNames.PERMISSIONS.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+        }
+
+        query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+        for collection, strategy in edge_strategies.items():
+            try:
+                query = query_template.format(filter=strategy["filter"])
+                bind_vars = {"@edge_collection": collection}
+                bind_vars.update(strategy["bind_vars"])
+
+                cursor = transaction.aql.execute(query, bind_vars=bind_vars)
+                deleted_count = len(list(cursor))
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"Deleted {deleted_count} edges from {collection}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to delete edges from {collection}: {e}")
+                raise
+
+        self.logger.info(f"Total edges deleted for record {record_id}: {total_deleted}")
+
+    async def _check_record_permission(self, record_id: str, user_key: str) -> Optional[str]:
+        """Check user's permission role on a record"""
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.PERMISSIONS.value}
+                FILTER edge._from == @record_from
+                    AND edge._to == @user_to
+                    AND edge.type == 'USER'
+                LIMIT 1
+                RETURN edge.role
+            """
+
+            cursor = self.db.aql.execute(query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "user_to": f"users/{user_key}"
+            })
+
+            return next(cursor, None)
+
+        except Exception as e:
+            self.logger.error(f"Failed to check record permission: {e}")
+            return None
 
     async def _delete_file_record(self, transaction, record_id: str) -> None:
         """Delete file record from files collection"""
@@ -2845,6 +3114,115 @@ class BaseArangoService:
             if transaction:
                 raise
             return False
+
+    async def get_record_by_conversation_index(
+        self,
+        connector_name: Connectors,
+        conversation_index: str,
+        thread_id: str,
+        org_id: str,
+        user_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[Record]:
+        """
+        Get mail record by conversation_index and thread_id for a specific user
+
+        Args:
+            connector_name: Connector name
+            conversation_index: The conversation index to look up
+            thread_id: The thread ID to match
+            org_id: The organization ID
+            user_id: User's id to filter results
+            transaction: Optional database transaction
+
+        Returns:
+            Optional[Record]: Mail record if found, None otherwise
+        """
+        try:
+
+            # Query that joins records, mails, and permissions to find mail by owner
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorName == @connector_name
+                    AND record.orgId == @org_id
+                FOR mail IN {CollectionNames.MAILS.value}
+                    FILTER mail._key == record._key
+                        AND mail.conversationIndex == @conversation_index
+                        AND mail.threadId == @thread_id
+                    FOR edge IN {CollectionNames.PERMISSIONS.value}
+                        FILTER edge._from == record._id
+                            AND edge.role == 'OWNER'
+                            AND edge.type == 'USER'
+                        LET user_key = SPLIT(edge._to, '/')[1]
+                        LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                        FILTER user.userId == @user_id
+                        LIMIT 1
+                    RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "conversation_index": conversation_index,
+                    "thread_id": thread_id,
+                    "connector_name": connector_name.value,
+                    "org_id": org_id,
+                    "user_id": user_id,
+                },
+            )
+            result = next(cursor, None)
+
+            if result:
+                return Record.from_arango_base_record(result)
+            else:
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve mail record for conversation_index %s in thread %s for user %s: %s",
+                conversation_index,
+                thread_id,
+                user_id,
+                str(e),
+            )
+            return None
+
+    async def get_record_owner_source_user_id(
+        self,
+        record_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
+        """
+        Get the owner's source_user_id (Graph User ID) from permission edges.
+
+        Args:
+            record_id: The record ID
+            transaction: Optional database transaction
+
+        Returns:
+            Optional[str]: source_user_id (Graph User ID) of the owner, None if not found
+        """
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.PERMISSIONS.value}
+                FILTER edge._from == CONCAT('{CollectionNames.RECORDS.value}/', @record_id)
+                FILTER edge.role == 'OWNER'
+                FILTER edge.type == 'USER'
+                LET user_key = SPLIT(edge._to, '/')[1]
+                LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                RETURN user.userId
+            LIMIT 1
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"record_id": record_id})
+            result = next(cursor, None)
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to get owner source_user_id for record {record_id}: {e}")
+            return None
 
     async def get_record_by_external_id(
         self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
