@@ -399,7 +399,6 @@ async def execute_tool_calls(
         }
     }
 
-
 async def stream_llm_response(
     llm,
     messages,
@@ -589,7 +588,6 @@ async def stream_llm_response_with_tools(
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 3,
-
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -698,7 +696,6 @@ async def stream_llm_response_with_tools(
         logger.debug(f"LLM bound with structured output: {llm}")
     except Exception as e:
         logger.warning(f"LLM provider or api does not support structured output: {e}")
-
     try:
         async for token in aiter_llm_stream(llm, messages):
             full_json_buf += token

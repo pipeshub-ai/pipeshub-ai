@@ -171,11 +171,35 @@ class DoclingDocToBlocksConverter():
             for child in children:
                 await _process_item(child, doc, level + 1)
 
+            return block
+
         async def _handle_group_block(item: dict, doc_dict: dict, parent_index: int, level: int,doc: DoclingDocument) -> BlockGroup:
             # For groups, process children and return their blocks
+            label = item.get("label", "")
+            block_group = None
+            if label in ["form_area","inline","key_value_area","list","ordered_list"]:
+                block_group = BlockGroup(
+                    index=len(block_groups),
+                    type=GroupType(label),
+                    parent_index=parent_index,
+                )
+                block_groups.append(block_group)
+
             children = item.get("children", [])
+            childBlocks = []
+
             for child in children:
-                await _process_item(child, doc, level + 1)
+                result = await _process_item(child, doc, level + 1, block_group.index if block_group else None)
+                if result:
+                    if isinstance(result, Block):
+                        childBlocks.append(BlockContainerIndex(block_index=result.index))
+                    elif isinstance(result, BlockGroup):
+                        childBlocks.append(BlockContainerIndex(block_group_index=result.index))
+
+            if block_group:
+                block_group.children = childBlocks
+
+            return block_group
 
         def _get_ref_text(ref_path: str, doc_dict: dict) -> str:
             """Get text content from a reference path."""
@@ -229,6 +253,8 @@ class DoclingDocToBlocksConverter():
             children = item.get("children", [])
             for child in children:
                 await _process_item(child, doc, level + 1)
+
+            return block
 
         async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
             table_data = item.get("data", {})
@@ -298,7 +324,9 @@ class DoclingDocToBlocksConverter():
             block_groups.append(block_group)
             children = item.get("children", [])
             for child in children:
-                await _process_item(child, doc, level + 1, block_group.index)
+                await _process_item(child, doc, level + 1)
+
+            return block_group
 
         async def _process_item(ref, doc: DoclingDocument, level=0, parent_index=None) -> None:
             """Recursively process items following references and return a BlockContainer"""
@@ -330,7 +358,6 @@ class DoclingDocToBlocksConverter():
 
             item = items[item_index]
 
-
             if not item or not isinstance(item, dict) or item_type not in [DOCLING_TEXT_BLOCK_TYPE, DOCLING_GROUP_BLOCK_TYPE, DOCLING_IMAGE_BLOCK_TYPE, DOCLING_TABLE_BLOCK_TYPE]:
                 self.logger.error(f"Invalid item type: {item_type} {item}")
                 return None
@@ -338,24 +365,27 @@ class DoclingDocToBlocksConverter():
             self.logger.debug(f"Processing item: {item_type} {ref_path}")
 
             # Create block
+            result = None
             if item_type == DOCLING_TEXT_BLOCK_TYPE:
-                await _handle_text_block(item, doc_dict, parent_index, ref_path,level,doc)
+                result = await _handle_text_block(item, doc_dict, parent_index, ref_path,level,doc)
 
             elif item_type == DOCLING_GROUP_BLOCK_TYPE:
-                await _handle_group_block(item, doc_dict, parent_index, level,doc)
+                result = await _handle_group_block(item, doc_dict, parent_index, level,doc)
 
 
             elif item_type == DOCLING_IMAGE_BLOCK_TYPE:
-                await _handle_image_block(item, doc_dict, parent_index, ref_path,level,doc)
+                result = await _handle_image_block(item, doc_dict, parent_index, ref_path,level,doc)
 
             elif item_type == DOCLING_TABLE_BLOCK_TYPE:
                 tables = doc.tables
                 table = tables[item_index]
                 table_markdown = table.export_to_markdown(doc=doc)
-                await _handle_table_block(item, doc_dict, parent_index, ref_path,table_markdown,level,doc)
+                result = await _handle_table_block(item, doc_dict, parent_index, ref_path,table_markdown,level,doc)
             else:
                 self.logger.error(f"❌ Unknown item type: {item_type} {item}")
                 return None
+
+            return result
 
         # Start processing from body
         doc_dict = doc.export_to_dict()

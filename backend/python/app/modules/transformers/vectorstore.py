@@ -51,7 +51,7 @@ def _get_shared_nlp() -> Language:
     return cached
 
 LENGTH_THRESHOLD = 2
-OUTPUT_DIMENSION = 1024
+OUTPUT_DIMENSION = 1536
 
 class VectorStore(Transformer):
 
@@ -421,7 +421,7 @@ class VectorStore(Transformer):
                                 input_type="image",
                                 embedding_types=["float"],
                                 inputs=[image_input],
-                                output_dimension=OUTPUT_DIMENSION
+                                # output_dimension=OUTPUT_DIMENSION
                             )
                         except Exception as cohere_error:
                             # Skip images that exceed provider limits or any bad input; continue with others
