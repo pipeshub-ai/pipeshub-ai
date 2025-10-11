@@ -1638,7 +1638,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
 async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get cached user credentials"""
     try:
-        cache_key = f"{org_id}_{user_id}"
+        cache_key = f"{org_id}_{user_id}_{connector}"
         user_creds_lock = container.user_creds_lock()
 
         async with user_creds_lock:
