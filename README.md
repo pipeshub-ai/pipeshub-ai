@@ -1,18 +1,23 @@
 <a name="readme-top"></a>
 
-<h2 align="center">
+<p align="center">
 <a href="https://www.pipeshub.com/">
-<img width="50%" src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg"/> 
+<img width="10%" alt="PipesHub Logo" src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg"/> 
 </a>
-</h2>
-
+</p>
 <p align="center"></p>
-<p align="center">Workplace AI Platform</p>
+<p align="center"><b>Workplace AI Platform</b></p>
 
 <p align="center" style="display: flex; justify-content: center; gap: 20px; align-items: center;">
   <a href="https://trendshift.io/repositories/14618" target="_blank">
     <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
+
+<div align="center">
+<b>⭐ Star the repo! It helps the platform reach more developers and grow the community.</b>
+</div>
+
+<h2 align="center"></h2>
 
 <!--Links in Readme-->
 <p align="center">
@@ -44,8 +49,8 @@
     <img src="https://img.shields.io/github/forks/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub forks">
   </a>
   &nbsp;
-  <a href="https://opensource.org/licenses/Apache-2.0">
-    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
+  <a href="https://hub.docker.com/r/pipeshubai/pipeshub-ai">
+    <img src="https://img.shields.io/docker/pulls/pipeshubai/pipeshub-ai?logo=docker&logoColor=white" alt="Docker Prod Pulls">
   </a>
 </p>
 
@@ -66,6 +71,9 @@
 </p>
 
 <p align="center">
+  <a href="https://opensource.org/licenses/Apache-2.0">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
+  </a>
   <a href="https://x.com/PipesHub">
     <img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter Follow">
   </a>
@@ -114,18 +122,35 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 ## Connectors
 
-- Google Drive
-- Gmail
-- Google Calendar
-- OneDrive
-- SharePoint Online
-- Outlook
-- Outlook Calendar
-- Slack
-- Notion
-- Jira
-- Confluence
-- Microsoft Teams
+<p display: flex; flex-wrap: wrap; gap: 12px;>
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gdrive.png" alt="Google Drive" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gmail.png" alt="Gmail" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gcalendar.png" alt="Google Calendar" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gdocs.png" alt="Google Docs" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gsheets.png" alt="Google Sheets" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gslides.png" alt="Google Slides" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gforms.png" alt="Google Forms" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gmeet.png" alt="Google Meet" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/one-drive.png" alt="OneDrive" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/sharepoint.png" alt="SharePoint Online" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/outlook.png" alt="Outlook Calendar" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/teams.png" alt="Microsoft Teams" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/one-note.png" alt="OneNote" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/jira.png" alt="Jira" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/confluence.png" alt="Confluence" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/slack.png" alt="Slack" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/notion.png" alt="Notion" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/dropbox.png" alt="Dropbox" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/linear.png" alt="Linear" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/github.png" alt="GitHub" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gitlab.png" alt="GitLab" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/zendesk.png" alt="Zendesk" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/airtable.png" alt="Airtable" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/bookstack.png" alt="Bookstack" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/s3.png" alt="S3" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/azure-blob.png" alt="Azure Blob" width="50" height="50">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/box.png" alt="Box" width="50" height="50">
+</p>
 
 ## File Formats Supported
 
@@ -141,6 +166,29 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Images
 - Audio
 - Video
+
+## Tech Stack
+### Frontend
+- **React** - Component-based UI library
+- **TypeScript** - Strongly typed JavaScript superset
+- **Material UI** - Prebuilt React UI components
+- **Zod** – Schema validation and parsing
+- **React Hook Form** – Flexible form state management
+
+### Backend
+- **FastAPI** - High-performance Python web framework
+- **LangChain** - Framework for LLM pipelines
+- **LangGraph** – State graph for LLM workflows
+- **Qdrant** - Vector similarity search engine
+- **ArangoDB** - Multi-model graph/document database
+- **Kafka** - Distributed event streaming platform
+- **Redis** - In-memory caching and messaging
+- **Celery** - Distributed task queue system
+- **Docling** - Document parsing and extraction toolkit
+- **PyMuPDF** - PDF processing library
+- **OCRmyPDF** - OCR text layer for PDFs
+- **pandas** - Data analysis and manipulation
+- **etcd3** - Distributed key-value configuration store
 
 ## RoadMap
 
@@ -205,6 +253,13 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
 
 ---
+
+## Star ⭐ us on GitHub!
+<p align="center">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai" target="_blank">
+    <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub" style="width:80%;">
+  </a>
+</p>
 
 <a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&Date">
   <picture>

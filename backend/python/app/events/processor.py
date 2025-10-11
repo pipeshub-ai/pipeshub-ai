@@ -38,13 +38,9 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         origin = OriginTypes(origin_value)
     except ValueError:
         origin = OriginTypes.UPLOAD
-    mime_value = record_dict.get("mimeType")
-    mime_type = None
-    if mime_value is not None:
-        try:
-            mime_type = MimeTypes(mime_value)
-        except ValueError:
-            mime_type = None
+
+    mime_type = record_dict.get("mimeType", None)
+
     record = Record(
         id=record_dict.get("_key"),
         org_id=record_dict.get("orgId"),

@@ -154,30 +154,37 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
+            self.logger.info(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
-            # For both create and update events, we need to process the document
-            if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
-                # For updates, first delete existing embeddings
-                self.logger.info(
-                    f"""🔄 Updating record {record_id} - deleting existing embeddings"""
-                )
-                await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-
-            if virtual_record_id is None:
-                virtual_record_id = str(uuid4())
-
-            # Update indexing status to IN_PROGRESS
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
+
+
+
+            # For both create and update events, we need to process the document
+            if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
+                # For updates, first delete existing embeddings
+                if virtual_record_id is None:
+                    raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
+
+                self.logger.info(
+                    f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
+                )
+                await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+
+
+
+
+            # Update indexing status to IN_PROGRESS
+
             doc = dict(record)
 
             # Extract necessary data
@@ -191,6 +198,8 @@ class EventProcessor:
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
             if mime_type == "text/gmail_content":
+                if virtual_record_id is None:
+                    virtual_record_id = str(uuid4())
                 self.logger.info("🚀 Processing Gmail Message")
                 result = await self.processor.process_gmail_message(
                     recordName=record_name,
@@ -282,9 +291,14 @@ class EventProcessor:
                         self.logger.info(f"🚀 No processed duplicate found, proceeding with processing for {record_id}")
                     else:
                         self.logger.info(f"🚀 No duplicate files found for record {record_id}")
+                        if event_type == EventTypes.UPDATE_RECORD.value:
+                            virtual_record_id = str(uuid4())
                 except Exception as e:
                     self.logger.error(f"❌ Error in file processing: {repr(e)}")
                     raise
+
+            if virtual_record_id is None:
+                virtual_record_id = str(uuid4())
 
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
@@ -363,7 +377,7 @@ class EventProcessor:
                 )
                 return result
 
-            if extension == ExtensionTypes.PDF.value:
+            if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
                 result = await self.processor.process_pdf_with_docling(
                     recordName=record_name,
                     recordId=record_id,
@@ -381,7 +395,7 @@ class EventProcessor:
                         virtual_record_id = virtual_record_id
                     )
 
-            elif extension == ExtensionTypes.DOCX.value:
+            elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 result = await self.processor.process_docx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -392,7 +406,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.DOC.value:
+            elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
                 result = await self.processor.process_doc_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -402,7 +416,7 @@ class EventProcessor:
                     doc_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-            elif extension == ExtensionTypes.XLSX.value:
+            elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
                 result = await self.processor.process_excel_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -412,7 +426,7 @@ class EventProcessor:
                     excel_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-            elif extension == ExtensionTypes.XLS.value:
+            elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
                 result = await self.processor.process_xls_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -422,7 +436,7 @@ class EventProcessor:
                     xls_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-            elif extension == ExtensionTypes.CSV.value:
+            elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
                 result = await self.processor.process_csv_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -434,7 +448,7 @@ class EventProcessor:
                     origin=origin,
                 )
 
-            elif extension == ExtensionTypes.HTML.value:
+            elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
                 result = await self.processor.process_html_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -447,7 +461,7 @@ class EventProcessor:
                     recordType=record_type
                 )
 
-            elif extension == ExtensionTypes.PPTX.value:
+            elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
                 result = await self.processor.process_pptx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -458,7 +472,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.PPT.value:
+            elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
                 result = await self.processor.process_ppt_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -469,7 +483,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.MD.value:
+            elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
                 result = await self.processor.process_md_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -480,7 +494,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.MDX.value:
+            elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
                 result = await self.processor.process_mdx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -491,7 +505,7 @@ class EventProcessor:
                     virtual_record_id = virtual_record_id
                 )
 
-            elif extension == ExtensionTypes.TXT.value:
+            elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
                 result = await self.processor.process_txt_document(
                     recordName=record_name,
                     recordId=record_id,

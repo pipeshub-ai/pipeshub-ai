@@ -436,7 +436,8 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
 
     // Move to next step or complete
     if (activeStep < CONFIGURATION_STEPS.length - 1) {
-      setActiveStep(activeStep + 1);
+      const nextIndex = activeStep + 1;
+      setActiveStep(nextIndex);
     } else {
       // This is the last step, complete configuration with current data
       await completeConfiguration();
@@ -461,16 +462,55 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
 
     // Move to next step or complete
     if (activeStep < CONFIGURATION_STEPS.length - 1) {
-      setActiveStep(activeStep + 1);
+      const nextIndex = activeStep + 1;
+      setActiveStep(nextIndex);
     } else {
       completeConfiguration();
     }
   };
 
+  // Robust rehydration on step change to ensure persistence across multiple navigations
+  useEffect(() => {
+    if (!open) return () => {};
+    const timer = setTimeout(async () => {
+      try {
+        const step = getCurrentStep();
+        if (!step) return;
+        const state = stepStates[step.id];
+        const ref = formRefs[step.id as keyof typeof formRefs];
+        if (ref?.current && state?.formData) {
+          await ref.current.rehydrateForm?.(state.formData);
+        }
+      } catch (e) {
+        // no-op
+      }
+    }, 80);
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStep, open]);
+
   const handleBack = () => {
     if (activeStep > 0) {
-      setActiveStep(activeStep - 1);
+      const previousIndex = activeStep - 1;
+      setActiveStep(previousIndex);
       setSubmissionError(''); // Clear any error when going back
+
+      // After moving back, rehydrate the previous step's form with its last known data
+      setTimeout(async () => {
+        const prevStep = CONFIGURATION_STEPS[previousIndex];
+        const prevState = stepStates[prevStep.id];
+        const prevFormRef = formRefs[prevStep.id as keyof typeof formRefs];
+
+        if (prevFormRef?.current && prevState?.formData) {
+          try {
+            await prevFormRef.current.rehydrateForm?.(prevState.formData);
+          } catch (e) {
+            // no-op: do not block navigation on rehydrate
+          }
+        }
+      }, 50);
     }
   };
 
@@ -622,7 +662,12 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       const savePromises = configurationsToSave.map((config) =>
         config.saveFn().catch((error: any) => {
           console.error(`Error saving ${config.type}:`, error);
-          throw new Error(`Failed to save ${config.type} configuration`);
+          throw new Error(
+            error.response?.data?.error?.message ||
+              error.response?.data?.message ||
+              error.message ||
+              `Failed to save ${config.type} configuration`
+          );
         })
       );
 

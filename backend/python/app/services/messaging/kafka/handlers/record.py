@@ -16,7 +16,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService
@@ -45,7 +45,7 @@ async def make_signed_url_api_call(signed_url: str) -> dict:
                 data = await response.read()
                 return data
     except Exception:
-        raise
+        raise Exception("Failed to make signed URL API call")
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
@@ -81,7 +81,7 @@ async def make_api_call(signed_url_route: str, token: str) -> dict:
                     data = await response.read()
                     return {"is_json": False, "data": data}
     except Exception:
-        raise
+        raise Exception("Failed to make API call")
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -126,37 +126,32 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"Missing record_id in message {payload}")
                 return False
 
+            record = await self.event_processor.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return False
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
-                f"Virtual Record ID: {virtual_record_id}"
+                f"Virtual Record ID: {virtual_record_id} "
                 f"Extension: {extension}, Mime Type: {mime_type}"
             )
 
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
-                self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
-                await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
-                self.logger.info(f"Scheduled update for record {record_id}")
-                record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-                )
-                if record is None:
-                    self.logger.error(f"❌ Record {record_id} not found in database")
-                    return False
-                doc = dict(record)
+                # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
+                # self.logger.info(f"Scheduled update for record {record_id}")
+                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
-                doc.update({"isDirty": True})
-
-                docs = [doc]
-                await self.event_processor.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-                return True
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
@@ -165,17 +160,11 @@ class RecordEventHandler(BaseEventService):
                     if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
 
-
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-            record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return False
+
             doc = dict(record)
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
@@ -278,7 +267,7 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise
+                    raise Exception(error_msg)
 
             elif payload and payload.get("signedUrl"):
                 try:
@@ -299,21 +288,51 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise
+                    raise Exception(error_msg)
             else:
-                raise ValueError(
-                    f"No signedUrlRoute or signedUrl found in payload for message {message_id}"
-                )
+                try:
+                    jwt_payload  = {
+                        "orgId": payload["orgId"],
+                        "scopes": ["connector:signedUrl"],
+                    }
+                    token = await self.__generate_jwt(jwt_payload)
+                    self.logger.debug(f"Generated JWT token for message {message_id}")
+
+                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+                    connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+
+                    response = await make_api_call(
+                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token
+                    )
+
+                    event_data_for_processor = {
+                        "eventType": event_type,
+                        "payload": payload
+                    }
+
+                    event_data_for_processor["payload"]["buffer"] = response["data"]
+
+                    await self.event_processor.on_event(event_data_for_processor)
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self.logger.info(
+                        f"✅ Successfully processed document for event: {event_type}. "
+                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                    )
+                    return True
+                except Exception as e:
+                    error_occurred = True
+                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    raise Exception(error_msg)
         except IndexingError as e:
             error_occurred = True
             error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            raise
+            raise Exception(error_msg)
         except Exception as e:
             error_occurred = True
             error_msg = f"Error processing message {message_id}: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            raise
+            raise Exception(error_msg)
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(

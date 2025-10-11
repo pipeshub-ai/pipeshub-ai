@@ -26,22 +26,33 @@ class QueryAppContainer(BaseAppContainer):
     redis_client = providers.Resource(
         BaseAppContainer._create_redis_client, config_service=config_service
     )
+    kafka_service = providers.Singleton(lambda: None)  # Not used in query service
     arango_service = providers.Resource(
         container_utils.create_retrieval_arango_service,
         logger=logger,
         arango_client=arango_client,
         config_service=config_service,
+        kafka_service=kafka_service,
     )
     vector_db_service =  providers.Resource(
         container_utils.get_vector_db_service,
         config_service=config_service,
     )
+
+    blob_store = providers.Resource(
+        container_utils.create_blob_storage,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+
     retrieval_service = providers.Resource(
         container_utils.create_retrieval_service,
         config_service=config_service,
         logger=logger,
         vector_db_service=vector_db_service,
         arango_service=arango_service,
+        blob_store=blob_store,
     )
     reranker_service = providers.Singleton(
         RerankerService,
@@ -53,7 +64,6 @@ class QueryAppContainer(BaseAppContainer):
         modules=[
             "app.api.routes.search",
             "app.api.routes.chatbot",
-            "app.modules.retrieval.retrieval_service",
-            "app.modules.retrieval.retrieval_arango",
+            "app.modules.retrieval.retrieval_service"
         ]
     )

@@ -35,11 +35,7 @@ import {
   ReindexAllRecordEvent,
   SyncEventProducer,
   Event as SyncEvent,
-  EventType as SyncEventType,
-  SyncDriveEvent,
-  SyncGmailEvent,
-  SyncOneDriveEvent,
-  SyncSharePointOnlineEvent,
+  BaseSyncEvent,
 } from './sync_events.service';
 import {
   IServiceFileRecord,
@@ -2748,7 +2744,7 @@ export class RecordRelationService {
         await this.createReindexAllRecordEventPayload(reindexPayload);
 
       const event: SyncEvent = {
-        eventType: SyncEventType.ReindexAllRecordEvent,
+        eventType: 'reindexAllRecord',
         timestamp: Date.now(),
         payload: reindexAllRecordEventPayload,
       };
@@ -2781,26 +2777,13 @@ export class RecordRelationService {
 
   async resyncConnectorRecords(resyncConnectorPayload: any): Promise<any> {
     try {
-      const resyncConnectorEventPayload =
+      const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-
+      const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
       const event: SyncEvent = {
-        eventType:
-          (() => {
-            switch (resyncConnectorEventPayload.connector) {
-              case 'GMAIL':
-                return SyncEventType.SyncGmailEvent;
-              case 'ONEDRIVE':
-                return SyncEventType.SyncOneDriveEvent;
-              case 'SHAREPOINT ONLINE':
-                return SyncEventType.SyncSharePointOnlineEvent;
-              default:
-                return SyncEventType.SyncDriveEvent;
-            }
-          })()
-        ,
+        eventType: eventType,
         timestamp: Date.now(),
-        payload: resyncConnectorEventPayload,
+        payload: resyncPayload,
       };
 
       await this.syncEventProducer.publishEvent(event);
@@ -2820,7 +2803,7 @@ export class RecordRelationService {
 
   async createResyncConnectorEventPayload(
     resyncConnectorEventPayload: any,
-  ): Promise<SyncDriveEvent | SyncGmailEvent | SyncOneDriveEvent | SyncSharePointOnlineEvent> {
+  ): Promise<BaseSyncEvent> {
     const connectorName = resyncConnectorEventPayload.connectorName;
 
     return {

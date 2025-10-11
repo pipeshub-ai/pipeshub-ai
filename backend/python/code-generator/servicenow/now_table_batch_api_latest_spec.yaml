@@ -1,0 +1,42 @@
+---
+openapi: "3.0.1"
+info:
+  title: "Table Batch API"
+  description: ""
+  version: "latest"
+externalDocs:
+  url: ""
+servers:
+- url: "https://<instance_name>.service-now.com/"
+paths:
+  /api/now/table_batch_api:
+    put:
+      description: ""
+      parameters: []
+      requestBody:
+        content:
+          application/json: {}
+          application/xml: {}
+          text/xml: {}
+      responses:
+        "200":
+          description: "ok"
+          content:
+            application/json: {}
+            application/xml: {}
+            text/xml: {}
+    post:
+      description: ""
+      parameters: []
+      requestBody:
+        content:
+          application/json: {}
+          application/xml: {}
+          text/xml: {}
+      responses:
+        "200":
+          description: "ok"
+          content:
+            application/json: {}
+            application/xml: {}
+            text/xml: {}

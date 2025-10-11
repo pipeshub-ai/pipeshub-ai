@@ -18,6 +18,7 @@ class RecordGroupType(str, Enum):
     JIRA_PROJECT = "JIRA_PROJECT"
     SHAREPOINT_SITE = "SHAREPOINT_SITE"
     SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
+    MAILBOX = "MAILBOX"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -60,7 +61,7 @@ class Record(BaseModel):
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
-    mime_type: Optional[MimeTypes] = Field(default=None, description="MIME type of the record")
+    mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -92,7 +93,7 @@ class Record(BaseModel):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -119,12 +120,13 @@ class Record(BaseModel):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record["connectorName"]),
-            mime_type=arango_base_record.get("mimeType", None),
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
             updated_at=arango_base_record.get("updatedAtTimestamp", None),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
+            virtual_record_id=arango_base_record.get("virtualRecordId", None),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -146,10 +148,11 @@ class FileRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
+            "recordGroupId": self.external_record_group_id,
             "name": self.record_name,
             "isFile": self.is_file,
             "extension": self.extension,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "sizeInBytes": self.size_in_bytes,
             "webUrl": self.weburl,
             "etag": self.etag,
@@ -173,7 +176,7 @@ class FileRecord(Record):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record["connectorName"]),
-            mime_type=arango_base_record["mimeType"],
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record["webUrl"],
             external_record_group_id=arango_base_file_record["externalGroupId"],
             parent_external_record_id=arango_base_file_record["externalParentId"],
@@ -202,7 +205,7 @@ class FileRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -239,6 +242,10 @@ class MailRecord(Record):
     to_emails: Optional[List[str]] = None
     cc_emails: Optional[List[str]] = None
     bcc_emails: Optional[List[str]] = None
+    thread_id: Optional[str] = None
+    is_parent: bool = False
+    internet_message_id: Optional[str] = None
+    conversation_index: Optional[str] = None
 
 
     def to_arango_record(self) -> Dict:
@@ -246,11 +253,16 @@ class MailRecord(Record):
             "_key": self.id,
             "orgId": self.org_id,
             "name": self.record_name,
-            "subject": self.subject,
-            "from": self.from_email,
-            "to": self.to_emails,
-            "cc": self.cc_emails,
-            "bcc": self.bcc_emails,
+            "threadId": self.thread_id or "",
+            "isParent": self.is_parent,
+            "subject": self.subject or "",
+            "from": self.from_email or "",
+            "to": self.to_emails or [],
+            "cc": self.cc_emails or [],
+            "bcc": self.bcc_emails or [],
+            "messageIdHeader": self.internet_message_id,
+            "webUrl": self.weburl or "",
+            "conversationIndex": self.conversation_index,
         }
 
 
@@ -260,17 +272,18 @@ class MailRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "mimeType": self.mime_type,
+            "subject": self.subject,
         }
 
 class WebpageRecord(Record):
-
     def to_kafka_record(self) -> Dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -283,16 +296,6 @@ class WebpageRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "name": self.record_name,
-            "recordType": self.record_type.value,
-            "mimeType": self.mime_type.value,
-            "createdAtTimestamp": self.created_at,
-            "updatedAtTimestamp": self.updated_at,
-            "sourceCreatedAtTimestamp": self.source_created_at,
-            "sourceLastModifiedTimestamp": self.source_updated_at,
-            "webUrl": self.weburl,
-            "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
         }
 
 class TicketRecord(Record):
@@ -355,7 +358,7 @@ class SharePointListRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -379,7 +382,7 @@ class SharePointListItemRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -403,7 +406,7 @@ class SharePointDocumentLibraryRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -427,7 +430,7 @@ class SharePointPageRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type.value,
+            "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -446,6 +449,7 @@ class RecordGroup(BaseModel):
     description: Optional[str] = Field(default=None, description="Description of the record group")
     external_group_id: Optional[str] = Field(description="External identifier for the record group")
     parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
+    parent_record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the parent record group")
     connector_name: Connectors = Field(description="Name of the connector used to create the record group")
     web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
     group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
@@ -457,6 +461,7 @@ class RecordGroup(BaseModel):
     def to_arango_base_record_group(self) -> Dict:
         return {
             "_key": self.id,
+            "orgId": self.org_id,
             "groupName": self.name,
             "shortName": self.short_name,
             "description": self.description,
@@ -637,6 +642,7 @@ class AppUser(BaseModel):
             "orgId": self.org_id,
             "email": self.email,
             "fullName": self.full_name,
+            "userId": self.source_user_id,
             "isActive": self.is_active,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,

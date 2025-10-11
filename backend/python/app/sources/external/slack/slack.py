@@ -43,7 +43,6 @@ class SlackDataSource:
                 elif 'error' in data:
                     success = False
                     error_msg = data.get('error')
-            success = bool(data.get('ok', False))
             return SlackResponse(
                 success=success,
                 data=data,
@@ -57,7 +56,54 @@ class SlackDataSource:
         """Handle Slack API errors and convert to standardized format"""
         error_msg = str(error)
         logger.error(f"Slack API error: {error_msg}")
+
+        # Provide more specific error messages for common token issues
+        if "not_allowed_token_type" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope."
+            )
+        elif "invalid_auth" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Invalid Slack token. Please check your token configuration."
+            )
+        elif "missing_scope" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Missing required Slack scope. Please add the necessary scopes to your bot token."
+            )
+        elif "account_inactive" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Slack account is inactive. Please check your workspace status."
+            )
+        elif "token_revoked" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Slack token has been revoked. Please generate a new token."
+            )
+        elif "channel_not_found" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Channel not found. The channel may not exist, be private, or the bot may not have access to it."
+            )
+        elif "not_in_channel" in error_msg:
+            return SlackResponse(
+                success=False,
+                error="Bot is not a member of this channel. Please invite the bot to the channel first."
+            )
+
         return SlackResponse(success=False, error=error_msg)
+
+    async def check_token_scopes(self) -> SlackResponse:
+        """Check what scopes the current token has access to"""
+        try:
+            # Use auth.test to get token info
+            response = getattr(self.client, 'auth_test')()
+            return await self._handle_slack_response(response)
+        except Exception as e:
+            return await self._handle_slack_error(e)
 
 
     async def admin_apps_approve(self,

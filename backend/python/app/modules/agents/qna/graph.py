@@ -12,6 +12,8 @@ from app.modules.agents.qna.nodes import (
     tool_execution_node,
 )
 
+LAST_N_TOOLS = 5
+MAX_TOOL_ITERATIONS = 30
 
 def should_continue_with_limit(state: ChatState) -> str:
     """Simple routing with safety limit - pure LLM autonomy"""
@@ -20,7 +22,7 @@ def should_continue_with_limit(state: ChatState) -> str:
     tool_call_count = len(all_tool_results)
 
     # Safety limit to prevent infinite loops - generous for enterprise workflows
-    max_iterations = 20  # Increased to support complex multi-tool enterprise workflows
+    max_iterations = MAX_TOOL_ITERATIONS  # Increased to support complex multi-tool enterprise workflows
 
     # Simple decision based on LLM's choice
     has_pending_calls = state.get("pending_tool_calls", False)
@@ -32,8 +34,16 @@ def should_continue_with_limit(state: ChatState) -> str:
 
         # Show recent tool usage for complex workflow tracking
         if all_tool_results and len(all_tool_results) > 0:
-            recent_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-5:]]
+            recent_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
             logger.debug(f"Recent tool chain: {' → '.join(recent_tools)}")
+
+            # Check for stuck loops - same tool called repeatedly
+            if len(all_tool_results) >= LAST_N_TOOLS:
+                last_5_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
+                if len(set(last_5_tools)) == 1:  # All 5 recent tools are the same
+                    logger.warning(f"Detected potential stuck loop with tool: {last_5_tools[0]}")
+                    logger.warning("Forcing termination to prevent infinite recursion")
+                    return "final"
 
     # Simple routing logic - let LLM drive everything
     if has_pending_calls and tool_call_count < max_iterations:

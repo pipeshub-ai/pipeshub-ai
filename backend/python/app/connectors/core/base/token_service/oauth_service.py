@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 from aiohttp import ClientSession
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.key_value_store import KeyValueStore
 
 
@@ -174,12 +175,23 @@ class OAuthProvider:
 
         session = await self.session
         async with session.post(self.config.token_url, data=data) as response:
+            if response.status == HttpStatusCode.FORBIDDEN.value:
+                # Log additional details for 403 errors (common with expired/invalid refresh tokens)
+                error_text = await response.text()
+                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. Response: {error_text}")
             response.raise_for_status()
             token_data = await response.json()
 
         # Create new token with current timestamp
         token = OAuthToken(**token_data)
-        # Preserve refresh_token (Google omits it on refresh)
+
+        # Handle different OAuth providers:
+        # - Google: doesn't return refresh_token on refresh, so preserve the old one
+        # - Atlassian: returns a NEW refresh_token (rotating refresh tokens), so use the new one
+        # - Other providers: use new refresh_token if provided, otherwise preserve old one
+
+        # If no new refresh_token was returned, preserve the old one
+        # This handles Google and other providers that don't return refresh_token on refresh
         if not token.refresh_token:
             token.refresh_token = refresh_token
 
@@ -187,15 +199,9 @@ class OAuthProvider:
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
-        stored_refresh = None
-        try:
-            stored_refresh = (config.get('credentials') or {}).get('refresh_token')
-        except Exception:
-            stored_refresh = None
-        token_dict = token.to_dict()
-        if not token_dict.get('refresh_token') and stored_refresh:
-            token_dict['refresh_token'] = stored_refresh
-        config['credentials'] = token_dict
+
+        # Store the new token (which includes the new refresh_token if provided)
+        config['credentials'] = token.to_dict()
         await self.key_value_store.create_key(self.credentials_path, config)
 
         return token
@@ -274,15 +280,9 @@ class OAuthProvider:
 
         # Clean up OAuth state and store credentials
         config['oauth'] = None  # remove transient state after successful exchange
-        existing_refresh = None
-        try:
-            existing_refresh = (config.get('credentials') or {}).get('refresh_token')
-        except Exception:
-            existing_refresh = None
-        token_dict = token.to_dict()
-        if not token_dict.get('refresh_token') and existing_refresh:
-            token_dict['refresh_token'] = existing_refresh
-        config['credentials'] = token_dict
+
+        # Store the new token (use the refresh_token from the response if available)
+        config['credentials'] = token.to_dict()
         await self.key_value_store.create_key(self.credentials_path, config)
 
         return token

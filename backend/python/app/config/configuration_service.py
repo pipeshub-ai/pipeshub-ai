@@ -132,7 +132,6 @@ class ConfigurationService:
             if hasattr(self.store, 'client'):
                 # Wait for client to be ready
                 while getattr(self.store, 'client', None) is None:
-                    self.logger.debug("🔄 Waiting for ETCD client to be initialized...")
                     time.sleep(3)
                 try:
                     self.store.client.add_watch_prefix_callback("/", self._watch_callback)
@@ -225,6 +224,5 @@ class ConfigurationService:
             for evt in event.events:
                 key = evt.key.decode()
                 self.cache.pop(key, None)
-                self.logger.debug("🔄 Cache updated for key: %s", key)
         except Exception as e:
             self.logger.error("❌ Error in watch callback: %s", str(e))

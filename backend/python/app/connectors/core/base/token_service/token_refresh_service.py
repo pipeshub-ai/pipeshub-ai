@@ -58,13 +58,12 @@ class TokenRefreshService:
             for connector in active_connectors:
                 connector_name = connector['name']
                 auth_type = connector.get('authType', '')
-
                 # Only refresh OAuth tokens
                 if auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
                     await self._refresh_connector_token(connector_name)
 
         except Exception as e:
-            self.logger.error(f"Error refreshing tokens: {e}")
+            self.logger.error(f"❌ Error refreshing tokens: {e}")
 
     async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
@@ -80,22 +79,17 @@ class TokenRefreshService:
             if not credentials.get('refresh_token'):
                 return
 
-            # Get connector config for OAuth URLs
-            connector_config = await self.arango_service.get_app_by_name(connector_name)
-            if not connector_config:
-                return
-
             auth_config = config.get('auth', {})
-            connector_auth_config = connector_config.get('config', {}).get('auth', {})
+
 
             # Create OAuth config
             oauth_config = OAuthConfig(
                 client_id=auth_config['clientId'],
                 client_secret=auth_config['clientSecret'],
-                redirect_uri=auth_config.get('redirectUri', connector_auth_config.get('redirectUri', '')),
-                authorize_url=connector_auth_config.get('authorizeUrl', ''),
-                token_url=connector_auth_config.get('tokenUrl', ''),
-                scope=' '.join(connector_auth_config.get('scopes', [])) if connector_auth_config.get('scopes') else ''
+                redirect_uri=auth_config.get('redirectUri', ''),
+                authorize_url=auth_config.get('authorizeUrl', ''),
+                token_url=auth_config.get('tokenUrl', ''),
+                scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
             )
 
             # Create OAuth provider
@@ -135,7 +129,7 @@ class TokenRefreshService:
             await self.schedule_token_refresh(connector_name, new_token)
 
         except Exception as e:
-            self.logger.error(f"Error refreshing token for {connector_name}: {e}")
+            self.logger.error(f"❌ Error refreshing token for {connector_name}: {e}")
 
     async def _periodic_refresh_check(self) -> None:
         """Periodically check and refresh tokens"""
@@ -146,7 +140,7 @@ class TokenRefreshService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"Error in periodic refresh check: {e}")
+                self.logger.error(f"❌ Error in periodic refresh check: {e}")
 
     async def refresh_connector_token(self, connector_name: str) -> None:
         """Manually refresh token for a specific connector"""

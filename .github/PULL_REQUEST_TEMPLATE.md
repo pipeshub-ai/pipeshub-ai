@@ -7,7 +7,7 @@
 - [ ] Bug fix (non-breaking change which fixes an issue)
 - [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
+- [ ] Documentation update (Is there an addition/change in API Request, Response? If yes, documentation is required)
 - [ ] Performance improvement
 - [ ] Code refactoring
 - [ ] Security fix

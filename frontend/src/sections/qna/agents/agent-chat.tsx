@@ -412,21 +412,19 @@ class StreamingManager {
       return;
     }
 
-    // Use the accumulated content from streaming as the primary source
-    let finalContent = state?.accumulatedContent || '';
+    // Align behavior with chat interface: prefer completion data if available
+    let finalContent = state?.content || '';
     let finalCitations = state?.citations || [];
     let finalMessageId = messageId;
 
     console.log('Pre-finalization state:', {
-      hasAccumulatedContent: !!state?.accumulatedContent,
-      accumulatedLength: state?.accumulatedContent?.length || 0,
+      hasContent: !!state?.content,
+      contentLength: state?.content?.length || 0,
       hasCompletionData: !!completionData?.conversation,
       citationsCount: finalCitations.length,
     });
 
-    // Only use completion data if we don't have accumulated content from streaming
-    if (!finalContent && completionData?.conversation) {
-      console.log('Using completion data as fallback');
+    if (completionData?.conversation) {
       const finalBotMessage = completionData.conversation.messages
         .filter((msg: any) => msg.messageType === 'bot_response')
         .pop();
@@ -435,23 +433,15 @@ class StreamingManager {
         const formatted = StreamingManager.formatMessage(finalBotMessage);
         if (formatted) {
           finalMessageId = formatted.id;
-          finalContent = formatted.content;
-          finalCitations = formatted.citations || [];
+          const { processedContent, processedCitations } = processStreamingContentLegacy(
+            formatted.content,
+            formatted.citations
+          );
+          finalContent = processedContent;
+          finalCitations = processedCitations;
         }
       }
     }
-
-    // Process the final content only once to ensure proper formatting
-    const { processedContent, processedCitations } = processStreamingContentLegacy(
-      finalContent,
-      finalCitations
-    );
-
-    console.log('Final content processing:', {
-      originalLength: finalContent.length,
-      processedLength: processedContent.length,
-      citationsCount: processedCitations.length,
-    });
 
     // Update the conversation messages with the final processed content
     this.updateConversationMessages(conversationKey, (prev) =>
@@ -460,8 +450,8 @@ class StreamingManager {
           ? {
               ...msg,
               id: finalMessageId,
-              content: processedContent,
-              citations: processedCitations,
+              content: finalContent,
+              citations: finalCitations,
               isStreamingCompleted: true,
             }
           : msg
@@ -477,20 +467,20 @@ class StreamingManager {
       isProcessingCompletion: false,
       isCompletionPending: false,
       isStreamingCompleted: true,
-      content: processedContent,
-      citations: processedCitations,
+      content: finalContent,
+      citations: finalCitations,
       finalMessageId,
       messageId: finalMessageId,
       statusMessage: '',
       showStatus: false,
       completionData: null,
-      accumulatedContent: finalContent, // Keep the original accumulated content
+      accumulatedContent: state?.accumulatedContent || finalContent,
     });
 
     console.log('Streaming finalized for conversation:', conversationKey, {
       finalMessageId,
-      contentLength: processedContent.length,
-      citationsCount: processedCitations.length,
+      contentLength: finalContent.length,
+      citationsCount: finalCitations.length,
     });
   }
 

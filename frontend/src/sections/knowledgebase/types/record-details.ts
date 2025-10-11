@@ -87,6 +87,7 @@ export interface Record {
   searchTags?: Array<{ _id: string; name: string }>;
   createdBy?: string;
   summaryDocumentId?: string;
+  webUrl?: string;
 }
 
 export interface FileRecord {
