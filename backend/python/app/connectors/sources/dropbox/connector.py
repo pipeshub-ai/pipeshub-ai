@@ -463,8 +463,6 @@ class DropboxConnector(BaseConnector):
                     team_member_id=user_id,
                     shared_folder_id=shared_folder_id
                 )
-
-                
                 
                 # If no explicit permissions were found (e.g., personal file), 
                 # add the owner's permission
@@ -1603,9 +1601,6 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to process single group {group_name} ({group_id}): {e}", exc_info=True)
 
-    # Update _process_group_event method to uncomment this line:
-    # if event_type == "group_create":
-    #     await self._handle_group_created_event(event)
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list:
         """
@@ -1642,6 +1637,8 @@ class DropboxConnector(BaseConnector):
         Extracted from _sync_user_groups sections 3b-3c for reusability.
         """
         # Permission mapping (from _sync_user_groups)
+
+        print("\n\n!!!!!!!!!!!!!!!!!!!!! all_members: ", all_members)
         dropbox_group_to_permission_type = {
             'owner': PermissionType.OWNER,
             'member': PermissionType.WRITE,
@@ -1667,9 +1664,11 @@ class DropboxConnector(BaseConnector):
                 external_id=member.profile.team_member_id,
                 email=member.profile.email,
                 type=permission_type,
-                entity_type=EntityType.USER
+                entity_type=EntityType.GROUP
             )
             member_permissions.append(user_permission)
+        
+        print("\n\n!!!!!!!!!!!!!!!!!!!!! permissions: ", member_permissions)
 
         return processor_group, member_permissions
 
@@ -1863,7 +1862,7 @@ class DropboxConnector(BaseConnector):
                         external_id=user.id,
                         email=user_email,
                         type=new_permission_type,
-                        entity_type=EntityType.USER
+                        entity_type=EntityType.GROUP
                     )
                     permission_edge = permission.to_arango_permission(from_key, to_key)
                     await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
@@ -1891,7 +1890,7 @@ class DropboxConnector(BaseConnector):
                     external_id=user.id,
                     email=user_email,
                     type=new_permission_type,
-                    entity_type=EntityType.USER
+                    entity_type=EntityType.GROUP
                 )
                 permission_edge = permission.to_arango_permission(from_key, to_key)
                 await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
@@ -2216,8 +2215,6 @@ class DropboxConnector(BaseConnector):
                 await self._handle_record_group_created_event(event, users)
             elif event_type == "team_folder_rename":
                 await self._handle_record_group_renamed_event(event)
-            elif event_type == "team_folder_archived":
-                await self._handle_record_group_archived_event(event)
             elif event_type == "team_folder_permanently_delete":
                 await self._handle_record_group_deleted_event(event)
             elif event_type == "team_folder_change_status":

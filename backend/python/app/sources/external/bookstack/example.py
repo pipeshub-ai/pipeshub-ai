@@ -38,18 +38,27 @@ async def main() -> None:
         token_secret=TOKEN_SECRET
     )
     client = BookStackClient.build_with_config(config)
+
+    print(TOKEN_ID)
+    print(TOKEN_SECRET)
+    print(BASE_URL)
     
     # Create the data source
     data_source = BookStackDataSource(client)
 
     # List all books
-    print("Listing all books:")
+    print("\nListing all books:")
     books = await data_source.list_books()
     print(books)
     
-    print("Creating a new book:")
+    print("\nCreating a new book:")
     create_response = await data_source.create_book(name="Test Book")
     print(create_response)
+
+    #List all users
+    print("\nList users:")
+    users = await data_source.list_users()
+    print(users)
 
 if __name__ == "__main__":
     asyncio.run(main())

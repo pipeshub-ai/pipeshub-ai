@@ -302,6 +302,7 @@ class DataSourceEntitiesProcessor:
     async def on_record_content_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             processed_record = await self._process_record(record, [], tx_store)
+            print("\n\n\n!!!!!!!!!!!!!!!!!!!!! publishing record for content update")
             await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
@@ -465,6 +466,7 @@ class DataSourceEntitiesProcessor:
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name}")
+                    self.logger.info(f"Processing user group permissions: {permissions}")
                     
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -487,6 +489,7 @@ class DataSourceEntitiesProcessor:
 
                     # 3. Handle User Permissions (from the passed 'permissions' list)
                     if not permissions:
+                        print("!!!!!!!!!!!!!!!!!!!!!!!! no perms")
                         continue
 
                     user_group_permissions = []
@@ -496,7 +499,7 @@ class DataSourceEntitiesProcessor:
                     for permission in permissions:
                         from_collection = None
                         
-                        if permission.entity_type == EntityType.USER:
+                        if permission.entity_type == EntityType.GROUP:
                             user = None
                             if permission.email:
                                 # Find the user's internal DB ID
@@ -516,6 +519,7 @@ class DataSourceEntitiesProcessor:
                                 permission.to_arango_permission(from_collection, to_collection)
                             )
 
+                    print("!!!!!!!!!!!!!!!!!!!!!!!! user_group_permissions: ", user_group_permissions)
                     # Batch create (upsert) all permission edges for this user group
                     if user_group_permissions:
                         self.logger.info(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
@@ -647,7 +651,7 @@ class DataSourceEntitiesProcessor:
                     external_id=user.id,  
                     email=user_email,
                     type=permission_type,
-                    entity_type=EntityType.USER
+                    entity_type=EntityType.GROUP
                 )
                 
                 # 5. Create new permission edge since it doesn't exist

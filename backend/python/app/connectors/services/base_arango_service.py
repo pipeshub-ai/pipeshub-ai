@@ -627,6 +627,7 @@ class BaseArangoService:
                 "data": None
             }
 
+    # TODO: Update group permission fetch
     async def check_record_access_with_details(
         self, user_id: str, org_id: str, record_id: str
     ) -> Optional[Dict]:
@@ -682,8 +683,8 @@ class BaseArangoService:
                 }}
             )
             LET groupAccessPermissionEdge = (
-                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER belongsEdge.entityType == 'GROUP'
+                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER belongsEdge.type == 'GROUP'
                 FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
@@ -1072,9 +1073,41 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET mergeRecords = Append(kbRecords, connectorRecords)
-            LET allRecords = APPEND(mergeRecords, connectorRecordsNewPermission)
-            
+            LET groupConnectorRecordsNewPermission = {
+                f'''(
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "GROUP"
+                        
+                        FOR record, permissionEdge IN 1..1 ANY group._id @@permission
+                            FILTER permissionEdge.type == "GROUP"
+                            {permission_filter}
+                            
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                            }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET allConnectorRecordsNewPermission = UNION_DISTINCT(connectorRecordsNewPermission, groupConnectorRecordsNewPermission)
+            LET allConnectorRecordsDistinct = (
+                FOR item IN allConnectorRecordsNewPermission
+                    COLLECT recordKey = item.record._key 
+                    INTO groups
+                    RETURN FIRST(groups[*].item)
+            )
+
+            LET mergeRecords = APPEND(kbRecords, connectorRecords)
+            //LET mergeRecordsNewPermission = APPEND(mergeRecords, connectorRecordsNewPermission)
+            LET allRecords = APPEND(mergeRecords, allConnectorRecordsDistinct)
+
             LET sortedRecords = (
                 FOR item IN allRecords
                     LET record = item.record
@@ -1196,8 +1229,9 @@ class BaseArangoService:
                 )''' if include_connector_records else '0'
             }
 
-            LET connectorCountNewPermission = {
-                f'''LENGTH(
+            // Only return record keys for new permission queries (much lighter)
+            LET connectorKeysNewPermission = {
+                f'''(
                     FOR permissionEdge IN @@permission
                         FILTER permissionEdge._from == user_from
                         FILTER permissionEdge.type == "USER"
@@ -1209,11 +1243,34 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
                         {record_filter}
-                        RETURN 1
-                )''' if include_connector_records else '0'
+                        RETURN record._key
+                )''' if include_connector_records else '[]'
             }
 
-            RETURN kbCount + connectorCount + connectorCountNewPermission
+            LET groupConnectorKeysNewPermission = {
+                f'''(
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "GROUP"
+                        
+                        FOR record, permissionEdge IN 1..1 ANY group._id @@permission
+                            FILTER permissionEdge.type == "GROUP"
+                            {permission_filter}
+                            
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
+            // Combine all keys and count unique ones
+            LET allNewPermissionKeys = APPEND(connectorKeysNewPermission, groupConnectorKeysNewPermission)
+            LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
+
+            RETURN kbCount + connectorCount + uniqueNewPermissionCount
             """
 
             # ===== FILTERS QUERY (Fixed) =====
@@ -1280,8 +1337,40 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET mergeRecords = Append(allKbRecords, allConnectorRecords)
-            LET allRecords = APPEND(mergeRecords, allConnectorRecordsNewPermission)
+            LET allGroupConnectorRecordsNewPermission = {
+                f'''(
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "GROUP"
+                        
+                        FOR record, permissionEdge IN 1..1 ANY group._id @@permission
+                            FILTER permissionEdge.type == "GROUP"
+                            {permission_filter}
+                            
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                            }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET ConnectorRecords = UNION_DISTINCT(allConnectorRecordsNewPermission, allGroupConnectorRecordsNewPermission)
+            LET allConnectorRecordsDistinct = (
+                FOR item IN ConnectorRecords
+                    COLLECT recordKey = item.record._key 
+                    INTO groups
+                    RETURN FIRST(groups[*].item)
+            )
+
+            LET mergeRecords = APPEND(allKbRecords, allConnectorRecords)
+            //LET mergeRecordsNewPermission = APPEND(mergeRecords, connectorRecordsNewPermission)
+            LET allRecords = APPEND(mergeRecords, allConnectorRecordsDistinct)
             
             LET flatRecords = (
                 FOR item IN allRecords
@@ -1363,6 +1452,7 @@ class BaseArangoService:
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
+                **filter_bind_vars,
             }
 
             # Execute queries
@@ -1453,6 +1543,7 @@ class BaseArangoService:
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
 
+            #TODO: implement for DROPBOX
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
                 if connector_name == Connectors.GOOGLE_DRIVE.value:
@@ -10597,10 +10688,22 @@ class BaseArangoService:
                 RETURN DISTINCT records
             )
 
+            LET directRecordsPermissionEdge = (
+                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                RETURN DISTINCT records
+            )
+
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER edge.entityType == 'GROUP'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET groupRecordsPermissionEdge = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER edge.type == 'GROUP'
+                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
@@ -10611,7 +10714,14 @@ class BaseArangoService:
                 RETURN DISTINCT records
             )
 
-            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords)
+            LET orgRecordsPermissionEdge = (
+                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER edge.entityType == 'ORGANIZATION'
+                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                RETURN DISTINCT records
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords, directRecordsPermissionEdge, groupRecordsPermissionEdge, orgRecordsPermissionEdge)
 
             LET anyoneRecords = (
                 FOR records IN @@anyone
