@@ -130,8 +130,9 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
 
             if 0 <= chunk_index < len(flattened_final_results):
                 doc = flattened_final_results[chunk_index]
+                content = doc.get("content", "")
                 new_citations.append({
-                    "content": doc.get("content", ""),
+                    "content": "Image" if content.startswith("data:image/") else content,
                     "chunkIndex": new_citation_num,  # Use new sequential number
                     "metadata": doc.get("metadata", {}),
                     "citationType": "vectordb|document",
@@ -176,7 +177,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 data = data.get("uri","")
             enhanced_metadata = get_enhanced_metadata(record,block,{})
             new_citations.append({
-                "content": data,
+                "content": "Image" if data.startswith("data:image/") else data,
                 "chunkIndex": new_citation_num,  # Use new sequential number
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
