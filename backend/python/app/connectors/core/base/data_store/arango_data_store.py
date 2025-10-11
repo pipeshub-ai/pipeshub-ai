@@ -131,8 +131,6 @@ class ArangoTransactionStore(TransactionStore):
         if duplicates:
             self.logger.warning(f"DUPLICATE RECORD IDS IN BATCH: {duplicates}")
 
-        self.logger.info("Upserting records in batch_record_upsert: %s", records)
-
         try:
             for record in records:
                 # Define record type configurations

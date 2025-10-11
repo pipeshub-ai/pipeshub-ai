@@ -1638,7 +1638,6 @@ class DropboxConnector(BaseConnector):
         """
         # Permission mapping (from _sync_user_groups)
 
-        print("\n\n!!!!!!!!!!!!!!!!!!!!! all_members: ", all_members)
         dropbox_group_to_permission_type = {
             'owner': PermissionType.OWNER,
             'member': PermissionType.WRITE,
@@ -1668,8 +1667,6 @@ class DropboxConnector(BaseConnector):
             )
             member_permissions.append(user_permission)
         
-        print("\n\n!!!!!!!!!!!!!!!!!!!!! permissions: ", member_permissions)
-
         return processor_group, member_permissions
 
     async def _handle_group_renamed_event(self, event) -> None:

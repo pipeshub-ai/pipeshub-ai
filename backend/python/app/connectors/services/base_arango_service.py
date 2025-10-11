@@ -1553,7 +1553,7 @@ class BaseArangoService:
                 elif connector_name in (Connectors.ONEDRIVE.value, Connectors.SHAREPOINT_ONLINE.value):
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 else:
-                    user_role = None
+                    user_role = await self._check_record_permissions(record_id, user_key)
 
                 if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
@@ -2678,6 +2678,207 @@ class BaseArangoService:
                 "allowed": False,
                 "reason": f"Permission check failed: {str(e)}",
                 "permission_level": "ERROR"
+            }
+
+    async def _check_record_permissions(self, record_id: str, user_key: str, check_drive_inheritance: bool = True) -> Dict:
+        """
+        Generic permission checker for any record type.
+        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+        
+        Args:
+            record_id: The record to check permissions for
+            user_key: The user to check permissions for
+            check_drive_inheritance: Whether to check for Drive-level inherited permissions
+        
+        Returns:
+            Dict with 'permission' (role) and 'source' (where permission came from)
+        """
+        try:
+            self.logger.info(f"🔍 Checking permissions for record {record_id} and user {user_key}")
+            
+            permission_query = """
+            LET user_from = CONCAT('users/', @user_key)
+            LET record_from = CONCAT('records/', @record_id)
+            
+            // 1. Check direct user permissions on the record
+            LET direct_permission_old_permissions = FIRST(
+                FOR perm IN @@permissions
+                    FILTER perm._from == record_from
+                    FILTER perm._to == user_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            LET direct_permission_new_permission = FIRST(
+                FOR perm IN @@permission
+                    FILTER perm._from == user_from
+                    FILTER perm._to == record_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            LET direct_permission = direct_permission_old_permissions ? direct_permission_old_permissions : direct_permission_new_permission
+            
+            // 2. Check group permissions
+            LET group_permission_old_permission = FIRST(
+                FOR belongs_edge IN @@permission
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "GROUP"
+                    LET group = DOCUMENT(belongs_edge._to)
+                    FILTER group != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == record_from
+                        FILTER perm._to == group._id
+                        FILTER perm.type == "GROUP"
+                        RETURN perm.role
+            )
+
+            LET group_permission_new_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "GROUP"
+                    LET group = DOCUMENT(belongs_edge._to)
+                    FILTER group != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == group._id
+                        FILTER perm._to == record_from
+                        FILTER perm.type == "GROUP"
+                        RETURN perm.role
+            )
+
+            LET group_permission = group_permission_old_permission ? group_permission_old_permission : group_permission_new_permission
+            
+            // 3. Check domain/organization permissions
+            LET domain_permission_old_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    FOR perm IN @@permissions
+                        FILTER perm._from == record_from
+                        FILTER perm._to == org._id
+                        FILTER perm.type == "DOMAIN"
+                        RETURN perm.role
+            )
+            
+            LET domain_permission_new_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == org._id
+                        FILTER perm._to == record_from
+                        FILTER perm.type == "DOMAIN"
+                        RETURN perm.role
+            )
+
+            LET domain_permission = domain_permission_old_permission ? domain_permission_old_permission : domain_permission_new_permission
+            
+            // 4. Check 'anyone' permissions (public sharing)
+            LET user_org_id = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    RETURN org._key
+            )
+            
+            LET anyone_permission = user_org_id ? FIRST(
+                FOR anyone_perm IN @@anyone
+                    FILTER anyone_perm.file_key == @record_id
+                    FILTER anyone_perm.organization == user_org_id
+                    FILTER anyone_perm.active == true
+                    RETURN anyone_perm.role
+            ) : null
+            
+            // 5. Check Drive-level access (if enabled)
+            LET drive_access = @check_drive_inheritance ? FIRST(
+                // Get the file record to find its drive
+                FOR record IN @@records
+                    FILTER record._key == @record_id
+                    FOR file_edge IN @@is_of_type
+                        FILTER file_edge._from == record._id
+                        LET file = DOCUMENT(file_edge._to)
+                        FILTER file != null
+                        // Get the drive this file belongs to
+                        LET file_drive_id = file.driveId
+                        FILTER file_drive_id != null
+                        // Check if user has access to this drive
+                        FOR drive_edge IN @@user_drive_relation
+                            FILTER drive_edge._from == user_from
+                            LET drive = DOCUMENT(drive_edge._to)
+                            FILTER drive != null
+                            FILTER drive._key == file_drive_id OR drive.driveId == file_drive_id
+                            // Map drive access level to permission role
+                            LET drive_role = (
+                                drive_edge.access_level == "owner" ? "OWNER" :
+                                drive_edge.access_level IN ["writer", "fileOrganizer"] ? "WRITER" :
+                                drive_edge.access_level IN ["commenter", "reader"] ? "READER" :
+                                null
+                            )
+                            RETURN drive_role
+            ) : null
+            
+            // Return the highest permission level found (in order of precedence)
+            LET final_permission = (
+                direct_permission ? direct_permission :
+                direct_permission_new_permission ? direct_permission:
+                group_permission ? group_permission :
+                group_permission_new_permission ? group_permission :
+                domain_permission ? domain_permission :
+                domain_permission_new_permission ? domain_permission :
+                anyone_permission ? anyone_permission :
+                drive_access ? drive_access :
+                null
+            )
+            
+            RETURN {
+                permission: final_permission,
+                source: (
+                    direct_permission ? "DIRECT" :
+                    group_permission ? "GROUP" :
+                    domain_permission ? "DOMAIN" :
+                    anyone_permission ? "ANYONE" :
+                    drive_access ? "DRIVE_ACCESS" :
+                    "NONE"
+                )
+            }
+            """
+            
+            cursor = self.db.aql.execute(permission_query, bind_vars={
+                "record_id": record_id,
+                "user_key": user_key,
+                "check_drive_inheritance": check_drive_inheritance,
+                "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@anyone": CollectionNames.ANYONE.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "@user_drive_relation": CollectionNames.USER_DRIVE_RELATION.value,
+            })
+            
+            result = next(cursor, None)
+
+            if result and result.get("permission"):
+                permission = result["permission"]
+                source = result["source"]
+                self.logger.info(f"✅ Drive permission found: {permission} (via {source})")
+                return permission
+            else:
+                self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check permissions: {str(e)}")
+            return {
+                "permission": None,
+                "source": "ERROR",
+                "error": str(e)
             }
 
     async def _check_drive_permissions(self, record_id: str, user_key: str) -> Optional[str]:
@@ -12024,7 +12225,7 @@ class BaseArangoService:
         node_key: str, 
         collection: str =  CollectionNames.PERMISSION.value,
         transaction: Optional[TransactionDatabase] = None
-    ) -> List[str]:
+    ) -> List[User]:
         """
         Get all users that have permission edges to a specific node/record
         
@@ -12069,7 +12270,7 @@ class BaseArangoService:
         node_key: str, 
         collection: str = CollectionNames.PERMISSION.value,
         transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
+    ) -> Optional[User]:
         """
         Get the first user that has a permission edge to a specific node/record
         
@@ -12079,7 +12280,7 @@ class BaseArangoService:
             transaction: Optional transaction database
         
         Returns:
-            Optional[str]: User key with permission to the node, or None if not found
+            Optional[User]: User with permission to the node, or None if not found
         """
         try:
             self.logger.info("🚀 Getting first user with permission to node: %s from collection: %s", node_key, collection)
