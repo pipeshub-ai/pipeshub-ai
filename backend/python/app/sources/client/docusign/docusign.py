@@ -382,17 +382,19 @@ class DocuSignClient:
 
         """
         try:
-            document = self.envelopes_api.get_document(
+            document_path = self.envelopes_api.get_document(
                 self.account_id,
                 envelope_id,
                 document_id,
             )
 
             if path:
-                with open(path, "wb") as file:
-                    file.write(document)
+                import shutil
+                shutil.move(document_path, path)
                 return path
-            return document
+            
+            with open(document_path, "rb") as f:
+                return f.read()
         except Exception as e:
             error_msg = f"Failed to download document {document_id} from envelope {envelope_id}: {e!s}"
             raise RequestError(error_msg) from e
