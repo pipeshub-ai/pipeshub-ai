@@ -180,8 +180,8 @@ class DocuSignClient:
 
     def refresh_access_token(self) -> None:
         """Refresh the OAuth access token using refresh token."""
-        if not self.refresh_token:
-            raise AuthenticationError("Refresh token not provided")
+        if not self.private_key_file:
+            raise AuthenticationError("Private key for JWT not provided")
 
         try:
             # Implementation depends on DocuSign SDK specifics
