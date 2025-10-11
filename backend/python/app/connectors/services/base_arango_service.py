@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import AppUserGroup, Record, RecordGroup, User, FileRecord
+from app.models.entities import AppUserGroup, FileRecord, Record, RecordGroup, User
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
