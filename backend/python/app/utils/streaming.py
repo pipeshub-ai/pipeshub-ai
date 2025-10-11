@@ -92,7 +92,6 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
-    """Stream content from a signed URL"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(signed_url) as response:

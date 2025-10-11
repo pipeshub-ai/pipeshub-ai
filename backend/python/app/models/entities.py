@@ -114,6 +114,7 @@ class Record(BaseModel):
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
             record_group_type=arango_base_record.get("recordGroupType", None),
+            external_revision_id=arango_base_record.get("externalRevisionId", None),
             external_record_id=arango_base_record["externalRecordId"],
             external_record_group_id=arango_base_record.get("externalGroupId", None),
             parent_external_record_id=arango_base_record.get("externalParentId", None),
@@ -178,12 +179,13 @@ class FileRecord(Record):
             connector_name=Connectors(arango_base_record["connectorName"]),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record["webUrl"],
-            external_record_group_id=arango_base_file_record["externalGroupId"],
-            parent_external_record_id=arango_base_file_record["externalParentId"],
+            external_record_group_id=arango_base_record.get("externalGroupId", None),
+            parent_external_record_id=arango_base_record.get("externalParentId", None),
             created_at=arango_base_record["createdAtTimestamp"],
             updated_at=arango_base_record["updatedAtTimestamp"],
             source_created_at=arango_base_record["sourceCreatedAtTimestamp"],
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
+            is_file=arango_base_file_record["isFile"],
             size_in_bytes=arango_base_file_record["sizeInBytes"],
             extension=arango_base_file_record["extension"],
             path=arango_base_file_record["path"],
@@ -457,7 +459,7 @@ class RecordGroup(BaseModel):
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
 
     def to_arango_base_record_group(self) -> Dict:
-        return {
+        doc = {
             "_key": self.id,
             "orgId": self.org_id,
             "groupName": self.name,
@@ -473,6 +475,7 @@ class RecordGroup(BaseModel):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
+        return doc
 
     @staticmethod
     def from_arango_base_record_group(arango_base_record_group: Dict) -> "RecordGroup":
@@ -633,6 +636,7 @@ class AppUser(BaseModel):
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
     is_active: bool = Field(default=False, description="Whether the user is active")
+    title: Optional[str] = Field(default=None, description="Title of the user")
 
     def to_arango_base_user(self) -> Dict:
         return {
@@ -658,3 +662,33 @@ class AppUserGroup(BaseModel):
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
+    def to_arango_base_user_group(self) -> Dict[str, Any]:
+        """
+        Converts the AppUserGroup model to a dictionary that matches the ArangoDB schema.
+        """
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.name,
+            "externalGroupId": self.source_user_group_id,
+            "connectorName": self.app_name.value,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+
+        }
+
+    @staticmethod
+    def from_arango_base_user_group(arango_doc: Dict[str, Any]) -> "AppUserGroup":
+        return AppUserGroup(
+            id=arango_doc["_key"],
+            org_id=arango_doc.get("orgId", ""),
+            name=arango_doc["name"],
+            source_user_group_id=arango_doc["externalGroupId"],
+            app_name=Connectors(arango_doc["connectorName"]),
+            created_at=arango_doc["createdAtTimestamp"],
+            updated_at=arango_doc["updatedAtTimestamp"],
+            source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
+        )

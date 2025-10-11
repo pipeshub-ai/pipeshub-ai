@@ -55,6 +55,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       const authFlag = config?.isAuthenticated || false;
       return authFlag ;
     }
+
     return !!connectorParam.isConfigured;
   }, []);
 
