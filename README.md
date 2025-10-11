@@ -76,7 +76,7 @@
 
 <!--Intro-->
 
-<strong>[PipesHub](https://github.com/pipeshub-ai/pipeshub-ai)</strong> is a fully extensible and explainable workplace AI platform for building enterprise search and workflow automation.
+<strong>[PipesHub](https://github.com/pipeshub-ai/pipeshub-ai)</strong> is a fully extensible and explainable workplace AI platform for enterprise search and workflow automation.
 In most companies, important work data is spread across multiple apps like Google Workspace, Microsoft 365, Slack, Jira, Confluence, and more. PipesHub AI helps you quickly find the right information using natural language search—just like Google.
 It can answer questions, provide insights, and more. The platform not only delivers the most relevant results but also shows where the information came from, with proper citations, using Knowledge Graphs and Page Ranking.
 Beyond search, our platform allows enterprises to create custom apps and AI agents using a No-Code interface.
