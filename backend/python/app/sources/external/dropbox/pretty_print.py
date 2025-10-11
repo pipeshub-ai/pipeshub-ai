@@ -1,10 +1,14 @@
 import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
-from typing import Any
+from typing import Dict, List, Union
 
+# Define a recursive type for JSON-serializable objects
+JSONValue = Union[str, int, float, bool, None, "JSONObject", "JSONArray"]
+JSONObject = Dict[str, JSONValue]
+JSONArray = List[JSONValue]
 
-def serialize(obj: Any) -> Any:
+def serialize(obj: object) -> JSONValue:
     # basic types
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj

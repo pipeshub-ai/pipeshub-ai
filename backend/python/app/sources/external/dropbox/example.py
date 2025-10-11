@@ -32,7 +32,7 @@ async def main() -> None:
     print("\nListing root folder:")
     files = await data_source.files_list_folder(path="")
     print(files)
-    # print(to_pretty_json(files))
+    print(to_pretty_json(files))
 
     # List files in team folder
     print("\nListing team folder:")

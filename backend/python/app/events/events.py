@@ -174,7 +174,7 @@ class EventProcessor:
                 # For updates, first delete existing embeddings
                 if virtual_record_id is None:
                     raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
-                
+
                 self.logger.info(
                     f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
                 )

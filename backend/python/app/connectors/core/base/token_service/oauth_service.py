@@ -61,7 +61,7 @@ class OAuthToken:
     created_at: datetime = field(default_factory=datetime.now)
     uid: Optional[str] = None   # used for dropbox
     account_id: Optional[str] = None
-    team_id: Optional[str] = None 
+    team_id: Optional[str] = None
 
     @property
     def is_expired(self) -> bool:

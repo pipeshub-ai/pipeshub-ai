@@ -56,9 +56,9 @@ async def main() -> None:
     print((team_members.data.members))
 
     # #list team folder items
-    # print("\nListing team folder:")
-    # team_files = await data_source.files_list_folder(path="",team_member_id=team_members.data.members[2].profile.team_member_id, team_folder_id="13131350499", recursive=True)
-    # print(to_pretty_json(team_files))
+    print("\nListing team folder:")
+    team_files = await data_source.files_list_folder(path="",team_member_id=team_members.data.members[2].profile.team_member_id, team_folder_id="13131350499", recursive=True)
+    print(to_pretty_json(team_files))
 
     # #list all folder groups in team:
     # folder_groups = await data_source.team_team_folder_list()

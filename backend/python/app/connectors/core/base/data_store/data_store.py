@@ -187,4 +187,3 @@ class TransactionStore(BaseDataStore):
         """Rollback the transaction"""
         pass
 
-        

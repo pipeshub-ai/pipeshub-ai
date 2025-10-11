@@ -675,7 +675,7 @@ class AppUserGroup(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
-           
+
         }
 
     @staticmethod

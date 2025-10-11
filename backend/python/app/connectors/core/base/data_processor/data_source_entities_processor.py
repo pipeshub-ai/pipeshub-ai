@@ -19,11 +19,12 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.models.permission import EntityType, Permission, PermissionType
+
 
 @dataclass
 class RecordGroupWithPermissions:
@@ -131,7 +132,7 @@ class DataSourceEntitiesProcessor:
     async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
         record.org_id = self.org_id
-        self.logger.info("Updating existing record: %s, version %d -> %d", 
+        self.logger.info("Updating existing record: %s, version %d -> %d",
                          record.record_name, existing_record.version, record.version)
         await tx_store.batch_upsert_records([record])
 
@@ -144,7 +145,7 @@ class DataSourceEntitiesProcessor:
             for permission in permissions:
                 from_collection = None
                 to_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
-                
+
                 if permission.entity_type == EntityType.USER.value:
                     user = None
                     if permission.email:
@@ -189,7 +190,7 @@ class DataSourceEntitiesProcessor:
                 )
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
-    
+
     async def _create_external_user(self, email: str, connector_name: str, tx_store) -> AppUser:
         """Create an external user record."""
         external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
@@ -214,7 +215,7 @@ class DataSourceEntitiesProcessor:
 
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
-    
+
 
         record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
 
@@ -252,10 +253,10 @@ class DataSourceEntitiesProcessor:
             # pass
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
-                await self._handle_updated_record(record, existing_record, tx_store) 
+                await self._handle_updated_record(record, existing_record, tx_store)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store) 
+        await self._handle_parent_record(record, tx_store)
 
         # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
         await self._handle_record_group(record, tx_store)
@@ -283,7 +284,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 for record, permissions in records_with_permissions:
                     processed_record = await self._process_record(record, permissions, tx_store)
-                    
+
                     if processed_record:
                         records_to_publish.append(processed_record)
 
@@ -307,14 +308,14 @@ class DataSourceEntitiesProcessor:
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
                 key=record.id
             )
-        
+
     async def on_record_metadata_update(self, record: Record) -> None:
         pass
 
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
-    
+
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -326,7 +327,7 @@ class DataSourceEntitiesProcessor:
                         connector_name=record_group.connector_name,
                         external_id=record_group.external_group_id
                     )
-                    
+
                     if existing_record_group is None:
                         record_group.id = str(uuid.uuid4())
                         self.logger.info(f"Creating new record group with id: {record_group.id}")
@@ -361,17 +362,17 @@ class DataSourceEntitiesProcessor:
 
                     for permission in permissions:
                         from_collection = None
-                        
+
                         if permission.entity_type == EntityType.USER:
                             user = None
                             if permission.email:
                                 user = await tx_store.get_user_by_email(permission.email)
-                            
+
                             if user:
                                 from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                             else:
                                 self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
-                        
+
                         elif permission.entity_type == EntityType.GROUP:
                             user_group = None
                             if permission.external_id:
@@ -379,12 +380,12 @@ class DataSourceEntitiesProcessor:
                                     connector_name=record_group.connector_name,
                                     external_id=permission.external_id
                                 )
-                            
+
                             if user_group:
                                 from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
                             else:
                                 self.logger.warning(f"Could not find group with external_id {permission.external_id} for RecordGroup permission.")
-                        
+
                         # (The ORG case is no longer needed here as it's handled by BELONGS_TO)
 
                         if from_collection:
@@ -398,10 +399,10 @@ class DataSourceEntitiesProcessor:
                         await tx_store.batch_create_edges(
                             record_group_permissions, collection=CollectionNames.PERMISSION.value
                         )
-                    
+
                     if record_group.parent_record_group_id:
                         await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
-                        
+
         except Exception as e:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
@@ -414,23 +415,23 @@ class DataSourceEntitiesProcessor:
                     connector_name=connector_name,
                     external_id=folder_id
                 )
-                
+
                 if not existing_group:
                     self.logger.warning(
                         f"Cannot rename record group: Group with external ID {folder_id} not found in database"
                     )
                     return
-                
+
                 existing_group.name = new_name
                 existing_group.updated_at = get_epoch_timestamp_in_ms()
-                
+
                 await tx_store.batch_upsert_record_groups([existing_group])
-                
+
                 self.logger.info(
                     f"Successfully renamed record group {folder_id} from '{old_name}' to '{new_name}' "
                     f"(internal_id: {existing_group.id})"
                 )
-                
+
         except Exception as e:
             self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
             raise
@@ -466,13 +467,13 @@ class DataSourceEntitiesProcessor:
 
                     self.logger.info(f"Processing user group: {user_group.name}")
                     self.logger.info(f"Processing user group permissions: {permissions}")
-                    
+
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
                         connector_name=user_group.app_name,
                         external_id=user_group.source_user_group_id
                     )
-                    
+
                     if existing_user_group is None:
                         # The ID is already set by default_factory, but we log
                         self.logger.info(f"Creating new user group with id: {user_group.id}")
@@ -496,19 +497,19 @@ class DataSourceEntitiesProcessor:
 
                     for permission in permissions:
                         from_collection = None
-                        
+
                         if permission.entity_type == EntityType.GROUP:
                             user = None
                             if permission.email:
                                 # Find the user's internal DB ID
                                 user = await tx_store.get_user_by_email(permission.email)
-                            
+
                             if user:
                                 # Set the 'from' side of the edge to be the user
                                 from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                             else:
                                 self.logger.warning(f"Could not find user with email {permission.email} for UserGroup permission.")
-                        
+
                         # (Other entity_type cases like GROUP could be added here if needed)
 
                         if from_collection:
@@ -543,9 +544,9 @@ class DataSourceEntitiesProcessor:
 
 
     async def on_user_group_member_removed(
-        self, 
-        external_group_id: str, 
-        user_email: str, 
+        self,
+        external_group_id: str,
+        user_email: str,
         connector_name: str
     ) -> bool:
 
@@ -559,7 +560,7 @@ class DataSourceEntitiesProcessor:
                         f"User with email {user_email} not found in database"
                     )
                     return False
-                
+
                 # 2. Look up the user group by external ID
                 user_group = await tx_store.get_user_group_by_external_id(
                     connector_name=connector_name,
@@ -571,18 +572,18 @@ class DataSourceEntitiesProcessor:
                         f"Group with external ID {external_group_id} not found in database"
                     )
                     return False
-                
+
                 # 3. Construct the edge keys
                 from_key = f"{CollectionNames.USERS.value}/{user.id}"
                 to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-                
+
                 # 4. Delete the permission edge
                 edge_deleted = await tx_store.delete_edge(
                     from_key=from_key,
                     to_key=to_key,
                     collection=CollectionNames.PERMISSION.value
                 )
-                
+
                 if edge_deleted:
                     self.logger.info(
                         f"Successfully removed user {user_email} from group {user_group.name} "
@@ -595,18 +596,18 @@ class DataSourceEntitiesProcessor:
                         f"and group {user_group.name} (external_id: {external_group_id})"
                     )
                     return False
-                    
+
         except Exception as e:
             self.logger.error(
-                f"Failed to remove user {user_email} from group {external_group_id}: {str(e)}", 
+                f"Failed to remove user {user_email} from group {external_group_id}: {str(e)}",
                 exc_info=True
             )
             return False
 
     async def on_user_group_member_added(
-        self, 
-        external_group_id: str, 
-        user_email: str, 
+        self,
+        external_group_id: str,
+        user_email: str,
         permission_type: PermissionType,
         connector_name: str
     ) -> bool:
@@ -620,7 +621,7 @@ class DataSourceEntitiesProcessor:
                         f"User with email {user_email} not found in database"
                     )
                     return False
-                
+
                 # 2. Look up the user group by external ID
                 user_group = await tx_store.get_user_group_by_external_id(
                     connector_name=connector_name,
@@ -632,58 +633,58 @@ class DataSourceEntitiesProcessor:
                         f"Group with external ID {external_group_id} not found in database"
                     )
                     return False
-                
+
                 # 3. Check if permission edge already exists
                 from_key = f"{CollectionNames.USERS.value}/{user.id}"
                 to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-                
+
                 # TODO: Implement a method to check if edge exists
                 existing_edge = await tx_store.get_edge(from_key, to_key, CollectionNames.PERMISSION.value)
                 if existing_edge:
                     self.logger.info(f"Permission edge already exists between {user_email} and group {user_group.name}")
                     return False
-                
+
                 # 4. Create the permission object (external_id is not used when storing in arango)
                 permission = Permission(
-                    external_id=user.id,  
+                    external_id=user.id,
                     email=user_email,
                     type=permission_type,
                     entity_type=EntityType.GROUP
                 )
-                
+
                 # 5. Create new permission edge since it doesn't exist
                 permission_edge = permission.to_arango_permission(from_key, to_key)
-                
+
                 await tx_store.batch_create_edges(
-                    [permission_edge], 
+                    [permission_edge],
                     collection=CollectionNames.PERMISSION.value
                 )
-                
+
                 self.logger.info(
                     f"Successfully added user {user_email} to group {user_group.name} "
                     f"(external_id: {external_group_id}) with permission {permission_type}"
                 )
                 return True
-                    
+
         except Exception as e:
             self.logger.error(
-                f"Failed to add user {user_email} to group {external_group_id}: {str(e)}", 
+                f"Failed to add user {user_email} to group {external_group_id}: {str(e)}",
                 exc_info=True
             )
             return False
-    
+
     async def on_user_group_deleted(
-        self, 
-        external_group_id: str, 
+        self,
+        external_group_id: str,
         connector_name: str
     ) -> bool:
         """
         Delete a user group and all its associated edges from the database.
-        
+
         Args:
             external_group_id: The external ID of the group from the source system
             connector_name: The name of the connector (e.g., 'DROPBOX')
-        
+
         Returns:
             bool: True if the group was successfully deleted, False otherwise
         """
@@ -700,29 +701,29 @@ class DataSourceEntitiesProcessor:
                         f"Cannot delete group: Group with external ID {external_group_id} not found in database"
                     )
                     return False
-                
+
                 group_internal_id = user_group.id
                 group_name = user_group.name
-                
+
                 self.logger.info(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
 
                 #Delete the node and edges
                 await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
-                
+
                 self.logger.info(
                     f"Successfully deleted user group {group_name} "
                     f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
                     f"and all associated edges"
                 )
                 return True
-                    
+
         except Exception as e:
             self.logger.error(
-                f"Failed to delete user group {external_group_id}: {str(e)}", 
+                f"Failed to delete user group {external_group_id}: {str(e)}",
                 exc_info=True
             )
             return False
-    
+
     async def on_record_group_deleted(
         self,
         external_group_id: str,
@@ -777,40 +778,40 @@ class DataSourceEntitiesProcessor:
             )
             return False
 
-    
+
     async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:
         """Delete BELONGS_TO edges between group and organization."""
         try:
             group_collection_id = f"{CollectionNames.GROUPS.value}/{group_internal_id}"
             org_collection_id = f"{CollectionNames.ORGS.value}/{self.org_id}"
-            
+
             # Delete the BELONGS_TO edge from group to organization
             edge_deleted = await tx_store.delete_edge(
                 from_key=group_collection_id,
                 to_key=org_collection_id,
                 collection=CollectionNames.BELONGS_TO.value
             )
-            
+
             if edge_deleted:
                 self.logger.info(f"Deleted BELONGS_TO edge from group {group_internal_id} to org {self.org_id}")
             else:
                 self.logger.debug(f"No BELONGS_TO edge found from group {group_internal_id} to org")
-                
+
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
 
     async def on_user_removed(
-        self, 
-        user_email: str, 
+        self,
+        user_email: str,
         connector_name: str
     ) -> bool:
         """
         Delete a user and all its associated edges from the database.
-        
+
         Args:
             user_email: The email of the user to be removed
             connector_name: The name of the connector (e.g., 'DROPBOX')
-        
+
         Returns:
             bool: True if the user was successfully deleted, False otherwise
         """
@@ -824,25 +825,25 @@ class DataSourceEntitiesProcessor:
                         f"Cannot delete user: User with email {user_email} not found in database"
                     )
                     return False
-                
+
                 user_internal_id = user.id
                 user_name = user.full_name
-                
+
                 self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
 
                 # Delete the node and edges
                 await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
-                
+
                 self.logger.info(
                     f"Successfully deleted user {user_name} "
                     f"(email: {user_email}, internal_id: {user_internal_id}) "
                     f"and all associated edges"
                 )
                 return True
-                    
+
         except Exception as e:
             self.logger.error(
-                f"Failed to delete user {user_email}: {str(e)}", 
+                f"Failed to delete user {user_email}: {str(e)}",
                 exc_info=True
             )
             return False

@@ -17,9 +17,9 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     Domain,
+    FileRecord,
     Org,
     Record,
-    FileRecord,
     RecordGroup,
     RecordType,
     User,
@@ -54,7 +54,7 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
-    
+
     async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
         return await self.arango_service.get_file_record_by_id(id, transaction=self.txn)
 
@@ -77,7 +77,7 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
         return await self.arango_service.get_user_by_user_id(user_id, transaction=self.txn)
-    
+
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
 
@@ -89,19 +89,19 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
         return await self.arango_service.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
-    
+
     async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edge(from_key, to_key, collection, transaction=self.txn)
-    
+
     async def delete_nodes(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes(keys, collection, transaction=self.txn)
-    
+
     async def delete_edges_from(self, from_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_from(from_key, collection, transaction=self.txn)
-    
+
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
-    
+
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
 
@@ -110,13 +110,13 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
-    
+
     async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[str]:
         return await self.arango_service.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
-    
+
     async def get_users_with_permission_to_node(self, node_key: str) -> List[str]:
         return await self.arango_service.get_users_with_permission_to_node(node_key, transaction=self.txn)
-    
+
     async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
         return await self.arango_service.get_edge(from_key, to_key, collection, transaction=self.txn)
 
@@ -174,12 +174,12 @@ class ArangoTransactionStore(TransactionStore):
                 await self.arango_service.batch_upsert_nodes([record.to_arango_record()], collection=config["collection"], transaction=self.txn)
                 # Create IS_OF_TYPE edge
                 await self.arango_service.batch_create_edges([is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=self.txn)
-                
+
             self.logger.info(" Successfully upserted records ")
             return True
         except Exception as e:
             self.logger.error("❌ Batch upsert failed: %s", str(e))
-           
+
             return False
 
     async def batch_upsert_record_groups(self, record_groups: List[RecordGroup]) -> None:

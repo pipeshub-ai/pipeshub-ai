@@ -39,10 +39,6 @@ async def main() -> None:
     )
     client = BookStackClient.build_with_config(config)
 
-    print(TOKEN_ID)
-    print(TOKEN_SECRET)
-    print(BASE_URL)
-    
     # Create the data source
     data_source = BookStackDataSource(client)
 

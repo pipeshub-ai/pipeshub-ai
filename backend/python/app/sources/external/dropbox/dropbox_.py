@@ -1,14 +1,10 @@
 import asyncio
-import re
 from typing import Dict, List, Optional, Union
-from dropbox.team import GroupSelector
-import dropbox
 
+import dropbox
 from dropbox import Dropbox, DropboxTeam
 from dropbox.file_properties import TemplateFilter  # type: ignore
 from dropbox.file_requests import UpdateFileRequestDeadline  # type: ignore
-from dropbox.team import UserSelectorArg
-
 from dropbox.files import (  # type: ignore
     ListRevisionsMode,
     SearchMode,
@@ -24,6 +20,7 @@ from dropbox.paper import (  # type: ignore
     UserOnPaperDocFilter,
 )
 from dropbox.sharing import AccessInheritance, AccessLevel  # type: ignore
+from dropbox.team import GroupSelector, UserSelectorArg
 
 from app.sources.client.dropbox.dropbox_ import DropboxClient, DropboxResponse
 
@@ -49,7 +46,7 @@ class DropboxDataSource:
         self._user_client = None
         self._team_client = None
 
-    async def _get_user_client(self, team_member_id: Optional[str] = None, as_admin: bool = False):
+    async def _get_user_client(self, team_member_id: Optional[str] = None, as_admin: bool = False) -> Union[Dropbox, DropboxTeam]:
         """
         Gets a Dropbox client scoped to a specific user or admin.
         """
@@ -63,7 +60,7 @@ class DropboxDataSource:
             else:
                 # Return a client scoped as a User
                 return base_client.as_user(team_member_id)
-        
+
         # Otherwise, return the base client (either non-team or team-level)
         return base_client
 
@@ -2737,7 +2734,7 @@ class DropboxDataSource:
             # Run the synchronous SDK call in a separate thread
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: client_to_use.files_list_folder_continue(cursor)
             )
             return DropboxResponse(success=True, data=response)
@@ -5575,7 +5572,7 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.CreateSharedLinkWithSettingsError`
         """
-        
+
         try:
             client = await self._get_user_client(team_member_id)
             client_to_use = client
@@ -5702,7 +5699,7 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.SharedFolderAccessError`
         """
-        
+
         try:
             client = await self._get_user_client(team_member_id=team_member_id)
             loop = asyncio.get_running_loop()
@@ -6042,7 +6039,7 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.SharedFolderAccessError`
         """
-        
+
         try:
             client = await self._get_user_client(team_member_id=team_member_id, as_admin=as_admin)
             loop = asyncio.get_running_loop()
@@ -7981,21 +7978,21 @@ class DropboxDataSource:
             limit: int = 1000  # This must be an integer
         ) -> DropboxResponse:
         """Lists members of a group. Permission : Team Information.
-        
+
         API Endpoint: /2/team/groups/members_list
         """
         client = await self._get_team_client()
         try:
             # 1. Create the GroupSelector object from the ID string
             group_selector = GroupSelector.group_id(group)
-            
+
             loop = asyncio.get_running_loop()
-            
+
             # 2. Pass the selector object and integer limit
             response = await loop.run_in_executor(
                 None,
                 lambda: client.team_groups_members_list(
-                    group=group_selector, 
+                    group=group_selector,
                     limit=limit
                 )
             )
@@ -8008,14 +8005,14 @@ class DropboxDataSource:
             cursor: str
         ) -> DropboxResponse:
         """Paginates through members of a group.
-        
+
         API Endpoint: /2/team/groups/members/list/continue
         """
         client = await self._get_team_client()
         try:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: client.team_groups_members_list_continue(cursor=cursor)
             )
             return DropboxResponse(success=True, data=response)
@@ -9312,7 +9309,7 @@ class DropboxDataSource:
         Returns:
             DropboxResponse: SDK response
 
-        Returns Model: 
+        Returns Model:
             List[User]
 
         Original SDK Documentation:
