@@ -545,7 +545,7 @@ class RetrievalService:
         except VectorDBEmptyError:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
-                    "Vector database is not ready. Please index content and try again.",
+                    "No records indexed yet. Please upload documents or enable connectors to index content",
                     Status.VECTOR_DB_EMPTY,
                 )
         except ValueError as e:
