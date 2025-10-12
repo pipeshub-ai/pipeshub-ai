@@ -229,7 +229,7 @@ git clone https://github.com/pipeshub-ai/pipeshub-ai.git
 cd pipeshub-ai/deployment/docker-compose
 
 # Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services  
+> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
 > _(Required for webhook notifications and real-time updates)_
 > Refer to env.template
 
