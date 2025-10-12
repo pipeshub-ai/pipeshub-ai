@@ -1,4 +1,4 @@
-# app/sources/client/iclient.py
+
 from abc import ABC, abstractmethod
 
 class IClient(ABC):

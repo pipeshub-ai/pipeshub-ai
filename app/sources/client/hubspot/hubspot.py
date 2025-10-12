@@ -2,8 +2,8 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, List
-from hubspot import HubSpot  # type: ignore
-from hubspot.crm.contacts import SimplePublicObjectInput  # type: ignore
+from hubspot import HubSpot 
+from hubspot.crm.contacts import SimplePublicObjectInput  
 from app.sources.client.iclient import IClient
 
 logger = logging.getLogger(__name__)

@@ -27,7 +27,6 @@ class HubSpotDataSource:
         self.client = client.get_hubspot_client()
         logger.info("HubSpot DataSource initialized successfully")
 
-    # ===== ACCOUNT & CONNECTIVITY =====
     
     async def get_account_info(self) -> HubSpotResponse:
         """Get HubSpot account information and test connectivity
@@ -36,10 +35,9 @@ class HubSpotDataSource:
             HubSpotResponse with account data
         """
         try:
-            # Test connectivity by making a simple API call
+           
             api_response = self.client.crm.contacts.basic_api.get_page(limit=1)
             
-            # Get account details if possible
             account_info = {
                 'account_connected': True,
                 'api_working': True,
@@ -59,7 +57,8 @@ class HubSpotDataSource:
                 error=f"Account connection error: {str(e)}"
             )
 
-    # ===== CONTACTS OPERATIONS =====
+
+
     
     async def get_contacts(self, limit: int = 10, properties: Optional[List[str]] = None) -> HubSpotResponse:
         """Get contacts from HubSpot CRM
@@ -169,7 +168,7 @@ class HubSpotDataSource:
             HubSpotResponse with created contact data
         """
         try:
-            # Validate required properties
+            
             if not properties.get('email'):
                 return HubSpotResponse(
                     success=False,
@@ -244,7 +243,7 @@ class HubSpotDataSource:
                 error=f"Unexpected error: {str(e)}"
             )
 
-    # ===== COMPANIES OPERATIONS =====
+ 
     
     async def get_companies(self, limit: int = 10, properties: Optional[List[str]] = None) -> HubSpotResponse:
         """Get companies from HubSpot CRM
@@ -354,7 +353,7 @@ class HubSpotDataSource:
             HubSpotResponse with created company data
         """
         try:
-            # Validate required properties
+        
             if not properties.get('name'):
                 return HubSpotResponse(
                     success=False,
@@ -389,7 +388,7 @@ class HubSpotDataSource:
                 error=f"Unexpected error: {str(e)}"
             )
 
-    # ===== DEALS OPERATIONS =====
+
     
     async def get_deals(self, limit: int = 10, properties: Optional[List[str]] = None) -> HubSpotResponse:
         """Get deals from HubSpot CRM
@@ -444,7 +443,7 @@ class HubSpotDataSource:
                 error=f"Unexpected error: {str(e)}"
             )
 
-    # ===== SEARCH OPERATIONS =====
+    
     
     async def search_contacts(self, query: str, limit: int = 10) -> HubSpotResponse:
         """Search contacts in HubSpot CRM
@@ -457,17 +456,16 @@ class HubSpotDataSource:
             HubSpotResponse with search results
         """
         try:
-            # Get contacts and perform client-side filtering
-            # Note: In production, you might want to use HubSpot's search API
+          
             api_response = self.client.crm.contacts.basic_api.get_page(
-                limit=limit * 2,  # Get more to filter
+                limit=limit * 2, 
                 properties=['firstname', 'lastname', 'email', 'company']
             )
             
             filtered_contacts = []
             if api_response.results:
                 for contact in api_response.results:
-                    # Create searchable text
+                    
                     searchable_fields = [
                         str(contact.properties.get('firstname', '')),
                         str(contact.properties.get('lastname', '')),
@@ -485,7 +483,7 @@ class HubSpotDataSource:
                             'relevance_score': contact_text.count(query.lower())
                         })
             
-            # Sort by relevance and limit results
+            
             filtered_contacts.sort(key=lambda x: x['relevance_score'], reverse=True)
             filtered_contacts = filtered_contacts[:limit]
             
@@ -506,7 +504,7 @@ class HubSpotDataSource:
                 error=f"Search error: {str(e)}"
             )
 
-    # ===== UTILITY METHODS =====
+ 
     
     async def get_properties_info(self, object_type: str = 'contacts') -> HubSpotResponse:
         """Get available properties for a CRM object type
