@@ -354,9 +354,7 @@ async def execute_tool_calls(
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
                 message_contents,record_ids = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
-                print("message_contents",len(message_contents))
-                print("record_ids",record_ids)
-                print("tool_call_ids",tool_call_ids)
+                logger.info("message_contents",len(message_contents))
         else:
             for record in records:
                 message_content = record_to_message_content(record,final_results)
@@ -480,7 +478,7 @@ async def stream_llm_response(
     # Try to bind structured output
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        print(f"LLM bound with structured output: {llm}")
+        logger.info("LLM bound with structured output successfully")
     except Exception as e:
         print(f"LLM provider or api does not support structured output: {e}")
 
@@ -694,7 +692,7 @@ async def stream_llm_response_with_tools(
     # Try to bind structured output
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        logger.debug(f"LLM bound with structured output: {llm}")
+        logger.info("LLM bound with structured output successfully")
     except Exception as e:
         logger.warning(f"LLM provider or api does not support structured output: {e}")
 
