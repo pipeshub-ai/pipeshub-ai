@@ -347,7 +347,6 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 
 
 
-
 @router.post("/chat/stream")
 @inject
 async def askAIStream(
