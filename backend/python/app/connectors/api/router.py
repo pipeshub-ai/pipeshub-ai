@@ -3107,8 +3107,8 @@ async def handle_oauth_callback(
 async def _get_connector_filter_options_from_config(
     connector_type: str,
     connector_config: Dict[str, Any],
-    token_or_credentials: Any,
-    config_service: Any
+    token_or_credentials: Dict[str, Any],
+    config_service: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Get filter options for a connector by calling dynamic endpoints.
@@ -3165,7 +3165,7 @@ async def _get_connector_filter_options_from_config(
 async def _fetch_filter_options_from_api(
     endpoint: str,
     filter_type: str,
-    token_or_credentials: Any,
+    token_or_credentials: Dict[str, Any],
     connector_type: str
 ) -> List[Dict[str, str]]:
     """

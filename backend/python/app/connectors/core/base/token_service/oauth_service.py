@@ -163,7 +163,7 @@ class OAuthProvider:
 
         session = await self.session
         async with session.post(self.config.token_url, data=data) as response:
-            if response.status >= 400:
+            if response.status >= HttpStatusCode.BAD_REQUEST.value:
                 # Get detailed error information
                 try:
                     error_data = await response.json()
