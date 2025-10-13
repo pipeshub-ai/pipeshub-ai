@@ -24,6 +24,7 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 # from app.connectors.sources.google.common.arango_service import ArangoService
 from app.services.scheduler.interface.scheduler import Scheduler
 from app.services.scheduler.scheduler_factory import SchedulerFactory
+from app.utils.redis_util import build_redis_url
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
@@ -103,7 +104,8 @@ class RecordEventHandler(BaseEventService):
         redis_config = config_service.get_config(config_node_constants.REDIS.value)
         if not redis_config or not isinstance(redis_config, dict):
             raise ValueError("Redis configuration not found")
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+        # Build Redis URL with password if provided
+        redis_url = build_redis_url(redis_config)
         return SchedulerFactory.scheduler("redis", redis_url, logger, config_service, delay_hours=1)
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -387,7 +389,12 @@ class RecordEventHandler(BaseEventService):
         redis_config = await config_service.get_config(config_node_constants.REDIS.value)
         if not redis_config or not isinstance(redis_config, dict):
             raise ValueError("Redis configuration not found")
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+        # Build Redis URL with password if provided
+        password = redis_config.get('password', '')
+        if password:
+            redis_url = f"redis://:{password}@{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+        else:
+            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
         return SchedulerFactory.scheduler(scheduler_type, redis_url, logger, config_service, delay_hours=1)
 
     async def __update_document_status(

@@ -4,7 +4,7 @@ from arango import ArangoClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
-from app.config.constants.service import RedisConfig, config_node_constants
+from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
@@ -34,6 +34,7 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
+from app.utils.redis_util import build_redis_url
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -182,9 +183,8 @@ class ContainerUtils:
             config_node_constants.REDIS.value
         )
         if redis_config and isinstance(redis_config, dict):
-            redis_url = f"redis://{redis_config.get('host', 'localhost')}:{redis_config.get('port', 6379)}/{RedisConfig.REDIS_DB.value}"
-        else:
-            redis_url = f"redis://localhost:6379/{RedisConfig.REDIS_DB.value}"
+            # Build Redis URL with password if provided
+            redis_url = build_redis_url(redis_config)
         redis_scheduler = RedisScheduler(
             redis_url=redis_url,
             logger=logger,

@@ -8,6 +8,7 @@ from redis import asyncio as aioredis  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.key_value.interface.key_value import IKeyValueService
+from app.utils.redis_util import build_redis_url
 
 
 class RedisService(IKeyValueService):
@@ -35,7 +36,8 @@ class RedisService(IKeyValueService):
             redis_config = await config_service.get_config(config_node_constants.REDIS.value)
             if not redis_config or not isinstance(redis_config, dict):
                 raise ValueError("Redis configuration not found")
-            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+            # Build Redis URL with password if provided
+            redis_url = build_redis_url(redis_config)
             redis_client = await aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True) # type: ignore
             service = cls(logger, redis_client, config_service)
             connected = await service.connect()
