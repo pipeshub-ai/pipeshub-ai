@@ -23,13 +23,14 @@ class GoogleSheetsParser:
         logger,
         admin_service: Optional[GoogleAdminService] = None,
         user_service: Optional[ParserUserService] = None,
+        connector_id: str = None,
     ) -> None:
         """Initialize with either admin or user service"""
         self.logger = logger
         self.admin_service = admin_service
         self.user_service = user_service
         self.service = None
-
+        self.connector_id = connector_id
         self.table_summary_prompt = table_summary_prompt
         self.row_text_prompt = row_text_prompt
 
@@ -39,10 +40,10 @@ class GoogleSheetsParser:
         self.max_wait = 10  # seconds
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive"
+        self, user_email: str = None, org_id: str = None, user_id: str = None
     ) -> None:
         if self.user_service:
-            if not await self.user_service.connect_individual_user(org_id, user_id,app_name=app_name):
+            if not await self.user_service.connect_individual_user(org_id, user_id,self.connector_id):
                 self.logger.error("❌ Failed to connect to Google Sheets service")
                 return None
 
@@ -50,7 +51,7 @@ class GoogleSheetsParser:
             self.logger.info("🚀 Connected to Google Sheets service: %s", self.service)
         elif self.admin_service:
             user_service = await self.admin_service.create_parser_user_service(
-                user_email
+                user_email, self.connector_id
             )
             self.service = user_service.sheets_service
             self.logger.info("🚀 Connected to Google Sheets service: %s", self.service)

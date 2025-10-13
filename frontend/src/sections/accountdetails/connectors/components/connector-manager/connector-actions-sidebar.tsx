@@ -14,6 +14,8 @@ import refreshIcon from '@iconify-icons/mdi/refresh';
 import pauseIcon from '@iconify-icons/mdi/pause';
 import playIcon from '@iconify-icons/mdi/play';
 import keyIcon from '@iconify-icons/mdi/key';
+import deleteIcon from '@iconify-icons/mdi/delete';
+import editIcon from '@iconify-icons/mdi/pencil';
 import { Connector } from '../../types/types';
 
 interface ConnectorActionsSidebarProps {
@@ -24,6 +26,8 @@ interface ConnectorActionsSidebarProps {
   onConfigure: () => void;
   onRefresh: () => void;
   onToggle: (enabled: boolean) => void;
+  onDelete: () => void;
+  onRename: () => void;
   hideAuthenticate?: boolean;
 }
 
@@ -35,6 +39,8 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   onConfigure,
   onRefresh,
   onToggle,
+  onDelete,
+  onRename,
   hideAuthenticate,
 }) => {
   const theme = useTheme();
@@ -118,22 +124,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
             {!isConfigured ? 'Configure Now' : 'Configure Settings'}
           </Button>
 
-          <Button
-            variant="outlined"
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={refreshIcon} width={14} height={14} />}
-            onClick={onRefresh}
-            disabled={loading}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-            }}
-          >
-            {loading ? 'Refreshing...' : 'Refresh Status'}
-          </Button>
+
 
           {isConfigured && (
             <Button
@@ -172,6 +163,39 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
               {isActive ? 'Disable' : 'Enable'}
             </Button>
           )}
+          <Button
+            variant="outlined"
+            fullWidth
+            size="small"
+            startIcon={<Iconify icon={editIcon} width={14} height={14} />}
+            onClick={onRename}
+            sx={{
+              textTransform: 'none',
+              fontWeight: 500,
+              justifyContent: 'flex-start',
+              borderRadius: 1,
+            }}
+          >
+            Rename Instance
+          </Button>
+
+
+          <Button
+            variant="outlined"
+            color="error"
+            fullWidth
+            size="small"
+            startIcon={<Iconify icon={deleteIcon} width={14} height={14} />}
+            onClick={onDelete}
+            sx={{
+              textTransform: 'none',
+              fontWeight: 500,
+              justifyContent: 'flex-start',
+              borderRadius: 1,
+            }}
+          >
+            Delete Instance
+          </Button>
         </Stack>
       </Paper>
 

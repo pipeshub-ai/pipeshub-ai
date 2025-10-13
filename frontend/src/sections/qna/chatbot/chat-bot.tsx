@@ -587,12 +587,12 @@ const ChatInterface = () => {
   useEffect(() => {
     const connectors = [...(activeConnectors || [])];
     const apps = connectors.map((c: any) => ({
-      id: (c.name || '').toLowerCase(),
+      id: c._key,
       name: c.name || '',
       iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
     }));
     // include local KB app selector
-    setAllApps([{ id: 'local', name: 'KB', iconPath: '/assets/icons/connectors/kb.svg' }, ...apps]);
+    setAllApps(apps);
   }, [activeConnectors]);
 
   // Load knowledge bases once

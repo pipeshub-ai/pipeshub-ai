@@ -1,5 +1,13 @@
-import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
+/**
+ * Connector Controllers
+ * 
+ * Controllers for managing connector instances and configurations.
+ * These controllers act as a proxy layer between the frontend and the Python backend,
+ * handling authentication, validation, and error transformation.
+ */
+
 import { NextFunction, Response } from 'express';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -16,12 +24,19 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 
 const logger = Logger.getInstance({
-  service: 'Connector Controller',
+  service: 'ConnectorController',
 });
 
 const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
   'Connector Service is currently unavailable. Please check your network connection or try again later.';
 
+/**
+ * Handle errors from the backend service and convert to appropriate HTTP errors.
+ * 
+ * @param error - Error object from backend
+ * @param operation - Description of the operation that failed
+ * @returns Appropriate HTTP error
+ */
 const handleBackendError = (error: any, operation: string): Error => {
   if (error.response) {
     const { status, data } = error.response;
@@ -35,7 +50,7 @@ const handleBackendError = (error: any, operation: string): Error => {
     });
 
     if (errorDetail === 'ECONNREFUSED') {
-      throw new InternalServerError(
+      return new InternalServerError(
         CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
         error,
       );
@@ -65,7 +80,15 @@ const handleBackendError = (error: any, operation: string): Error => {
   return new InternalServerError(`${operation} failed: ${error.message}`);
 };
 
-// Helper function to execute connector service commands
+/**
+ * Execute a command against the connector service.
+ * 
+ * @param uri - Request URI
+ * @param method - HTTP method
+ * @param headers - Request headers
+ * @param body - Optional request body
+ * @returns Response from connector service
+ */
 const executeConnectorCommand = async (
   uri: string,
   method: HttpMethod,
@@ -81,11 +104,19 @@ const executeConnectorCommand = async (
     },
     ...(body && { body }),
   };
+  
   const connectorCommand = new ConnectorServiceCommand(connectorCommandOptions);
   return await connectorCommand.execute();
 };
 
-// Helper function to handle common connector response logic
+/**
+ * Handle connector response and send appropriate HTTP response.
+ * 
+ * @param connectorResponse - Response from connector service
+ * @param res - Express response object
+ * @param notFoundMessage - Message for 404 errors
+ * @param failureMessage - Message for other failures
+ */
 const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,
@@ -95,14 +126,23 @@ const handleConnectorResponse = (
   if (connectorResponse && connectorResponse.statusCode !== 200) {
     throw new BadRequestError(failureMessage);
   }
-  const connectorsData = connectorResponse.data;
-  if (!connectorsData) {
+  
+  const responseData = connectorResponse.data;
+  if (!responseData) {
     throw new NotFoundError(notFoundMessage);
   }
-  res.status(200).json(connectorsData);
+  
+  res.status(200).json(responseData);
 };
 
-export const getConnectors =
+// ============================================================================
+// Registry & Instance Controllers
+// ============================================================================
+
+/**
+ * Get all available connector types from registry.
+ */
+export const getConnectorRegistry =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -116,9 +156,10 @@ export const getConnectors =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Getting all connectors for user ${userId}`);
+      logger.info(`Getting connector registry for user ${userId}`);
+      
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors`,
+        `${appConfig.connectorBackend}/api/v1/connectors/registry`,
         HttpMethod.GET,
         req.headers as Record<string, string>
       );
@@ -126,22 +167,25 @@ export const getConnectors =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Connectors not found',
-        'Failed to get all connectors'
+        'Connector registry not found',
+        'Failed to get connector registry'
       );
     } catch (error: any) {
-      logger.error('Error getting all connectors', {
+      logger.error('Error getting connector registry', {
         error: error.message,
         userId: req.user?.userId,
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(error, 'get all connectors');
-      next(handleError);
+      const handledError = handleBackendError(error, 'get connector registry');
+      next(handledError);
     }
   };
 
-export const getActiveConnectors =
+/**
+ * Get all configured connector instances.
+ */
+export const getConnectorInstances =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -150,10 +194,56 @@ export const getActiveConnectors =
   ): Promise<void> => {
     try {
       const { userId } = req.user || {};
+
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
       }
-      logger.info(`Getting all active connectors for user ${userId}`);
+
+      logger.info(`Getting connector instances for user ${userId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instances not found',
+        'Failed to get connector instances'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector instances', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(error, 'get connector instances');
+      next(handledError);
+    }
+  };
+
+/**
+ * Get all active connector instances.
+ */
+export const getActiveConnectorInstances =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      
+      logger.info(`Getting active connector instances for user ${userId}`);
+      
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/active`,
         HttpMethod.GET,
@@ -163,25 +253,28 @@ export const getActiveConnectors =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Active connectors not found',
-        'Failed to get all active connectors'
+        'Active connector instances not found',
+        'Failed to get active connector instances'
       );
     } catch (error: any) {
-      logger.error('Error getting all active connectors', {
+      logger.error('Error getting active connector instances', {
         error: error.message,
         userId: req.user?.userId,
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(
+      const handledError = handleBackendError(
         error,
-        'get all active connectors',
+        'get active connector instances',
       );
-      next(handleError);
+      next(handledError);
     }
   };
 
-export const getInactiveConnectors =
+/**
+ * Get all inactive connector instances.
+ */
+export const getInactiveConnectorInstances =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -190,10 +283,13 @@ export const getInactiveConnectors =
   ): Promise<void> => {
     try {
       const { userId } = req.user || {};
+      
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
       }
-      logger.info(`Getting all inactive connectors for user ${userId}`);
+      
+      logger.info(`Getting inactive connector instances for user ${userId}`);
+      
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/inactive`,
         HttpMethod.GET,
@@ -203,25 +299,28 @@ export const getInactiveConnectors =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Inactive connectors not found',
-        'Failed to get all inactive connectors'
+        'Inactive connector instances not found',
+        'Failed to get inactive connector instances'
       );
     } catch (error: any) {
-      logger.error('Error getting all inactive connectors', {
+      logger.error('Error getting inactive connector instances', {
         error: error.message,
         userId: req.user?.userId,
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(
+      const handledError = handleBackendError(
         error,
-        'get all inactive connectors',
+        'get inactive connector instances',
       );
-      next(handleError);
+      next(handledError);
     }
   };
 
-export const getConnectorConfig =
+/**
+ * Get all configured connector instances.
+ */
+export const getConfiguredConnectorInstances =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -229,13 +328,16 @@ export const getConnectorConfig =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { connectorName } = req.params;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
+      const { userId } = req.user || {};
+      
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
       }
-      logger.info(`Getting connector config for ${connectorName}`);
+      
+      logger.info(`Getting configured connector instances for user ${userId}`);
+      
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/config/${connectorName}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/configured`,
         HttpMethod.GET,
         req.headers as Record<string, string>
       );
@@ -243,22 +345,32 @@ export const getConnectorConfig =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Connector config not found',
-        'Failed to get connector config'
+        'Configured connector instances not found',
+        'Failed to get configured connector instances'
       );
     } catch (error: any) {
-      logger.error('Error getting connector config', {
+      logger.error('Error getting configured connector instances', {
         error: error.message,
         userId: req.user?.userId,
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(error, 'get connector config');
-      next(handleError);
+      const handledError = handleBackendError(
+        error,
+        'get configured connector instances',
+      );
+      next(handledError);
     }
   };
 
-export const updateConnectorConfig =
+// ============================================================================
+// Instance Management Controllers
+// ============================================================================
+
+/**
+ * Create a new connector instance.
+ */
+export const createConnectorInstance =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -266,18 +378,167 @@ export const updateConnectorConfig =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { connectorName } = req.params;
-      const { auth, sync, filters,baseUrl } = req.body;
-      const config = { auth, sync, filters, base_url: baseUrl};
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
+      const { userId } = req.user || {};
+      const { connectorType, instanceName, config, baseUrl } = req.body;
+      
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
       }
-      if (!config) {
-        throw new BadRequestError('Config is required');
+      
+      if (!connectorType || !instanceName) {
+        throw new BadRequestError('connector_type and instanceName are required');
       }
-      logger.info(`Updating connector config for ${connectorName}`);
+      
+      logger.info(`Creating connector instance for user ${userId}`, {
+        connectorType,
+        instanceName,
+      });
+      
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/config/${connectorName}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { connectorType, instanceName, config, baseUrl }
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Failed to create connector instance',
+        'Failed to create connector instance'
+      );
+    } catch (error: any) {
+      logger.error('Error creating connector instance', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(error, 'create connector instance');
+      next(handledError);
+    }
+  };
+
+/**
+ * Get a specific connector instance.
+ */
+export const getConnectorInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      logger.info(`Getting connector instance ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance not found',
+        'Failed to get connector instance'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector instance', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(error, 'get connector instance');
+      next(handledError);
+    }
+  };
+
+/**
+ * Get connector instance configuration.
+ */
+export const getConnectorInstanceConfig =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      logger.info(`Getting connector instance config for ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance config not found',
+        'Failed to get connector instance config'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector instance config', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'get connector instance config'
+      );
+      next(handledError);
+    }
+  };
+
+/**
+ * Update connector instance configuration.
+ */
+export const updateConnectorInstanceConfig =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { auth, sync, filters, baseUrl } = req.body;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      const config = {
+        auth,
+        sync,
+        filters,
+        baseUrl: baseUrl,
+      };
+      
+      logger.info(`Updating connector instance config for ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
         HttpMethod.PUT,
         req.headers as Record<string, string>,
         config
@@ -286,21 +547,403 @@ export const updateConnectorConfig =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Connector config not found',
-        'Failed to update connector config'
+        'Connector instance not found',
+        'Failed to update connector instance config'
       );
     } catch (error: any) {
-      logger.error('Error updating connector config', {
+      logger.error('Error updating connector instance config', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'update connector instance config'
+      );
+      next(handledError);
+    }
+  };
+
+/**
+ * Delete a connector instance.
+ */
+export const deleteConnectorInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      logger.info(`Deleting connector instance ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+        HttpMethod.DELETE,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance not found',
+        'Failed to delete connector instance'
+      );
+    } catch (error: any) {
+      logger.error('Error deleting connector instance', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(error, 'delete connector instance');
+      next(handledError);
+    }
+  };
+
+/**
+ * Update connector instance name.
+ */
+export const updateConnectorInstanceName =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { instanceName } = req.body as { instanceName: string };
+
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      if (!instanceName || !instanceName.trim()) {
+        throw new BadRequestError('instanceName is required');
+      }
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/name`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { instanceName: instanceName }
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance not found',
+        'Failed to update connector instance name'
+      );
+    } catch (error: any) {
+      const handledError = handleBackendError(error, 'update connector instance name');
+      next(handledError);
+    }
+  };
+
+// ============================================================================
+// OAuth Controllers
+// ============================================================================
+
+/**
+ * Get OAuth authorization URL for a connector instance.
+ */
+export const getOAuthAuthorizationUrl =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { baseUrl } = req.query;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      const queryParams = new URLSearchParams();
+      if (baseUrl) {
+        queryParams.set('base_url', String(baseUrl));
+      }
+      
+      const authorizationUrl = 
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/oauth/authorize?${queryParams.toString()}`;
+
+      logger.info(`Getting OAuth authorization URL for instance ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        authorizationUrl,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'OAuth authorization URL not found',
+        'Failed to get OAuth authorization URL'
+      );
+    } catch (error: any) {
+      logger.error('Error getting OAuth authorization URL', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'get OAuth authorization URL',
+      );
+      next(handledError);
+    }
+  };
+
+/**
+ * Handle OAuth callback.
+ */
+export const handleOAuthCallback =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { baseUrl, code, state, error } = req.query;
+      
+      if (!code || !state) {
+        throw new BadRequestError('Code and state are required');
+      }
+      
+      logger.info('Handling OAuth callback');
+      
+      const queryParams = new URLSearchParams();
+      if (code) queryParams.set('code', String(code));
+      if (state) queryParams.set('state', String(state));
+      if (error) queryParams.set('error', String(error));
+      if (baseUrl) queryParams.set('base_url', String(baseUrl));
+      
+      const callbackUrl = 
+        `${appConfig.connectorBackend}/api/v1/connectors/oauth/callback?${queryParams.toString()}`;
+
+      const connectorResponse = await executeConnectorCommand(
+        callbackUrl,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      
+      // Handle redirect responses
+      if (
+        connectorResponse &&
+        connectorResponse.statusCode === 302 &&
+        connectorResponse.headers?.location
+      ) {
+        const redirectUrl = connectorResponse.headers.location;
+        res.status(200).json({ redirectUrl });
+        return;
+      }
+      
+      // Handle JSON responses with redirect URL
+      if (connectorResponse && connectorResponse.data) {
+        const responseData = connectorResponse.data as any;
+        const redirectUrlFromJson = responseData.redirect_url as string | undefined;
+        
+        if (redirectUrlFromJson) {
+          res.status(200).json({ redirectUrl: redirectUrlFromJson });
+          return;
+        }
+      }
+      
+      // Handle normal response
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'OAuth callback failed',
+        'Failed to handle OAuth callback'
+      );
+    } catch (error: any) {
+      logger.error('Error handling OAuth callback', {
         error: error.message,
         userId: req.user?.userId,
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(error, 'update connector config');
-      next(handleError);
+      const handledError = handleBackendError(error, 'handle OAuth callback');
+      next(handledError);
     }
   };
 
+// ============================================================================
+// Filter Controllers
+// ============================================================================
+
+/**
+ * Get filter options for a connector instance.
+ */
+export const getConnectorInstanceFilterOptions =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      logger.info(`Getting filter options for instance ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance filter options not found',
+        'Failed to get connector instance filter options'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector instance filter options', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'get connector instance filter options',
+      );
+      next(handledError);
+    }
+  };
+
+/**
+ * Save filter options for a connector instance.
+ */
+export const saveConnectorInstanceFilterOptions =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { filters } = req.body;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      if (!filters) {
+        throw new BadRequestError('Filters are required');
+      }
+      
+        logger.info(`Saving filter options for instance ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { filters }
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance not found',
+        'Failed to save connector instance filter options'
+      );
+    } catch (error: any) {
+      logger.error('Error saving connector instance filter options', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'save connector instance filter options',
+      );
+      next(handledError);
+    }
+  };
+
+// ============================================================================
+// Toggle Controller
+// ============================================================================
+
+/**
+ * Toggle connector instance active status.
+ */
+export const toggleConnectorInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      
+      logger.info(`Toggling connector instance ${connectorId}`);
+      
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/toggle`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector instance not found',
+        'Failed to toggle connector instance'
+      );
+    } catch (error: any) {
+      logger.error('Error toggling connector instance', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(error, 'toggle connector instance');
+      next(handledError);
+    }
+  };
+
+// ============================================================================
+// Schema Controller
+// ============================================================================
+
+/**
+ * Get connector schema from registry.
+ */
 export const getConnectorSchema =
   (appConfig: AppConfig) =>
   async (
@@ -309,13 +952,16 @@ export const getConnectorSchema =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { connectorName } = req.params;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
+      const { connectorType } = req.params;
+      
+      if (!connectorType) {
+        throw new BadRequestError('Connector type is required');
       }
-      logger.info(`Getting connector schema for ${connectorName}`);
+      
+      logger.info(`Getting connector schema for ${connectorType}`);
+      
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/schema/${connectorName}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/registry/${connectorType}/schema`,
         HttpMethod.GET,
         req.headers as Record<string, string>
       );
@@ -329,257 +975,12 @@ export const getConnectorSchema =
     } catch (error: any) {
       logger.error('Error getting connector schema', {
         error: error.message,
+        connectorType: req.params.connectorType,
         userId: req.user?.userId,
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(error, 'get connector schema');
-      next(handleError);
-    }
-  };
-
-export const toggleConnector =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorName } = req.params;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
-      }
-      logger.info(`Toggling connector for ${connectorName}`);
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/toggle/${connectorName}`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>
-      );
-      
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Connector not found',
-        'Failed to toggle connector'
-      );
-    } catch (error: any) {
-      logger.error('Error toggling connector', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(error, 'toggle connector');
-      next(handleError);
-    }
-  };
-
-export const getOAuthAuthorizationUrl =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorName } = req.params;
-      const { baseUrl } = req.query;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
-      }
-      const queryParams = new URLSearchParams();
-      if (baseUrl) queryParams.set('base_url', String(baseUrl));
-      const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/authorize?${queryParams.toString()}`;
-
-      logger.info(`Getting OAuth authorization url for ${connectorName}`);
-      const connectorResponse = await executeConnectorCommand(
-        authorizationUrl,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-      
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'OAuth authorization url not found',
-        'Failed to get OAuth authorization url'
-      );
-    } catch (error: any) {
-      logger.error('Error getting OAuth authorization url', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(
-        error,
-        'get OAuth authorization url',
-      );
-      next(handleError);
-    }
-  };
-
-export const getConnectorFilterOptions =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorName } = req.params;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
-      }
-      logger.info(`Getting connector filter options for ${connectorName}`);
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/filters/${connectorName}`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>
-      );
-      
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Connector filter options not found',
-        'Failed to get connector filter options'
-      );
-    } catch (error: any) {
-      logger.error('Error getting connector filter options', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(
-        error,
-        'get connector filter options',
-      );
-      next(handleError);
-    }
-  };
-
-export const saveConnectorFilterOptions =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorName } = req.params;
-      const { filterOptions } = req.body;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
-      }
-      if (!filterOptions) {
-        throw new BadRequestError('Filter options are required');
-      }
-      logger.info(`Saving connector filter options for ${connectorName}`);
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/filters/${connectorName}`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        filterOptions
-      );
-      
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Connector filter options not found',
-        'Failed to save connector filter options'
-      );
-    } catch (error: any) {
-      logger.error('Error saving connector filter options', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(
-        error,
-        'save connector filter options',
-      );
-      next(handleError);
-    }
-  };
-
-export const handleOAuthCallback =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorName } = req.params;
-      const { baseUrl } = req.query;
-      const {code, state, error} = req.query;
-      if (!connectorName) {
-        throw new BadRequestError('Connector name is required');
-      }
-      logger.info(`Handling OAuth callback for ${connectorName}`);
-      if (!code || !state) {
-        throw new BadRequestError('Code and state are required');
-      }
-      
-      const queryParams = new URLSearchParams();
-      if (code) queryParams.set('code', String(code));
-      if (state) queryParams.set('state', String(state));
-      if (error) queryParams.set('error', String(error));
-      if (baseUrl) queryParams.set('base_url', String(baseUrl));
-      const callBackUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/callback?${queryParams.toString()}`;
-
-      // Call Python backend to handle OAuth callback
-      const connectorResponse = await executeConnectorCommand(
-        callBackUrl,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-      
-          // Check if the response is a redirect (from Python backend)
-          if (connectorResponse && connectorResponse.statusCode === 302 && connectorResponse.headers?.location) {
-            // Python backend returned a redirect; send JSON so frontend navigates to avoid CORS
-            const redirectUrl = connectorResponse.headers?.location;
-            if (redirectUrl) {
-              res.status(200).json({ redirectUrl });
-              return;
-            }
-          }
-          
-          // Check if Python backend returned JSON response (success/error with redirect URL)
-          if (connectorResponse && connectorResponse.data) {
-            const responseData = connectorResponse.data as any;
-            // Normalize possible string values
-            const successFlag = Boolean(responseData.success);
-            const redirectUrlFromJson = responseData.redirect_url as string | undefined;
-            if (responseData.success && redirectUrlFromJson) {
-              // Return JSON for frontend navigation
-              res.status(200).json({ redirectUrl: redirectUrlFromJson });
-              return;
-            } else if (!successFlag && redirectUrlFromJson) {
-              // Return JSON error with redirect target
-              res.status(200).json({ redirectUrl: redirectUrlFromJson });
-              return;
-            }
-          }
-          
-          // If not a redirect, handle as normal response
-          handleConnectorResponse(
-            connectorResponse,
-            res,
-            'OAuth callback not found',
-            'Failed to handle OAuth callback'
-          );
-    } catch (error: any) {
-      logger.error('Error handling OAuth callback', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(error, 'handle OAuth callback');
-      next(handleError);
+      const handledError = handleBackendError(error, 'get connector schema');
+      next(handledError);
     }
   };

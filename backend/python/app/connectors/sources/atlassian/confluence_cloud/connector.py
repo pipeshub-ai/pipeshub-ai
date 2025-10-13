@@ -53,13 +53,14 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class ConfluenceClient:
-    def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
+    def __init__(self, logger: Logger, config_service: ConfigurationService, connector_id: str) -> None:
         self.logger = logger
         self.config_service = config_service
         self.base_url = "https://api.atlassian.com/ex/confluence"
         self.session = aiohttp.ClientSession()
         self.accessible_resources = None
         self.cloud_id = None
+        self.connector_id = connector_id
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure session is created and available"""
@@ -98,7 +99,7 @@ class ConfluenceClient:
         **kwargs
     ) -> Dict[str, Any]:
         """Make authenticated API request and return JSON response"""
-        config = await self.config_service.get_config(f"{OAUTH_CONFLUENCE_CONFIG_PATH}")
+        config = await self.config_service.get_config(f"{OAUTH_CONFLUENCE_CONFIG_PATH.format(connector_id=self.connector_id)}")
         token = None
         if not config:
             self.logger.error("❌ Confluence credentials not found")
@@ -270,6 +271,7 @@ class ConfluenceClient:
                     record_type=RecordTypes.WEBPAGE,
                     origin=OriginTypes.CONNECTOR,
                     connector_name=Connectors.CONFLUENCE,
+                    connector_id=self.connector_id,
                     record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                     external_record_group_id=space_id,
                     parent_record_type=RecordType.WEBPAGE,
@@ -340,8 +342,8 @@ class ConfluenceClient:
     .build_decorator()
 class ConfluenceConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-                 data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(ConfluenceApp(), logger, data_entities_processor, data_store_provider, config_service)
+                 data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
+        super().__init__(ConfluenceApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
     async def init(self) -> None:
         await self.data_entities_processor.initialize()
@@ -392,14 +394,14 @@ class ConfluenceConnector(BaseConnector):
 
     @classmethod
     async def create_connector(cls, logger: Logger,
-                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
+                               data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> BaseConnector:
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return ConfluenceConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return ConfluenceConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
     async def get_confluence_client(self) -> ConfluenceClient:
-        confluence_client = ConfluenceClient(self.logger, self.config_service)
+        confluence_client = ConfluenceClient(self.logger, self.config_service, self.connector_id)
         await confluence_client.initialize()
 
         return confluence_client

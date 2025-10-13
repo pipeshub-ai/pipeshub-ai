@@ -236,10 +236,79 @@ interface Connector {
   updatedAtTimestamp: number;
 }
 
+/**
+ * Connector registry entry (available connector types)
+ */
+interface ConnectorRegistry {
+  name: string;
+  type: string;
+  appGroup: string;
+  authType: string;
+  appDescription: string;
+  appCategories: string[];
+  iconPath: string;
+  supportsRealtime: boolean;
+  supportsSync: boolean;
+  config: {
+    auth: any;
+    sync: any;
+    filters: any;
+    documentationLinks?: DocumentationLink[];
+  };
+}
+
+interface IndexingStatusStats {
+  NOT_STARTED: number;
+  IN_PROGRESS: number;
+  COMPLETED: number;
+  FAILED: number;
+  FILE_TYPE_NOT_SUPPORTED: number;
+  AUTO_INDEX_OFF: number;
+}
+
+interface BasicStats {
+  total: number;
+  indexing_status: IndexingStatusStats;
+}
+
+interface RecordTypeStats {
+  record_type: string;
+  total: number;
+  indexing_status: IndexingStatusStats;
+}
+
+// For individual Knowledge Base details
+interface KnowledgeBaseStats {
+  kb_id: string;
+  kb_name: string;
+  total: number;
+  indexing_status: IndexingStatusStats;
+  by_record_type: RecordTypeStats[];
+}
+
+// Main connector stats data structure
+interface ConnectorStatsData {
+  org_id: string;
+  connector: Connector; // "KNOWLEDGE_BASE" or specific connector name like "GOOGLE_DRIVE"
+  origin: 'CONNECTOR';
+  stats: BasicStats;
+  by_record_type: RecordTypeStats[];
+  // knowledge_bases?: KnowledgeBaseStats[]; // Only present for Knowledge Base queries
+  connectorId?: string;
+}
+
+interface ConnectorStatsResponse {
+  success: boolean;
+  message?: string; // Present when success is false
+  data: ConnectorStatsData | null;
+}
+
+
 // Export all types
 export type { 
-  Connector, 
-  ConnectorConfig, 
+  Connector,
+  ConnectorConfig,
+  ConnectorRegistry,
   ConnectorAuthConfig,
   ConnectorSyncConfig,
   ConnectorFiltersConfig,
@@ -255,5 +324,7 @@ export type {
   FieldValidation,
   BaseField,
   ConditionalDisplayRule,
-  ConditionalDisplayConfig
+  ConditionalDisplayConfig,
+  ConnectorStatsData,
+  ConnectorStatsResponse
 };

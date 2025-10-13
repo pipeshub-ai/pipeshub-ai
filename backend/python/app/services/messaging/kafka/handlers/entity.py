@@ -362,12 +362,12 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
 
-    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str]) -> bool:
+    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str],connector_id: str) -> bool:
         """Handle Google account services"""
         if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
-            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, app_names)
+            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
         elif account_type == AccountType.INDIVIDUAL.value:
-            await initialize_individual_google_account_services_fn(org_id, self.app_container, app_names)
+            await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
         else:
             self.logger.error("Account Type not valid")
             return False
@@ -381,6 +381,7 @@ class EntityEventService(BaseEventService):
             app_group = payload["appGroup"]
             apps = payload["apps"]
             sync_action = payload.get("syncAction", "none")
+            connector_id = payload.get("connectorId", "")
 
             # Get org details to check account type
             org = await self.arango_service.get_document(
@@ -399,7 +400,7 @@ class EntityEventService(BaseEventService):
                 if self.app_container and "google" in app_group.lower():
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
-                    await self.__handle_google_app_account_services(org_id, accountType, enabled_apps)
+                    await self.__handle_google_app_account_services(org_id, accountType, enabled_apps,connector_id)
                     self.logger.info(
                         f"✅ Successfully initialized services for account type: {org['accountType']}"
                     )
@@ -430,7 +431,8 @@ class EntityEventService(BaseEventService):
                             event_type=f"{app_name.lower()}.init",
                             value={
                                 "orgId": org_id,
-                                "connector":app_name
+                                "connector":app_name,
+                                "connectorId":connector_id
                             },
                         )
 
@@ -443,7 +445,8 @@ class EntityEventService(BaseEventService):
                                 event_type=f"{app_name.lower()}.start",
                                 value={
                                     "orgId": org_id,
-                                    "connector":app_name
+                                    "connector":app_name,
+                                    "connectorId":connector_id
                                 },
                             )
                             # TODO: Remove this sleep
@@ -466,7 +469,8 @@ class EntityEventService(BaseEventService):
                             event_type=f"{app_name.lower()}.init",
                             value={
                                 "orgId": org_id,
-                                "connector":app_name
+                                "connector":app_name,
+                                "connectorId":connector_id
                             },
                         )
                         # TODO: Remove this sleep
@@ -486,7 +490,8 @@ class EntityEventService(BaseEventService):
                                     value={
                                         "orgId": org_id,
                                         "email": user["email"],
-                                        "connector":app
+                                        "connector":app,
+                                        "connectorId":connector_id
                                     },
                                 )
                                 # TODO: Remove this sleep
@@ -504,6 +509,7 @@ class EntityEventService(BaseEventService):
         try:
             org_id = payload["orgId"]
             apps = payload["apps"]
+            connector_id = payload.get("connectorId", "")
 
             if not org_id or not apps:
                 self.logger.error("Both orgId and apps are required to disable apps")
@@ -516,13 +522,13 @@ class EntityEventService(BaseEventService):
             app_updates = []
             for app_name in apps:
                 app_doc = await self.arango_service.get_document(
-                    f"{org_id}_{app_name}", CollectionNames.APPS.value
+                    connector_id, CollectionNames.APPS.value
                 )
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
                 app_data = {
-                    "_key": f"{org_id}_{app_name}",  # Construct the app _key
+                    "_key": connector_id,  # Construct the app _key
                     "name": app_doc["name"],
                     "type": app_doc["type"],
                     "appGroup": app_doc["appGroup"],

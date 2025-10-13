@@ -1,4 +1,11 @@
-import React, { useState } from 'react';
+/**
+ * Connector Card
+ * 
+ * Card component for displaying configured connector instances.
+ * Shows instance status and provides navigation to the management page.
+ */
+
+import React from 'react';
 import { 
   useTheme, 
   alpha, 
@@ -12,15 +19,15 @@ import {
   Stack,
   Tooltip,
 } from '@mui/material';
-import { useNavigate } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
 import settingsIcon from '@iconify-icons/mdi/settings';
-import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
 import boltIcon from '@iconify-icons/mdi/bolt';
+import eyeIcon from '@iconify-icons/mdi/eye';
+import { useNavigate } from 'react-router-dom';
+import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector } from '../types/types';
-import ConnectorConfigForm from './connector-config/connector-config-form';
 
 interface ConnectorCardProps {
   connector: Connector;
@@ -29,11 +36,10 @@ interface ConnectorCardProps {
 const ConnectorCard = ({ connector }: ConnectorCardProps) => {
   const theme = useTheme();
   const navigate = useNavigate();
-  const [isConfigFormOpen, setIsConfigFormOpen] = useState(false);
   const isDark = theme.palette.mode === 'dark';
-
+  const {isBusiness} = useAccountType();
+  console.log(isBusiness)
   const connectorImage = connector.iconPath;
-  
 
   const isActive = connector.isActive;
   const isConfigured = connector.isConfigured;
@@ -43,7 +49,9 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
       return {
         label: 'Active',
         color: theme.palette.success.main,
-        bgColor:  isDark ? alpha(theme.palette.success.main, 0.8) : alpha(theme.palette.success.main, 0.1),
+        bgColor: isDark 
+          ? alpha(theme.palette.success.main, 0.8) 
+          : alpha(theme.palette.success.main, 0.1),
         icon: checkCircleIcon,
       };
     }
@@ -51,65 +59,32 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
       return {
         label: 'Configured',
         color: theme.palette.warning.main,
-        bgColor: isDark ? alpha(theme.palette.warning.main, 0.8) : alpha(theme.palette.warning.main, 0.1),
+        bgColor: isDark 
+          ? alpha(theme.palette.warning.main, 0.8) 
+          : alpha(theme.palette.warning.main, 0.1),
         icon: clockCircleIcon,
       };
     }
     return {
       label: 'Setup Required',
       color: theme.palette.text.secondary,
-      bgColor: isDark ? alpha(theme.palette.text.secondary, 0.8) : alpha(theme.palette.text.secondary, 0.08),
+      bgColor: isDark 
+        ? alpha(theme.palette.text.secondary, 0.8) 
+        : alpha(theme.palette.text.secondary, 0.08),
       icon: settingsIcon,
     };
   };
 
   const statusConfig = getStatusConfig();
 
-  const getActionConfig = () => {
-    if (isActive) {
-      return {
-        text: 'Manage',
-        icon: settingsIcon,
-        variant: 'outlined' as const,
-      };
-    }
-    if (isConfigured) {
-      return {
-        text: 'Manage',
-        icon: settingsIcon,
-        variant: 'outlined' as const,
-      };
-    }
-    return {
-      text: 'Configure',
-      icon: plusCircleIcon,
-      variant: 'outlined' as const,
-      color: 'primary' as const,
-    };
-  };
-
-  const actionConfig = getActionConfig();
-
-  const configureConnector = () => {
-    if (!connector.isConfigured) {
-      setIsConfigFormOpen(true);
-      return;
-    }
-    // If already configured, navigate to the management page
-    navigate(`${connector.name}`);
-  };
-
-  const handleConfigFormClose = () => {
-    setIsConfigFormOpen(false);
-  };
-
-  const handleConfigSuccess = () => {
-    setIsConfigFormOpen(false);
-    // Optionally refresh the connector data or show success message
-    navigate(`${connector.name}`);
+  const handleManageClick = () => {
+    // Navigate to the connector manager page using connectorId
+    const basePath = isBusiness ? '/account/company-settings/settings/connector' : '/account/individual/settings/connector';
+    navigate(`${basePath}/${connector._key}`);
   };
 
   return (
+    <>
     <Card
       elevation={0}
       sx={{
@@ -139,7 +114,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
           },
         },
       }}
-      onClick={() => configureConnector()}
+      onClick={handleManageClick}
     >
       {/* Status Dot */}
       {isActive && (
@@ -210,7 +185,17 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
               variant="caption"
               sx={{
                 color: theme.palette.text.secondary,
-                fontSize: '0.8125rem',
+                fontSize: '0.75rem',
+              }}
+            >
+              {connector.type}
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{
+                display: 'block',
+                color: theme.palette.text.disabled,
+                fontSize: '0.6875rem',
               }}
             >
               {connector.appGroup}
@@ -321,7 +306,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
                 height: 4,
                 borderRadius: '50%',
                 backgroundColor: isConfigured 
-                  ? theme.palette.warning.main 
+                  ? theme.palette.success.main 
                   : theme.palette.text.disabled,
               }}
             />
@@ -361,35 +346,15 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
           </Stack>
         </Box>
 
-        {/* Action Button */}
-        {isConfigFormOpen && (
-          <Box
-            // Prevent clicks inside the dialog from bubbling to the Card
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ConnectorConfigForm 
-              connector={connector} 
-              onClose={handleConfigFormClose}
-              onSuccess={handleConfigSuccess}
-            />
-          </Box>
-        )}
+        {/* Manage Button */}
         <Button
           fullWidth 
-          variant={actionConfig.variant}
-          color={actionConfig.color}
+          variant="outlined"
           size="medium"
-          startIcon={
-            <Iconify
-              icon={actionConfig.icon}
-              width={16}
-              height={16}
-            />
-          }
+          startIcon={<Iconify icon={eyeIcon} width={16} height={16} />}
           onClick={(e) => {
-            // Avoid re-triggering Card's onClick when clicking the button
             e.stopPropagation();
-            configureConnector();
+            handleManageClick();
           }}
           sx={{
             mt: 'auto',
@@ -398,19 +363,18 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
             textTransform: 'none',
             fontWeight: 600,
             fontSize: '0.8125rem',
-            ...(actionConfig.variant === 'outlined' && {
-              borderColor: alpha(theme.palette.primary.main, 0.3),
-              '&:hover': {
-                borderColor: theme.palette.primary.main,
-                backgroundColor: alpha(theme.palette.primary.main, 0.04),
-              },
-            }),
+            borderColor: alpha(theme.palette.primary.main, 0.3),
+            '&:hover': {
+              borderColor: theme.palette.primary.main,
+              backgroundColor: alpha(theme.palette.primary.main, 0.04),
+            },
           }}
         >
-          {actionConfig.text}
+          Manage
         </Button>
       </CardContent>
     </Card>
+    </>
   );
 };
 

@@ -83,13 +83,16 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             app_names = [app["name"].replace(" ", "").lower() for app in enabled_apps]
             logger.info(f"App names: {app_names}")
             # Ensure the method is called on the correct object
-            if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
-                await initialize_enterprise_google_account_services_fn(org_id, app_container, app_names)
-            elif accountType == AccountType.INDIVIDUAL.value:
-                await initialize_individual_google_account_services_fn(org_id, app_container, app_names)
-            else:
-                logger.error("Account Type not valid")
-                continue
+            for app in enabled_apps:
+                connector_id = app.get("_key")
+                app_group = app.get("appGroup", "")
+                if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value or "google" in app_group.lower():
+                    await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, app_names)
+                elif accountType == AccountType.INDIVIDUAL.value or "google" in app_group.lower():
+                    await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, app_names)
+                else:
+                    logger.error("Account Type not valid")
+                    continue
 
             logger.info(
                 "Processing organization %s with account type %s", org_id, accountType
@@ -116,32 +119,34 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 app_container.connectors_map = {}
 
             for app in enabled_apps:
+                connector_id = app.get("_key")
                 if app["name"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
                     drive_sync_service = app_container.drive_sync_service()  # type: ignore
-                    await drive_sync_service.initialize(org_id)  # type: ignore
+                    await drive_sync_service.initialize(org_id, connector_id)  # type: ignore
                     logger.info("Drive Service initialized for org %s", org_id)
 
                 if app["name"].lower() == Connectors.GOOGLE_MAIL.value.lower():
                     gmail_sync_service = app_container.gmail_sync_service()  # type: ignore
-                    await gmail_sync_service.initialize(org_id)  # type: ignore
+                    await gmail_sync_service.initialize(org_id, connector_id)  # type: ignore
                     logger.info("Gmail Service initialized for org %s", org_id)
                 else:
-                    connector_name = app["name"].lower().replace(" ", "")
+                    connector_name = app["type"].lower().replace(" ", "")
                     connector = await ConnectorFactory.create_and_start_sync(
                         name=connector_name,
                         logger=logger,
                         data_store_provider=data_store_provider,
-                        config_service=config_service
+                        config_service=config_service,
+                        connector_id=connector_id
                     )
                     if connector:
                         # Store using both the original name and the processed name for compatibility
-                        app_container.connectors_map[app["name"]] = connector
                         app_container.connectors_map[connector_name] = connector
-                        logger.info(f"{app['name']} connector initialized for org %s", org_id)
+                        app_container.connectors_map[connector_id] = connector
+                        logger.info(f"{connector_name} connector initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:
-                    asyncio.create_task(drive_sync_service.perform_initial_sync(org_id))  # type: ignore
+                    asyncio.create_task(drive_sync_service.perform_initial_sync(org_id, connector_id))  # type: ignore
                     logger.info(
                         "✅ Resumed Drive sync for org %s",
                         org_id,
@@ -155,7 +160,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             if gmail_sync_service is not None:
                 try:
-                    asyncio.create_task(gmail_sync_service.perform_initial_sync(org_id))  # type: ignore
+                    asyncio.create_task(gmail_sync_service.perform_initial_sync(org_id, connector_id))  # type: ignore
                     logger.info(
                         "✅ Resumed Gmail sync for org %s",
                         org_id,

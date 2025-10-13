@@ -2256,7 +2256,7 @@ export const getConnectorStats =
           {
             params: {
               org_id: orgId,
-              connector: req.params.connector,
+              connector_id: req.params.connectorId,
             },
           },
         );
@@ -2380,13 +2380,14 @@ export const getRecordBuffer =
     }
   };
 
-export const reindexAllRecords =
+export const reindexFailedRecords =
   (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const app = req.body.app;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
@@ -2401,10 +2402,11 @@ export const reindexAllRecords =
         userId,
         orgId,
         app: normalizeAppName(app),
+        connectorId,
       };
 
       const reindexResponse =
-        await recordRelationService.reindexAllRecords(reindexPayload);
+        await recordRelationService.reindexFailedRecords(reindexPayload);
 
       res.status(200).json({
         reindexResponse,
@@ -2412,7 +2414,7 @@ export const reindexAllRecords =
 
       return; // Added return statement
     } catch (error: any) {
-      logger.error('Error re indexing all records', {
+      logger.error('Error re indexing failed records', {
         error,
       });
       next(error);
@@ -2427,6 +2429,7 @@ export const resyncConnectorRecords =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
@@ -2441,6 +2444,7 @@ export const resyncConnectorRecords =
         userId,
         orgId,
         connectorName: normalizeAppName(connectorName),
+        connectorId,
       };
 
       const resyncConnectorResponse =

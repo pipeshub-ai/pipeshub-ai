@@ -47,6 +47,7 @@ class DriveUserService:
         config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
+        connector_id: str,
         credentials=None,
     ) -> None:
         """Initialize DriveService with config and rate limiter
@@ -66,6 +67,7 @@ class DriveUserService:
         self.rate_limiter = rate_limiter
         self.google_limiter = self.rate_limiter.google_limiter
         self.google_token_handler = google_token_handler
+        self.connector_id = connector_id
         self.token_expiry = None
         self.org_id = None
         self.user_id = None
@@ -87,10 +89,11 @@ class DriveUserService:
             self.org_id = org_id
             self.user_id = user_id
 
-            SCOPES = await self._get_drive_scopes()
+            SCOPES = await self.google_token_handler.get_account_scopes(self.connector_id)
+
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name="drive"
+                    org_id, user_id, connector_id=self.connector_id
                 )
             except Exception as e:
                 raise GoogleAuthError(
@@ -173,12 +176,12 @@ class DriveUserService:
         )
 
         if time_until_refresh.total_seconds() <= 0:
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name="drive")
+            await self.google_token_handler.refresh_token(self.org_id, self.user_id, self.connector_id)
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name="drive"
+                self.org_id, self.user_id, self.connector_id
             )
-            SCOPES = await self._get_drive_scopes()
+            SCOPES = await self.google_token_handler.get_account_scopes(self.connector_id)
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),

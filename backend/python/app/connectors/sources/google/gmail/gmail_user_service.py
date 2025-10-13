@@ -40,6 +40,7 @@ class GmailUserService:
         config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
+        connector_id: str,
         credentials=None,
         admin_service=None,
     ) -> None:
@@ -51,11 +52,13 @@ class GmailUserService:
             self.service = None
             self.credentials = credentials
             self.google_token_handler = google_token_handler
+            self.connector_id = connector_id
             self.gmail_drive_interface = GmailDriveInterface(
                 logger=self.logger,
                 config_service=self.config_service,
                 google_token_handler=self.google_token_handler,
                 rate_limiter=rate_limiter,
+                connector_id=self.connector_id,
                 admin_service=admin_service,
             )
 
@@ -75,14 +78,43 @@ class GmailUserService:
                 details={"error": str(e)},
             )
 
-    async def _get_gmail_scopes(self) -> List[str]:
-        """Get scopes for gmail, with fallback to default readonly scope."""
-        SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
-        if not SCOPES:
-            SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-            self.logger.warning("Scopes for gmail not found in config, using default.")
-        self.logger.debug("Using scopes for gmail: %s", SCOPES)
-        return SCOPES
+    async def _resolve_scopes(self) -> List[str]:
+        """Resolve OAuth scopes for the current connector with robust fallbacks.
+
+        Resolution order:
+        1) Use scopes from token handler for the provided connector_id
+        2) Fallback to etcd connector config at /services/connectors/{connector_id}/config -> auth.scopes
+        3) Fallback to safe defaults for Gmail read access
+        """
+        try:
+            # Primary source: token handler
+            scopes = await self.google_token_handler.get_account_scopes(
+                connector_id=self.connector_id
+            )
+            if scopes:
+                return scopes
+
+            # Fallback: read from etcd config for this connector instance
+            try:
+                config_path = f"/services/connectors/{self.connector_id}/config"
+                config = await self.config_service.get_config(config_path)
+                auth_cfg = (config or {}).get("auth", {}) if isinstance(config, dict) else {}
+                etcd_scopes = auth_cfg.get("scopes", [])
+                if etcd_scopes:
+                    return etcd_scopes
+            except Exception:
+                # ignore and fallback to defaults
+                pass
+
+            # Final fallback: conservative Gmail scopes for read-only listing
+            return [
+                "https://www.googleapis.com/auth/gmail.readonly",
+            ]
+        except Exception:
+            # On any unexpected failure, still return basic read-only scope
+            return [
+                "https://www.googleapis.com/auth/gmail.readonly",
+            ]
 
     @token_refresh
     async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
@@ -91,11 +123,12 @@ class GmailUserService:
             self.org_id = org_id
             self.user_id = user_id
 
-            SCOPES = await self._get_gmail_scopes()
+            SCOPES = await self._resolve_scopes()
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name="gmail"
+                    org_id, user_id, connector_id=self.connector_id
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -158,7 +191,8 @@ class GmailUserService:
                 )
 
             try:
-                self.service = build("gmail", "v1", credentials=creds)
+                self.logger.debug("Building Gmail client with provided credentials")
+                self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
                 self.logger.debug("Self Gmail Service: %s", self.service)
             except Exception as e:
                 raise MailOperationError(
@@ -196,12 +230,14 @@ class GmailUserService:
         )
 
         if time_until_refresh.total_seconds() <= 0:
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name="gmail")
+            self.logger.info("Token is due for refresh; refreshing now")
+            await self.google_token_handler.refresh_token(self.org_id, self.user_id, connector_id=self.connector_id)
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name="gmail"
+                self.org_id, self.user_id, connector_id=self.connector_id
             )
-            SCOPES = await self._get_gmail_scopes()
+            SCOPES = await self._resolve_scopes()
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
@@ -211,7 +247,8 @@ class GmailUserService:
                 scopes=SCOPES,
             )
 
-            self.service = build("gmail", "v1", credentials=creds)
+            self.logger.debug("Rebuilding Gmail client after token refresh")
+            self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
             self.logger.debug("Self Gmail Service: %s", self.service)
             # Update token expiry time using created_at + expires_in if possible
             try:
@@ -350,7 +387,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_messages(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_messages(self, query: str = "newer_than:1d") -> List[Dict]:
         """Get list of messages"""
         try:
             self.logger.info("🚀 Getting list of messages")
@@ -526,7 +563,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_threads(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_threads(self, query: str = "newer_than:1d") -> List[Dict]:
         """Get list of unique threads"""
         try:
             self.logger.info("🚀 Getting list of threads")
@@ -770,12 +807,12 @@ class GmailUserService:
             if accountType == AccountType.INDIVIDUAL.value:
                 self.logger.info("Creating Individual Gmail User watch")
                 creds_data = await self.google_token_handler.get_individual_token(
-                    self.org_id, self.user_id, app_name="gmail"
+                    self.org_id, self.user_id, connector_id=self.connector_id
                 )
             else:
                 self.logger.info("Creating Enterprise Gmail User watch")
                 creds_data = await self.google_token_handler.get_enterprise_token(
-                    self.org_id, app_name="gmail"
+                    self.org_id, connector_id=self.connector_id
                 )
 
             enable_real_time_updates = creds_data.get("enableRealTimeUpdates", False)

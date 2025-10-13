@@ -1,5 +1,6 @@
 import type { Theme, SxProps } from '@mui/material';
 import type { Icon as IconifyIcon } from '@iconify/react';
+import type { Connector } from '../../accountdetails/connectors/types/types';
 
 export interface Department {
   _id: string;
@@ -127,4 +128,5 @@ export interface KnowledgeSearchSideBarProps {
   sx: SxProps<Theme>;
   openSidebar: boolean;
   onToggleSidebar: () => void;
+  activeConnectors: Connector[];
 }

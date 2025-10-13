@@ -27,43 +27,7 @@ import {
 import axios from 'src/utils/axios';
 import { Iconify } from 'src/components/iconify';
 import { useConnectors } from '../context';
-
-interface IndexingStatusStats {
-  NOT_STARTED: number;
-  IN_PROGRESS: number;
-  COMPLETED: number;
-  FAILED: number;
-  FILE_TYPE_NOT_SUPPORTED: number;
-  AUTO_INDEX_OFF: number;
-}
-
-interface BasicStats {
-  total: number;
-  indexing_status: IndexingStatusStats;
-}
-
-interface RecordTypeStats {
-  record_type: string;
-  total: number;
-  indexing_status: IndexingStatusStats;
-}
-
-interface KnowledgeBaseStats {
-  kb_id: string;
-  kb_name: string;
-  total: number;
-  indexing_status: IndexingStatusStats;
-  by_record_type: RecordTypeStats[];
-}
-
-export interface ConnectorStatsData {
-  org_id: string;
-  connector: string;
-  origin: 'UPLOAD' | 'CONNECTOR';
-  stats: BasicStats;
-  by_record_type: RecordTypeStats[];
-  knowledge_bases?: KnowledgeBaseStats[];
-}
+import { ConnectorStatsData } from '../types/types';
 
 type SnackbarSeverity = 'success' | 'error' | 'warning' | 'info';
 
@@ -82,9 +46,9 @@ const getConnectorData = (connectorName: string, allConnectors: any[]) => {
 };
 
 export const ConnectorStatsCard = ({
-  connector,
+  connectorStatsData,
 }: {
-  connector: ConnectorStatsData;
+  connectorStatsData: ConnectorStatsData;
 }): JSX.Element => {
   const theme = useTheme();
   const [isReindexing, setIsReindexing] = useState<boolean>(false);
@@ -99,11 +63,12 @@ export const ConnectorStatsCard = ({
   const { activeConnectors, inactiveConnectors } = useConnectors();
   const allConnectors = [...activeConnectors, ...inactiveConnectors];
 
-  const { connector: connectorName, stats } = connector;
+  const { connector, stats, connectorId } = connectorStatsData;
+  console.log(connector, stats, connectorId);
   const { total, indexing_status } = stats;
 
   // Get dynamic connector data
-  const connectorData = getConnectorData(connectorName, allConnectors);
+  const connectorData = getConnectorData(connector.name, allConnectors);
   const displayName = connectorData.displayName;
   const iconName = connectorData.iconPath;
 
@@ -114,7 +79,10 @@ export const ConnectorStatsCard = ({
   const handleReindex = async (): Promise<void> => {
     try {
       setIsReindexing(true);
-      await axios.post('/api/v1/knowledgeBase/reindex-all/connector', { app: connectorName });
+      await axios.post('/api/v1/knowledgeBase/reindex-failed/connector', {
+        app: connector.type,
+        connectorId,
+      });
       setSnackbar({
         open: true,
         message: `Reindexing started for ${displayName}`,
@@ -134,7 +102,10 @@ export const ConnectorStatsCard = ({
   const handleResync = async (): Promise<void> => {
     try {
       setIsResyncing(true);
-      await axios.post('/api/v1/knowledgeBase/resync/connector', { connectorName });
+      await axios.post('/api/v1/knowledgeBase/resync/connector', {
+        connectorName: connector.type,
+        connectorId,
+      });
       setSnackbar({
         open: true,
         message: `Resync started for ${displayName}`,

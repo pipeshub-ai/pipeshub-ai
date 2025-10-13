@@ -53,12 +53,13 @@ class ConnectorFactory:
         logger: logging.Logger,
         data_store_provider: ArangoDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
-            logger.error(f"Unknown connector type: {name}")
+            logger.error(f"Unknown connector type: {name} {connector_id}")
             return None
 
         try:
@@ -66,12 +67,13 @@ class ConnectorFactory:
                 logger=logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
+                connector_id=connector_id,
                 **kwargs
             )
-            logger.info(f"Created {name} connector successfully")
+            logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
-            logger.error(f"❌ Failed to create {name} connector: {str(e)}")
+            logger.error(f"❌ Failed to create {name} {connector_id} connector: {str(e)}")
             return None
 
     @classmethod
@@ -81,6 +83,7 @@ class ConnectorFactory:
         logger: logging.Logger,
         data_store_provider: ArangoDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create and initialize a connector"""
@@ -89,16 +92,17 @@ class ConnectorFactory:
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
+            connector_id=connector_id,
             **kwargs
         )
 
         if connector:
             try:
                 await connector.init()
-                logger.info(f"Initialized {name} connector successfully")
+                logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to initialize {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}")
                 return None
 
         return None
@@ -110,6 +114,7 @@ class ConnectorFactory:
         logger: logging.Logger,
         data_store_provider: ArangoDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create, initialize, and start sync for a connector"""
@@ -118,6 +123,7 @@ class ConnectorFactory:
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
+            connector_id=connector_id,
             **kwargs
         )
 
@@ -125,10 +131,10 @@ class ConnectorFactory:
             try:
                 import asyncio
                 asyncio.create_task(connector.run_sync())
-                logger.info(f"Started sync for {name} connector")
+                logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to start sync for {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}")
                 return None
 
         return None
