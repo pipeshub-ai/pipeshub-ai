@@ -4594,7 +4594,10 @@ class BitbucketCodeGenerator:
     def _build_url_code(self, endpoint: Dict[str, Any]) -> str:
         """Build URL construction code."""
         path = endpoint["path"]
-        return f'            url = f"{path}"'
+        # Remove /2.0 from path since base URL already includes it
+        if path.startswith("/2.0"):
+            path = path[4:]  # Remove "/2.0"
+        return f'            url = f"{{self.client.get_base_url()}}{path}"'
 
     def generate_method(self, endpoint: Dict[str, Any]) -> str:
         """Generate a single method with proper indentation."""
@@ -4635,79 +4638,36 @@ class BitbucketCodeGenerator:
         # Build HTTP request based on method and parameters
         has_query_params = bool(query_params_code)
 
-        if http_method == "GET":
-            if has_query_params:
-                lines.append(
-                    "            response = await self.client.get(url, params=params)"
-                )
-            else:
-                lines.append("            response = await self.client.get(url)")
+        # Create HTTPRequest object
+        lines.append("            request = HTTPRequest(")
+        lines.append(f'                method="{http_method}",')
+        lines.append("                url=url,")
 
-        elif http_method == "DELETE":
-            if has_query_params:
-                lines.append(
-                    "            response = await self.client.delete(url, params=params)"
-                )
-            else:
-                lines.append("            response = await self.client.delete(url)")
+        # Add headers for JSON requests
+        if has_body and http_method in ["POST", "PUT", "PATCH"]:
+            lines.append(
+                '                headers={"Content-Type": "application/json"},'
+            )
+        else:
+            lines.append("                headers={},")
 
-        elif http_method == "POST":
-            if has_files:
-                lines.append(
-                    "            response = await self.client.upload(url, files=files)"
-                )
-            elif has_body:
-                if has_query_params:
-                    lines.append(
-                        "            response = await self.client.post(url, json=body, params=params)"
-                    )
-                else:
-                    lines.append(
-                        "            response = await self.client.post(url, json=body)"
-                    )
-            else:
-                if has_query_params:
-                    lines.append(
-                        "            response = await self.client.post(url, params=params)"
-                    )
-                else:
-                    lines.append("            response = await self.client.post(url)")
+        # Add query parameters if they exist
+        if has_query_params:
+            lines.append("                query_params=params,")
+        else:
+            lines.append("                query_params={},")
 
-        elif http_method == "PUT":
-            if has_body:
-                if has_query_params:
-                    lines.append(
-                        "            response = await self.client.put(url, json=body, params=params)"
-                    )
-                else:
-                    lines.append(
-                        "            response = await self.client.put(url, json=body)"
-                    )
-            else:
-                if has_query_params:
-                    lines.append(
-                        "            response = await self.client.put(url, params=params)"
-                    )
-                else:
-                    lines.append("            response = await self.client.put(url)")
+        # Add body for POST/PUT/PATCH requests
+        if has_body and http_method in ["POST", "PUT", "PATCH"]:
+            lines.append("                body=body")
+        elif has_files and http_method == "POST":
+            lines.append("                body=files")
+        else:
+            lines.append("                body=None")
 
-        elif http_method == "PATCH":
-            if has_body:
-                if has_query_params:
-                    lines.append(
-                        "            response = await self.client.patch(url, json=body, params=params)"
-                    )
-                else:
-                    lines.append(
-                        "            response = await self.client.patch(url, json=body)"
-                    )
-            else:
-                if has_query_params:
-                    lines.append(
-                        "            response = await self.client.patch(url, params=params)"
-                    )
-                else:
-                    lines.append("            response = await self.client.patch(url)")
+        lines.append("            )")
+        lines.append("")
+        lines.append("            response = await self.client.execute(request)")
 
         # Handle response
         lines.append("")
@@ -4717,14 +4677,14 @@ class BitbucketCodeGenerator:
         lines.append(
             '                    error=f"Request failed with status {response.status}",'
         )
-        lines.append("                    message=response.text")
+        lines.append("                    message=response.text()")
         lines.append("                )")
         lines.append("")
         lines.append("            # Handle empty responses (e.g., 204 No Content)")
-        lines.append("            if response.status == 204 or not response.text:")
+        lines.append("            if response.status == 204 or not response.text():")
         lines.append("                return BitbucketResponse(success=True, data={})")
         lines.append("")
-        lines.append("            data = response.json() if response.text else {}")
+        lines.append("            data = response.json() if response.text() else {}")
         lines.append("            return BitbucketResponse(success=True, data=data)")
         lines.append("")
         lines.append("        except Exception as e:")
@@ -4760,6 +4720,7 @@ from app.sources.client.bitbucket.bitbucket import (
     BitbucketRESTClientViaOAuth,
     BitbucketResponse,
 )
+from app.sources.client.http.http_request import HTTPRequest
 
 
 class BitbucketDataSource:

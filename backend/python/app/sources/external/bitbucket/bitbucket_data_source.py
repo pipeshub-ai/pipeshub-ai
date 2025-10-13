@@ -18,6 +18,7 @@ from app.sources.client.bitbucket.bitbucket import (
     BitbucketRESTClientViaOAuth,
     BitbucketResponse,
 )
+from app.sources.client.http.http_request import HTTPRequest
 
 
 class BitbucketDataSource:
@@ -107,22 +108,30 @@ class BitbucketDataSource:
             if page is not None:
                 params["page"] = page
 
-            url = f"/2.0/workspaces"
+            url = f"{self.client.get_base_url()}/workspaces"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -144,22 +153,30 @@ class BitbucketDataSource:
         Required OAuth scopes: workspace
         """
         try:
-            url = f"/2.0/workspaces/{workspace}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -192,22 +209,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/workspaces/{workspace}/members"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/members"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -230,22 +255,30 @@ class BitbucketDataSource:
         Required OAuth scopes: workspace
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/members/{member}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/members/{member}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -278,22 +311,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/workspaces/{workspace}/projects"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/projects"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -320,22 +361,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/workspaces/{workspace}/hooks"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/hooks"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -358,22 +407,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/hooks"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/hooks"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -396,22 +453,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/hooks/{uid}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/hooks/{uid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -435,22 +500,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/hooks/{uid}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/hooks/{uid}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -473,22 +546,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/hooks/{uid}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/hooks/{uid}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -515,22 +596,30 @@ class BitbucketDataSource:
             if q is not None:
                 params["q"] = q
 
-            url = f"/2.0/workspaces/{workspace}/permissions"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/permissions"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -566,22 +655,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -604,22 +701,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -643,22 +748,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -682,22 +795,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -720,22 +841,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:delete
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -763,22 +892,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/watchers"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/watchers"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -806,22 +943,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/forks"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/forks"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -845,22 +990,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/forks"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/forks"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -888,22 +1041,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/hooks"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/hooks"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -927,22 +1088,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/hooks"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/hooks"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -966,22 +1135,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/hooks/{uid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/hooks/{uid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1006,22 +1183,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/hooks/{uid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/hooks/{uid}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1045,22 +1230,30 @@ class BitbucketDataSource:
         Required OAuth scopes: webhook
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/hooks/{uid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/hooks/{uid}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1094,22 +1287,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commits"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commits"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1133,22 +1334,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commits/{commit}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commits/{commit}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1177,22 +1386,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commits/{commit}/comments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commits/{commit}/comments"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1217,22 +1434,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commits/{commit}/comments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commits/{commit}/comments"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1264,22 +1489,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1304,22 +1537,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses/build"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses/build"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1344,22 +1585,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses/build/{key}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses/build/{key}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1385,22 +1634,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses/build/{key}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/statuses/build/{key}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1424,22 +1681,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/approve"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/approve"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1463,22 +1728,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/approve"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/approve"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1515,22 +1788,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1554,22 +1835,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1593,22 +1882,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1633,22 +1930,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1677,22 +1982,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/activity"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/activity"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1724,22 +2037,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1764,22 +2085,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1804,22 +2133,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1845,22 +2182,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1885,22 +2230,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1929,22 +2282,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/commits"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/commits"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -1968,22 +2329,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/approve"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/approve"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2007,22 +2376,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/approve"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/approve"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2046,22 +2423,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/diff"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/diff"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2085,22 +2470,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/diffstat"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/diffstat"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2125,22 +2518,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/merge"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/merge"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2164,22 +2565,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/decline"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/decline"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2211,22 +2620,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/statuses"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/statuses"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2250,22 +2667,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/patch"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/patch"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2289,22 +2714,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/request-changes"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/request-changes"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2328,22 +2761,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pullrequest:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/request-changes"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/request-changes"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2377,22 +2818,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/branches"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/branches"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2416,22 +2865,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/branches"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/branches"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2455,22 +2912,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/branches/{name}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/branches/{name}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2494,22 +2959,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/branches/{name}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/branches/{name}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2540,22 +3013,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/branch-restrictions"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/branch-restrictions"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2579,22 +3060,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/branch-restrictions"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/branch-restrictions"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2618,22 +3107,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/branch-restrictions/{id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/branch-restrictions/{id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2658,22 +3155,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/branch-restrictions/{id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/branch-restrictions/{id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2697,22 +3202,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/branch-restrictions/{id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/branch-restrictions/{id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2746,22 +3259,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/tags"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/tags"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2785,22 +3306,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/tags"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/tags"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2824,22 +3353,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/tags/{name}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/tags/{name}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2863,22 +3400,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/refs/tags/{name}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/refs/tags/{name}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2909,22 +3454,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2948,22 +3501,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -2987,22 +3548,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3026,22 +3595,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/stopPipeline"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/stopPipeline"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3065,22 +3642,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/steps"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/steps"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3105,22 +3690,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/steps/{step_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/steps/{step_uuid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3145,22 +3738,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/steps/{step_uuid}/log"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines/{pipeline_uuid}/steps/{step_uuid}/log"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3183,22 +3784,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3222,22 +3831,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3260,22 +3877,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:variable
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config/variables"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config/variables"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3299,22 +3924,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:variable:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config/variables"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config/variables"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3338,22 +3971,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:variable
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config/variables/{variable_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config/variables/{variable_uuid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3378,22 +4019,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:variable:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config/variables/{variable_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config/variables/{variable_uuid}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3417,22 +4066,30 @@ class BitbucketDataSource:
         Required OAuth scopes: pipeline:variable:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/pipelines_config/variables/{variable_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/pipelines_config/variables/{variable_uuid}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3455,22 +4112,30 @@ class BitbucketDataSource:
         Required OAuth scopes: project
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/projects/{project_key}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/projects/{project_key}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3494,22 +4159,30 @@ class BitbucketDataSource:
         Required OAuth scopes: project:write
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/projects/{project_key}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/projects/{project_key}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3532,22 +4205,30 @@ class BitbucketDataSource:
         Required OAuth scopes: project:admin
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/projects/{project_key}"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/projects/{project_key}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3570,22 +4251,30 @@ class BitbucketDataSource:
         Required OAuth scopes: project:write
         """
         try:
-            url = f"/2.0/workspaces/{workspace}/projects"
+            url = f"{self.client.get_base_url()}/workspaces/{workspace}/projects"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3619,22 +4308,30 @@ class BitbucketDataSource:
             if pagelen is not None:
                 params["pagelen"] = pagelen
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3658,22 +4355,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3697,22 +4402,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3737,22 +4450,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3776,22 +4497,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3820,22 +4549,30 @@ class BitbucketDataSource:
             if q is not None:
                 params["q"] = q
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3860,22 +4597,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3900,22 +4645,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments/{comment_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments/{comment_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3941,22 +4694,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments/{comment_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments/{comment_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -3981,22 +4742,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments/{comment_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/comments/{comment_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4020,22 +4789,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4060,22 +4837,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments"
 
-            response = await self.client.upload(url, files=files)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=files
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4100,22 +4885,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments/{path}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments/{path}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4140,22 +4933,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments/{path}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/attachments/{path}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4179,22 +4980,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/vote"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/vote"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4218,22 +5027,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/vote"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/vote"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4257,22 +5074,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/watch"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/watch"
 
-            response = await self.client.post(url)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4296,22 +5121,30 @@ class BitbucketDataSource:
         Required OAuth scopes: issue:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/issues/{issue_id}/watch"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/issues/{issue_id}/watch"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4341,22 +5174,30 @@ class BitbucketDataSource:
             if format is not None:
                 params["format"] = format
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/src/{commit}/{path}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/src/{commit}/{path}"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4385,22 +5226,30 @@ class BitbucketDataSource:
             if path is not None:
                 params["path"] = path
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/src/{commit}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/src/{commit}"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4433,22 +5282,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/filehistory/{commit}/{path}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/filehistory/{commit}/{path}"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4467,22 +5324,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account
         """
         try:
-            url = f"/2.0/user"
+            url = f"{self.client.get_base_url()}/user"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4501,22 +5366,30 @@ class BitbucketDataSource:
         Required OAuth scopes: email
         """
         try:
-            url = f"/2.0/user/emails"
+            url = f"{self.client.get_base_url()}/user/emails"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4538,22 +5411,30 @@ class BitbucketDataSource:
         Required OAuth scopes: email
         """
         try:
-            url = f"/2.0/user/emails/{email}"
+            url = f"{self.client.get_base_url()}/user/emails/{email}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4575,22 +5456,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account
         """
         try:
-            url = f"/2.0/users/{selected_user}"
+            url = f"{self.client.get_base_url()}/users/{selected_user}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4623,22 +5512,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/users/{selected_user}/repositories"
+            url = f"{self.client.get_base_url()}/users/{selected_user}/repositories"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4667,22 +5564,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/user/permissions/workspaces"
+            url = f"{self.client.get_base_url()}/user/permissions/workspaces"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4711,22 +5616,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/user/permissions/repositories"
+            url = f"{self.client.get_base_url()}/user/permissions/repositories"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4753,22 +5666,30 @@ class BitbucketDataSource:
             if role is not None:
                 params["role"] = role
 
-            url = f"/2.0/snippets/{workspace}"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4791,22 +5712,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet:write
         """
         try:
-            url = f"/2.0/snippets/{workspace}"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4829,22 +5758,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet
         """
         try:
-            url = f"/2.0/snippets/{workspace}/{encoded_id}"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}/{encoded_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4868,22 +5805,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet:write
         """
         try:
-            url = f"/2.0/snippets/{workspace}/{encoded_id}"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}/{encoded_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4906,22 +5851,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet:write
         """
         try:
-            url = f"/2.0/snippets/{workspace}/{encoded_id}"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}/{encoded_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4944,22 +5897,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet
         """
         try:
-            url = f"/2.0/snippets/{workspace}/{encoded_id}/comments"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}/{encoded_id}/comments"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -4983,22 +5944,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet
         """
         try:
-            url = f"/2.0/snippets/{workspace}/{encoded_id}/comments"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}/{encoded_id}/comments"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5022,22 +5991,30 @@ class BitbucketDataSource:
         Required OAuth scopes: snippet
         """
         try:
-            url = f"/2.0/snippets/{workspace}/{encoded_id}/{node_id}"
+            url = f"{self.client.get_base_url()}/snippets/{workspace}/{encoded_id}/{node_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5060,22 +6037,30 @@ class BitbucketDataSource:
         Required OAuth scopes: deployment
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/deployments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/deployments"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5099,22 +6084,30 @@ class BitbucketDataSource:
         Required OAuth scopes: deployment
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/deployments/{deployment_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/deployments/{deployment_uuid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5137,22 +6130,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/environments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/environments"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5176,22 +6177,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/environments"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/environments"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5215,22 +6224,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/environments/{environment_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/environments/{environment_uuid}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5254,22 +6271,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/environments/{environment_uuid}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/environments/{environment_uuid}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5294,22 +6319,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/environments/{environment_uuid}/changes"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/environments/{environment_uuid}/changes"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5332,22 +6365,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/downloads"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/downloads"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5371,22 +6412,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/downloads"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/downloads"
 
-            response = await self.client.upload(url, files=files)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={},
+                query_params={},
+                body=files
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5410,22 +6459,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/downloads/{filename}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/downloads/{filename}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5449,22 +6506,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/downloads/{filename}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/downloads/{filename}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5495,22 +6560,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/permissions-config/users"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/permissions-config/users"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5535,22 +6608,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/permissions-config/users/{selected_user_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/permissions-config/users/{selected_user_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5574,22 +6655,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/permissions-config/users/{selected_user_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/permissions-config/users/{selected_user_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5620,22 +6709,30 @@ class BitbucketDataSource:
             if sort is not None:
                 params["sort"] = sort
 
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/permissions-config/groups"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/permissions-config/groups"
 
-            response = await self.client.get(url, params=params)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params=params,
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5660,22 +6757,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/permissions-config/groups/{group_slug}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/permissions-config/groups/{group_slug}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5699,22 +6804,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/permissions-config/groups/{group_slug}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/permissions-config/groups/{group_slug}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5733,22 +6846,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account
         """
         try:
-            url = f"/2.0/user/ssh-keys"
+            url = f"{self.client.get_base_url()}/user/ssh-keys"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5770,22 +6891,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account:write
         """
         try:
-            url = f"/2.0/user/ssh-keys"
+            url = f"{self.client.get_base_url()}/user/ssh-keys"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5807,22 +6936,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account
         """
         try:
-            url = f"/2.0/user/ssh-keys/{key_id}"
+            url = f"{self.client.get_base_url()}/user/ssh-keys/{key_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5845,22 +6982,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account:write
         """
         try:
-            url = f"/2.0/user/ssh-keys/{key_id}"
+            url = f"{self.client.get_base_url()}/user/ssh-keys/{key_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5882,22 +7027,30 @@ class BitbucketDataSource:
         Required OAuth scopes: account:write
         """
         try:
-            url = f"/2.0/user/ssh-keys/{key_id}"
+            url = f"{self.client.get_base_url()}/user/ssh-keys/{key_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5921,22 +7074,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/reports"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/reports"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -5961,22 +7122,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6002,22 +7171,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}"
 
-            response = await self.client.put(url, json=body)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6042,22 +7219,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6082,22 +7267,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}/annotations"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}/annotations"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6123,22 +7316,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:write
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}/annotations"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/commit/{commit}/reports/{report_id}/annotations"
 
-            response = await self.client.post(url, json=body)
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query_params={},
+                body=body
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6161,22 +7362,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/default-reviewers"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/default-reviewers"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6200,22 +7409,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/default-reviewers/{target_username}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/default-reviewers/{target_username}"
 
-            response = await self.client.get(url)
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6239,22 +7456,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/default-reviewers/{target_username}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/default-reviewers/{target_username}"
 
-            response = await self.client.put(url)
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
@@ -6278,22 +7503,30 @@ class BitbucketDataSource:
         Required OAuth scopes: repository:admin
         """
         try:
-            url = f"/2.0/repositories/{workspace}/{repo_slug}/default-reviewers/{target_username}"
+            url = f"{self.client.get_base_url()}/repositories/{workspace}/{repo_slug}/default-reviewers/{target_username}"
 
-            response = await self.client.delete(url)
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={},
+                query_params={},
+                body=None
+            )
+
+            response = await self.client.execute(request)
 
             if response.status >= 400:
                 return BitbucketResponse(
                     success=False,
                     error=f"Request failed with status {response.status}",
-                    message=response.text
+                    message=response.text()
                 )
 
             # Handle empty responses (e.g., 204 No Content)
-            if response.status == 204 or not response.text:
+            if response.status == 204 or not response.text():
                 return BitbucketResponse(success=True, data={})
 
-            data = response.json() if response.text else {}
+            data = response.json() if response.text() else {}
             return BitbucketResponse(success=True, data=data)
 
         except Exception as e:
