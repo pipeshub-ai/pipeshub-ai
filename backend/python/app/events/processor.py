@@ -1,8 +1,8 @@
 import io
 import json
-import html2text
-
 from datetime import datetime
+
+import html2text
 
 from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -23,7 +24,6 @@ from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.llm import get_llm
-from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -582,7 +582,7 @@ class Processor:
                 html_content=html_content,
                 virtual_record_id=virtual_record_id
             )
-         
+
             self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
 
         except Exception as e:
@@ -1080,6 +1080,36 @@ class Processor:
         self.logger.debug(f"Processed {len(ordered_items)} items in order")
         return ordered_items
 
+    async def _mark_record_as_completed(self, record_id, virtual_record_id) -> None:
+        record = await self.arango_service.get_document(
+                        record_id, CollectionNames.RECORDS.value
+                    )
+        if not record:
+            raise DocumentProcessingError(
+                "Record not found in database",
+                doc_id=record_id,
+            )
+        doc = dict(record)
+        doc.update(
+            {
+                "indexingStatus": "COMPLETED",
+                "isDirty": False,
+                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                "virtualRecordId": virtual_record_id,
+            }
+        )
+
+        docs = [doc]
+
+        success = await self.arango_service.batch_upsert_nodes(
+            docs, CollectionNames.RECORDS.value
+        )
+        if not success:
+            raise DocumentProcessingError(
+                "Failed to update indexing status", doc_id=record_id
+            )
+        return
+
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ) -> None:
@@ -1109,34 +1139,8 @@ class Processor:
             self.logger.debug(f"📄 Markdown content: {markdown_content}")
             if markdown_content is None or markdown_content == "":
                 try:
-                    record = await self.arango_service.get_document(
-                        recordId, CollectionNames.RECORDS.value
-                    )
-                    if not record:
-                        raise DocumentProcessingError(
-                            "Record not found in database",
-                            doc_id=recordId,
-                        )
-                    doc = dict(record)
-                    doc.update(
-                        {
-                            "indexingStatus": "COMPLETED",
-                            "isDirty": False,
-                            "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                            "virtualRecordId": virtual_record_id,
-                        }
-                    )
+                    await self._mark_record_as_completed(recordId, virtual_record_id)
 
-                    docs = [doc]
-
-                    success = await self.arango_service.batch_upsert_nodes(
-                        docs, CollectionNames.RECORDS.value
-                    )
-                    if not success:
-                        raise DocumentProcessingError(
-                            "Failed to update indexing status", doc_id=recordId
-                        )
-                    return
 
                 except DocumentProcessingError:
                     raise
@@ -1148,7 +1152,7 @@ class Processor:
                     )
             # Convert markdown content to bytes for processing
             md_binary = markdown_content.encode("utf-8")
-            
+
             # Use the existing markdown processing function
             await self.process_md_document(
                 recordName=recordName,
@@ -1159,7 +1163,7 @@ class Processor:
                 md_binary=md_binary,
                 virtual_record_id=virtual_record_id
             )
-            
+
             self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
 
         except Exception as e:
