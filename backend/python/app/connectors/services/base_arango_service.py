@@ -3593,11 +3593,11 @@ class BaseArangoService:
         """
         try:
             query = f"""
-            FOR edge IN {CollectionNames.PERMISSIONS.value}
-                FILTER edge._from == CONCAT('{CollectionNames.RECORDS.value}/', @record_id)
+            FOR edge IN {CollectionNames.PERMISSION.value}
+                FILTER edge._to == CONCAT('{CollectionNames.RECORDS.value}/', @record_id)
                 FILTER edge.role == 'OWNER'
                 FILTER edge.type == 'USER'
-                LET user_key = SPLIT(edge._to, '/')[1]
+                LET user_key = SPLIT(edge._from, '/')[1]
                 LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
                 LIMIT 1
                 RETURN user.email
