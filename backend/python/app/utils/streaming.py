@@ -17,7 +17,10 @@ from app.utils.chat_helpers import (
     get_message_content_for_tool,
     record_to_message_content,
 )
-from app.utils.citations import normalize_citations_and_chunks
+from app.utils.citations import (
+    normalize_citations_and_chunks,
+    normalize_citations_and_chunks_for_agent,
+)
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
@@ -89,7 +92,6 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
-    """Stream content from a signed URL"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(signed_url) as response:
@@ -397,7 +399,7 @@ async def execute_tool_calls(
             if status_code in [202, 500, 503]:
                 raise HTTPException(
                     status_code=status_code,
-                    content={
+                    detail={
                         "status": result.get("status", "error"),
                         "message": result.get("message", "No results found"),
                     }
@@ -457,7 +459,6 @@ async def execute_tool_calls(
         }
     }
 
-
 async def stream_llm_response(
     llm,
     messages,
@@ -506,7 +507,7 @@ async def stream_llm_response(
                 reason = None
                 confidence = None
 
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results)
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -583,7 +584,7 @@ async def stream_llm_response(
                         if INCOMPLETE_CITE_RE.search(current_raw):
                             continue
 
-                        normalized, cites = normalize_citations_and_chunks(
+                        normalized, cites = normalize_citations_and_chunks_for_agent(
                             current_raw, final_results
                         )
 
@@ -604,7 +605,7 @@ async def stream_llm_response(
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
 
-            normalized, c = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results)
             yield {
                 "event": "complete",
                 "data": {
@@ -616,7 +617,7 @@ async def stream_llm_response(
             }
         except Exception:
             # Fallback if JSON parsing fails
-            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
+            normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results)
             yield {
                 "event": "complete",
                 "data": {
@@ -647,7 +648,6 @@ async def stream_llm_response_with_tools(
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 3,
-
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -694,7 +694,7 @@ async def stream_llm_response_with_tools(
 
             messages = final_messages
         except Exception:
-            logger.exception("stream_llm_response_with_tools: error during execute_tool_calls")
+            logger.error("Error in execute_tool_calls",exc_info=True)
             pass
 
         if len(messages) > 0 and isinstance(messages[-1], AIMessage):
@@ -774,7 +774,6 @@ async def stream_llm_response_with_tools(
         logger.debug(f"LLM bound with structured output: {llm}")
     except Exception as e:
         logger.warning(f"LLM provider or api does not support structured output: {e}")
-
     try:
         async for token in aiter_llm_stream(llm, messages):
             full_json_buf += token

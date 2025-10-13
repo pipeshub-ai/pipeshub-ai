@@ -366,7 +366,6 @@ async def stream_record_internal(
         logger.error("Unexpected error during token validation: %s", str(e))
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
 
-
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
 async def download_file(
@@ -1638,7 +1637,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
 async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get cached user credentials"""
     try:
-        cache_key = f"{org_id}_{user_id}"
+        cache_key = f"{org_id}_{user_id}_{connector}"
         user_creds_lock = container.user_creds_lock()
 
         async with user_creds_lock:
@@ -2203,13 +2202,14 @@ async def get_oauth_authorization_url(
     logger = container.logger()
 
     try:
-        # Get connector config
-        connector_config = await arango_service.get_app_by_name(app_name)
-        if not connector_config:
+        # Get connector metadata from registry (source of truth)
+        connector_registry = request.app.state.connector_registry
+        registry_entry = await connector_registry.get_connector_by_name(app_name)
+        if not registry_entry:
             raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
 
         # Check if it's an OAuth connector
-        if connector_config.get('authType') not in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
+        if (registry_entry.get('authType') or '').upper() not in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
             raise HTTPException(status_code=400, detail=f"Connector {app_name} does not support OAuth")
 
         # Get OAuth configuration from etcd
@@ -2222,8 +2222,8 @@ async def get_oauth_authorization_url(
 
         auth_config = config['auth']
 
-        # Get OAuth configuration from connector config
-        connector_auth_config = connector_config.get('config', {}).get('auth', {})
+        # Get OAuth configuration from registry metadata
+        connector_auth_config = registry_entry.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
@@ -2286,7 +2286,7 @@ async def get_oauth_authorization_url(
             parsed_url = urlparse(auth_url)
             params = parse_qs(parsed_url.query)
             params['response_mode'] = ['query']
-            if connector_config.get('authType') == 'OAUTH_ADMIN_CONSENT':
+            if (registry_entry.get('authType') or '').upper() == 'OAUTH_ADMIN_CONSENT':
                 params['prompt'] = ['admin_consent']
 
             # Rebuild URL with additional parameters
@@ -2364,9 +2364,9 @@ async def handle_oauth_callback(
         # Process OAuth callback directly here
         logger.info(f"Processing OAuth callback for {app_name}")
 
-        # Get connector config
-        connector_config = await arango_service.get_app_by_name(app_name)
-        if not connector_config:
+        # Get connector metadata from registry (source of truth)
+        registry_entry = await connector_registry.get_connector_by_name(app_name)
+        if not registry_entry:
             logger.error(f"Connector {app_name} not found")
             return {"success": False, "error": "connector_not_found", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=connector_not_found"}
 
@@ -2381,8 +2381,8 @@ async def handle_oauth_callback(
 
         auth_config = config['auth']
 
-        # Get OAuth configuration from connector config
-        connector_auth_config = connector_config.get('config', {}).get('auth', {})
+        # Get OAuth configuration from registry metadata
+        connector_auth_config = registry_entry.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
@@ -2769,14 +2769,15 @@ async def get_connector_filters(
         # Convert app_name to uppercase for database lookup (connectors are stored in uppercase)
         app_name_upper = app_name.upper()
 
-        # Get connector config
-        connector_config = await arango_service.get_app_by_name(app_name_upper)
+        # Get connector metadata from registry
+        connector_registry = request.app.state.connector_registry
+        connector_config = await connector_registry.get_connector_by_name(app_name_upper)
         if not connector_config:
             raise HTTPException(status_code=404, detail=f"Connector {app_name_upper} not found")
 
         # Get credentials based on auth type
         config_service = container.config_service()
-        auth_type = connector_config.get('authType', '').upper()
+        auth_type = (connector_config.get('authType') or '').upper()
         filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
@@ -2944,6 +2945,7 @@ async def update_connector_config(
             logger.warning(f"App may already exist in database for {app_name}: {e}")
 
         app_doc = await connector_registry.get_connector_by_name(app_name)
+        auth_type = app_doc.get('authType', '')
         connector_config = app_doc.get('config', {})
 
         redirect_uri = connector_config.get('auth', {}).get('redirectUri', '')
@@ -2955,13 +2957,22 @@ async def update_connector_config(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
+        # Ensure OAuth static metadata from registry is present in etcd config
+        auth_meta = connector_config.get('auth', {})
+        if 'auth' not in merged_config or not isinstance(merged_config['auth'], dict):
+            merged_config['auth'] = {}
+        merged_config['auth']['authorizeUrl'] = auth_meta.get('authorizeUrl', '')
+        merged_config['auth']['tokenUrl'] = auth_meta.get('tokenUrl', '')
+        merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
         merged_config["auth"]["redirectUri"] = redirect_uri
+        merged_config["auth"]["authType"] = auth_type
 
         await config_service.set_config(config_key, merged_config)
         logger.info(f"Config stored in etcd for {app_name}")
 
         updates = {
             "isConfigured": True,
+            "isAuthenticated": False,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
         await connector_registry.update_connector(app_name, updates)
@@ -3037,7 +3048,7 @@ async def toggle_connector(
                 custom_google_business_logic = org_account_type == "enterprise" and app_name.upper() in ["GMAIL", "DRIVE"]
                 if auth_type == "OAUTH":
                     if custom_google_business_logic:
-                        auth_creds = cfg.get("auth")
+                        auth_creds = cfg.get("auth", {})
                         if not auth_creds or not (auth_creds.get("client_id") and auth_creds.get("adminEmail")):
                             logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
                             raise HTTPException(

@@ -180,6 +180,10 @@ class GroupType(str, Enum):
     CODE = "code"
     MEDIA = "media"
     SHEET = "sheet"
+    FORM_AREA = "form_area"
+    INLINE = "inline"
+    KEY_VALUE_AREA = "key_value_area"
+    ORDERED_LIST = "ordered_list"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -254,7 +258,7 @@ class BlockGroup(BaseModel):
     semantic_metadata: Optional[SemanticMetadata] = None
     children: Optional[List[BlockContainerIndex]] = None
     data: Optional[Any] = None
-    format: DataFormat
+    format: Optional[DataFormat] = None
 
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)

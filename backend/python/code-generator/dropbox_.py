@@ -9,7 +9,7 @@ import inspect
 import re
 from typing import Dict, Optional, Tuple, Union
 from pathlib import Path
-import dropbox
+import dropbox # type: ignore
 
 
 class DropboxSDKMethodGenerator:
@@ -93,7 +93,7 @@ class DropboxSDKMethodGenerator:
         
         # Try to import additional modules if available
         try:
-            from dropbox import files, users, sharing, team, paper, file_requests, auth, check
+            from dropbox import files, users, sharing, team, paper, file_requests, auth, check # type: ignore
             modules.update({
                 'files': files,
                 'users': users,

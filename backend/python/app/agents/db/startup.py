@@ -5,8 +5,8 @@ Simple integration script to warmup tools during application startup.
 
 import logging
 
+from app.agents.tools.discovery import ToolsDiscovery
 from app.agents.tools.registry import _global_tools_registry
-from app.agents.tools.tools_discovery import ToolsDiscovery
 from app.utils.logger import create_logger
 
 

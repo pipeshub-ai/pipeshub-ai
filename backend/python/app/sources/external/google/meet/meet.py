@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional
 
+from app.sources.client.google.google import GoogleClient
+
 
 class GoogleMeetDataSource:
     """
@@ -10,7 +12,7 @@ class GoogleMeetDataSource:
     """
     def __init__(
         self,
-        client: object
+        client: GoogleClient
     ) -> None:
         """
         Initialize with Google Meet API client.
@@ -19,7 +21,7 @@ class GoogleMeetDataSource:
         """
         self.client = client
 
-    async def spaces_create(self) -> Dict[str, Any]:
+    async def spaces_create(self, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Google Meet API: Creates a space.
 
         HTTP POST v2/spaces
@@ -28,11 +30,8 @@ class GoogleMeetDataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        # No parameters for this method
-
-        # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        # Handle request body if provided
+        if body is not None:
             request = self.client.spaces().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.spaces().create(**kwargs) # type: ignore
@@ -62,7 +61,8 @@ class GoogleMeetDataSource:
     async def spaces_patch(
         self,
         name: str,
-        updateMask: Optional[str] = None
+        updateMask: Optional[str] = None,
+        body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Google Meet API: Updates details about a meeting space. For an example, see [Update a meeting space](https://developers.google.com/workspace/meet/api/guides/meeting-spaces#update-meeting-space).
 
@@ -81,9 +81,8 @@ class GoogleMeetDataSource:
         if updateMask is not None:
             kwargs['updateMask'] = updateMask
 
-        # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        # Handle request body if provided
+        if body is not None:
             request = self.client.spaces().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.spaces().patch(**kwargs) # type: ignore

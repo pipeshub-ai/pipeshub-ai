@@ -1,13 +1,13 @@
 
 import base64
 import json
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
@@ -258,22 +258,67 @@ class NotionClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger,
+        logger: logging.Logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "NotionClient":
-        """Build NotionClient using configuration service and arango service
+        """Build NotionClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: GraphDB service instance
         Returns:
             NotionClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored Notion credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
+        try:
+            # Get Notion configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
 
-        return cls(client=None)  # type: ignore
+            if not config:
+                raise ValueError("Failed to get Notion connector configuration")
+
+            # Extract configuration values
+            auth_type = config.get("authType", "apiToken")  # token, oauth
+            version = config.get("version", "2022-06-28")
+
+            # Create appropriate client based on auth type
+            # to be implemented
+            if auth_type == "OAUTH":
+                client_id = config.get("clientId", "")
+                client_secret = config.get("clientSecret", "")
+                redirect_uri = config.get("redirectUri", "")
+                access_token = config.get("accessToken", "")
+
+                if not client_id or not client_secret or not redirect_uri:
+                    raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")
+
+                client = NotionRESTClientViaOAuth(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
+                    access_token=access_token,
+                    version=version
+                )
+
+            elif auth_type == "API_TOKEN":  # Default to token auth
+                token = config.get("apiToken", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = NotionRESTClientViaToken(token, version)
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Notion client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Notion."""
+        try:
+            config = await config_service.get_config("/services/connectors/notion/config")
+            return config.get("auth",{}) or {}
+        except Exception as e:
+            logger.error(f"Failed to get Notion connector config: {e}")
+            return {}

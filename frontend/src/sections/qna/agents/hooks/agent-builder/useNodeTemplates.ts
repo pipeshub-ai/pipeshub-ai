@@ -80,8 +80,12 @@ export const useAgentBuilderNodeTemplates = (
           .replace(/[^a-zA-Z0-9]/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
+        
+        // Create unique type identifier using provider and modelName to avoid conflicts
+        const uniqueTypeId = `${model.provider}-${modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+        
         return {
-          type: `llm-${model.modelKey || modelName.replace(/[^a-zA-Z0-9]/g, '-')}`,
+          type: `llm-${uniqueTypeId}`,
           label: normalizeDisplayName(normalizedName),
           description: `${model.provider} AI model for text generation`,
           icon: brainIcon,

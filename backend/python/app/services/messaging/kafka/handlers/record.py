@@ -16,7 +16,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService
@@ -164,7 +164,6 @@ class RecordEventHandler(BaseEventService):
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-
             doc = dict(record)
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
@@ -298,9 +297,11 @@ class RecordEventHandler(BaseEventService):
                     token = await self.__generate_jwt(jwt_payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
 
-                    # Todo: Replace http://localhost:8088 with the connector endpoint
+                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+                    connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+
                     response = await make_api_call(
-                        f"http://localhost:8088/api/v1/internal/stream/record/{record_id}", token
+                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token
                     )
 
                     event_data_for_processor = {

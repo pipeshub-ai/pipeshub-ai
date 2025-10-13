@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional
 
+from app.sources.client.google.google import GoogleClient
+
 
 class YouTubeDataSource:
     """
@@ -11,7 +13,7 @@ class YouTubeDataSource:
 
     def __init__(
         self,
-        client: object
+        client: GoogleClient
     ) -> None:
         """
         Initialize with YouTube Data API client.

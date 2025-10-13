@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
+    DefaultEndpoints,
     KafkaConfig,
     config_node_constants,
 )
@@ -370,9 +371,39 @@ class KafkaConsumerManager:
                     error_msg = f"Failed to process signed URL: {str(e)}"
                     raise
             else:
-                raise ValueError(
-                    f"No signedUrlRoute or signedUrl found in payload for message {message_id}"
-                )
+                try:
+                    payload = {
+                        "orgId": payload_data["orgId"],
+                        "scopes": ["connector:signedUrl"],
+                    }
+                    token = await self.generate_jwt(payload)
+                    self.logger.debug(f"Generated JWT token for message {message_id}")
+
+                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+                    connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+
+                    response = await make_api_call(
+                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token
+                    )
+                    self.logger.debug(
+                        f"Received signed URL response for message {message_id}"
+                    )
+
+                    payload_data["buffer"] = response["data"]
+                    data["payload"] = payload_data
+
+                    await self.event_processor.on_event(data)
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self.logger.info(
+                        f"✅ Successfully processed document for event: {event_type}. "
+                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                    )
+                    self.mark_message_processed(topic_partition, offset)
+                    return True
+                except Exception as e:
+                    error_occurred = True
+                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    raise
 
         except IndexingError as e:
             error_occurred = True

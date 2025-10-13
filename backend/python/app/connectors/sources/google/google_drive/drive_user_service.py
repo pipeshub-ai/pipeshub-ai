@@ -71,6 +71,15 @@ class DriveUserService:
         self.user_id = None
         self.is_delegated = credentials is not None
 
+    async def _get_drive_scopes(self) -> List[str]:
+        """Get scopes for drive, with fallback to default readonly scope."""
+        SCOPES = await self.google_token_handler.get_account_scopes(app_name="drive")
+        if not SCOPES:
+            SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+            self.logger.warning("Scopes for drive not found in config, using default.")
+        self.logger.debug("Using scopes for drive: %s", SCOPES)
+        return SCOPES
+
     @token_refresh
     async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
         """Connect using OAuth2 credentials for individual user"""
@@ -78,8 +87,7 @@ class DriveUserService:
             self.org_id = org_id
             self.user_id = user_id
 
-            SCOPES = await self.google_token_handler.get_account_scopes(app_name="drive")
-
+            SCOPES = await self._get_drive_scopes()
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
                     org_id, user_id, app_name="drive"
@@ -170,7 +178,7 @@ class DriveUserService:
             creds_data = await self.google_token_handler.get_individual_token(
                 self.org_id, self.user_id, app_name="drive"
             )
-            SCOPES = await self.google_token_handler.get_account_scopes(app_name="drive")
+            SCOPES = await self._get_drive_scopes()
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),

@@ -4,6 +4,12 @@ import os
 
 from app.sources.client.dropbox.dropbox_ import DropboxAppKeySecretConfig, DropboxClient, DropboxTokenConfig
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
+from app.sources.external.dropbox.pretty_print import to_pretty_json
+
+import json
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
+from typing import Any
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TOKEN")
 
@@ -12,20 +18,37 @@ async def main() -> None:
     client = await DropboxClient.build_with_config(config, is_team=False)
     data_source = DropboxDataSource(client)
 
-    # List files in root
-    print("Listing root folder:")
+    # List current user
+    print("\nListing current user:")
+    current_user = await data_source.users_get_current_account()
+    print(current_user.data.name.display_name)
+    
+    # #List shared folders
+    print("\nListing shared folders:")
+    shared_folders = await data_source.sharing_list_folders()
+    print(to_pretty_json(shared_folders))
+
+    # # List files in root
+    print("\nListing root folder:")
     files = await data_source.files_list_folder(path="")
     print(files)
+    print(to_pretty_json(files))
+
+    # List files in team folder
+    print("\nListing team folder:")
+    team_files = await data_source.files_list_folder(path="", team_folder_id="13131350499", recursive=True)
+    print(to_pretty_json(team_files))
 
     # Upload a test file
     # print("\nUploading test.txt...")
-    # upload_resp = await data_source.files_upload("/test.txt", b"Hello from API integration!")
+    # upload_resp = await data_source.files_upload(b"Hello from API integration!", "/test.txt")
     # print(upload_resp)
 
     # # Download the file
     # print("\nDownloading test.txt...")
-    # download_resp = await data_source.files_download("/IMG_1677.jpg")
-    # print(f"Downloaded bytes: {len(download_resp['data'])}")
+    # download_resp = await data_source.files_download("/test.txt")
+    # print(f"Downloaded bytes: {download_resp.data[0].size}")
+    # print(f"Download response: {download_resp}")
 
     # # Get metadata
     # print("\nGetting metadata for test.txt...")
@@ -44,7 +67,7 @@ async def main() -> None:
 
     # # Search for file
     # print("\nSearching for 'test'...")
-    # search_resp = await data_source.files_search("test")
+    # search_resp = await data_source.files_search_v2("test")
     # print(search_resp)
 
     # # Delete files
@@ -60,6 +83,10 @@ async def main() -> None:
     # print("\nCreating folder /MyNewFolder3...")
     # folder_resp = await data_source.files_create_folder("/MyNewFolder3")
     # print(folder_resp)
+
+
+
+
 
 if __name__ == "__main__":
     asyncio.run(main())

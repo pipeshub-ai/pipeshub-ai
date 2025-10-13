@@ -84,8 +84,8 @@ class IGraphService(ABC):
         pass
 
     @abstractmethod
-    async def execute_query(self, query: str, bind_vars: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Execute an AQL query"""
+    async def execute_query(self, query: str, bind_vars: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
+        """Execute an AQL query. Returns None on error, empty list if successful but no results."""
         pass
 
     @abstractmethod
