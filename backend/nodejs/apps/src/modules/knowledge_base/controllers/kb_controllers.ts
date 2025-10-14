@@ -2361,8 +2361,8 @@ export const getRecordBuffer =
         if (!res.headersSent) {
           try {
             res.status(500).end('Error streaming data');
-          } catch (_) {
-            // ignore
+          } catch (e) {
+            logger.error('Failed to send stream error response to client', { error: e });
           }
         }
       });
