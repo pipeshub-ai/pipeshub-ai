@@ -2,7 +2,8 @@ import io
 import json
 from datetime import datetime
 
-import html2text
+from html_to_markdown import convert
+
 
 from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
@@ -1129,19 +1130,14 @@ class Processor:
 
             # Convert HTML to markdown
             self.logger.debug("📄 Converting HTML to markdown")
-            h = html2text.HTML2Text()
-            h.ignore_links = False
-            h.ignore_images = False
-            h.ignore_emphasis = False
-            h.body_width = 0  # Don't wrap lines
-            markdown_content = h.handle(html_content)
-            markdown_content = markdown_content.strip()
-            self.logger.debug(f"📄 Markdown content: {markdown_content}")
-            if markdown_content is None or markdown_content == "":
+            markdown = convert(html_content)
+            markdown = markdown.strip()
+
+            if markdown is None or markdown == "":
                 try:
                     await self._mark_record_as_completed(recordId, virtual_record_id)
-
-
+                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    return
                 except DocumentProcessingError:
                     raise
                 except Exception as e:
@@ -1150,8 +1146,9 @@ class Processor:
                         doc_id=recordId,
                         details={"error": str(e)},
                     )
+
             # Convert markdown content to bytes for processing
-            md_binary = markdown_content.encode("utf-8")
+            md_binary = markdown.encode("utf-8")
 
             # Use the existing markdown processing function
             await self.process_md_document(
