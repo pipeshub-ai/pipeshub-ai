@@ -39,8 +39,6 @@ services:
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
       - OLLAMA_API_URL=http://host.docker.internal:11434
-    networks:
-      - coolify-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
@@ -59,8 +57,6 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
-    networks:
-      - coolify-internal
     restart: always
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
@@ -74,8 +70,6 @@ services:
       - redis_data:/data
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-    networks:
-      - coolify-internal
     command: >
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     restart: always
@@ -86,8 +80,6 @@ services:
       - arango_data:/var/lib/arangodb3
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
-    networks:
-      - coolify-internal
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version"]
@@ -99,8 +91,6 @@ services:
     image: quay.io/coreos/etcd:v3.5.17
     volumes:
       - etcd_data:/etcd-data
-    networks:
-      - coolify-internal
     command: >
       etcd --name etcd-node --data-dir /etcd-data --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://0.0.0.0:2380 --initial-cluster etcd-node=http://0.0.0.0:2380
     restart: always
@@ -110,8 +100,6 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
-    networks:
-      - coolify-internal
     restart: always
 
   kafka-1:
@@ -133,8 +121,6 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
-    networks:
-      - coolify-internal
     restart: always
 
   qdrant:
@@ -143,8 +129,6 @@ services:
       - qdrant_storage:/qdrant/storage
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
-    networks:
-      - coolify-internal
     restart: always
     healthcheck:
       test:
@@ -158,10 +142,6 @@ services:
       nofile:
         soft: 50000
         hard: 50000
-
-networks:
-  coolify-internal:
-    internal: true
 
 volumes:
   mongodb_data:
