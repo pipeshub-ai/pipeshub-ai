@@ -1,0 +1,179 @@
+services:
+  pipeshub-ai:
+    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    depends_on:
+      - arango
+      - etcd
+      - kafka-1
+      - mongodb
+      - qdrant
+      - redis
+    volumes:
+      - pipeshub_data:/data/pipeshub
+      - pipeshub_root_local:/root/.local
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
+      - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
+      - QUERY_BACKEND=http://localhost:8000
+      - CONNECTOR_BACKEND=http://localhost:8088
+      - INDEXING_BACKEND=http://localhost:8091
+      - ETCD_URL=http://etcd:2379
+      - ETCD_HOST=etcd
+      - ARANGO_URL=http://arango:8529
+      - ARANGO_DB_NAME=es
+      - ARANGO_USERNAME=root
+      - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
+      - KAFKA_BROKERS=kafka-1:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=es
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT_HOST=qdrant
+      - QDRANT_GRPC_PORT=6334
+      - QDRANT_PORT=6333
+      - OLLAMA_API_URL=http://host.docker.internal:11434
+    networks:
+      - coolify-internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    init: true
+    shm_size: 2gb
+
+  mongodb:
+    image: mongo:8.0.6
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+    networks:
+      - coolify-internal
+    restart: always
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:bookworm
+    volumes:
+      - redis_data:/data
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    networks:
+      - coolify-internal
+    command: >
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    restart: always
+
+  arango:
+    image: arangodb:3.12.4
+    volumes:
+      - arango_data:/var/lib/arangodb3
+    environment:
+      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
+    networks:
+      - coolify-internal
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    volumes:
+      - etcd_data:/etcd-data
+    networks:
+      - coolify-internal
+    command: >
+      etcd --name etcd-node --data-dir /etcd-data --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://0.0.0.0:2380 --initial-cluster etcd-node=http://0.0.0.0:2380
+    restart: always
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.9.0
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    networks:
+      - coolify-internal
+    restart: always
+
+  kafka-1:
+    image: confluentinc/cp-kafka:7.9.0
+    depends_on:
+      - zookeeper
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT
+      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
+      - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      - KAFKA_LOG_RETENTION_HOURS=24
+      - KAFKA_NUM_NETWORK_THREADS=3
+      - KAFKA_NUM_IO_THREADS=8
+    networks:
+      - coolify-internal
+    restart: always
+
+  qdrant:
+    image: qdrant/qdrant:v1.15
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+    networks:
+      - coolify-internal
+    restart: always
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 50000
+        hard: 50000
+
+networks:
+  coolify-internal:
+    internal: true
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  arango_data:
+    driver: local
+  etcd_data:
+    driver: local
+  qdrant_storage:
+    driver: local
+  pipeshub_data:
+    driver: local
+  pipeshub_root_local:
+    driver: local
