@@ -2344,7 +2344,9 @@ export const getRecordBuffer =
       );
 
       // Set appropriate headers from the FastAPI response
-      res.set('Content-Type', response.headers['content-type']);
+      if (response.headers['content-type']) {
+        res.set('Content-Type', response.headers['content-type']);
+      }
       if (response.headers['content-disposition']) {
         res.set('Content-Disposition', response.headers['content-disposition']);
       }
@@ -2357,7 +2359,11 @@ export const getRecordBuffer =
         console.error('Stream error:', error);
         // Only send error if headers haven't been sent yet
         if (!res.headersSent) {
-          throw new InternalServerError('Error streaming data');
+          try {
+            res.status(500).end('Error streaming data');
+          } catch (_) {
+            // ignore
+          }
         }
       });
     } catch (error: any) {
@@ -2369,7 +2375,9 @@ export const getRecordBuffer =
             error: error.response.data || 'Error from AI backend',
           });
         } else {
-          throw new InternalServerError('Failed to retrieve record data');
+          // Don't throw here to avoid uncaughtException shutdown during streams
+          res.status(500).json({ error: 'Failed to retrieve record data' });
+          return;
         }
       }
       const handleError = handleBackendError(error, 'get record buffer');
