@@ -112,10 +112,31 @@ class BookStackClient(IClient):
         Returns:
             BookStackClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored BookStack credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
+        config = await cls._get_connector_config(config_service, "bookstack")
+        if not config:
+            raise ValueError("BookStack configuration not found")
 
-        raise NotImplementedError("build_from_services is not yet implemented")
+        auth_type = config.get("authType", "BEARER_TOKEN")
+        auth_config = config.get("auth", {})
+        if auth_type == "BEARER_TOKEN":
+            token_id = auth_config.get("tokenId")
+            token_secret = auth_config.get("tokenSecret")
+            base_url = auth_config.get("baseURL")
+            config = BookStackTokenConfig(
+                base_url=base_url,
+                token_id=token_id,
+                token_secret=token_secret
+            )
+            return cls.build_with_config(config)
+        else:
+            raise ValueError(f"Unsupported auth type: {auth_type}")
+
+    @staticmethod
+    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+        """Get connector configuration from config service"""
+        try:
+            config_path = f"/services/connectors/{connector_name}/config"
+            config_data = await config_service.get_config(config_path)
+            return config_data
+        except Exception as e:
+            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")

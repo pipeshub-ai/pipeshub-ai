@@ -183,10 +183,13 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
     try:
         registry = ConnectorRegistry(app_container)
 
+        feature_flag_service = await app_container.feature_flag_service()
+        ConnectorFactory.initialize_connectors(feature_flag_service)
         # Register connectors using generic factory
         available_connectors = ConnectorFactory.list_connectors()
         for name, connector_class in available_connectors.items():
             registry.register_connector(connector_class)
+        logger.info("✅ Connectors registered")
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
         logger.info(f"Registered {len(registry._connectors)} connectors")
@@ -341,8 +344,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
-
-
     logger.debug("🚀 Starting application")
     # Start messaging producer first
     try:

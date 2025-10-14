@@ -6,7 +6,6 @@ from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
@@ -395,20 +394,54 @@ class ZendeskClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "ZendeskClient":
-        """Build ZendeskClient using configuration service and graph database service
+        """Build ZendeskClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
         Returns:
             ZendeskClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored Zendesk credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials (token vs OAuth)
+        try:
+            config = await cls._get_connector_config(logger, config_service)
+            if not config:
+                raise ValueError("Failed to get Zendesk connector configuration")
+            auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            auth_config = config.get("auth", {})
 
-        raise NotImplementedError("build_from_services is not yet implemented")
+            if auth_type == "API_TOKEN":
+                client = ZendeskRESTClientViaToken(
+                    subdomain=auth_config.get("subdomain"),
+                    token=auth_config.get("apiToken"),
+                    email=auth_config.get("email")
+                )
+
+
+            elif auth_type == "OAUTH":
+                credentials_config = auth_config.get("credentials", {})
+                client = ZendeskRESTClientViaOAuth(
+                    subdomain=auth_config.get("subdomain"),
+                    client_id=auth_config.get("clientId"),
+                    client_secret=auth_config.get("clientSecret"),
+                    redirect_uri=auth_config.get("redirectUri"),
+                    access_token=credentials_config.get("access_token")
+                )
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Zendesk client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Zendesk."""
+        try:
+            config = await config_service.get_config("/services/connectors/zendesk/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Zendesk connector config: {e}")
+            return {}

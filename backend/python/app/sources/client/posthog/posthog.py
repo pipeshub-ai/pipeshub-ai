@@ -5,7 +5,6 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.graphql.client import GraphQLClient
 from app.sources.client.iclient import IClient
 
@@ -139,23 +138,41 @@ class PostHogClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "PostHogClient":
-        """Build PostHogClient using configuration service and graph database service
+        """Build PostHogClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
         Returns:
             PostHogClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored PostHog credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
 
-        raise NotImplementedError("build_from_services is not yet implemented")
+        config = await cls._get_connector_config(logger, config_service)
+        if not config:
+            raise ValueError("Failed to get PostHog connector configuration")
+        auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+        auth_config = config.get("auth", {})
+        if auth_type == "API_TOKEN":
+            token = auth_config.get("apiKey", "")
+            endpoint = auth_config.get("endpoint", "https://app.posthog.com/api/graphql")
+            timeout = auth_config.get("timeout", 30)
+            use_header_auth = auth_config.get("useHeaderAuth", True)
+            if not token:
+                raise ValueError("Token required for token auth type")
+            client = PostHogTokenConfig(api_key=token, endpoint=endpoint, timeout=timeout, use_header_auth=use_header_auth).create_client()
+        else:
+            raise ValueError(f"Invalid auth type: {auth_type}")
+        return cls(client)
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for PostHog."""
+        try:
+            config = await config_service.get_config("/services/connectors/posthog/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get PostHog connector config: {e}")
+            return {}
 
     async def close(self) -> None:
         """Close the client and cleanup resources"""

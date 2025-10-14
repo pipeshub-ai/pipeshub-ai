@@ -4,7 +4,6 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, field_validator  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
@@ -184,25 +183,39 @@ class FreshDeskClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "FreshDeskClient":
-        """Build FreshDeskClient using configuration service and graph-db service
+        """Build FreshDeskClient using configuration service
 
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph-DB service instance
         Returns:
             FreshDeskClient: Configured client instance
 
         Raises:
             NotImplementedError: This method needs to be implemented
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored FreshDesk credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
-        raise NotImplementedError(
-            "build_from_services is not implemented for FreshDeskClient"
-        )
+        config = await cls._get_connector_config(logger, config_service)
+        if not config:
+            raise ValueError("Failed to get FreshDesk connector configuration")
+        auth_type = config.get("authType", "API_KEY")  # API_KEY or OAUTH
+        auth_config = config.get("auth", {})
+        if auth_type == "API_KEY":
+            api_key = auth_config.get("apiKey", "")
+            domain = auth_config.get("domain", "")
+            if not api_key:
+                raise ValueError("API key required for API key auth type")
+            client = FreshDeskApiKeyConfig(domain=domain, api_key=api_key).create_client()
+        else:
+            raise ValueError(f"Invalid auth type: {auth_type}")
+        return cls(client)
+
+    @staticmethod
+    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for FreshDesk."""
+        try:
+            config = await config_service.get_config("/services/connectors/freshdesk/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get FreshDesk connector config: {e}")
+            return {}

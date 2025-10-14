@@ -26,6 +26,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
+from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
 from app.services.vector_db.const.const import (
     VECTOR_DB_COLLECTION_NAME,
@@ -223,3 +224,10 @@ class ContainerUtils:
             blob_store=blob_store,
         )
         return service
+
+    async def create_feature_flag_service(
+        self,
+    ) -> FeatureFlagService:
+        """Async factory for FeatureFlagService"""
+        feature_flag_service = FeatureFlagService.get_service()
+        return feature_flag_service

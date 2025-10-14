@@ -202,7 +202,6 @@ class DropboxClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         arango_service: Optional[IGraphService] = None,
-        is_team: bool = False,
     ) -> "DropboxClient":
         """
         Build DropboxClient using configuration service
@@ -222,14 +221,15 @@ class DropboxClient(IClient):
                 raise ValueError("Failed to get Dropbox connector configuration")
 
             # Extract configuration values
-            auth_type = config.get("auth_type", "token")  # token or app_key_secret
-            timeout = config.get("timeout")
+            auth_type = config.get("authType", "APP_KEY_SECRET")  # APP_KEY_SECRET or OAUTH
+            auth_config = config.get("auth", {})
 
             # Create appropriate client based on auth type
-            if auth_type == "app_key_secret":
-                app_key = config.get("app_key", "")
-                app_secret = config.get("app_secret", "")
-
+            if auth_type == "APP_KEY_SECRET":
+                app_key = auth_config.get("appKey", "")
+                app_secret = auth_config.get("appSecret", "")
+                timeout = auth_config.get("timeout", None)
+                is_team = auth_config.get("isTeam", False)
                 if not app_key or not app_secret:
                     raise ValueError("App key and app secret required for app_key_secret auth type")
 
@@ -240,16 +240,16 @@ class DropboxClient(IClient):
                 )
                 client = await app_config.create_client(is_team=is_team)
 
-            else:  # Default to token auth
-                token = config.get("token", "")
-                if not token:
-                    raise ValueError("Token required for token auth type")
+            elif auth_type == "OAUTH":
+                credentials_config = auth_config.get("credentials", {})
+                is_team = credentials_config.get("isTeam", False)
+                access_token = credentials_config.get("accessToken", "")
+                if not access_token:
+                    raise ValueError("Access token required for oauth auth type")
+                client = await DropboxTokenConfig(token=access_token).create_client(is_team=is_team)
 
-                token_config = DropboxTokenConfig(
-                    token=token,
-                    timeout=timeout
-                )
-                client = await token_config.create_client(is_team=is_team)
+            else:
+                raise ValueError(f"Unsupported auth type: {auth_type}")
 
             return cls(client)
 

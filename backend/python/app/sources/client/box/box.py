@@ -384,23 +384,24 @@ class BoxClient(IClient):
             config_data = await cls._get_connector_config(config_service, "box")
 
             # Extract configuration parameters
-            auth_type = config_data.get("auth_type", "token")
+            auth_type = config_data.get("authType", "OAUTH")
+            auth_config = config_data.get("auth", {})
 
-            if auth_type == "token":
-                access_token = config_data.get("access_token")
+            if auth_type == "API_TOKEN":
+                access_token = auth_config.get("access_token")
                 if not access_token:
                     raise ValueError("access_token is required for token auth_type")
 
                 config = BoxTokenConfig(token=access_token)
                 return await cls.build_with_config(config)
 
-            elif auth_type == "jwt":
-                client_id = config_data.get("client_id")
-                client_secret = config_data.get("client_secret")
-                enterprise_id = config_data.get("enterprise_id")
-                jwt_key_id = config_data.get("jwt_key_id")
-                rsa_private_key_data = config_data.get("rsa_private_key_data")
-                rsa_private_key_passphrase = config_data.get("rsa_private_key_passphrase")
+            elif auth_type == "JWT":
+                client_id = auth_config.get("clientId")
+                client_secret = auth_config.get("clientSecret")
+                enterprise_id = auth_config.get("enterpriseId")
+                jwt_key_id = auth_config.get("jwtKeyId")
+                rsa_private_key_data = auth_config.get("rsaPrivateKeyData")
+                rsa_private_key_passphrase = auth_config.get("rsaPrivateKeyPassphrase")
 
                 if not all([client_id, client_secret, enterprise_id, jwt_key_id, rsa_private_key_data]):
                     raise ValueError("client_id, client_secret, enterprise_id, jwt_key_id, and rsa_private_key_data are required for jwt auth_type")
@@ -415,11 +416,12 @@ class BoxClient(IClient):
                 )
                 return await cls.build_with_config(config)
 
-            elif auth_type == "oauth2":
-                client_id = config_data.get("client_id")
-                client_secret = config_data.get("client_secret")
-                access_token = config_data.get("access_token")
-                refresh_token = config_data.get("refresh_token")
+            elif auth_type == "OAUTH":
+                credentials_config = auth_config.get("credentials", {})
+                client_id = auth_config.get("clientId")
+                client_secret = auth_config.get("clientSecret")
+                access_token = credentials_config.get("access_token")
+                refresh_token = credentials_config.get("refresh_token")
 
                 if not all([client_id, client_secret, access_token]):
                     raise ValueError("client_id, client_secret, and access_token are required for oauth2 auth_type")
@@ -432,11 +434,11 @@ class BoxClient(IClient):
                 )
                 return await cls.build_with_config(config)
 
-            elif auth_type == "oauth_code":
-                client_id = config_data.get("client_id")
-                client_secret = config_data.get("client_secret")
-                code = config_data.get("code")
-                redirect_uri = config_data.get("redirect_uri")
+            elif auth_type == "OAUTH_CODE":
+                client_id = auth_config.get("clientId")
+                client_secret = auth_config.get("clientSecret")
+                code = credentials_config.get("code")
+                redirect_uri = auth_config.get("redirectUri")
 
                 if not all([client_id, client_secret, code]):
                     raise ValueError("client_id, client_secret, and code are required for oauth_code auth_type")

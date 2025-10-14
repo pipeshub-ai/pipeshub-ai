@@ -7,7 +7,6 @@ from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.exception.exception import BadRequestError
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
@@ -668,24 +667,77 @@ class ServiceNowClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
-        org_id: str,
-        user_id: str,
     ) -> "ServiceNowClient":
-        """Build ServiceNowClient using configuration service and graph database service
+        """Build ServiceNowClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
-            org_id: Organization ID
-            user_id: User ID
         Returns:
             ServiceNowClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored ServiceNow credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
+        try:
+            config = await cls._get_connector_config(logger, config_service)
+            if not config:
+                raise ValueError("Failed to get ServiceNow connector configuration")
+            auth_type = config.get("authType", "USERNAME_PASSWORD")  # USERNAME_PASSWORD or TOKEN or API_KEY or OAUTH_CLIENT_CREDENTIALS or OAUTH_AUTHORIZATION_CODE or OAUTH_ROPC
+            auth_config = config.get("auth", {})
+            if auth_type == "USERNAME_PASSWORD":
+                client = ServiceNowRESTClientViaUsernamePassword(
+                    instance_url=auth_config.get("instanceUrl"),
+                    username=auth_config.get("username"),
+                    password=auth_config.get("password")
+                )
+            elif auth_type == "TOKEN":
+                client = ServiceNowRESTClientViaToken(
+                    instance_url=auth_config.get("instanceUrl"),
+                    token=auth_config.get("token")
+                )
+            elif auth_type == "API_KEY":
+                client = ServiceNowRESTClientViaAPIKey(
+                    instance_url=auth_config.get("instanceUrl"),
+                    api_key=auth_config.get("apiKey"),
+                    header_name=auth_config.get("headerName", "x-sn-apikey")
+                )
+            elif auth_type == "OAUTH_CLIENT_CREDENTIALS":
+                credentials_config = auth_config.get("credentials", {})
+                client = ServiceNowRESTClientViaOAuthClientCredentials(
+                    instance_url=auth_config.get("instanceUrl"),
+                    client_id=auth_config.get("clientId"),
+                    client_secret=auth_config.get("clientSecret"),
+                    access_token=credentials_config.get("access_token")
+                )
+            elif auth_type == "OAUTH_AUTHORIZATION_CODE":
+                credentials_config = auth_config.get("credentials", {})
+                client = ServiceNowRESTClientViaOAuthAuthorizationCode(
+                    instance_url=auth_config.get("instanceUrl"),
+                    client_id=auth_config.get("clientId"),
+                    client_secret=auth_config.get("clientSecret"),
+                    redirect_uri=auth_config.get("redirectUri"),
+                    access_token=credentials_config.get("access_token")
+                )
+            elif auth_type == "OAUTH_ROPC":
+                credentials_config = auth_config.get("credentials", {})
+                client = ServiceNowRESTClientViaOAuthROPC(
+                    instance_url=auth_config.get("instanceUrl"),
+                    client_id=auth_config.get("clientId"),
+                    client_secret=auth_config.get("clientSecret"),
+                    username=auth_config.get("username"),
+                    password=auth_config.get("password"),
+                    access_token=credentials_config.get("access_token")
+                )
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+            return cls(client=client)
+        except Exception as e:
+            logger.error(f"Failed to build ServiceNow client from services: {str(e)}")
+            raise
 
-        return cls(client=None)  # type: ignore
+    @staticmethod
+    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for ServiceNow."""
+        try:
+            config = await config_service.get_config("/services/connectors/servicenow/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get ServiceNow connector config: {e}")
+            return {}
