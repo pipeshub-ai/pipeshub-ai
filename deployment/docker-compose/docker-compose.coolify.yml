@@ -50,6 +50,7 @@ services:
           memory: 10G
     init: true
     shm_size: 2gb
+    exclude_from_hc: true # Exclude the pipeshub-ai service from health checks
 
   mongodb:
     image: mongo:8.0.6
