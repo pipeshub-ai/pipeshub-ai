@@ -4,7 +4,6 @@ from datetime import datetime
 
 from html_to_markdown import convert
 
-
 from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
     OCRProvider,
@@ -1146,7 +1145,6 @@ class Processor:
                         doc_id=recordId,
                         details={"error": str(e)},
                     )
-
             # Convert markdown content to bytes for processing
             md_binary = markdown.encode("utf-8")
 

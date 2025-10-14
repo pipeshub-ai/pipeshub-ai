@@ -455,7 +455,7 @@ class EventProcessor:
                     orgId=org_id,
                     html_content=file_content,
                     virtual_record_id = virtual_record_id,
-                 
+
                 )
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
