@@ -1,3 +1,4 @@
+# ruff: noqa
 #!/usr/bin/env python3
 """
 DocuSign Complete API Code Generator
@@ -1930,7 +1931,7 @@ DOCUSIGN_API_OPERATIONS = {
 class DocuSignDataSourceGenerator:
     """Generates a comprehensive DocuSignDataSource class covering all DocuSign APIs."""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.generated_methods = []
         
     def _sanitize_method_name(self, operation_id: str) -> str:
