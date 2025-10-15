@@ -150,6 +150,7 @@ class DoclingDocToBlocksConverter():
 
 
         async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
+            block = None
             if item.get("text") != "":
                 block = Block(
                         id=str(uuid.uuid4()),
