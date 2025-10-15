@@ -78,6 +78,10 @@ class VectorStore(Transformer):
         self.embedding_provider = None
         self.is_multimodal_embedding = False
         self.region_name = None
+        self.aws_access_key_id = None
+        self.aws_secret_access_key = None
+        
+        
         
         try:
             # Initialize sparse embeddings
@@ -98,6 +102,57 @@ class VectorStore(Transformer):
                 "Failed to initialize indexing pipeline: " + str(e),
                 details={"error": str(e)},
             )
+
+    def _normalize_image_to_base64(self, image_uri: str) -> str | None:
+        """
+        Normalize an image reference into a raw base64-encoded string (no data: prefix).
+        - data URLs (data:image/...;base64,xxxxx) -> returns the part after the comma
+        - http/https URLs -> downloads bytes then base64-encodes
+        - raw base64 strings -> returns as-is (after trimming/padding)
+
+        Returns None if normalization fails.
+        """
+        try:
+            if not image_uri or not isinstance(image_uri, str):
+                return None
+
+            uri = image_uri.strip()
+
+            # data URL
+            if uri.startswith("data:"):
+                comma_index = uri.find(",")
+                if comma_index == -1:
+                    return None
+                b64_part = uri[comma_index + 1 :].strip()
+                # fix padding
+                missing = (-len(b64_part)) % 4
+                if missing:
+                    b64_part += "=" * missing
+                return b64_part
+
+            # http(s) URL
+            if uri.startswith("http://") or uri.startswith("https://"):
+                import requests
+                import base64
+
+                resp = requests.get(uri, timeout=20)
+                if resp.status_code != 200 or not resp.content:
+                    return None
+                return base64.b64encode(resp.content).decode("ascii")
+
+            # Assume raw base64
+            import re
+
+            candidate = uri
+            candidate = candidate.replace("\n", "").replace("\r", "").replace(" ", "")
+            if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", candidate):
+                return None
+            missing = (-len(candidate)) % 4
+            if missing:
+                candidate += "=" * missing
+            return candidate
+        except Exception:
+            return None
 
     async def apply(self, ctx: TransformContext) -> bool|None:
         record = ctx.record
@@ -313,6 +368,8 @@ class VectorStore(Transformer):
                 model_name = dense_embeddings.model_name
             elif hasattr(dense_embeddings, "model"):
                 model_name = dense_embeddings.model
+            elif hasattr(dense_embeddings, "model_id"):
+                model_name = dense_embeddings.model_id
             else:
                 model_name = "unknown"
 
@@ -340,6 +397,10 @@ class VectorStore(Transformer):
             self.api_key = configuration["apiKey"] if configuration and "apiKey" in configuration else None
             self.model_name = model_name
             self.region_name = configuration["region"] if configuration and "region" in configuration else None
+            # Persist AWS credentials when using Bedrock so we can call image embedding runtime directly
+            if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
+                self.aws_access_key_id = configuration.get("awsAccessKeyId")
+                self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
             self.is_multimodal_embedding = bool(is_multimodal)
             return self.is_multimodal_embedding
         except IndexingError as e:
@@ -436,27 +497,9 @@ class VectorStore(Transformer):
                         )
                         points.append(point)
                 elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
-                    from voyageai import Client
-
-                    vo = Client(api_key=self.api_key)
                     
-                    inputs =  [
-                                {
-                                    "content": [
-                                    {
-                                        "type": "image_base64",
-                                        "image_base64": image_base64
-                                    } 
-                                    ]
-                                } for image_base64 in image_base64s
-                            ]
-
-                    result = vo.multimodal_embed(
-                        inputs=inputs,
-                        model=self.model_name,
-                    )       
-                  
-                    for i,embedding in enumerate(result.embeddings):
+                    embeddings = self.dense_embeddings.embed_documents(image_base64s)
+                    for i,embedding in enumerate(embeddings):
                         image_chunk = image_chunks[i]
                         point = PointStruct(
                             id=str(uuid.uuid4()),
@@ -471,11 +514,24 @@ class VectorStore(Transformer):
                 elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
                     import boto3
                     import json
+                    from botocore.exceptions import NoCredentialsError, ClientError
                     # Initialize Bedrock client
-                    bedrock = boto3.client(
-                        service_name='bedrock-runtime',
-                        region_name=self.region_name  # Choose your region
-                    )
+                    try:
+                        client_kwargs = {
+                            "service_name": "bedrock-runtime",
+                            "region_name": self.region_name,
+                        }
+                        # If explicit credentials are configured, use them; otherwise fall back to default chain
+                        if self.aws_access_key_id and self.aws_secret_access_key:
+                            client_kwargs.update({
+                                "aws_access_key_id": self.aws_access_key_id,
+                                "aws_secret_access_key": self.aws_secret_access_key,
+                            })
+                        bedrock = boto3.client(**client_kwargs)
+                    except NoCredentialsError as cred_err:
+                        raise EmbeddingError(
+                            "AWS credentials not found for Bedrock image embeddings. Provide awsAccessKeyId/awsAccessSecretKey or configure a credential source."
+                        ) from cred_err
                     # Prepare the request
                     request_body = {
                         "inputImage": "",
@@ -485,16 +541,35 @@ class VectorStore(Transformer):
                     }
 
                     # Generate embeddings
-                    for i,image_base64 in enumerate(image_base64s):
-                        request_body["inputImage"] = image_base64
-                        response = bedrock.invoke_model(
-                            modelId=self.model_name,
-                            body=json.dumps(request_body),
-                            contentType='application/json',
-                            accept='application/json'
-                        )
-                        response_body = json.loads(response['body'].read())
-                        image_embedding = response_body['embedding']
+                    for i, image_ref in enumerate(image_base64s):
+                        normalized_b64 = self._normalize_image_to_base64(image_ref)
+                        if not normalized_b64:
+                            self.logger.warning("Skipping image: unable to normalize to base64 (index=%s)", i)
+                            continue
+
+                        request_body["inputImage"] = normalized_b64
+                        try:
+                            response = bedrock.invoke_model(
+                                modelId=self.model_name,
+                                body=json.dumps(request_body),
+                                contentType='application/json',
+                                accept='application/json'
+                            )
+                            response_body = json.loads(response['body'].read())
+                            image_embedding = response_body['embedding']
+                        except NoCredentialsError as cred_err:
+                            raise EmbeddingError(
+                                "AWS credentials not found while invoking Bedrock model."
+                            ) from cred_err
+                        except ClientError as client_err:
+                            # Handle Bedrock 4xx (e.g., bad base64) gracefully per image
+                            self.logger.warning("Bedrock image embedding failed for index=%s: %s", i, str(client_err))
+                            continue
+                        except Exception as bedrock_err:
+                            # Any other unexpected error for this image -> skip
+                            self.logger.warning("Unexpected Bedrock error for image index=%s: %s", i, str(bedrock_err))
+                            continue
+
                         image_chunk = image_chunks[i]
                         point = PointStruct(
                             id=str(uuid.uuid4()),
@@ -521,7 +596,6 @@ class VectorStore(Transformer):
                     }
                     response = requests.post(url, headers=headers, json=data)
                     response_body = response.json()
-                    self.logger.info(f"Response body: {response_body}")
                     embeddings = [data["embedding"] for data in response_body["data"]]
                     for i, embedding in enumerate(embeddings):
                         image_chunk = image_chunks[i]
@@ -537,17 +611,17 @@ class VectorStore(Transformer):
 
 
                 if points:
-                        # upsert_points is a synchronous interface; do not await
-                        self.vector_db_service.upsert_points(
-                                collection_name=self.collection_name, points=points
-                            )
-                        self.logger.info(
-                                        "✅ Successfully added image embeddings to vector store"
-                                    )
-                else:
-                        self.logger.info(
-                            "No image embeddings to upsert; all images were skipped or failed to embed"
+                    # upsert_points is a synchronous interface; do not await
+                    self.vector_db_service.upsert_points(
+                            collection_name=self.collection_name, points=points
                         )
+                    self.logger.info(
+                                    "✅ Successfully added image embeddings to vector store"
+                                )
+                else:
+                    self.logger.info(
+                        "No image embeddings to upsert; all images were skipped or failed to embed"
+                    )
 
             if langchain_document_chunks:
                 try:

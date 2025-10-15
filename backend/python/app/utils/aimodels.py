@@ -13,7 +13,6 @@ from app.config.constants.ai_models import (
 )
 from app.utils.logger import create_logger
 
-
 class ModelType(str, Enum):
     LLM = "llm"
     EMBEDDING = "embedding"
@@ -223,11 +222,11 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         )
 
     elif provider == EmbeddingProvider.VOYAGE.value:
-        from langchain_voyageai import VoyageAIEmbeddings
-
-        return VoyageAIEmbeddings(
+        from app.utils.custom_embeddings import VoyageEmbeddings
+        
+        return VoyageEmbeddings(
             model=model_name,
-            api_key=configuration['apiKey'],
+            voyage_api_key=configuration['apiKey'],
         )
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
