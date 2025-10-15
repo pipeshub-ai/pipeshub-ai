@@ -1,7 +1,10 @@
 import asyncio
+import base64
+import re
 import uuid
 from typing import List, Optional
 
+import requests
 import spacy
 from langchain.chat_models.base import BaseChatModel
 from langchain.schema import Document, HumanMessage
@@ -133,9 +136,7 @@ class VectorStore(Transformer):
 
             # http(s) URL
             if uri.startswith("http://") or uri.startswith("https://"):
-                import base64
 
-                import requests
 
                 resp = requests.get(uri, timeout=20)
                 if resp.status_code != HTTP_OK or not resp.content:
@@ -143,7 +144,6 @@ class VectorStore(Transformer):
                 return base64.b64encode(resp.content).decode("ascii")
 
             # Assume raw base64
-            import re
 
             candidate = uri
             candidate = candidate.replace("\n", "").replace("\r", "").replace(" ", "")
@@ -594,7 +594,7 @@ class VectorStore(Transformer):
                     data = {
                         "model": self.model_name,
                         "input": [
-                            {"image": image_base64} for image_base64 in image_base64s
+                            {"image": self._normalize_image_to_base64(image_base64)} for image_base64 in image_base64s
                         ]
                     }
                     response = requests.post(url, headers=headers, json=data)
