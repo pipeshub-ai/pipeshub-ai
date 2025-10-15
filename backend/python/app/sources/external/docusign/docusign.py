@@ -26,9 +26,9 @@ class DocuSignDataSource:
         if self.http is None:
             raise ValueError('HTTP client is not initialized')
         try:
-            self.base_url = self.http.get_base_url().rstrip('/')
+            self.base_url = self.http.get_base_path().rstrip('/')
         except AttributeError as exc:
-            raise ValueError('HTTP client does not have get_base_url method') from exc
+            raise ValueError('HTTP client does not have get_base_path method') from exc
 
     def get_data_source(self) -> 'DocuSignDataSource':
         return self

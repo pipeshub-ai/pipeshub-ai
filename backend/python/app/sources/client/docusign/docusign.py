@@ -42,12 +42,14 @@ class DocuSignRESTClientViaPAT:
         self.access_token = access_token
         self.base_path = base_path
         self.api_client: Optional[ApiClient] = None
+        self._http_client: Optional[HTTPClient] = None
 
     def create_client(self) -> ApiClient:  # type: ignore[valid-type]
         """Create DocuSign API client using PAT authentication."""
         self.api_client = ApiClient()
         self.api_client.set_base_path(self.base_path)
-        self.api_client.set_oauth_token(self.access_token)
+        self.api_client.set_default_header("Authorization", f"Bearer {self.access_token}")
+        self._http_client = HTTPClient(token=self.access_token)
         return self.api_client
 
     def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
@@ -57,6 +59,32 @@ class DocuSignRESTClientViaPAT:
 
     def get_base_path(self) -> str:
         return self.base_path
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        """Get default headers for HTTP requests."""
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+    async def execute(self, request: HTTPRequest) -> Any:
+        """Execute an HTTP request using the HTTP client."""
+        if self._http_client is None:
+            self._http_client = HTTPClient(token=self.access_token)
+        
+        response = await self._http_client.execute(request)
+        
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            error_text = response.text()
+            raise Exception(f"HTTP {response.status}: {error_text}")
+        
+        # Try to parse as JSON, fallback to text
+        try:
+            return response.json()
+        except Exception:
+            return response.text()
 
 # ============================================================
 # JWT Client
@@ -127,6 +155,38 @@ class DocuSignRESTClientViaJWT:
     def get_base_path(self) -> str:
         return self.base_path
 
+    @property
+    def headers(self) -> Dict[str, str]:
+        """Get default headers for HTTP requests."""
+        if self.api_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        token = self.api_client.get_default_header().get("Authorization", "").replace("Bearer ", "")
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+    async def execute(self, request: HTTPRequest) -> Any:
+        """Execute an HTTP request using the HTTP client."""
+        if self.api_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        
+        token = self.api_client.get_default_header().get("Authorization", "").replace("Bearer ", "")
+        http_client = HTTPClient(token=token)
+        
+        response = await http_client.execute(request)
+        
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            error_text = response.text()
+            raise Exception(f"HTTP {response.status}: {error_text}")
+        
+        # Try to parse as JSON, fallback to text
+        try:
+            return response.json()
+        except Exception:
+            return response.text()
+
 
 # ============================================================
 # OAuth Client
@@ -177,7 +237,7 @@ class DocuSignRESTClientViaOAuth:
         try:
             self.api_client = ApiClient()
             self.api_client.set_base_path(self.base_path)
-            self.api_client.set_oauth_token(self.access_token)
+            self.api_client.set_default_header("Authorization", f"Bearer {self.access_token}")
             return self.api_client
         except Exception as e:
             raise RuntimeError("Failed to create DocuSign OAuth client") from e
@@ -189,6 +249,36 @@ class DocuSignRESTClientViaOAuth:
 
     def get_base_path(self) -> str:
         return self.base_path
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        """Get default headers for HTTP requests."""
+        if not self.access_token:
+            raise RuntimeError("No access token available. Authenticate first.")
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+    async def execute(self, request: HTTPRequest) -> Any:
+        """Execute an HTTP request using the HTTP client."""
+        if not self.access_token:
+            raise RuntimeError("No access token available. Authenticate first.")
+        
+        http_client = HTTPClient(token=self.access_token)
+        
+        response = await http_client.execute(request)
+        
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            error_text = response.text()
+            raise Exception(f"HTTP {response.status}: {error_text}")
+        
+        # Try to parse as JSON, fallback to text
+        try:
+            return response.json()
+        except Exception:
+            return response.text()
 
     async def _exchange_token(self, data: dict) -> DocuSignResponse:
         """Helper for exchanging tokens with DocuSign OAuth server."""
@@ -210,9 +300,9 @@ class DocuSignRESTClientViaOAuth:
         response = await http_client.execute(request)
 
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            return DocuSignResponse(success=False, error=f"{response.status}", message=await response.text())
+            return DocuSignResponse(success=False, error=f"{response.status}", message=response.text())
 
-        token_data = await response.json()
+        token_data = response.json()
         self.access_token = token_data.get("access_token")
         self.refresh_token = token_data.get("refresh_token", self.refresh_token)
         return DocuSignResponse(success=True, data=token_data)
@@ -293,10 +383,12 @@ class DocuSignPATConfig(BaseModel):
     ssl: bool = True  # unused
 
     def create_client(self) -> DocuSignRESTClientViaPAT:
-        return DocuSignRESTClientViaPAT(
+        client = DocuSignRESTClientViaPAT(
             access_token=self.access_token,
             base_path=self.base_path
         )
+        client.create_client()  # Initialize the API client
+        return client
 
 # ============================================================
 # Builder
