@@ -353,7 +353,36 @@ class DataSourceEntitiesProcessor:
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
 
-                    # 3. Handle User and Group Permissions (from the passed 'permissions' list)
+                    # 3. Create BELONGS_TO edge to the parent record group (e.g., Chapter -> Book)
+                    if record_group.parent_external_group_id:
+                        parent_record_group = await tx_store.get_record_group_by_external_id(
+                            connector_name=record_group.connector_name,
+                            external_id=record_group.parent_external_group_id
+                        )
+                        
+                        if parent_record_group:
+                            self.logger.info(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
+                            
+                            # Define the edge document from child to parent RecordGroup
+                            parent_relation = {
+                                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
+                                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_group.id}",
+                                "createdAtTimestamp": record_group.created_at,
+                                "updatedAtTimestamp": record_group.updated_at,
+                                "entityType": "KB",
+                            }
+                            
+                            # Create the edge using the same batch method
+                            await tx_store.batch_create_edges(
+                                [parent_relation], collection=CollectionNames.BELONGS_TO.value
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Could not find parent record group with external_id "
+                                f"'{record_group.parent_external_group_id}' for child '{record_group.name}'"
+                            )
+
+                    # 4. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
                         continue
 

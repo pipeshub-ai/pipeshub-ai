@@ -22,6 +22,7 @@ from typing import Optional
 
 from app.sources.client.bookstack.bookstack import BookStackTokenConfig, BookStackClient
 from app.sources.external.bookstack.bookstack import BookStackDataSource
+from app.sources.external.dropbox.pretty_print import to_pretty_json
 
 # Environment variables
 TOKEN_ID = os.getenv("BOOKSTACK_TOKEN_ID")
@@ -42,19 +43,47 @@ async def main() -> None:
     # Create the data source
     data_source = BookStackDataSource(client)
 
-    # List all books
-    print("\nListing all books:")
-    books = await data_source.list_books()
-    print(books)
     
-    print("\nCreating a new book:")
-    create_response = await data_source.create_book(name="Test Book")
-    print(create_response)
+    # print("\nCreating a new book:")
+    # create_response = await data_source.create_book(name="Test Book")
+    # print(create_response)
 
     #List all users
     print("\nList users:")
-    users = await data_source.list_users()
+    users = await data_source.list_users(filter={"email": "admin@admin.com"})
     print(users)
+
+    #List a particular user
+    print("\nList a particular user:")
+    user1 = await data_source.get_user(id=1)
+    user2 = await data_source.get_user(id=2)
+    print(user1)
+    print(user2)
+
+    print("\nList roles:")
+    roles = await data_source.list_roles()
+    print(roles)
+
+    print("\nList shelves")
+    shelves = await data_source.list_shelves()
+    print(shelves)
+
+    print("\nListing all books:")
+    books = await data_source.list_books()
+    print(books)
+
+    print("\nList all chapters")
+    chapters = await data_source.list_chapters()
+    print(chapters)
+
+    print("\nList Pages")
+    pages = await data_source.list_pages()
+    print(pages)
+
+    print("\nList Permissions")
+    permissions = await data_source.get_content_permissions(content_type="bookshelf", content_id=1)
+    print(permissions)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
