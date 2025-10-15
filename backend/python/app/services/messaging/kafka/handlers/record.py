@@ -24,6 +24,7 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 # from app.connectors.sources.google.common.arango_service import ArangoService
 from app.services.scheduler.interface.scheduler import Scheduler
 from app.services.scheduler.scheduler_factory import SchedulerFactory
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.redis_util import build_redis_url
 
 
@@ -161,6 +162,11 @@ class RecordEventHandler(BaseEventService):
                     record_name = payload.get("recordName")
                     if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
+
+            if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
+                derived_extension = get_extension_from_mimetype(mime_type)
+                if derived_extension:
+                    extension = derived_extension
 
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
