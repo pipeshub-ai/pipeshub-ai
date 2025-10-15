@@ -149,7 +149,7 @@ class DoclingDocToBlocksConverter():
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
 
 
-        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
+        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block|None:
             block = None
             if item.get("text") != "":
                 block = Block(
