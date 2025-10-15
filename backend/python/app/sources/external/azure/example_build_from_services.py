@@ -40,6 +40,11 @@ async def main() -> None:
         print(f"✅ Azure list account information response: {response}")
     except Exception as e:
         print(f"❌ Error getting Azure list account information: {e}")
+    finally:
+        try:
+            await azure_client.close_async_client()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())

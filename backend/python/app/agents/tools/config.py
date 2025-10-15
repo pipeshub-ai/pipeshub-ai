@@ -166,8 +166,8 @@ class ToolDiscoveryConfig:
         #     app_name="bookstack",
         #     client_builder="BookStackClient",
         # ),
-        # "azureblob": AppConfiguration(
-        #     app_name="azureblob",
+        # "azure_blob": AppConfiguration(
+        #     app_name="azure_blob",
         #     client_builder="AzureBlobClient",
         # ),
         # "zendesk": AppConfiguration(

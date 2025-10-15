@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -33,10 +33,22 @@ class GitHub:
         asyncio.set_event_loop(self._bg_loop)
         self._bg_loop.run_forever()
 
-    def _run_async(self, coro: Any) -> GitHubResponse:
+    def _run_async(self, coro) -> GitHubResponse:
         """Run a coroutine safely from sync context via a dedicated loop."""
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
+
+    def shutdown(self) -> None:
+        """Gracefully stop the background event loop and thread."""
+        try:
+            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            if getattr(self, "_bg_loop_thread", None) is not None:
+                self._bg_loop_thread.join()
+            if getattr(self, "_bg_loop", None) is not None:
+                self._bg_loop.close()
+        except Exception as exc:
+            logger.warning(f"GitHub shutdown encountered an issue: {exc}")
 
     def _handle_response(
         self, response: GitHubResponse, success_message: str
@@ -157,33 +169,7 @@ class GitHub:
             logger.error(f"Error getting repository: {e}")
             return False, json.dumps({"error": str(e)})
 
-    @tool(
-        app_name="github",
-        tool_name="delete_repository",
-        description="Delete a repository from GitHub (Note: This requires special permissions and is typically done via GitHub web interface)",
-        parameters=[
-            ToolParameter(
-                name="owner",
-                type=ParameterType.STRING,
-                description="The owner of the repository (username or organization) (required)",
-            ),
-            ToolParameter(
-                name="repo",
-                type=ParameterType.STRING,
-                description="The name of the repository (required)",
-            ),
-        ],
-        returns="JSON with success status",
-    )
-    def delete_repository(self, owner: str, repo: str) -> Tuple[bool, str]:
-        """Delete a repository from GitHub."""
-        try:
-            # Note: GitHub API doesn't provide a direct delete method through PyGithub
-            # This would typically require using the GitHub REST API directly
-            return False, json.dumps({"error": "Repository deletion requires special permissions and should be done via GitHub web interface"})
-        except Exception as e:
-            logger.error(f"Error deleting repository: {e}")
-            return False, json.dumps({"error": str(e)})
+    # delete_repository removed: non-functional and misleading
 
     @tool(
         app_name="github",

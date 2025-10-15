@@ -1,8 +1,13 @@
 import asyncio
+import base64
+import io
 import json
 import logging
 import threading
 from typing import Coroutine, Optional, Tuple
+
+from box_sdk_gen.managers.files import UpdateFileByIdParent
+from box_sdk_gen.managers.uploads import UploadFileAttributes
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -44,6 +49,18 @@ class Box:
         """Run a coroutine safely from sync context via a dedicated loop."""
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
+
+    def shutdown(self) -> None:
+        """Gracefully stop the background event loop and thread."""
+        try:
+            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            if getattr(self, "_bg_loop_thread", None) is not None:
+                self._bg_loop_thread.join()
+            if getattr(self, "_bg_loop", None) is not None:
+                self._bg_loop.close()
+        except Exception as exc:
+            logger.warning(f"Box shutdown encountered an issue: {exc}")
 
     def _handle_response(
         self,
@@ -124,7 +141,6 @@ class Box:
             # Create parent object if parent_id is provided
             parent = None
             if parent_id:
-                from box_sdk_gen.managers.files import UpdateFileByIdParent
                 parent = UpdateFileByIdParent(id=parent_id)
 
             response = self._run_async(
@@ -201,10 +217,6 @@ class Box:
     ) -> Tuple[bool, str]:
         """Upload a file to Box."""
         try:
-            import base64
-            import io
-
-            from box_sdk_gen.managers.uploads import UploadFileAttributes
 
             # Decode base64 content
             try:

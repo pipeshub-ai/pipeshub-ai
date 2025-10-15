@@ -3,7 +3,6 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
@@ -104,11 +103,10 @@ class BookStackClient(IClient):
     async def build_from_services(
         cls,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "BookStackClient":
-        """Build BookStackClient using configuration service and graph database service
+        """Build BookStackClient using configuration service
+        Args:
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
         Returns:
             BookStackClient instance
         """

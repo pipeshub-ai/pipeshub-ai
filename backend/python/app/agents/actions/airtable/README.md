@@ -31,7 +31,7 @@ Here's what's available out of the box:
 | `create_records` | Add one or more new records to a table | `base_id`, `table_id_or_name`, `records_json`, `typecast` |
 | `get_record` | Grab a specific record by its ID | `base_id`, `table_id_or_name`, `record_id` |
 | `list_records` | Get a list of records with optional filters | `base_id`, `table_id_or_name`, `view`, `filter_by_formula`, `page_size` |
-| `update_records` | Modify existing records | `base_id`, `table_id_or_name`, `records_json`, `typecast` `destructive_update` |
+| `update_records` | Modify existing records | `base_id`, `table_id_or_name`, `records_json`, `typecast`, `destructive_update` |
 | `delete_records` | Remove records permanently | `base_id`, `table_id_or_name`, `record_ids` |
 | `search_records` | Find records using Airtable's formula syntax | `base_id`, `table_id_or_name`, `filter_by_formula`, `page_size` |
 

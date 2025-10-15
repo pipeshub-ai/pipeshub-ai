@@ -30,6 +30,18 @@ class AzureBlob:
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
 
+    def shutdown(self) -> None:
+        """Gracefully stop the background event loop and thread."""
+        try:
+            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            if getattr(self, "_bg_loop_thread", None) is not None:
+                self._bg_loop_thread.join()
+            if getattr(self, "_bg_loop", None) is not None:
+                self._bg_loop.close()
+        except Exception as exc:
+            logger.warning(f"AzureBlob shutdown encountered an issue: {exc}")
+
     def _wrap(self, success: bool, data: object | None, error: Optional[str], message: str) -> Tuple[bool, str]:
         if success:
             return True, json.dumps({"message": message, "data": data}, default=str)
@@ -99,8 +111,15 @@ class AzureBlob:
     )
     def upload_blob(self, container_name: str, blob_name: str, content: str) -> Tuple[bool, str]:
         try:
-            body = content
-            resp = self._run_async(self.client.upload_blob(container_name=container_name, blob_name=blob_name, body=body, Content_Length=len(body)))
+            body_bytes = content.encode('utf-8')
+            resp = self._run_async(
+                self.client.upload_blob(
+                    container_name=container_name,
+                    blob_name=blob_name,
+                    body=body_bytes,
+                    Content_Length=len(body_bytes)
+                )
+            )
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Blob uploaded successfully")
         except Exception as e:
             logger.error(f"upload_blob error: {e}")

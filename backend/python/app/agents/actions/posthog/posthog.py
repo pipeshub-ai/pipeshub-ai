@@ -45,6 +45,18 @@ class PostHog:
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
 
+    def shutdown(self) -> None:
+        """Gracefully stop the background event loop and thread."""
+        try:
+            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            if getattr(self, "_bg_loop_thread", None) is not None:
+                self._bg_loop_thread.join()
+            if getattr(self, "_bg_loop", None) is not None:
+                self._bg_loop.close()
+        except Exception as exc:
+            logger.warning(f"PostHog shutdown encountered an issue: {exc}")
+
     def _handle_response(
         self,
         response,

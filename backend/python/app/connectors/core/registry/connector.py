@@ -470,7 +470,7 @@ class AirtableConnector:
 
 @ConnectorBuilder("Azure Blob")\
     .in_group("Azure")\
-    .with_auth_type("CONNECTION_STRING")\
+    .with_auth_type("ACCOUNT_KEY")\
     .with_description("Sync files and folders from Azure Blob Storage")\
     .with_categories(["Storage"])\
     .configure(lambda builder: builder

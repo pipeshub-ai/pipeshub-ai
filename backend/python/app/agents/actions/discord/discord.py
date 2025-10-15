@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -34,10 +34,22 @@ class Discord:
         asyncio.set_event_loop(self._bg_loop)
         self._bg_loop.run_forever()
 
-    def _run_async(self, coro: Any) -> DiscordResponse:
+    def _run_async(self, coro) -> DiscordResponse:
         """Run a coroutine safely from sync context via a dedicated loop."""
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
+
+    def shutdown(self) -> None:
+        """Gracefully stop the background event loop and thread."""
+        try:
+            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            if getattr(self, "_bg_loop_thread", None) is not None:
+                self._bg_loop_thread.join()
+            if getattr(self, "_bg_loop", None) is not None:
+                self._bg_loop.close()
+        except Exception as exc:
+            logger.warning(f"Discord shutdown encountered an issue: {exc}")
 
     def _handle_response(
         self,

@@ -104,8 +104,7 @@ def list_folder(
     include_media_info: Optional[bool] = None,
     include_deleted: Optional[bool] = None
 ) -> Tuple[bool, str]:
-    """List contents of a folder"""
-    """
+    """List contents of a folder
     Args:
         path: Path of the folder to list
         recursive: Whether to list recursively

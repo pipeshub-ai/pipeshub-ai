@@ -40,6 +40,11 @@ async def main() -> None:
         print(f"✅ BookStack list pages response: {response}")
     except Exception as e:
         print(f"❌ Error getting BookStack list pages: {e}")
+    finally:
+        try:
+            await bookstack_client.get_client().close_async_client()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())
