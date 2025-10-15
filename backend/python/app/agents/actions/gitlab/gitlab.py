@@ -359,7 +359,6 @@ class GitLab:
         issue_iid: int,
         title: Optional[str] = None,
         description: Optional[str] = None,
-        assignee_ids: Optional[List[int]] = None,
         labels: Optional[List[str]] = None,
         state_event: Optional[str] = None,
     ) -> Tuple[bool, str]:
@@ -371,7 +370,6 @@ class GitLab:
                     issue_iid=issue_iid,
                     title=title,
                     description=description,
-                    assignee_ids=assignee_ids,
                     labels=labels,
                     state_event=state_event,
                 )
@@ -506,9 +504,7 @@ class GitLab:
         """Get details of a specific merge request from a GitLab project."""
         try:
             response = self._run_async(
-                self.client.get_merge_request(
-                    project_id=project_id, merge_request_iid=merge_request_iid
-                )
+                self.client.get_merge_request(project_id=project_id, mr_iid=merge_request_iid)
             )
             return self._handle_response(response, "Merge request fetched successfully")
         except Exception as e:
@@ -531,17 +527,16 @@ class GitLab:
                 description="The internal ID of the merge request (required)",
             ),
             ToolParameter(
-                name="merge_commit_message",
-                type=ParameterType.STRING,
-                description="The commit message for the merge",
+                name="merge_when_pipeline_succeeds",
+                type=ParameterType.BOOLEAN,
+                description="Merge when pipeline succeeds",
                 required=False,
             ),
             ToolParameter(
-                name="should_remove_source_branch",
+                name="squash",
                 type=ParameterType.BOOLEAN,
-                description="Whether to remove the source branch after merge. Defaults to False.",
+                description="Squash commits on merge",
                 required=False,
-                default=False,
             ),
         ],
         returns="JSON with merge status",
@@ -550,17 +545,17 @@ class GitLab:
         self,
         project_id: str,
         merge_request_iid: int,
-        merge_commit_message: Optional[str] = None,
-        should_remove_source_branch: bool = False,
+        merge_when_pipeline_succeeds: Optional[bool] = None,
+        squash: Optional[bool] = None,
     ) -> Tuple[bool, str]:
         """Merge a merge request in a GitLab project."""
         try:
             response = self._run_async(
                 self.client.merge_merge_request(
                     project_id=project_id,
-                    merge_request_iid=merge_request_iid,
-                    merge_commit_message=merge_commit_message,
-                    should_remove_source_branch=should_remove_source_branch,
+                    mr_iid=merge_request_iid,
+                    merge_when_pipeline_succeeds=merge_when_pipeline_succeeds,
+                    squash=squash,
                 )
             )
             return self._handle_response(response, "Merge request merged successfully")
@@ -578,22 +573,15 @@ class GitLab:
                 type=ParameterType.STRING,
                 description="The search query string (required)",
             ),
-            ToolParameter(
-                name="scope",
-                type=ParameterType.STRING,
-                description="The scope of the search ('projects', 'issues', 'merge_requests', 'milestones', 'notes', 'wiki_blobs', 'commits', 'blobs', 'users'). Defaults to 'projects'.",
-                required=False,
-                default="projects",
-            ),
         ],
         returns="JSON with search results",
     )
-    def search_projects(self, query: str, scope: str = "projects") -> Tuple[bool, str]:
+    def search_projects(self, query: str) -> Tuple[bool, str]:
         """Search for projects in GitLab."""
         try:
             # Note: GitLabDataSource doesn't have a direct search method, so we'll use list_projects with search parameter
             response = self._run_async(
-                self.client.list_projects(search=query, scope=scope)
+                self.client.list_projects(search=query)
             )
             return self._handle_response(response, "Project search completed successfully")
         except Exception as e:

@@ -152,8 +152,9 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
-            response = self._run_async(self.client.show_ticket(ticket_id=ticket_id))
+            # Use ZendeskDataSource method (coerce ID to int)
+            tid = int(ticket_id)
+            response = self._run_async(self.client.show_ticket(ticket_id=tid))
 
             if response.success:
                 return True, response.to_json()
@@ -228,24 +229,15 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
-            ticket_data = {
-                "ticket": {
-                    "subject": subject,
-                    "description": description
-                }
-            }
-
-            if requester_id:
-                ticket_data["ticket"]["requester_id"] = requester_id
-            if assignee_id:
-                ticket_data["ticket"]["assignee_id"] = assignee_id
-            if priority:
-                ticket_data["ticket"]["priority"] = priority
-            if status:
-                ticket_data["ticket"]["status"] = status
-
-            response = self._run_async(self.client.create_ticket(ticket=ticket_data))
+            # Map to data source flat params; description -> comment body
+            response = self._run_async(self.client.create_ticket(
+                subject=subject,
+                comment={"body": description},
+                requester_id=int(requester_id) if requester_id is not None else None,
+                assignee_id=int(assignee_id) if assignee_id is not None else None,
+                priority=priority,
+                status=status
+            ))
 
             if response.success:
                 return True, response.to_json()
@@ -320,23 +312,15 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
-            ticket_data = {"ticket": {}}
-
-            if subject:
-                ticket_data["ticket"]["subject"] = subject
-            if description:
-                ticket_data["ticket"]["description"] = description
-            if assignee_id:
-                ticket_data["ticket"]["assignee_id"] = assignee_id
-            if priority:
-                ticket_data["ticket"]["priority"] = priority
-            if status:
-                ticket_data["ticket"]["status"] = status
-
+            # Use ZendeskDataSource method with flat params; description -> comment body
+            tid = int(ticket_id)
             response = self._run_async(self.client.update_ticket(
-                ticket_id=ticket_id,
-                ticket=ticket_data
+                ticket_id=tid,
+                subject=subject,
+                comment={"body": description} if description is not None else None,
+                assignee_id=int(assignee_id) if assignee_id is not None else None,
+                priority=priority,
+                status=status
             ))
 
             if response.success:
@@ -369,8 +353,9 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
-            response = self._run_async(self.client.delete_ticket(ticket_id=ticket_id))
+            # Use ZendeskDataSource method (coerce ID to int)
+            tid = int(ticket_id)
+            response = self._run_async(self.client.delete_ticket(ticket_id=tid))
 
             if response.success:
                 return True, response.to_json()
@@ -401,8 +386,8 @@ class Zendesk:
     )
     def list_users(
         self,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None
+        role: Optional[str] = None,
+        include: Optional[str] = None
     ) -> Tuple[bool, str]:
         """List users"""
         """
@@ -413,10 +398,10 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
+            # Use ZendeskDataSource method (supports role/include among others)
             response = self._run_async(self.client.list_users(
-                per_page=per_page,
-                page=page
+                role=role,
+                include=include
             ))
 
             if response.success:
@@ -449,8 +434,9 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
-            response = self._run_async(self.client.show_user(user_id=user_id))
+            # Use ZendeskDataSource method (coerce ID to int)
+            uid = int(user_id)
+            response = self._run_async(self.client.show_user(user_id=uid))
 
             if response.success:
                 return True, response.to_json()
@@ -501,9 +487,7 @@ class Zendesk:
         self,
         query: str,
         sort_by: Optional[str] = None,
-        sort_order: Optional[str] = None,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None
+        sort_order: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Search tickets"""
         """
@@ -517,13 +501,11 @@ class Zendesk:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use ZendeskDataSource method
-            response = self._run_async(self.client.search_tickets(
+            # Use ZendeskDataSource method (generic search)
+            response = self._run_async(self.client.search(
                 query=query,
                 sort_by=sort_by,
-                sort_order=sort_order,
-                per_page=per_page,
-                page=page
+                sort_order=sort_order
             ))
 
             if response.success:

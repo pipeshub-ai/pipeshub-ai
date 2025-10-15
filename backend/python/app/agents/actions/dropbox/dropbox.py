@@ -259,11 +259,14 @@ class Dropbox:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use DropboxDataSource method
+            # Convert textual content to bytes as required by DataSource
+            file_bytes = content.encode('utf-8')
+
+            # Use DropboxDataSource method (expects bytes in 'f' argument)
             response = self._run_async(self.client.files_upload(
+                f=file_bytes,
                 path=path,
-                content=content,
-                mode=mode
+                mode=mode if mode is not None else 'add'
             ))
 
             if response.success:
