@@ -8,7 +8,7 @@ RUN pip install uv
 
 # Install system dependencies and necessary runtime libraries
 RUN apt-get update && apt-get install -y \
-    curl gnupg iputils-ping telnet traceroute dnsutils net-tools wget \
+    curl build-essential gnupg iputils-ping telnet traceroute dnsutils net-tools wget \
     librocksdb-dev libgflags-dev libsnappy-dev zlib1g-dev \
     libbz2-dev liblz4-dev libzstd-dev libssl-dev ca-certificates libspatialindex-dev libpq5 && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y \
     apt-get install -y ocrmypdf tesseract-ocr ghostscript unpaper qpdf && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Stage 2: Python dependencies
 FROM base AS python-deps
