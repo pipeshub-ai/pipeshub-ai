@@ -3,6 +3,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 
+
 class SinkOrchestrator(Transformer):
     def __init__(self, arango: Arango, blob_storage: BlobStorage, vector_store: VectorStore) -> None:
         super().__init__()

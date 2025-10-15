@@ -515,7 +515,7 @@ class EventProcessor:
                     connectorName=connector,
                     origin=origin
                 )
-            
+
             elif (
                  extension in {
                     ExtensionTypes.PNG.value,

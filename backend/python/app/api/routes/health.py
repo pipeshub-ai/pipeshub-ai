@@ -430,7 +430,7 @@ async def perform_embedding_health_check(
                 asyncio.to_thread(embedding_model.embed_documents, test_texts),
                 timeout=120.0  # 120 second timeout
             )
-            
+
             logger.info(f"Test embeddings length: {len(test_embeddings)}")
             if not test_embeddings or len(test_embeddings) == 0:
                 logger.error(f"Embedding model returned empty results for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")

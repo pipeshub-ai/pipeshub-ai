@@ -16,6 +16,7 @@ from app.modules.parsers.docx.docx_parser import DocxParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
+from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
@@ -35,7 +36,6 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
-from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.redis_util import build_redis_url
 
 
@@ -136,7 +136,7 @@ class ContainerUtils:
             ExtensionTypes.CSV.value: CSVParser(),
             ExtensionTypes.XLSX.value: ExcelParser(logger),
             ExtensionTypes.XLS.value: XLSParser(),
-            ExtensionTypes.PNG.value: image_parser,     
+            ExtensionTypes.PNG.value: image_parser,
             ExtensionTypes.JPG.value: image_parser,
             ExtensionTypes.JPEG.value: image_parser,
             ExtensionTypes.WEBP.value: image_parser,

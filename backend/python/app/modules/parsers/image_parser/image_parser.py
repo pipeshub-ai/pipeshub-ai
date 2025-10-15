@@ -1,5 +1,7 @@
 import base64
-from app.models.blocks import Block, BlockType, BlocksContainer, DataFormat
+
+from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
 
 class ImageParser:
     def __init__(self, logger) -> None:

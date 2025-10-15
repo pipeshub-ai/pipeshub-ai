@@ -52,6 +52,7 @@ def _get_shared_nlp() -> Language:
 
 LENGTH_THRESHOLD = 2
 OUTPUT_DIMENSION = 1536
+HTTP_OK = 200
 
 class VectorStore(Transformer):
 
@@ -80,9 +81,9 @@ class VectorStore(Transformer):
         self.region_name = None
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
-        
-        
-        
+
+
+
         try:
             # Initialize sparse embeddings
             try:
@@ -132,11 +133,12 @@ class VectorStore(Transformer):
 
             # http(s) URL
             if uri.startswith("http://") or uri.startswith("https://"):
-                import requests
                 import base64
 
+                import requests
+
                 resp = requests.get(uri, timeout=20)
-                if resp.status_code != 200 or not resp.content:
+                if resp.status_code != HTTP_OK or not resp.content:
                     return None
                 return base64.b64encode(resp.content).decode("ascii")
 
@@ -391,7 +393,7 @@ class VectorStore(Transformer):
                 sparse_embedding=self.sparse_embeddings,
                 retrieval_mode=RetrievalMode.HYBRID,
             )
-          
+
             self.dense_embeddings = dense_embeddings
             self.embedding_provider = provider
             self.api_key = configuration["apiKey"] if configuration and "apiKey" in configuration else None
@@ -446,7 +448,7 @@ class VectorStore(Transformer):
             if len(image_chunks) > 0:
                 image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
                 points = []
-                                
+
 
                 if self.embedding_provider == EmbeddingProvider.COHERE.value:
 
@@ -497,7 +499,7 @@ class VectorStore(Transformer):
                         )
                         points.append(point)
                 elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
-                    
+
                     embeddings = self.dense_embeddings.embed_documents(image_base64s)
                     for i,embedding in enumerate(embeddings):
                         image_chunk = image_chunks[i]
@@ -510,11 +512,12 @@ class VectorStore(Transformer):
                             },
                         )
                         points.append(point)
-                   
+
                 elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
-                    import boto3
                     import json
-                    from botocore.exceptions import NoCredentialsError, ClientError
+
+                    import boto3
+                    from botocore.exceptions import ClientError, NoCredentialsError
                     # Initialize Bedrock client
                     try:
                         client_kwargs = {
@@ -902,7 +905,7 @@ class VectorStore(Transformer):
                                     raise DocumentProcessingError(
                                         "Failed to update indexing status", doc_id=record_id
                                     )
-                                
+
                                 return False
 
                             except DocumentProcessingError:

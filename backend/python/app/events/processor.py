@@ -91,14 +91,14 @@ class Processor:
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
-    
+
     async def process_image(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         try:
             # Initialize image parser
             self.logger.debug("📸 Processing image content")
             if not content:
                 raise Exception("No image data provided")
-            
+
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
@@ -113,7 +113,7 @@ class Processor:
             parser = self.parsers.get(extension)
             if not parser:
                 raise Exception(f"Unsupported extension: {extension}")
-        
+
             block_containers = parser.parse_image(content,extension)
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers

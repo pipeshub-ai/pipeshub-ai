@@ -134,7 +134,7 @@ class DocumentExtraction(Transformer):
                         continue
                 else:
                     continue
-                        
+
             elif block.type.value == "table_row":
                 if block.data:
                     if isinstance(block.data, dict):
@@ -182,7 +182,7 @@ class DocumentExtraction(Transformer):
 
             # Prepare multimodal content
             content = self._prepare_content(blocks, is_multimodal_llm)
-            
+
             if len(content) == 0:
                 self.logger.info("No content to process in document extraction")
                 return None

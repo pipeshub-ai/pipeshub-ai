@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from app.utils.logger import create_logger
-logger = create_logger("custom_embeddings")
 import json
 import logging
 from typing import (
@@ -16,7 +14,6 @@ from typing import (
 )
 
 import requests
-from langchain_core._api.deprecation import deprecated
 from langchain_core.embeddings import Embeddings
 from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
@@ -27,6 +24,9 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.utils.logger import create_logger
+
+logger = create_logger("custom_embeddings")
 
 
 def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any]:
@@ -48,12 +48,12 @@ def _check_response(response: dict) -> dict:
     return response
 
 
-def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: Any) -> Any:
+def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> dict[str, Any]:
     """Use tenacity to retry the embedding call."""
     retry_decorator = _create_retry_decorator(embeddings)
 
     @retry_decorator
-    def _embed_with_retry(**kwargs: Any) -> Any:
+    def _embed_with_retry(**kwargs: dict[str, Any]) -> dict[str, Any]:
         response = requests.post(**kwargs)
         return _check_response(response.json())
 
@@ -87,13 +87,13 @@ class VoyageEmbeddings(BaseModel, Embeddings):
     request_timeout: Optional[Union[float, Tuple[float, float]]] = None
     """Timeout in seconds for the API request."""
     show_progress_bar: bool = False
-    """Whether to show a progress bar when embedding. Must have tqdm installed if set 
+    """Whether to show a progress bar when embedding. Must have tqdm installed if set
         to True."""
     truncation: bool = True
     """Whether to truncate the input texts to fit within the context length.
-    
-        If True, over-length input texts will be truncated to fit within the context 
-        length, before vectorized by the embedding model. If False, an error will be 
+
+        If True, over-length input texts will be truncated to fit within the context
+        length, before vectorized by the embedding model. If False, an error will be
         raised if any given text exceeds the context length."""
 
     model_config = ConfigDict(
@@ -102,7 +102,7 @@ class VoyageEmbeddings(BaseModel, Embeddings):
 
     @model_validator(mode="before")
     @classmethod
-    def validate_environment(cls, values: Dict) -> Any:
+    def validate_environment(cls, values: Dict) -> Dict:
         """Validate that api key and python package exists in environment."""
         values["voyage_api_key"] = convert_to_secret_str(
             get_from_dict_or_env(values, "voyage_api_key", "VOYAGE_API_KEY")
@@ -135,7 +135,7 @@ class VoyageEmbeddings(BaseModel, Embeddings):
             url = "https://api.voyageai.com/v1/multimodalembeddings"
             inputs =[]
             for text in input:
-                if text.startswith("data:image"):   
+                if text.startswith("data:image"):
                     inputs.append({
                         "content" : [{
                             "type": "image_base64",
