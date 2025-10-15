@@ -5,6 +5,7 @@ from typing import Optional
 
 import aiohttp  # type: ignore
 from jose import jwt  # type: ignore
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
@@ -161,6 +162,9 @@ class RecordEventHandler(BaseEventService):
                     record_name = payload.get("recordName")
                     if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
+            
+            if extension is None and mime_type is not None and mime_type != "unknown":
+                extension = get_extension_from_mimetype(mime_type)
 
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
