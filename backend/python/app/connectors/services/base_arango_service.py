@@ -7038,6 +7038,23 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
             raise
 
+    async def get_folder_record_by_id(self, folder_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        try:
+            db = transaction if transaction else self.db
+            query = """
+            FOR file IN @@files
+                FILTER file._key == @folder_id
+                RETURN file
+            """
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_id": folder_id,
+                "@files": CollectionNames.FILES.value,
+            })
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch folder record {folder_id}: {str(e)}")
+            return None
+
     async def find_folder_by_name_in_parent(
         self,
         kb_id: str,
@@ -7141,7 +7158,7 @@ class BaseArangoService:
                 current_parent_id = folder["_key"]
 
             # Return the final folder if we successfully navigated the entire path
-            return await self.get_file_record_by_id(current_parent_id, transaction)
+            return await self.get_folder_record_by_id(current_parent_id, transaction)
 
         except Exception as e:
             self.logger.error(f"❌ Failed to navigate to folder by path: {str(e)}")
@@ -7180,7 +7197,7 @@ class BaseArangoService:
             try:
                 # Step 1: Validate parent folder exists (if nested)
                 if parent_folder_id:
-                    parent_folder = await self.get_file_record_by_id(parent_folder_id, transaction)
+                    parent_folder = await self.get_folder_record_by_id(parent_folder_id, transaction)
                     if not parent_folder:
                         raise ValueError(f"Parent folder {parent_folder_id} not found")
                     if parent_folder.get("isFile") is not False:
@@ -12378,13 +12395,8 @@ class BaseArangoService:
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={"id": id})
             result = next(cursor, None)
-            print("!!!!!!!!!!!!!!!!!!! result:", result)
             if result and result.get("file") and result.get("record"):
                 self.logger.info("✅ Successfully retrieved file record for id %s", id)
-                print("!!!!!!!!!!!!!!!!!!! FileRecord.from_arango_base_file_record:", FileRecord.from_arango_base_file_record(
-                    arango_base_file_record=result["file"],
-                    arango_base_record=result["record"]
-                ))
                 return FileRecord.from_arango_base_file_record(
                     arango_base_file_record=result["file"],
                     arango_base_record=result["record"]
