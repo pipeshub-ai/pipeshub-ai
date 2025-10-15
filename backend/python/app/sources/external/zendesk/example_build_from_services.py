@@ -41,6 +41,9 @@ async def main() -> None:
     except Exception as e:
         print(f"❌ Error getting Zendesk list: {e}")
 
+    finally:
+        # Properly close the client session
+        await zendesk_client.get_client().close()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -36,6 +36,7 @@ from app.connectors.core.registry.connector_builder import (
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["file.created", "file.modified", "file.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .add_filter_field(CommonFields.file_types_filter(), "static")
@@ -81,6 +82,7 @@ class GoogleDriveConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["message.created", "message.modified", "message.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(FilterField(
             name="labels",
@@ -122,6 +124,7 @@ class GmailConnector:
             max_length=8000,
             is_secret=True
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(CommonFields.channels_filter(),
                           "https://slack.com/api/conversations.list")
@@ -160,6 +163,7 @@ class SlackConnector:
             max_length=8000,
             is_secret=True
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -201,6 +205,7 @@ class  NotionConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["event.created", "event.modified", "event.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -243,6 +248,7 @@ class CalendarConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["space.created", "space.modified", "space.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -285,6 +291,7 @@ class MeetConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["document.created", "document.modified", "document.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -324,6 +331,7 @@ class DocsConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["sheet.created", "sheet.modified", "sheet.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -366,6 +374,7 @@ class SheetsConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["form.created", "form.modified", "form.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -406,6 +415,7 @@ class FormsConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["slide.created", "slide.modified", "slide.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -442,6 +452,7 @@ class SlidesConnector:
             max_length=8000,
             is_secret=True
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -510,6 +521,7 @@ class AirtableConnector:
             field_type="TEXT",
             max_length=2000
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -562,6 +574,8 @@ class AzureBlobConnector:
             field_type="TEXT",
             max_length=2000
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
     )\
     .build_decorator()
 class BookStackConnector:
@@ -597,6 +611,7 @@ class BookStackConnector:
             max_length=2000,
             is_secret=True
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -658,6 +673,7 @@ class LinearConnector:
             field_type="TEXT",
             max_length=2000
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -710,6 +726,7 @@ class S3Connector:
             field_type="TEXT",
             max_length=2000
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -761,6 +778,7 @@ class ServiceNowConnector:
             field_type="TEXT",
             max_length=2000
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()

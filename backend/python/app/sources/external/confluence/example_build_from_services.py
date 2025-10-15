@@ -53,5 +53,7 @@ async def main():
     else:
         print(f"Error response: {response.text}")
 
+    await confluence_client.get_client().close()
+
 if __name__ == "__main__":
     asyncio.run(main())

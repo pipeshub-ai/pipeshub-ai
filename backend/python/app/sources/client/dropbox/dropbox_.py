@@ -12,7 +12,6 @@ except ImportError:
     raise ImportError("dropbox is not installed. Please install it with `pip install dropbox`")
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
@@ -201,15 +200,12 @@ class DropboxClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        arango_service: Optional[IGraphService] = None,
     ) -> "DropboxClient":
         """
         Build DropboxClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: GraphDB service instance (optional)
-            is_team: Whether to use team client
         Returns:
             DropboxClient instance
         """

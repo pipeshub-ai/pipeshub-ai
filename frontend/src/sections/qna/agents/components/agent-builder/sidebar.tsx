@@ -540,6 +540,21 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       Onedrive: microsoftOnedriveIcon,
       Sharepointonline: '/assets/icons/connectors/sharepoint.svg',
       Outlook: '/assets/icons/connectors/outlook.svg',
+      Discord: '/assets/icons/connectors/discord.svg',
+      Linear: '/assets/icons/connectors/linear.svg',
+      LinkedIn: '/assets/icons/connectors/linkedin.svg',
+      Dropbox: '/assets/icons/connectors/dropbox.svg',
+      Freshdesk: '/assets/icons/connectors/freshdesk.svg',
+      Zendesk: '/assets/icons/connectors/zendesk.svg',
+      Posthog: '/assets/icons/connectors/posthog.svg',
+      Box: '/assets/icons/connectors/box.svg',
+      Bookstack: '/assets/icons/connectors/bookstack.svg',
+      Azureblob: '/assets/icons/connectors/azureblob.svg',
+      Airtable: '/assets/icons/connectors/airtable.svg',
+      Evernote: '/assets/icons/connectors/evernote.svg',
+      S3: '/assets/icons/connectors/s3.svg',
+      Github: '/assets/icons/connectors/github.svg',
+      Gitlab: '/assets/icons/connectors/gitlab.svg',
     };
     return iconMap[appName] || applicationIcon;
   };

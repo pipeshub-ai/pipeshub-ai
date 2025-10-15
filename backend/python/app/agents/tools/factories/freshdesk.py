@@ -1,22 +1,22 @@
 """
-Client factories for Freshdesk.
+Client factories for FreshDesk.
 """
 
 
 from app.agents.tools.factories.base import ClientFactory
-from app.sources.client.freshdesk.freshdesk import FreshdeskClient
+from app.sources.client.freshdesk.freshdesk import FreshDeskClient
 
 # ============================================================================
-# Freshdesk Client Factory
+# FreshDesk Client Factory
 # ============================================================================
 
-class FreshdeskClientFactory(ClientFactory):
-    """Factory for creating Freshdesk clients"""
+class FreshDeskClientFactory(ClientFactory):
+    """Factory for creating FreshDesk clients"""
 
-    async def create_client(self, config_service, logger) -> FreshdeskClient:
-        """Create Freshdesk client instance"""
+    async def create_client(self, config_service, logger) -> FreshDeskClient:
+        """Create FreshDesk client instance"""
 
-        return await FreshdeskClient.build_from_services(
+        return await FreshDeskClient.build_from_services(
             logger=logger,
             config_service=config_service
         )

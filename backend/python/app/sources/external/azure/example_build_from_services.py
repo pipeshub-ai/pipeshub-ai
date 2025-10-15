@@ -41,6 +41,5 @@ async def main() -> None:
     except Exception as e:
         print(f"❌ Error getting Azure list account information: {e}")
 
-
 if __name__ == "__main__":
     asyncio.run(main())

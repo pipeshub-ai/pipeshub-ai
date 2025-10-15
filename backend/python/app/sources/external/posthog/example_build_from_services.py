@@ -48,6 +48,9 @@ async def main():
     except Exception as e:
         print(f"❌ Error getting events: {e}")
 
+    finally:
+        # Properly close the client session
+        await posthog_client.get_client().close()
 
 if __name__ == "__main__":
     asyncio.run(main())

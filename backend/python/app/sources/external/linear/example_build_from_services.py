@@ -41,7 +41,9 @@ async def main() -> None:
         print(f"✅ Linear get all teams response: {response}")
     except Exception as e:
         print(f"❌ Error getting Linear get all teams: {e}")
-
+    finally:
+        # Properly close the client session
+        await linear_client.get_client().close()
 
 if __name__ == "__main__":
     asyncio.run(main())

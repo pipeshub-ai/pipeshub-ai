@@ -40,7 +40,9 @@ async def main() -> None:
         print(f"✅ Airtable get current user response: {response}")
     except Exception as e:
         print(f"❌ Error getting Airtable get current user: {e}")
-
+    finally:
+        # Properly close the client session
+        await airtable_client.get_client().close()
 
 if __name__ == "__main__":
     asyncio.run(main())

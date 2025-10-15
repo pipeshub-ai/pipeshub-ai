@@ -7,11 +7,26 @@ from typing import Dict, Optional
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
 from app.agents.tools.factories.confluence import ConfluenceClientFactory
+from app.agents.tools.factories.dropbox import DropboxClientFactory
 from app.agents.tools.factories.google import GoogleClientFactory
 from app.agents.tools.factories.jira import JiraClientFactory
+from app.agents.tools.factories.linear import LinearClientFactory
 from app.agents.tools.factories.microsoft import MSGraphClientFactory
 from app.agents.tools.factories.notion import NotionClientFactory
 from app.agents.tools.factories.slack import SlackClientFactory
+
+# from app.agents.tools.factories.linkedin import LinkedInClientFactory
+# from app.agents.tools.factories.freshdesk import FreshDeskClientFactory
+# from app.agents.tools.factories.zendesk import ZendeskClientFactory
+# from app.agents.tools.factories.posthog import PostHogClientFactory
+# from app.agents.tools.factories.box import BoxClientFactory
+# from app.agents.tools.factories.bookstack import BookStackClientFactory
+# from app.agents.tools.factories.azureblob import AzureBlobClientFactory
+# from app.agents.tools.factories.airtable import AirtableClientFactory
+# from app.agents.tools.factories.evernote import EvernoteClientFactory
+# from app.agents.tools.factories.s3 import S3ClientFactory
+# from app.agents.tools.factories.github import GitHubClientFactory
+# from app.agents.tools.factories.gitlab import GitLabClientFactory
 
 
 class ClientFactoryRegistry:
@@ -115,6 +130,48 @@ class ClientFactoryRegistry:
                 # Register factories for Microsoft sub-services
                 for subdir in config.subdirectories:
                     cls.register(subdir, MSGraphClientFactory(subdir))
+
+            elif app_name == "linear":
+                cls.register(app_name, LinearClientFactory())
+
+            # elif app_name == "linkedin":
+            #     cls.register(app_name, LinkedInClientFactory())
+
+            elif app_name == "dropbox":
+                cls.register(app_name, DropboxClientFactory())
+
+            # elif app_name == "freshdesk":
+            #     cls.register(app_name, FreshDeskClientFactory())
+
+            # elif app_name == "zendesk":
+            #     cls.register(app_name, ZendeskClientFactory())
+
+            # elif app_name == "posthog":
+            #     cls.register(app_name, PostHogClientFactory())
+
+            # elif app_name == "box":
+            #     cls.register(app_name, BoxClientFactory())
+
+            # elif app_name == "bookstack":
+            #     cls.register(app_name, BookStackClientFactory())
+
+            # elif app_name == "azureblob":
+            #     cls.register(app_name, AzureBlobClientFactory())
+
+            # elif app_name == "airtable":
+            #     cls.register(app_name, AirtableClientFactory())
+
+            # elif app_name == "evernote":
+            #     cls.register(app_name, EvernoteClientFactory())
+
+            # elif app_name == "s3":
+            #     cls.register(app_name, S3ClientFactory())
+
+            # elif app_name == "github":
+            #     cls.register(app_name, GitHubClientFactory())
+
+            # elif app_name == "gitlab":
+            #     cls.register(app_name, GitLabClientFactory())
 
         cls._initialized = True
 

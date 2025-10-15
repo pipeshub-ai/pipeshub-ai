@@ -4,7 +4,7 @@ Client factories for Azure Blob.
 
 
 from app.agents.tools.factories.base import ClientFactory
-from app.sources.client.azureblob.azureblob import AzureBlobClient
+from app.sources.client.azure.azure_blob import AzureBlobClient
 
 # ============================================================================
 # Azure Blob Client Factory

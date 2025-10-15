@@ -41,6 +41,10 @@ async def main() -> None:
     except Exception as e:
         print(f"❌ Error getting FreshDesk list tickets: {e}")
 
+    finally:
+        # Properly close the client session
+        await freshdesk_client.get_client().close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

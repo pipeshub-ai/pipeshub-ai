@@ -110,70 +110,70 @@ class ToolDiscoveryConfig:
             subdirectories=["one_drive", "sharepoint"],
             client_builder="MSGraphClient",
         ),
-        "discord": AppConfiguration(
-            app_name="discord",
-            client_builder="DiscordClient",
-        ),
-        "freshdesk": AppConfiguration(
-            app_name="freshdesk",
-            client_builder="FreshDeskClient",
-        ),
-        "evernote": AppConfiguration(
-            app_name="evernote",
-            client_builder="EvernoteClient",
-        ),
+        # "discord": AppConfiguration(
+        #     app_name="discord",
+        #     client_builder="DiscordClient",
+        # ),
+        # "freshdesk": AppConfiguration(
+        #     app_name="freshdesk",
+        #     client_builder="FreshDeskClient",
+        # ),
+        # "evernote": AppConfiguration(
+        #     app_name="evernote",
+        #     client_builder="EvernoteClient",
+        # ),
         "linear": AppConfiguration(
             app_name="linear",
             client_builder="LinearClient",
         ),
-        "linkedin": AppConfiguration(
-            app_name="linkedin",
-            client_builder="LinkedInClient",
-        ),
-        "posthog": AppConfiguration(
-            app_name="posthog",
-            client_builder="PostHogClient",
-        ),
-        "s3": AppConfiguration(
-            app_name="s3",
-            client_builder="S3Client",
-        ),
-        "servicenow": AppConfiguration(
-            app_name="servicenow",
-            client_builder="ServiceNowClient",
-        ),
-        "box": AppConfiguration(
-            app_name="box",
-            client_builder="BoxClient",
-        ),
+        # "linkedin": AppConfiguration(
+        #     app_name="linkedin",
+        #     client_builder="LinkedInClient",
+        # ),
+        # "posthog": AppConfiguration(
+        #     app_name="posthog",
+        #     client_builder="PostHogClient",
+        # ),
+        # "s3": AppConfiguration(
+        #     app_name="s3",
+        #     client_builder="S3Client",
+        # ),
+        # "servicenow": AppConfiguration(
+        #     app_name="servicenow",
+        #     client_builder="ServiceNowClient",
+        # ),
+        # "box": AppConfiguration(
+        #     app_name="box",
+        #     client_builder="BoxClient",
+        # ),
         "dropbox": AppConfiguration(
             app_name="dropbox",
             client_builder="DropboxClient",
         ),
-        "github": AppConfiguration(
-            app_name="github",
-            client_builder="GitHubClient",
-        ),
-        "gitlab": AppConfiguration(
-            app_name="gitlab",
-            client_builder="GitLabClient",
-        ),
-        "airtable": AppConfiguration(
-            app_name="airtable",
-            client_builder="AirtableClient",
-        ),
-        "bookstack": AppConfiguration(
-            app_name="bookstack",
-            client_builder="BookStackClient",
-        ),
-        "azureblob": AppConfiguration(
-            app_name="azureblob",
-            client_builder="AzureBlobClient",
-        ),
-        "zendesk": AppConfiguration(
-            app_name="zendesk",
-            client_builder="ZendeskClient",
-        )
+        # "github": AppConfiguration(
+        #     app_name="github",
+        #     client_builder="GitHubClient",
+        # ),
+        # "gitlab": AppConfiguration(
+        #     app_name="gitlab",
+        #     client_builder="GitLabClient",
+        # ),
+        # "airtable": AppConfiguration(
+        #     app_name="airtable",
+        #     client_builder="AirtableClient",
+        # ),
+        # "bookstack": AppConfiguration(
+        #     app_name="bookstack",
+        #     client_builder="BookStackClient",
+        # ),
+        # "azureblob": AppConfiguration(
+        #     app_name="azureblob",
+        #     client_builder="AzureBlobClient",
+        # ),
+        # "zendesk": AppConfiguration(
+        #     app_name="zendesk",
+        #     client_builder="ZendeskClient",
+        # )
 
     }
 
