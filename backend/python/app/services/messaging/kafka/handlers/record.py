@@ -132,7 +132,7 @@ class RecordEventHandler(BaseEventService):
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-            
+
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
