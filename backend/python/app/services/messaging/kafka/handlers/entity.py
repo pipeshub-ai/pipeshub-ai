@@ -532,7 +532,6 @@ class EntityEventService(BaseEventService):
                     "name": app_doc["name"],
                     "type": app_doc["type"],
                     "appGroup": app_doc["appGroup"],
-                    "appGroupId": app_doc["appGroupId"],
                     "isActive": False,
                     "createdAtTimestamp": app_doc["createdAtTimestamp"],
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),

@@ -106,7 +106,7 @@ class BaseGmailSyncService(ABC):
                 for user in users:
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -151,7 +151,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -165,7 +165,7 @@ class BaseGmailSyncService(ABC):
 
                     # Update state in Arango
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
 
                     # Cancel current sync task
@@ -192,7 +192,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     if not sync_state:
                         self.logger.warning("⚠️ No user found, starting fresh")
@@ -231,13 +231,13 @@ class BaseGmailSyncService(ABC):
             users = await self.arango_service.get_users(org_id=org_id)
             for user in users:
                 current_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 if current_state:
                     current_state = current_state.get("syncState")
                     if current_state == "IN_PROGRESS":
                         await self.arango_service.update_user_sync_state(
-                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                         )
                         self.logger.info("✅ Gmail sync state updated before stopping")
                         return True
@@ -911,7 +911,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 )
             except TypeError:
                 channel_history = await self.arango_service.get_channel_history_id(
-                    user_email
+                    user_email, connector_id=self.connector_id
                 )
             if not channel_history:
                 self.logger.info("No channel history found for user %s", user_email)
@@ -1113,6 +1113,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         user["email"],
                         "PAUSED",
                         service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                        connector_id=self.connector_id,
                     )
 
                 self.logger.info(
@@ -1139,6 +1140,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 channel_data["historyId"],
                                 channel_data["expiration"],
                                 user["email"],
+                                connector_id=self.connector_id,
                             )
 
                     self.logger.info(
@@ -1250,6 +1252,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     user["email"],
                     "IN_PROGRESS",
                     service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
                 # Stop checks
@@ -1261,13 +1264,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         user["email"],
                         "PAUSED",
                         service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                        connector_id=self.connector_id,
                     )
                     return False
 
                 # Initialize user service
                 self.logger.debug("Creating Gmail user service via admin for %s", user["email"])
                 user_service = await self.gmail_admin_service.create_gmail_user_service(
-                    user["email"], self.connector_id
+                    user["email"], connector_id=self.connector_id
                 )
                 if not user_service:
                     self.logger.warning(
@@ -1281,12 +1285,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 for thread in threads:
                     if thread.get("historyId"):
                         self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
-                        channel_history = await self.arango_service.get_channel_history_id(user["email"])
+                        channel_history = await self.arango_service.get_channel_history_id(user["email"], connector_id=self.connector_id)
                         if not channel_history:
                             await self.arango_service.store_channel_history_id(
                                 history_id=thread["historyId"],
                                 expiration=None,
                                 user_email=user["email"],
+                                connector_id=self.connector_id,
                             )
                         break
 
@@ -1525,6 +1530,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     user["email"],
                     "COMPLETED",
                     service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
             # Add completion handling
@@ -1534,7 +1540,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -1586,7 +1592,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_MAIL.value
+                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             account_type = await self.arango_service.get_account_type(org_id)
@@ -1597,14 +1603,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Create user service instance
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email, connector_id=self.connector_id
             )
             if not user_service:
                 self.logger.error(
                     "❌ Failed to create Gmail service for user %s", user_email
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -1620,6 +1626,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         channel_data["historyId"],
                         channel_data["expiration"],
                         user["email"],
+                        connector_id=self.connector_id,
                     )
 
                 self.logger.info(
@@ -1639,12 +1646,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             for thread in threads:
                 if thread.get("historyId"):
                     self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
-                    channel_history = await self.arango_service.get_channel_history_id(user["email"])
+                    channel_history = await self.arango_service.get_channel_history_id(user["email"], connector_id=self.connector_id)
                     if not channel_history:
                         await self.arango_service.store_channel_history_id(
                             history_id=thread["historyId"],
                             expiration=None,
                             user_email=user["email"],
+                            connector_id=self.connector_id,
                         )
                     break
 
@@ -1653,7 +1661,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             if not threads:
                 self.logger.info("No threads found for user %s", user_email)
                 await self.arango_service.update_user_sync_state(
-                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return True
 
@@ -1718,7 +1726,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         "Sync stopped during batch processing at index %s", i
                     )
                     await self.arango_service.update_user_sync_state(
-                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     return False
 
@@ -1848,14 +1856,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             self.logger.info("✅ Successfully completed sync for user %s", user_email)
             return True
 
         except Exception as e:
             await self.arango_service.update_user_sync_state(
-                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             self.logger.error("❌ Failed to sync user %s: %s", user_email, str(e))
             return False
@@ -1877,11 +1885,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 return True
 
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user["email"]
+                user["email"],
+                connector_id=self.connector_id
             )
 
             channel_history = await self.arango_service.get_channel_history_id(
-                user["email"]
+                user["email"],
+                connector_id=self.connector_id
             )
             if not channel_history:
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
@@ -1903,7 +1913,8 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     await self.arango_service.store_channel_history_id(
                         changes["historyId"],
                         channel_history["expiration"],
-                        user["email"]
+                        user["email"],
+                        connector_id=self.connector_id
                     )
                     self.logger.info(f"🚀 Updated historyId for user {user['email']}")
 
@@ -1990,7 +2001,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                             # Add type-specific fields
                             if record["recordType"] == RecordTypes.MAIL.value:
-                                gmail_user_service = await self.gmail_admin_service.create_gmail_user_service(user["email"])
+                                gmail_user_service = await self.gmail_admin_service.create_gmail_user_service(user["email"], connector_id=self.connector_id)
                                 message = await gmail_user_service.get_message(record["externalRecordId"])
                                 message_body = message.get("body", {}) if message else {}
                                 event.update({
@@ -2104,7 +2115,8 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 )
             except TypeError:
                 channel_history = await self.arango_service.get_channel_history_id(
-                    user_email
+                    user_email,
+                    connector_id=self.connector_id
                 )
             if not channel_history:
                 self.logger.info(
@@ -2199,7 +2211,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     f"Gmail sync is currently RUNNING for user {user_info['email']}. Pausing it."
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
 
             try:
@@ -2227,6 +2239,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                             channel_data["historyId"],
                             channel_data["expiration"],
                             user_info["email"],
+                            connector_id=self.connector_id,
                         )
 
                 self.logger.info(
@@ -2302,7 +2315,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             account_type = await self.arango_service.get_account_type(org_id)
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             if await self._should_stop(org_id):
@@ -2310,7 +2323,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     "Sync stopped during user %s processing", user["email"]
                 )
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -2321,7 +2334,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             if not await user_service.connect_individual_user(org_id, user["userId"]):
                 self.logger.error(f"Failed to connect Gmail service for user {user['email']}")
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -2330,12 +2343,13 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             for thread in threads:
                 if thread.get("historyId"):
                     self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
-                    channel_history = await self.arango_service.get_channel_history_id(user["email"])
+                    channel_history = await self.arango_service.get_channel_history_id(user["email"], connector_id=self.connector_id)
                     if not channel_history:
                         await self.arango_service.store_channel_history_id(
                             history_id=thread["historyId"],
                             expiration=None,
                             user_email=user["email"],
+                            connector_id=self.connector_id,
                         )
                     break
 
@@ -2347,7 +2361,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             if not threads:
                 self.logger.info(f"No threads found for user {user['email']}")
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -2409,7 +2423,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         f"Sync stopped during batch processing at index {i}"
                     )
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     return False
 
@@ -2541,7 +2555,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             self.is_completed = True
@@ -2550,7 +2564,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -2566,7 +2580,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 return False
 
             channel_history = await self.arango_service.get_channel_history_id(
-                user["email"]
+                user["email"], connector_id=self.connector_id
             )
             if not channel_history:
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
@@ -2588,7 +2602,8 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     await self.arango_service.store_channel_history_id(
                         changes["historyId"],
                         channel_history["expiration"],
-                        user["email"]
+                        user["email"],
+                        connector_id=self.connector_id
                     )
                     self.logger.info(f"🚀 Updated historyId for user {user['email']}")
 

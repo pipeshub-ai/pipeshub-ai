@@ -201,7 +201,7 @@ class BaseDriveSyncService(ABC):
                 for user in users:
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_DRIVE.value.lower()
+                        user["email"], Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
@@ -280,7 +280,7 @@ class BaseDriveSyncService(ABC):
             users = await self.arango_service.get_users(org_id=org_id)
             for user in users:
                 current_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_DRIVE.value.lower()
+                    user["email"], Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
                 if current_state:
                     current_state = current_state.get("syncState")
@@ -289,6 +289,7 @@ class BaseDriveSyncService(ABC):
                             user["email"],
                             ProgressStatus.PAUSED.value,
                             service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                            connector_id=self.connector_id,
                         )
                         self.logger.info("✅ Drive sync state updated before stopping")
                         return True
@@ -664,7 +665,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 )
             except TypeError:
                 page_token = await self.arango_service.get_page_token_db(
-                    user_email=user_email
+                    user_email=user_email, connector_id=self.connector_id
                 )
             if not page_token:
                 self.logger.warning("⚠️ No page token found for user %s", user_email)
@@ -849,6 +850,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         user["email"],
                         ProgressStatus.PAUSED.value,
                         service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                        connector_id=self.connector_id,
                     )
 
                 try:
@@ -878,6 +880,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                 user["email"],
                                 channel_data["token"],
                                 channel_data["expiration"],
+                                connector_id=self.connector_id,
                             )
 
                     self.logger.info(
@@ -993,6 +996,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     user["email"],
                     ProgressStatus.IN_PROGRESS.value,
                     service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
                 if await self._should_stop(org_id):
@@ -1003,12 +1007,13 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         user["email"],
                         ProgressStatus.PAUSED.value,
                         service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                        connector_id=self.connector_id,
                     )
                     return False
 
                 # Validate user access and get fresh token
                 user_service = await self.drive_admin_service.create_drive_user_service(
-                    user["email"], self.connector_id
+                    user["email"], connector_id=self.connector_id
                 )
                 if not user_service:
                     self.logger.warning(
@@ -1197,6 +1202,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     user["email"],
                     ProgressStatus.COMPLETED.value,
                     service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
             self.is_completed = True
@@ -1206,7 +1212,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             # Update user state to FAILED if we have a current user
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                    user["email"], ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -1258,19 +1264,19 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user_email, ProgressStatus.IN_PROGRESS.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                user_email, ProgressStatus.IN_PROGRESS.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
             )
 
             # Validate user access and get fresh token
             user_service = await self.drive_admin_service.create_drive_user_service(
-                user_email, self.connector_id
+                user_email, connector_id=self.connector_id
             )
             if not user_service:
                 self.logger.error(
                     f"❌ Failed to get drive service for user {user_email}"
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_email, ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                    user_email, ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -1296,6 +1302,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         user_email,
                         channel_data["token"],
                         channel_data["expiration"],
+                        connector_id=self.connector_id,
                     )
 
             # Initialize workers and get drive list
@@ -1319,10 +1326,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         "Sync stopped during drive %s processing", drive_id
                     )
                     await self.arango_service.update_drive_sync_state(
-                        drive_id, ProgressStatus.PAUSED.value
+                        drive_id, ProgressStatus.PAUSED.value, connector_id=self.connector_id
                     )
                     await self.arango_service.update_user_sync_state(
-                        user_email, ProgressStatus.PAUSED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                        user_email, ProgressStatus.PAUSED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                     )
                     return False
 
@@ -1373,6 +1380,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                 user_email,
                                 ProgressStatus.PAUSED.value,
                                 service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                                connector_id=self.connector_id,
                             )
                             return False
 
@@ -1480,14 +1488,14 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user_email, ProgressStatus.COMPLETED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                user_email, ProgressStatus.COMPLETED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
             )
             self.logger.info(f"✅ Successfully completed sync for user {user_email}")
             return True
 
         except Exception as e:
             await self.arango_service.update_user_sync_state(
-                user_email, ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                user_email, ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
             )
             self.logger.error(f"❌ Failed to sync user {user_email}: {str(e)}")
             return False
@@ -1511,11 +1519,11 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             self.logger.info(f"Found enterprise user {user['email']}, continuing with sync")
 
             user_service = await self.drive_admin_service.create_drive_user_service(
-                user["email"], self.connector_id
+                user["email"], connector_id=self.connector_id
             )
             self.logger.info(f"Resyncing drive for user {user['email']}")
             page_token = await self.arango_service.get_page_token_db(
-                user_email=user["email"]
+                user_email=user["email"], connector_id=self.connector_id
             )
 
             if not page_token:
@@ -1547,6 +1555,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     user_email=user["email"],
                     token=new_token,
                     expiration=page_token["expiration"],
+                    connector_id=self.connector_id,
                 )
                 self.logger.info(f"🚀 Updated token for user {user['email']}")
 
@@ -1720,7 +1729,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             # Set up watch
             user_service = self.drive_user_service
             page_token = await self.arango_service.get_page_token_db(
-                user_email=user_email
+                user_email=user_email, connector_id=self.connector_id
             )
             if not page_token:
                 self.logger.warning("⚠️ No page token found for user %s", user_email)
@@ -1793,6 +1802,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     user_info["email"],
                     ProgressStatus.PAUSED.value,
                     service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
             self.logger.info("👀 Setting up changes watch for all users...")
@@ -1822,6 +1832,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                                 user_info["email"],
                                 channel_data["token"],
                                 channel_data["expiration"],
+                                connector_id=self.connector_id,
                             )
 
                         self.logger.info(
@@ -1923,7 +1934,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user["email"], ProgressStatus.IN_PROGRESS.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                user["email"], ProgressStatus.IN_PROGRESS.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
             )
 
             if await self._should_stop(org_id):
@@ -1931,7 +1942,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     "Sync stopped during user %s processing", user["email"]
                 )
                 await self.arango_service.update_user_sync_state(
-                    user["email"], ProgressStatus.PAUSED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                    user["email"], ProgressStatus.PAUSED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -1943,7 +1954,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             except Exception as _e:
                 self.logger.error("❌ Failed to ensure Drive user connection: %s", str(_e))
                 await self.arango_service.update_user_sync_state(
-                    user["email"], ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                    user["email"], ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -1968,7 +1979,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                         "Sync stopped during drive %s processing", drive_id
                     )
                     await self.arango_service.update_drive_sync_state(
-                        drive_id, ProgressStatus.PAUSED.value
+                        drive_id, ProgressStatus.PAUSED.value, connector_id=self.connector_id
                     )
                     return False
 
@@ -2013,7 +2024,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                                 "Sync stopped during batch processing at index %s", i
                             )
                             await self.arango_service.update_drive_sync_state(
-                                drive_id, ProgressStatus.PAUSED.value
+                                drive_id, ProgressStatus.PAUSED.value, connector_id=self.connector_id
                             )
                             return False
 
@@ -2110,7 +2121,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
                     # Update drive status after completion
                     await self.arango_service.update_drive_sync_state(
-                        drive_id, "COMPLETED"
+                        drive_id, "COMPLETED", connector_id=self.connector_id
                     )
 
                 except Exception as e:
@@ -2121,7 +2132,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user["email"], ProgressStatus.COMPLETED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                user["email"], ProgressStatus.COMPLETED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
             )
 
             self.is_completed = True
@@ -2131,7 +2142,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             # Update user state to FAILED
             if user:
                 await self.arango_service.update_user_sync_state(
-                    user["email"], ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
+                    user["email"], ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -2148,7 +2159,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 self.logger.error("❌ Failed to ensure Drive user connection for %s: %s", user["email"], str(_e))
                 return False
             page_token = await self.arango_service.get_page_token_db(
-                user_email=user["email"]
+                user_email=user["email"], connector_id=self.connector_id
             )
 
             if not page_token:
@@ -2180,6 +2191,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     user_email=user["email"],
                     token=new_token,
                     expiration=page_token["expiration"],
+                    connector_id=self.connector_id,
                 )
                 self.logger.info(f"🚀 Updated token for user {user['email']}")
 
