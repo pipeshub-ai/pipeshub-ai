@@ -132,12 +132,7 @@ class RecordEventHandler(BaseEventService):
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return False
-
-            if virtual_record_id is None:
-                virtual_record_id = record.get("virtualRecordId")
+            
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -154,6 +149,13 @@ class RecordEventHandler(BaseEventService):
                 # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
                 # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return False
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
 
 
             if extension is None and mime_type != "text/gmail_content":
