@@ -1,227 +1,333 @@
-from typing import Any, Dict, Optional
+import base64
+import logging
+from typing import Any, Dict, Optional, Union
+from urllib.parse import urlencode
 
 from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.http_status_code import HttpStatusCode
 from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
+from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+
+try:
+    from docusign_esign import ApiClient  # type: ignore
+except ImportError:
+    raise ImportError("docusign_esign is not installed. Install with `pip install docusign_esign`")
 
 
 class DocuSignResponse(BaseModel):
-    """Standardized DocuSign API response wrapper"""
+    """Standardized DocuSign API response wrapper."""
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
     def to_json(self) -> str:
-        """Convert to JSON string"""
         return self.model_dump_json()
 
+# ============================================================
+# PAT Client
+# ============================================================
 
-class DocuSignRESTClientViaToken(HTTPClient):
-    """DocuSign REST client via Token ID and Token Secret
-    DocuSign uses a custom token authentication format:
-    Authorization: Token <token_id>:<token_secret>
-        base_url: The base URL of the DocuSign instance
-        token_id: The token ID from DocuSign
-        token_secret: The token secret from DocuSign
-    """
-from typing import Any, Dict, Optional
+class DocuSignRESTClientViaPAT:
+    """DocuSign client via PAT authentication (server-to-server)."""
 
-from pydantic import BaseModel  # type: ignore
+    def __init__(self, access_token: str, base_path: str = "https://demo.docusign.net/restapi") -> None:
+        self.access_token = access_token
+        self.base_path = base_path
+        self.api_client: Optional[ApiClient] = None
 
-from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
-from app.sources.client.http.http_client import HTTPClient
-from app.sources.client.iclient import IClient
+    def create_client(self) -> ApiClient:  # type: ignore[valid-type]
+        """Create DocuSign API client using PAT authentication."""
+        self.api_client = ApiClient()
+        self.api_client.set_base_path(self.base_path)
+        self.api_client.set_oauth_token(self.access_token)
+        return self.api_client
+
+    def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
+        if self.api_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        return self.api_client
+
+    def get_base_path(self) -> str:
+        return self.base_path
+
+# ============================================================
+# JWT Client
+# ============================================================
+
+class DocuSignRESTClientViaJWT:
+    """DocuSign client via JWT authentication (server-to-server)."""
+
+    def __init__(
+        self,
+        client_id: str,
+        user_id: str,
+        oauth_base_url: str = "https://account-d.docusign.com",
+        base_path: str = "https://demo.docusign.net/restapi",
+        expires_in: int = 3600,
+        private_key_data: Optional[str] = None,
+        private_key_file: Optional[str] = None,
+    ) -> None:
+        if not private_key_data and not private_key_file:
+            raise ValueError("Either private_key_data or private_key_file must be provided")
+
+        if private_key_data == "":
+            raise ValueError("private_key_data cannot be an empty string")
+
+        if "demo" in base_path:
+            logging.warning("Using DocuSign demo environment. Switch to production before go-live.")
+
+        self.client_id = client_id
+        self.user_id = user_id
+        self.oauth_base_url = oauth_base_url
+        self.base_path = base_path
+        self.expires_in = expires_in
+        self.private_key_data = private_key_data
+        self.private_key_file = private_key_file
+        self.api_client: Optional[ApiClient] = None
+
+    def create_client(self) -> ApiClient:  # type: ignore[valid-type]
+        """Create DocuSign API client using JWT authentication."""
+        try:
+            self.api_client = ApiClient()
+            self.api_client.set_base_path(self.base_path)
+
+            if self.private_key_file:
+                self.api_client.configure_jwt_authorization_flow(
+                    private_key_file=self.private_key_file,
+                    oauth_base_url=self.oauth_base_url,
+                    client_id=self.client_id,
+                    user_id=self.user_id,
+                    expires_in=self.expires_in
+                )
+            else:
+                self.api_client.configure_jwt_authorization_flow_bytes(
+                    private_key_bytes=self.private_key_data.encode(),
+                    oauth_base_url=self.oauth_base_url,
+                    client_id=self.client_id,
+                    user_id=self.user_id,
+                    expires_in=self.expires_in
+                )
+            return self.api_client
+        except Exception as e:
+            raise RuntimeError("Failed to create DocuSign JWT client") from e
+
+    def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
+        if self.api_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        return self.api_client
+
+    def get_base_path(self) -> str:
+        return self.base_path
 
 
-class DocuSignResponse(BaseModel):
-    """Standardized DocuSign API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
+# ============================================================
+# OAuth Client
+# ============================================================
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
-        return self.model_dump()
+class DocuSignRESTClientViaOAuth:
+    """DocuSign client via OAuth 2.0 (user-based applications)."""
 
-    def to_json(self) -> str:
-        """Convert to JSON string"""
-        return self.model_dump_json()
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+        oauth_base_url: str = "https://account-d.docusign.com",
+        base_path: str = "https://demo.docusign.net/restapi",
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.redirect_uri = redirect_uri
+        self.oauth_base_url = oauth_base_url
+        self.base_path = base_path
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.api_client: Optional[ApiClient] = None
+
+    def get_authorization_url(self, scopes: Optional[list[str]] = None, state: Optional[str] = None) -> str:
+        """Generate OAuth authorization URL."""
+        if scopes is None:
+            scopes = ["signature"]
+
+        params = {
+            "response_type": "code",
+            "scope": " ".join(scopes),
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri
+        }
+        if state:
+            params["state"] = state
+        return f"{self.oauth_base_url}/oauth/auth?{urlencode(params)}"
+
+    def create_client(self) -> ApiClient:  # type: ignore[valid-type]
+        """Create DocuSign API client using OAuth authentication."""
+        if not self.access_token:
+            raise RuntimeError("Access token not available. Complete OAuth flow first.")
+
+        try:
+            self.api_client = ApiClient()
+            self.api_client.set_base_path(self.base_path)
+            self.api_client.set_oauth_token(self.access_token)
+            return self.api_client
+        except Exception as e:
+            raise RuntimeError("Failed to create DocuSign OAuth client") from e
+
+    def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
+        if self.api_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        return self.api_client
+
+    def get_base_path(self) -> str:
+        return self.base_path
+
+    async def _exchange_token(self, data: dict) -> DocuSignResponse:
+        """Helper for exchanging tokens with DocuSign OAuth server."""
+        credentials = f"{self.client_id}:{self.client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+        headers = {
+            "Authorization": f"Basic {encoded_credentials}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
+        request = HTTPRequest(
+            method="POST",
+            url=f"{self.oauth_base_url}/oauth/token",
+            headers=headers,
+            body=data
+        )
+        http_client = HTTPClient(token="")
+        response = await http_client.execute(request)
+
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            return DocuSignResponse(success=False, error=f"{response.status}", message=await response.text())
+
+        token_data = await response.json()
+        self.access_token = token_data.get("access_token")
+        self.refresh_token = token_data.get("refresh_token", self.refresh_token)
+        return DocuSignResponse(success=True, data=token_data)
+
+    async def exchange_code_for_token(self, authorization_code: str) -> DocuSignResponse:
+        """Exchange authorization code for access token."""
+        data = {"grant_type": "authorization_code", "code": authorization_code, "redirect_uri": self.redirect_uri}
+        return await self._exchange_token(data)
+
+    async def refresh_access_token(self) -> DocuSignResponse:
+        """Refresh OAuth access token using refresh token."""
+        if not self.refresh_token:
+            return DocuSignResponse(success=False, error="missing_refresh_token", message="Refresh token not available")
+        data = {"grant_type": "refresh_token", "refresh_token": self.refresh_token}
+        return await self._exchange_token(data)
+
+    async def ensure_valid_token(self) -> None:
+        """Ensure the client has a valid token, refresh if needed."""
+        # NOTE: This requires token expiry tracking; here we assume caller refreshes proactively
+        if not self.access_token:
+            raise RuntimeError("No access token available; call exchange_code_for_token first.")
 
 
-class DocuSignRESTClientViaToken(HTTPClient):
-    """DocuSign REST client via Token ID and Token Secret
-    DocuSign uses a custom token authentication format:
-    Authorization: Token <token_id>:<token_secret>
-        base_url: The base URL of the DocuSign instance
-        token_id: The token ID from DocuSign
-        token_secret: The token secret from DocuSign
-    """
+# ============================================================
+# Config Models
+# ============================================================
 
-    def __init__(self, base_url: str, token_id: str, token_secret: str) -> None:
-        # Combine token_id and token_secret into DocuSign's format
-        token = f"{token_id}:{token_secret}"
-        # Initialize with the combined token and "Token" as the auth type
-        super().__init__(token, "Token")
-        self.base_url = base_url.rstrip('/')
-        self.token_id = token_id
-        self.token_secret = token_secret
+class DocuSignJWTConfig(BaseModel):
+    client_id: str
+    user_id: str
+    oauth_base_url: str = "https://account-d.docusign.com"
+    base_path: str = "https://demo.docusign.net/restapi"
+    expires_in: int = 3600
+    private_key_data: Optional[str] = None
+    private_key_file: Optional[str] = None
+    ssl: bool = True  # unused
 
-        # Add DocuSign-specific headers
-        self.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        })
+    def model_post_init(self, __context) -> None:
+        if not self.private_key_data and not self.private_key_file:
+            raise ValueError("Either private_key_data or private_key_file must be provided")
 
-    def get_base_url(self) -> str:
-        """Get the base URL"""
-        return self.base_url
+    def create_client(self) -> DocuSignRESTClientViaJWT:
+        return DocuSignRESTClientViaJWT(
+            client_id=self.client_id,
+            user_id=self.user_id,
+            oauth_base_url=self.oauth_base_url,
+            base_path=self.base_path,
+            expires_in=self.expires_in,
+            private_key_data=self.private_key_data,
+            private_key_file=self.private_key_file
+        )
 
 
-class DocuSignTokenConfig(BaseModel):
-    """Configuration for DocuSign REST client via Token
-    Args:
-        base_url: The base URL of the DocuSign instance
-        token_id: The token ID from DocuSign
-        token_secret: The token secret from DocuSign
-        ssl: Whether to use SSL (default: True)
-    """
-    base_url: str
-    token_id: str
-    token_secret: str
-    ssl: bool = True
+class DocuSignOAuthConfig(BaseModel):
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+    oauth_base_url: str = "https://account-d.docusign.com"
+    base_path: str = "https://demo.docusign.net/restapi"
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    ssl: bool = True  # unused
 
-    def create_client(self) -> DocuSignRESTClientViaToken:
-        """Create a DocuSign client"""
-        return DocuSignRESTClientViaToken(self.base_url, self.token_id, self.token_secret)
+    def create_client(self) -> DocuSignRESTClientViaOAuth:
+        return DocuSignRESTClientViaOAuth(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            redirect_uri=self.redirect_uri,
+            oauth_base_url=self.oauth_base_url,
+            base_path=self.base_path,
+            access_token=self.access_token,
+            refresh_token=self.refresh_token
+        )
 
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return self.model_dump()
+class DocuSignPATConfig(BaseModel):
+    access_token: str
+    base_path: str = "https://demo.docusign.net/restapi"
+    ssl: bool = True  # unused
 
+    def create_client(self) -> DocuSignRESTClientViaPAT:
+        return DocuSignRESTClientViaPAT(
+            access_token=self.access_token,
+            base_path=self.base_path
+        )
+
+# ============================================================
+# Builder
+# ============================================================
 
 class DocuSignClient(IClient):
-    """Builder class for DocuSign clients with different construction methods"""
+    """Builder class for DocuSign clients with multiple construction methods."""
 
-    def __init__(self, client: DocuSignRESTClientViaToken) -> None:
-        """Initialize with a DocuSign client object"""
+    def __init__(self, client: Union[DocuSignRESTClientViaJWT, DocuSignRESTClientViaOAuth, DocuSignRESTClientViaPAT]) -> None:
         self.client = client
 
-    def get_client(self) -> DocuSignRESTClientViaToken:
-        """Return the DocuSign client object"""
+    def get_client(self) -> Union[DocuSignRESTClientViaJWT, DocuSignRESTClientViaOAuth, DocuSignRESTClientViaPAT]:
         return self.client
 
-    def get_base_url(self) -> str:
-        """Get the base URL"""
-        return self.client.get_base_url()
-    def __init__(self, base_url: str, token_id: str, token_secret: str) -> None:
-        # Combine token_id and token_secret into DocuSign's format
-        token = f"{token_id}:{token_secret}"
-        # Initialize with the combined token and "Token" as the auth type
-        super().__init__(token, "Token")
-        self.base_url = base_url.rstrip('/')
-        self.token_id = token_id
-        self.token_secret = token_secret
+    def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
+        return self.client.get_api_client()
 
-        # Add DocuSign-specific headers
-        self.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        })
-
-    def get_base_url(self) -> str:
-        """Get the base URL"""
-        return self.base_url
-
-
-class DocuSignTokenConfig(BaseModel):
-    """Configuration for DocuSign REST client via Token
-    Args:
-        base_url: The base URL of the DocuSign instance
-        token_id: The token ID from DocuSign
-        token_secret: The token secret from DocuSign
-        ssl: Whether to use SSL (default: True)
-    """
-    base_url: str
-    token_id: str
-    token_secret: str
-    ssl: bool = True
-
-    def create_client(self) -> DocuSignRESTClientViaToken:
-        """Create a DocuSign client"""
-        return DocuSignRESTClientViaToken(self.base_url, self.token_id, self.token_secret)
-
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return self.model_dump()
-
-
-class DocuSignClient(IClient):
-    """Builder class for DocuSign clients with different construction methods"""
-
-    def __init__(self, client: DocuSignRESTClientViaToken) -> None:
-        """Initialize with a DocuSign client object"""
-        self.client = client
-
-    def get_client(self) -> DocuSignRESTClientViaToken:
-        """Return the DocuSign client object"""
-        return self.client
-
-    def get_base_url(self) -> str:
-        """Get the base URL"""
-        return self.client.get_base_url()
+    def get_base_path(self) -> str:
+        return self.client.get_base_path()
 
     @classmethod
-    def build_with_config(cls, config: DocuSignTokenConfig) -> "DocuSignClient":
-        """Build DocuSignClient with configuration
-    def build_with_config(cls, config: DocuSignTokenConfig) -> "DocuSignClient":
-        """Build DocuSignClient with configuration
-        Args:
-            config: DocuSignTokenConfig instance
-            config: DocuSignTokenConfig instance
-        Returns:
-            DocuSignClient instance
-        """
-        return cls(config.create_client())
+    def build_with_config(cls, config: Union[DocuSignJWTConfig, DocuSignOAuthConfig, DocuSignPATConfig]) -> "DocuSignClient":
+        client = config.create_client()
+        return cls(client=client)
 
     @classmethod
-    async def build_from_services(
+    def build_from_services(
         cls,
+        logger: logging.Logger,
         config_service: ConfigurationService,
         graph_db_service: IGraphService,
     ) -> "DocuSignClient":
-        """Build DocuSignClient using configuration service and graph database service
-            config_service: Configuration service instance
-            graph_db_service: Graph database service instance
-            DocuSignClient instance
-        """
-        return cls(config.create_client())
-
-    @classmethod
-    async def build_from_services(
-        cls,
-        config_service: ConfigurationService,
-        graph_db_service: IGraphService,
-    ) -> "DocuSignClient":
-        """Build DocuSignClient using configuration service and graph database service
-            config_service: Configuration service instance
-            graph_db_service: Graph database service instance
-        Returns:
-            DocuSignClient instance
-        """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored DocuSign credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
-
-        raise NotImplementedError("build_from_services is not yet implemented")
+        logger.warning("DocuSignClient.build_from_services not yet implemented")
+        raise NotImplementedError("Implement build_from_services with actual services")

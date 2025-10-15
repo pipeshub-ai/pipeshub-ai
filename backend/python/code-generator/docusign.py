@@ -1,1693 +1,2185 @@
-# ruff: noqa
+#!/usr/bin/env python3
 """
-DocuSign API DataSource Generator
+DocuSign Complete API Code Generator
 
-This script generates a comprehensive DocuSign datasource class that covers ALL
-DocuSign API endpoints including:
-- eSignature API (envelopes, documents, templates, recipients, etc.)
-- Rooms API (rooms, forms, office, field data, etc.)
-- Click API (clickwraps, agreements, etc.)
-- Admin API (users, groups, accounts, etc.)
-- Monitor API (monitoring data, status, etc.)
+Generates a comprehensive DocuSignDataSource class covering all DocuSign APIs:
+- eSignature REST API v2.1 (Business & Personal)  
+- Admin API v2.1 (Organization management)
+- Rooms API v2 (Real estate transactions)
+- Click API v1 (Clickwrap agreements)
+- Maestro API v1 (Workflow orchestration)
+- WebForms API v1.1 (Form management)
+- Navigator API (Agreement analytics)
+- Monitor API v2 (Security events)
 
-The generated class accepts a DocuSignClient and uses explicit type hints
-for all parameters (no Any types allowed).
+The generator creates methods with explicit parameter typing, proper headers,
+and standardized error handling. All parameters match DocuSign's official
+SDK specifications exactly.
 """
 
-import argparse
-import keyword
+from typing import Dict, List, Optional, Any, Union, Literal
+import json
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set, Optional, Union, Any
 
-# ============================================================================
-# DOCUSIGN API ENDPOINT DEFINITIONS
-# ============================================================================
 
-DOCUSIGN_API_ENDPOINTS = {
-    # ========================================================================
-    # AUTHENTICATION API
-    # ========================================================================
-    'get_user_info': {
+@dataclass
+class DocuSignAPIOperation:
+    """Represents a single DocuSign API operation."""
+    operation_id: str
+    method: str  # GET, POST, PUT, DELETE, PATCH
+    path: str
+    summary: str
+    description: str
+    parameters: List[Dict[str, Any]]
+    request_body: Optional[Dict[str, Any]]
+    responses: Dict[str, Any]
+    tags: List[str]
+    api_category: str  # esignature, admin, rooms, etc.
+    security: List[Dict[str, Any]]
+    headers: Dict[str, str]
+
+
+# Complete DocuSign API Operations Database
+# Based on official OpenAPI specifications from github.com/docusign/OpenAPI-Specifications
+DOCUSIGN_API_OPERATIONS = {
+    
+    # ================================================================================
+    # ESIGNATURE REST API v2.1 - CORE BUSINESS & PERSONAL FUNCTIONALITY
+    # ================================================================================
+    
+    # ACCOUNTS OPERATIONS
+    'accounts_get_account': {
         'method': 'GET',
-        'path': '/oauth/userinfo',
-        'description': 'Retrieves information about the authenticated user',
-        'parameters': {},
-        'required': []
+        'path': '/v2.1/accounts/{accountId}',
+        'summary': 'Retrieves the account information for a single account.',
+        'description': 'Gets account settings and information for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'include_account_settings': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, includes account settings in the response.'}
+        },
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Accounts']
     },
-
-    # ========================================================================
-    # ESIGNATURE - ACCOUNTS API
-    # ========================================================================
-    'list_accounts': {
-        'method': 'GET',
+    
+    'accounts_create_account': {
+        'method': 'POST', 
         'path': '/v2.1/accounts',
-        'description': 'Gets account information for the authenticated user',
+        'summary': 'Creates new DocuSign account.',
+        'description': 'Creates a new DocuSign account. Only available in the Developer environment.',
         'parameters': {
-            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter results by email address'},
-            'include_closed': {'type': 'Optional[str]', 'location': 'query', 'description': 'When set to true, includes closed accounts'},
+            'preview_billing_plan': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, returns billing plan information.'}
         },
-        'required': []
-    },
-    
-    'get_account_information': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}',
-        'description': 'Retrieves the account information for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'}
+        'request_body': {
+            'accountName': {'type': 'str', 'required': True, 'description': 'The account name.'},
+            'accountSettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Account settings.'},
+            'addressInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Account address information.'},
+            'creditCardInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Credit card information.'},
+            'distributorCode': {'type': 'Optional[str]', 'description': 'The distributor code.'},
+            'distributorPassword': {'type': 'Optional[str]', 'description': 'The distributor password.'},
+            'initialUser': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Initial user information.'},
+            'planInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Plan information.'},
+            'referralInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Referral information.'},
+            'socialAccountInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Social account information.'}
         },
-        'required': ['account_id']
-    },
-    
-    'update_account_settings': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/settings',
-        'description': 'Updates account settings for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'access_code_format': {'type': 'Optional[Dict[str, Union[str, bool, int]]]', 'location': 'body', 'description': 'Access code format settings'},
-            'account_settings': {'type': 'Optional[Dict[str, Union[str, bool, int]]]', 'location': 'body', 'description': 'Account settings'},
-            'adoption_settings': {'type': 'Optional[Dict[str, Union[str, bool, int]]]', 'location': 'body', 'description': 'Adoption settings'},
-            'advanced_correct_settings': {'type': 'Optional[Dict[str, Union[str, bool, int]]]', 'location': 'body', 'description': 'Advanced correct settings'},
-            'allow_bulk_send': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Allow bulk sending'},
-            # Additional settings parameters would be included here
-        },
-        'required': ['account_id']
-    },
-    
-    'get_account_settings': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/settings',
-        'description': 'Gets account settings information for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'}
-        },
-        'required': ['account_id']
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Accounts']
     },
 
-    # ========================================================================
-    # ESIGNATURE - ENVELOPES API
-    # ========================================================================
-    'create_envelope': {
+    'accounts_get_account_settings': {
+        'method': 'GET',
+        'path': '/v2.1/accounts/{accountId}/settings',
+        'summary': 'Gets account settings information.',
+        'description': 'Retrieves the account settings for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Accounts']
+    },
+
+    'accounts_update_account_settings': {
+        'method': 'PUT',
+        'path': '/v2.1/accounts/{accountId}/settings',
+        'summary': 'Updates the account settings for the specified account.',
+        'description': 'Updates account settings for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'}
+        },
+        'request_body': {
+            'accountSettings': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Contains account settings information.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Accounts']
+    },
+
+    # ENVELOPES OPERATIONS - CORE ESIGNATURE FUNCTIONALITY
+    'envelopes_create_envelope': {
         'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/envelopes',
-        'description': 'Creates an envelope or a draft envelope',
+        'path': '/v2.1/accounts/{accountId}/envelopes',
+        'summary': 'Creates an envelope.',
+        'description': 'Creates and sends an envelope or creates a draft envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'documents': {'type': 'List[Dict[str, Union[str, int, bytes]]]', 'location': 'body', 'description': 'Array of documents to include in the envelope'},
-            'email_subject': {'type': 'Optional[str]', 'location': 'body', 'description': 'Subject line of the email message sent to all recipients'},
-            'email_blurb': {'type': 'Optional[str]', 'location': 'body', 'description': 'Email message sent to all recipients'},
-            'status': {'type': 'Optional[str]', 'location': 'body', 'description': 'Envelope status: sent, created, or draft'},
-            'recipients': {'type': 'Optional[Dict[str, List[Dict[str, Union[str, int]]]]]', 'location': 'body', 'description': 'Recipient information'},
-            'custom_fields': {'type': 'Optional[Dict[str, List[Dict[str, str]]]]', 'location': 'body', 'description': 'Custom fields'},
-            'notification_uri': {'type': 'Optional[str]', 'location': 'body', 'description': 'Notification URI for envelope events'},
-            'event_notification': {'type': 'Optional[Dict[str, Union[str, List]]]', 'location': 'body', 'description': 'Event notification settings'},
-            'cdse_mode': {'type': 'Optional[str]', 'location': 'query', 'description': 'Client Data Set Encryption mode'},
-            'change_routing_order': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Change routing order'},
-            'completed_documents_only': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Only return completed documents'},
-            'merge_roles_on_draft': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Merge roles on draft'},
-            'template_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Template ID to use for this envelope'},
-            'template_roles': {'type': 'Optional[List[Dict[str, str]]]', 'location': 'body', 'description': 'Template roles to use'},
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'cdse_mode': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'completed_documents_only': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'merge_roles_on_draft': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, template roles are merged.'}
         },
-        'required': ['account_id']
+        'request_body': {
+            'allowMarkup': {'type': 'Optional[bool]', 'description': 'When true, Document Markup is enabled.'},
+            'allowReassign': {'type': 'Optional[bool]', 'description': 'When true, the recipient can redirect envelope to another recipient.'},
+            'allowViewHistory': {'type': 'Optional[bool]', 'description': 'When true, the recipient can view envelope history.'},
+            'asynchronous': {'type': 'Optional[bool]', 'description': 'When true, envelope is queued for processing.'},
+            'attachmentsUri': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'authoritativeCopy': {'type': 'Optional[bool]', 'description': 'Specifies whether the envelope is an authoritative copy.'},
+            'autoNavigation': {'type': 'Optional[bool]', 'description': 'When true, auto-navigation is enabled.'},
+            'brandId': {'type': 'Optional[str]', 'description': 'The unique identifier of the brand.'},
+            'brandLock': {'type': 'Optional[bool]', 'description': 'When true, the brand is locked.'},
+            'burnDefaultTabData': {'type': 'Optional[bool]', 'description': 'When true, default tab data is burned into documents.'},
+            'certificateUri': {'type': 'Optional[str]', 'description': 'Retrieval URI for the envelope certificate.'},
+            'completedDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope was completed.'},
+            'compositeTemplates': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Zero or more composite templates.'},
+            'customFields': {'type': 'Optional[Dict[str, Any]]', 'description': 'Custom fields for the envelope.'},
+            'customFieldsUri': {'type': 'Optional[str]', 'description': 'Contains a URI for retrieving custom fields.'},
+            'declinedDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope was declined.'},
+            'deletedDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope was deleted.'},
+            'deliveredDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope was delivered.'},
+            'documents': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of document objects.'},
+            'documentsUri': {'type': 'Optional[str]', 'description': 'Contains a URI for retrieving envelope documents.'},
+            'emailBlurb': {'type': 'Optional[str]', 'description': 'The subject line of the email message sent to recipients.'},
+            'emailSettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Email settings for the envelope.'},
+            'emailSubject': {'type': 'Optional[str]', 'description': 'The subject line of the email message.'},
+            'enableWetSign': {'type': 'Optional[bool]', 'description': 'When true, enables wet signing.'},
+            'enforceSignerVisibility': {'type': 'Optional[bool]', 'description': 'When true, enforces signer visibility.'},
+            'envelopeAttachments': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of envelope attachments.'},
+            'envelopeCustomMetadata': {'type': 'Optional[Dict[str, Any]]', 'description': 'Custom metadata for envelope.'},
+            'envelopeDocuments': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of envelope documents.'},
+            'envelopeId': {'type': 'Optional[str]', 'description': 'The envelope ID.'},
+            'envelopeIdStamping': {'type': 'Optional[bool]', 'description': 'When true, envelope ID is stamped.'},
+            'envelopeLocation': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'envelopeMetadata': {'type': 'Optional[Dict[str, Any]]', 'description': 'Metadata for the envelope.'},
+            'envelopeUri': {'type': 'Optional[str]', 'description': 'Contains a URI for retrieving the envelope.'},
+            'eventNotifications': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of event notifications.'},
+            'expireAfter': {'type': 'Optional[int]', 'description': 'Number of days envelope is active.'},
+            'expireDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope expires.'},
+            'expireEnabled': {'type': 'Optional[bool]', 'description': 'When true, envelope expires.'},
+            'externalEnvelopeId': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'favoritedByMe': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'folderId': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'folderIds': {'type': 'Optional[List[str]]', 'description': 'Reserved for DocuSign.'},
+            'folderName': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'folders': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Reserved for DocuSign.'},
+            'hasComments': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'hasFormDataChanged': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'hasWavFile': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'holder': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'initialSentDateTime': {'type': 'Optional[str]', 'description': 'The date and time envelope was initially sent.'},
+            'is21CFRPart11': {'type': 'Optional[bool]', 'description': 'When true, envelope is 21 CFR Part 11 compliant.'},
+            'isDynamicEnvelope': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'isSignatureProviderEnvelope': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'lastModifiedDateTime': {'type': 'Optional[str]', 'description': 'The date and time envelope was last modified.'},
+            'location': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'lockInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Lock information for the envelope.'},
+            'messageLock': {'type': 'Optional[bool]', 'description': 'When true, prevents envelope message changes.'},
+            'notification': {'type': 'Optional[Dict[str, Any]]', 'description': 'Notification settings.'},
+            'notificationUri': {'type': 'Optional[str]', 'description': 'Contains a URI for retrieving notifications.'},
+            'powerForm': {'type': 'Optional[Dict[str, Any]]', 'description': 'Information about the powerform.'},
+            'purgeCompletedDate': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'purgeRequestDate': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'purgeState': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'recipients': {'type': 'Optional[Dict[str, Any]]', 'description': 'Array of recipient objects.'},
+            'recipientsLock': {'type': 'Optional[bool]', 'description': 'When true, prevents envelope recipient changes.'},
+            'recipientsUri': {'type': 'Optional[str]', 'description': 'Contains a URI for retrieving recipients.'},
+            'recipientViewRequest': {'type': 'Optional[Dict[str, Any]]', 'description': 'Reserved for DocuSign.'},
+            'sender': {'type': 'Optional[Dict[str, Any]]', 'description': 'Information about the envelope sender.'},
+            'sentDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope was sent.'},
+            'signerCanSignOnMobile': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'signingLocation': {'type': 'Optional[str]', 'description': 'Specifies the signing location.'},
+            'status': {'type': 'Optional[str]', 'description': 'Envelope status.'},
+            'statusChangedDateTime': {'type': 'Optional[str]', 'description': 'The date and time envelope status changed.'},
+            'statusDateTime': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'templatesUri': {'type': 'Optional[str]', 'description': 'Contains a URI for retrieving templates.'},
+            'transactionId': {'type': 'Optional[str]', 'description': 'Used to identify envelope in DocuSign Connect.'},
+            'useDisclosure': {'type': 'Optional[bool]', 'description': 'When true, enables the Consumer Disclosure feature.'},
+            'voidedDateTime': {'type': 'Optional[str]', 'description': 'The date and time the envelope was voided.'},
+            'voidedReason': {'type': 'Optional[str]', 'description': 'The reason the envelope was voided.'},
+            'workflow': {'type': 'Optional[Dict[str, Any]]', 'description': 'Workflow information for the envelope.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Envelopes']
     },
 
-    'get_envelope': {
+    'envelopes_get_envelope': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}',
-        'description': 'Gets the status of the specified envelope',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}',
+        'summary': 'Gets the status of a single envelope.',
+        'description': 'Retrieves the overall status for the specified envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope status that you want to get'},
-            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Additional information to include in response'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'advanced_update': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies additional information to return.'}
         },
-        'required': ['account_id', 'envelope_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Envelopes']
     },
 
-    'list_envelopes': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/envelopes',
-        'description': 'Gets the status of all envelopes in the account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the date range. Format: MM/DD/YYYY'},
-            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the date range. Format: MM/DD/YYYY'},
-            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Status of the envelopes to return'},
-            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Email address filter'},
-            'envelope_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Comma-separated list of envelope IDs to return'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start position for pagination'},
-            'count': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return in the cache'}
-        },
-        'required': ['account_id']
-    },
-
-    'update_envelope': {
+    'envelopes_update_envelope': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}',
-        'description': 'Updates the specified envelope',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}',
+        'summary': 'Send, void, or modify a draft envelope.',
+        'description': 'Updates envelope information for the specified envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID'},
-            'advanced_update': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, allows the caller to update recipients, tabs, custom fields, notification, email settings and other settings'},
-            'email_subject': {'type': 'Optional[str]', 'location': 'body', 'description': 'Subject line of the email message sent to all recipients'},
-            'email_blurb': {'type': 'Optional[str]', 'location': 'body', 'description': 'Email message sent to all recipients'},
-            'status': {'type': 'Optional[str]', 'location': 'body', 'description': 'Status to set the envelope to'},
-            'recipients': {'type': 'Optional[Dict[str, List[Dict[str, Union[str, int]]]]]', 'location': 'body', 'description': 'Recipient information'},
-            'custom_fields': {'type': 'Optional[Dict[str, List[Dict[str, str]]]]', 'location': 'body', 'description': 'Custom fields'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'advanced_update': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'resend_envelope': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, resends the envelope.'}
         },
-        'required': ['account_id', 'envelope_id']
+        'request_body': {
+            'status': {'type': 'Optional[str]', 'description': 'Envelope status.'},
+            'voidedReason': {'type': 'Optional[str]', 'description': 'The reason for voiding the envelope.'},
+            'emailBlurb': {'type': 'Optional[str]', 'description': 'The subject line of the email message.'},
+            'emailSubject': {'type': 'Optional[str]', 'description': 'The subject line of the email message.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Envelopes']
     },
 
-    'delete_envelope': {
+    'envelopes_list_envelopes': {
+        'method': 'GET',
+        'path': '/v2.1/accounts/{accountId}/envelopes',
+        'summary': 'Gets status changes for one or more envelopes.',
+        'description': 'Retrieves envelope status changes for all envelopes.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'ac_status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the AC status to filter by.'},
+            'block': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'},
+            'custom_field': {'type': 'Optional[str]', 'location': 'query', 'description': 'Custom field to filter by.'},
+            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Email address to filter by.'},
+            'envelope_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Comma separated list of envelope IDs.'},
+            'exclude': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the envelope information to exclude.'},
+            'folder_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'folder_types': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start of date range for envelope status changes.'},
+            'from_to_status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Envelope status filter.'},
+            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the envelope information to include.'},
+            'include_purge_information': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'intersecting_folder_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'last_queried_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'order': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the sort order.'},
+            'order_by': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the field to sort by.'},
+            'powerformids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'query_budget': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'requester_date_format': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'search_text': {'type': 'Optional[str]', 'location': 'query', 'description': 'Text to search for in the envelope.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Envelope status to filter by.'},
+            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End of date range for envelope status changes.'},
+            'transaction_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'user_filter': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter by user.'},
+            'user_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'User ID to filter by.'},
+            'user_name': {'type': 'Optional[str]', 'location': 'query', 'description': 'User name to filter by.'}
+        },
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Envelopes']
+    },
+
+    'envelopes_delete_envelope': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}',
-        'description': 'Deletes the specified draft envelope',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}',
+        'summary': 'Deletes a draft envelope.',
+        'description': 'Deletes the specified draft envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope to be deleted'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'}
         },
-        'required': ['account_id', 'envelope_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Envelopes']
     },
 
-    'list_documents': {
+    # ENVELOPE RECIPIENTS OPERATIONS
+    'envelope_recipients_list': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/documents',
-        'description': 'Gets a list of documents in the specified envelope',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/recipients',
+        'summary': 'Gets the status of recipients for an envelope.',
+        'description': 'Retrieves the status of all recipients in the specified envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'include_metadata': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, the response includes metadata indicating which user can modify the document'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'include_anchor_tab_locations': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include_extended': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include_metadata': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include_tabs': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, includes tab information.'}
         },
-        'required': ['account_id', 'envelope_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeRecipients']
     },
 
-    'get_document': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/documents/{document_id}',
-        'description': 'Gets a document from the specified envelope',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'document_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the document being accessed'},
-            'certificate': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, returns additional certificate information'},
-            'encoding': {'type': 'Optional[str]', 'location': 'query', 'description': 'The encoding format to use for the retrieved document'},
-            'encrypt': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, the PDF bytes returned are encrypted for all the key managers configured on your DocuSign account'},
-            'language': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the language for the Certificate of Completion in the response'},
-            'show_changes': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, any changed fields for the returned PDF are highlighted in yellow and optional signatures or initials outlined in red'},
-            'watermark': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, the account has the watermark feature enabled, and the envelope is not complete, the watermark for the account is added to the PDF documents'}
-        },
-        'required': ['account_id', 'envelope_id', 'document_id']
-    },
-
-    'add_document': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/documents/{document_id}',
-        'description': 'Adds or replaces a document in an existing envelope',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'document_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the document being accessed'},
-            'file_extension': {'type': 'Optional[str]', 'location': 'query', 'description': 'The file extension type of the document'},
-            'document_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The name of the document'},
-            'document_bytes': {'type': 'bytes', 'location': 'file', 'description': 'The document content in bytes'},
-        },
-        'required': ['account_id', 'envelope_id', 'document_id', 'document_bytes']
-    },
-
-    'delete_document': {
-        'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/documents/{document_id}',
-        'description': 'Deletes a document from a draft envelope',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'document_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the document being accessed'}
-        },
-        'required': ['account_id', 'envelope_id', 'document_id']
-    },
-
-    # ========================================================================
-    # ESIGNATURE - RECIPIENTS API
-    # ========================================================================
-    'list_recipients': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/recipients',
-        'description': 'Gets the status of recipients for an envelope',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'include_anchor_tab_locations': {'type': 'Optional[str]', 'location': 'query', 'description': 'When set to true, all tabs with anchor strings are included in the response'},
-            'include_extended': {'type': 'Optional[str]', 'location': 'query', 'description': 'When set to true, extended properties are included in the response'}
-        },
-        'required': ['account_id', 'envelope_id']
-    },
-
-    'update_recipients': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/recipients',
-        'description': 'Updates recipients in a draft envelope or corrects recipient information for an in-process envelope',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'resend_envelope': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When set to true, resends the envelope if the new recipients routing order is before or the same as the envelopes next recipient'},
-            'signers': {'type': 'Optional[List[Dict[str, Union[str, int]]]]', 'location': 'body', 'description': 'A complex type containing information about the Signers of the document'},
-            'carbon_copies': {'type': 'Optional[List[Dict[str, Union[str, int]]]]', 'location': 'body', 'description': 'A complex type containing information about the carbon copy recipients for the envelope'},
-            'certified_deliveries': {'type': 'Optional[List[Dict[str, Union[str, int]]]]', 'location': 'body', 'description': 'A complex type containing information about the recipients who should receive a copy of the envelope'},
-            'editors': {'type': 'Optional[List[Dict[str, Union[str, int]]]]', 'location': 'body', 'description': 'A complex type defining the management and access rights of a recipient assigned editor privileges'}
-        },
-        'required': ['account_id', 'envelope_id']
-    },
-
-    'delete_recipient': {
-        'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/envelopes/{envelope_id}/recipients/{recipient_id}',
-        'description': 'Deletes a recipient from a draft envelope or voided envelope',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'envelope_id': {'type': 'str', 'location': 'path', 'description': 'The envelope ID of the envelope being accessed'},
-            'recipient_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the recipient being accessed'}
-        },
-        'required': ['account_id', 'envelope_id', 'recipient_id']
-    },
-
-    # ========================================================================
-    # ESIGNATURE - TEMPLATES API
-    # ========================================================================
-    'list_templates': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/templates',
-        'description': 'Gets the list of templates for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'count': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return in the cache'},
-            'folder_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'A comma-separated list of folder ID GUIDs'},
-            'folder_types': {'type': 'Optional[str]', 'location': 'query', 'description': 'A comma-separated list of folder types'},
-            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the date range filter'},
-            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Additional information to include in the response'},
-            'order': {'type': 'Optional[str]', 'location': 'query', 'description': 'Sets the direction order used to sort the list'},
-            'order_by': {'type': 'Optional[str]', 'location': 'query', 'description': 'Sets the file attribute used to sort the list'},
-            'search_text': {'type': 'Optional[str]', 'location': 'query', 'description': 'The search text used to search template names'},
-            'shared_by_me': {'type': 'Optional[str]', 'location': 'query', 'description': 'If true, the response only includes templates shared by the user'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Position of the template items to begin the list'},
-            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the date range filter'},
-            'used_from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the template used date range filter'},
-            'used_to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the template used date range filter'},
-            'user_filter': {'type': 'Optional[str]', 'location': 'query', 'description': 'Sets if the templates shown in the response valid for the user'}
-        },
-        'required': ['account_id']
-    },
-
-    'create_template': {
+    'envelope_recipients_create': {
         'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/templates',
-        'description': 'Creates a template definition',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/recipients',
+        'summary': 'Adds one or more recipients to an envelope.',
+        'description': 'Adds one or more recipients to an envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'documents': {'type': 'List[Dict[str, Union[str, int, bytes]]]', 'location': 'body', 'description': 'Array of documents to include in the template'},
-            'email_subject': {'type': 'Optional[str]', 'location': 'body', 'description': 'Subject line of the email message sent to all recipients'},
-            'email_blurb': {'type': 'Optional[str]', 'location': 'body', 'description': 'Email message sent to all recipients'},
-            'name': {'type': 'str', 'location': 'body', 'description': 'Name of the template'},
-            'description': {'type': 'Optional[str]', 'location': 'body', 'description': 'Description of the template'},
-            'recipients': {'type': 'Optional[Dict[str, List[Dict[str, Union[str, int]]]]]', 'location': 'body', 'description': 'Recipient information'},
-            'folder_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'Name of the folder where the template is stored'},
-            'folder_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'ID of the folder where the template is stored'},
-            'shared': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, this template is shared with the Everyone group in the account'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'resend_envelope': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, resends the envelope.'}
         },
-        'required': ['account_id', 'name', 'documents']
+        'request_body': {
+            'agents': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of agent recipients.'},
+            'carbonCopies': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of carbon copy recipients.'},
+            'certifiedDeliveries': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of certified delivery recipients.'},
+            'currentRoutingOrder': {'type': 'Optional[int]', 'description': 'Current routing order.'},
+            'editors': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of editor recipients.'},
+            'errorDetails': {'type': 'Optional[Dict[str, Any]]', 'description': 'Array of error details.'},
+            'inPersonSigners': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of in-person signer recipients.'},
+            'intermediaries': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of intermediary recipients.'},
+            'notaries': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of notary recipients.'},
+            'recipientCount': {'type': 'Optional[int]', 'description': 'The number of recipients.'},
+            'seals': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of seal recipients.'},
+            'signers': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of signer recipients.'},
+            'witnesses': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of witness recipients.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeRecipients']
     },
 
-    'get_template': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/templates/{template_id}',
-        'description': 'Gets a template definition',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'template_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the template being accessed'},
-            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Additional template data to include in the response'}
-        },
-        'required': ['account_id', 'template_id']
-    },
-
-    'update_template': {
+    'envelope_recipients_update': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/templates/{template_id}',
-        'description': 'Updates an existing template',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/recipients',
+        'summary': 'Updates recipients in a draft envelope or corrects recipient information for an in-process envelope.',
+        'description': 'Updates recipients for the specified envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'template_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the template being accessed'},
-            'documents': {'type': 'Optional[List[Dict[str, Union[str, int, bytes]]]]', 'location': 'body', 'description': 'Array of documents to include in the template'},
-            'email_subject': {'type': 'Optional[str]', 'location': 'body', 'description': 'Subject line of the email message sent to all recipients'},
-            'email_blurb': {'type': 'Optional[str]', 'location': 'body', 'description': 'Email message sent to all recipients'},
-            'name': {'type': 'Optional[str]', 'location': 'body', 'description': 'Name of the template'},
-            'description': {'type': 'Optional[str]', 'location': 'body', 'description': 'Description of the template'},
-            'recipients': {'type': 'Optional[Dict[str, List[Dict[str, Union[str, int]]]]]', 'location': 'body', 'description': 'Recipient information'},
-            'shared': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, this template is shared with the Everyone group in the account'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'combine_same_order_recipients': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'offline_signing': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'resend_envelope': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, resends the envelope.'}
         },
-        'required': ['account_id', 'template_id']
+        'request_body': {
+            'agents': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of agent recipients.'},
+            'carbonCopies': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of carbon copy recipients.'},
+            'certifiedDeliveries': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of certified delivery recipients.'},
+            'currentRoutingOrder': {'type': 'Optional[int]', 'description': 'Current routing order.'},
+            'editors': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of editor recipients.'},
+            'errorDetails': {'type': 'Optional[Dict[str, Any]]', 'description': 'Array of error details.'},
+            'inPersonSigners': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of in-person signer recipients.'},
+            'intermediaries': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of intermediary recipients.'},
+            'notaries': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of notary recipients.'},
+            'recipientCount': {'type': 'Optional[int]', 'description': 'The number of recipients.'},
+            'seals': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of seal recipients.'},
+            'signers': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of signer recipients.'},
+            'witnesses': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of witness recipients.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeRecipients']
     },
 
-    'delete_template': {
+    'envelope_recipients_delete': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/templates/{template_id}',
-        'description': 'Deletes the specified template',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/recipients',
+        'summary': 'Deletes recipients from a draft envelope.',
+        'description': 'Deletes one or more recipients from the specified envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'template_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the template being accessed'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'}
         },
-        'required': ['account_id', 'template_id']
+        'request_body': {
+            'recipientIds': {'type': 'List[str]', 'required': True, 'description': 'Array of recipient IDs to delete.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeRecipients']
     },
 
-    # ========================================================================
-    # ESIGNATURE - USERS API
-    # ========================================================================
-    'list_users': {
+    # ENVELOPE DOCUMENTS OPERATIONS
+    'envelope_documents_list': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/users',
-        'description': 'Retrieves the list of users for the specified account',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/documents',
+        'summary': 'Gets a list of envelope documents.',
+        'description': 'Retrieves a list of documents associated with the specified envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'additional_info': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, the full list of user information is returned for all users in the account'},
-            'count': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return in the cache'},
-            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by email address'},
-            'email_substring': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by email address substring'},
-            'group_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by the ID of the group to which they belong'},
-            'include_closed': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by closed status'},
-            'include_usersettings_for_csv': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, user settings for CSV are included'},
-            'login_status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by login status'},
-            'not_group_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by excluding those who belong to the specified group'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Position of the user records to begin the list'},
-            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter users by status'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'documents_by_userid': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include_document_size': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'}
         },
-        'required': ['account_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeDocuments']
     },
 
-    'create_user': {
-        'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/users',
-        'description': 'Creates one or more new users for the account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'new_users': {'type': 'List[Dict[str, Union[str, int, bool, List, Dict]]]', 'location': 'body', 'description': 'Array of user objects to be created'},
-        },
-        'required': ['account_id', 'new_users']
-    },
-
-    'get_user': {
+    'envelope_documents_get': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/users/{user_id}',
-        'description': 'Gets the user information for the specified user',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/documents/{documentId}',
+        'summary': 'Gets a document from an envelope.',
+        'description': 'Retrieves the specified document from the envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'user_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the user being accessed'},
-            'additional_info': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, the full list of user information is returned'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'documentId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The document ID.'},
+            'certificate': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'documents_by_userid': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'encoding': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'encrypt': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'language': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'recipient_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'shared_user_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'show_changes': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'watermark': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'}
         },
-        'required': ['account_id', 'user_id']
+        'headers': {'Accept': 'application/pdf'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeDocuments']
     },
 
-    'update_user': {
+    'envelope_documents_put': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/users/{user_id}',
-        'description': 'Updates the specified user information',
+        'path': '/v2.1/accounts/{accountId}/envelopes/{envelopeId}/documents/{documentId}',
+        'summary': 'Adds a document to a draft envelope.',
+        'description': 'Adds a document to the specified draft envelope.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'user_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the user being accessed'},
-            'email': {'type': 'Optional[str]', 'location': 'body', 'description': 'The email address for the user'},
-            'user_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The user name associated with the account'},
-            'first_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The first name of the user'},
-            'last_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The last name of the user'},
-            'company_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The company name for the user'},
-            'job_title': {'type': 'Optional[str]', 'location': 'body', 'description': 'The job title of the user'},
-            'permission_profile_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'The ID of the permission profile associated with the user'},
-            'groups': {'type': 'Optional[List[Dict[str, str]]]', 'location': 'body', 'description': 'A list of group information associated with the user'},
-            'user_settings': {'type': 'Optional[Dict[str, Union[str, bool]]]', 'location': 'body', 'description': 'User account settings'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'envelopeId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The envelope GUID.'},
+            'documentId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The document ID.'}
         },
-        'required': ['account_id', 'user_id']
+        'request_body': {
+            'document_base64': {'type': 'str', 'required': True, 'description': 'The document encoded as base64.'},
+            'documentId': {'type': 'str', 'required': True, 'description': 'The document ID.'},
+            'fileExtension': {'type': 'str', 'required': True, 'description': 'The file extension.'},
+            'name': {'type': 'str', 'required': True, 'description': 'The document name.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['EnvelopeDocuments']
     },
 
-    'delete_user': {
+    # TEMPLATES OPERATIONS
+    'templates_list': {
+        'method': 'GET',
+        'path': '/v2.1/accounts/{accountId}/templates',
+        'summary': 'Gets the definition of a template.',
+        'description': 'Retrieves the list of templates for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'},
+            'created_from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'created_to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'folder_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'folder_types': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start of date range filter.'},
+            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'is_download': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'is_shared_by_me': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'modified_from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'modified_to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'order': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'order_by': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'search_fields': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'search_text': {'type': 'Optional[str]', 'location': 'query', 'description': 'Text to search for in templates.'},
+            'shared_by_me': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'},
+            'template_ids': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End of date range filter.'},
+            'used_from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'used_to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'user_filter': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'user_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'}
+        },
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Templates']
+    },
+
+    'templates_create': {
+        'method': 'POST',
+        'path': '/v2.1/accounts/{accountId}/templates',
+        'summary': 'Creates an envelope from a template.',
+        'description': 'Creates a template definition using a multipart request.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'}
+        },
+        'request_body': {
+            'allowMarkup': {'type': 'Optional[bool]', 'description': 'When true, Document Markup is enabled.'},
+            'allowReassign': {'type': 'Optional[bool]', 'description': 'When true, the recipient can redirect envelope to another recipient.'},
+            'allowViewHistory': {'type': 'Optional[bool]', 'description': 'When true, the recipient can view envelope history.'},
+            'asynchronous': {'type': 'Optional[bool]', 'description': 'When true, envelope is queued for processing.'},
+            'authoritativeCopy': {'type': 'Optional[bool]', 'description': 'Specifies whether the envelope is an authoritative copy.'},
+            'autoNavigation': {'type': 'Optional[bool]', 'description': 'When true, auto-navigation is enabled.'},
+            'brandId': {'type': 'Optional[str]', 'description': 'The unique identifier of the brand.'},
+            'brandLock': {'type': 'Optional[bool]', 'description': 'When true, the brand is locked.'},
+            'burnDefaultTabData': {'type': 'Optional[bool]', 'description': 'When true, default tab data is burned into documents.'},
+            'created': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'createdDateTime': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'customFields': {'type': 'Optional[Dict[str, Any]]', 'description': 'Custom fields for the template.'},
+            'description': {'type': 'Optional[str]', 'description': 'The description of the template.'},
+            'documents': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of document objects.'},
+            'emailBlurb': {'type': 'Optional[str]', 'description': 'The subject line of the email message sent to recipients.'},
+            'emailSettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Email settings for the template.'},
+            'emailSubject': {'type': 'Optional[str]', 'description': 'The subject line of the email message.'},
+            'enableWetSign': {'type': 'Optional[bool]', 'description': 'When true, enables wet signing.'},
+            'enforceSignerVisibility': {'type': 'Optional[bool]', 'description': 'When true, enforces signer visibility.'},
+            'envelopeCustomMetadata': {'type': 'Optional[Dict[str, Any]]', 'description': 'Custom metadata for template.'},
+            'envelopeIdStamping': {'type': 'Optional[bool]', 'description': 'When true, envelope ID is stamped.'},
+            'envelopeMetadata': {'type': 'Optional[Dict[str, Any]]', 'description': 'Metadata for the template.'},
+            'eventNotifications': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of event notifications.'},
+            'folderId': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'folderName': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'folders': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Reserved for DocuSign.'},
+            'lastModified': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'lastModifiedBy': {'type': 'Optional[Dict[str, Any]]', 'description': 'Reserved for DocuSign.'},
+            'lastModifiedDateTime': {'type': 'Optional[str]', 'description': 'The date and time template was last modified.'},
+            'lastUsed': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'messageLock': {'type': 'Optional[bool]', 'description': 'When true, prevents template message changes.'},
+            'name': {'type': 'str', 'required': True, 'description': 'The template name.'},
+            'newPassword': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'notification': {'type': 'Optional[Dict[str, Any]]', 'description': 'Notification settings.'},
+            'owner': {'type': 'Optional[Dict[str, Any]]', 'description': 'Reserved for DocuSign.'},
+            'pageCount': {'type': 'Optional[int]', 'description': 'Reserved for DocuSign.'},
+            'parentFolderId': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'password': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'recipients': {'type': 'Optional[Dict[str, Any]]', 'description': 'Array of recipient objects.'},
+            'recipientsLock': {'type': 'Optional[bool]', 'description': 'When true, prevents template recipient changes.'},
+            'shared': {'type': 'Optional[bool]', 'description': 'When true, template is shared.'},
+            'signerCanSignOnMobile': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'signingLocation': {'type': 'Optional[str]', 'description': 'Specifies the signing location.'},
+            'templateId': {'type': 'Optional[str]', 'description': 'The unique identifier of the template.'},
+            'transactionId': {'type': 'Optional[str]', 'description': 'Used to identify template in DocuSign Connect.'},
+            'uri': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'useDisclosure': {'type': 'Optional[bool]', 'description': 'When true, enables the Consumer Disclosure feature.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Templates']
+    },
+
+    'templates_get': {
+        'method': 'GET',
+        'path': '/v2.1/accounts/{accountId}/templates/{templateId}',
+        'summary': 'Gets a specific template associated with a specified account.',
+        'description': 'Retrieves the definition of the specified template.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'templateId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The template ID GUID.'},
+            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'}
+        },
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Templates']
+    },
+
+    'templates_update': {
+        'method': 'PUT',
+        'path': '/v2.1/accounts/{accountId}/templates/{templateId}',
+        'summary': 'Updates an existing template.',
+        'description': 'Updates the specified template.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'templateId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The template ID GUID.'}
+        },
+        'request_body': {
+            'name': {'type': 'Optional[str]', 'description': 'The template name.'},
+            'description': {'type': 'Optional[str]', 'description': 'The description of the template.'},
+            'shared': {'type': 'Optional[bool]', 'description': 'When true, template is shared.'},
+            'password': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Templates']
+    },
+
+    'templates_delete': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/users/{user_id}',
-        'description': 'Closes one or more user records in the account',
+        'path': '/v2.1/accounts/{accountId}/templates/{templateId}',
+        'summary': 'Deletes the specified template.',
+        'description': 'Deletes the specified template from the account.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'user_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the user being accessed'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'templateId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The template ID GUID.'}
         },
-        'required': ['account_id', 'user_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Templates']
     },
 
-    # ========================================================================
-    # ESIGNATURE - GROUPS API
-    # ========================================================================
-    'list_groups': {
+    # USERS OPERATIONS
+    'users_list': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/groups',
-        'description': 'Gets group information for groups in the specified account',
+        'path': '/v2.1/accounts/{accountId}/users',
+        'summary': 'Retrieves the list of users for the specified account.',
+        'description': 'Retrieves the list of users for the specified account.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'count': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return in the cache'},
-            'group_type': {'type': 'Optional[str]', 'location': 'query', 'description': 'Type of groups to return'},
-            'include_users': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, the response includes user information for each group'},
-            'search_text': {'type': 'Optional[str]', 'location': 'query', 'description': 'The search text used to search group names'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Position of the group records to begin the list'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'additional_info': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, includes additional user information.'},
+            'alternate_admins_only': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'},
+            'domain_users_only': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Email address to filter by.'},
+            'email_substring': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'group_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include_usersettings_for_csv': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'login_status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'not_group_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'User status to filter by.'},
+            'user_name_substring': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'}
         },
-        'required': ['account_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Users']
     },
 
-    'create_group': {
+    'users_create': {
         'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/groups',
-        'description': 'Creates one or more groups for the account',
+        'path': '/v2.1/accounts/{accountId}/users',
+        'summary': 'Adds news user to the specified account.',
+        'description': 'Adds new users to your account.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'groups': {'type': 'List[Dict[str, Union[str, int, bool, List]]]', 'location': 'body', 'description': 'Array of group objects to be created'},
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'}
         },
-        'required': ['account_id', 'groups']
+        'request_body': {
+            'newUsers': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Array of new user objects.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Users']
     },
 
-    'get_group': {
+    'users_get': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/groups/{group_id}',
-        'description': 'Gets information about a specific group',
+        'path': '/v2.1/accounts/{accountId}/users/{userId}',
+        'summary': 'Gets the user information for a specified user.',
+        'description': 'Retrieves user information for the specified user.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'group_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the group being accessed'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'userId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The user ID of the user being accessed.'},
+            'additional_info': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, includes additional user information.'}
         },
-        'required': ['account_id', 'group_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Users']
     },
 
-    'update_group': {
+    'users_update': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/groups/{group_id}',
-        'description': 'Updates the group name and modifies or sets the permission profile for the group',
+        'path': '/v2.1/accounts/{accountId}/users/{userId}',
+        'summary': 'Updates the user attributes of an existing account user.',
+        'description': 'Updates user information for the specified user.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'group_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the group being accessed'},
-            'group_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The name of the group'},
-            'permission_profile_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'The ID of the permission profile associated with the group'},
-            'group_type': {'type': 'Optional[str]', 'location': 'body', 'description': 'The group type'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'userId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The user ID of the user being accessed.'},
+            'allow_all_languages': {'type': 'Optional[bool]', 'location': 'query', 'description': 'Reserved for DocuSign.'}
         },
-        'required': ['account_id', 'group_id']
+        'request_body': {
+            'activationAccessCode': {'type': 'Optional[str]', 'description': 'The activation access code.'},
+            'email': {'type': 'Optional[str]', 'description': 'The user email address.'},
+            'enableConnectForUser': {'type': 'Optional[bool]', 'description': 'When true, enables DocuSign Connect for user.'},
+            'firstName': {'type': 'Optional[str]', 'description': 'The user first name.'},
+            'forgottenPasswordInfo': {'type': 'Optional[Dict[str, Any]]', 'description': 'Forgotten password information.'},
+            'groupList': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of group objects.'},
+            'homeAddress': {'type': 'Optional[Dict[str, Any]]', 'description': 'The user home address.'},
+            'initialsImageUri': {'type': 'Optional[str]', 'description': 'Contains the URI for retrieving the initials image.'},
+            'isAdmin': {'type': 'Optional[bool]', 'description': 'When true, user is an admin.'},
+            'lastName': {'type': 'Optional[str]', 'description': 'The user last name.'},
+            'loginStatus': {'type': 'Optional[str]', 'description': 'The user login status.'},
+            'middleName': {'type': 'Optional[str]', 'description': 'The user middle name.'},
+            'password': {'type': 'Optional[str]', 'description': 'The user password.'},
+            'passwordExpiration': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'profileImageUri': {'type': 'Optional[str]', 'description': 'Contains the URI for retrieving the profile image.'},
+            'sendActivationEmail': {'type': 'Optional[bool]', 'description': 'When true, sends an activation email.'},
+            'sendActivationOnInvalidLogin': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'signatureImageUri': {'type': 'Optional[str]', 'description': 'Contains the URI for retrieving the signature image.'},
+            'subscribe': {'type': 'Optional[bool]', 'description': 'Reserved for DocuSign.'},
+            'suffixName': {'type': 'Optional[str]', 'description': 'The user suffix name.'},
+            'title': {'type': 'Optional[str]', 'description': 'The user title.'},
+            'userName': {'type': 'Optional[str]', 'description': 'The user name.'},
+            'userSettings': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of user settings.'},
+            'workAddress': {'type': 'Optional[Dict[str, Any]]', 'description': 'The user work address.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Users']
     },
 
-    'delete_group': {
+    'users_delete': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/groups/{group_id}',
-        'description': 'Deletes a group from the account',
+        'path': '/v2.1/accounts/{accountId}/users/{userId}',
+        'summary': 'Closes one or more user records.',
+        'description': 'Closes one or more user records.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'group_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the group being accessed'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'userId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The user ID of the user being accessed.'}
         },
-        'required': ['account_id', 'group_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Users']
     },
 
-    # ========================================================================
-    # ESIGNATURE - CUSTOM TABS API
-    # ========================================================================
-    'list_custom_tabs': {
+    # GROUPS OPERATIONS
+    'groups_list': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/tab_definitions',
-        'description': 'Gets a list of all account tabs',
+        'path': '/v2.1/accounts/{accountId}/groups',
+        'summary': 'Gets information about groups associated with the account.',
+        'description': 'Retrieves information about groups associated with the account.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'custom_tab_only': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, only custom tabs are returned in the response'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'},
+            'group_type': {'type': 'Optional[str]', 'location': 'query', 'description': 'Reserved for DocuSign.'},
+            'include_usercount': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, includes user count.'},
+            'search_text': {'type': 'Optional[str]', 'location': 'query', 'description': 'Text to search for in group name.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'}
         },
-        'required': ['account_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    'create_custom_tab': {
+    'groups_create': {
         'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/tab_definitions',
-        'description': 'Creates a custom tab',
+        'path': '/v2.1/accounts/{accountId}/groups',
+        'summary': 'Creates one or more groups for the account.',
+        'description': 'Creates one or more groups for the account.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'tab_label': {'type': 'str', 'location': 'body', 'description': 'The label string associated with the tab'},
-            'tab_type': {'type': 'str', 'location': 'body', 'description': 'The type of tab'},
-            'anchor_allow_white_space_in_characters': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Allow white space in anchor characters'},
-            'anchor_case_sensitive': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Case sensitivity for the anchor string'},
-            'anchor_horizontal_alignment': {'type': 'Optional[str]', 'location': 'body', 'description': 'Horizontal alignment for the anchor'},
-            'anchor_ignore_if_not_present': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Ignore anchor if not present'},
-            'anchor_match_whole_word': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the anchor string must match the entire word'},
-            'anchor_string': {'type': 'Optional[str]', 'location': 'body', 'description': 'The string to find in the document'},
-            'anchor_units': {'type': 'Optional[str]', 'location': 'body', 'description': 'The units used to set the anchor location'},
-            'anchor_x_offset': {'type': 'Optional[str]', 'location': 'body', 'description': 'The x offset position for the anchor'},
-            'anchor_y_offset': {'type': 'Optional[str]', 'location': 'body', 'description': 'The y offset position for the anchor'},
-            'bold': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the information in the tab is bold'},
-            'font': {'type': 'Optional[str]', 'location': 'body', 'description': 'The font to use for the tab value'},
-            'font_color': {'type': 'Optional[str]', 'location': 'body', 'description': 'The font color to use for the tab value'},
-            'font_size': {'type': 'Optional[str]', 'location': 'body', 'description': 'The font size to use for the tab value'},
-            'height': {'type': 'Optional[str]', 'location': 'body', 'description': 'Height of the tab in pixels'},
-            'italic': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the information in the tab is italic'},
-            'max_length': {'type': 'Optional[str]', 'location': 'body', 'description': 'The maximum length of the tab value in characters'},
-            'required': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the signer is required to fill out this tab'},
-            'width': {'type': 'Optional[str]', 'location': 'body', 'description': 'Width of the tab in pixels'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'}
         },
-        'required': ['account_id', 'tab_label', 'tab_type']
+        'request_body': {
+            'groups': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Array of group objects.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    'get_custom_tab': {
+    'groups_get': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/tab_definitions/{custom_tab_id}',
-        'description': 'Gets custom tab information',
+        'path': '/v2.1/accounts/{accountId}/groups/{groupId}',
+        'summary': 'Gets information about a group.',
+        'description': 'Retrieves information about the specified group.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'custom_tab_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the custom tab being accessed'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'groupId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The ID of the group being accessed.'}
         },
-        'required': ['account_id', 'custom_tab_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    'update_custom_tab': {
+    'groups_update': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/tab_definitions/{custom_tab_id}',
-        'description': 'Updates a custom tab',
+        'path': '/v2.1/accounts/{accountId}/groups/{groupId}',
+        'summary': 'Updates the group information for a group.',
+        'description': 'Updates the group name and modifies, or set, the permission profile for the group.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'custom_tab_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the custom tab being accessed'},
-            'tab_label': {'type': 'Optional[str]', 'location': 'body', 'description': 'The label string associated with the tab'},
-            'anchor_allow_white_space_in_characters': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Allow white space in anchor characters'},
-            'anchor_case_sensitive': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Case sensitivity for the anchor string'},
-            'anchor_horizontal_alignment': {'type': 'Optional[str]', 'location': 'body', 'description': 'Horizontal alignment for the anchor'},
-            'anchor_ignore_if_not_present': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Ignore anchor if not present'},
-            'anchor_match_whole_word': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the anchor string must match the entire word'},
-            'anchor_string': {'type': 'Optional[str]', 'location': 'body', 'description': 'The string to find in the document'},
-            'anchor_units': {'type': 'Optional[str]', 'location': 'body', 'description': 'The units used to set the anchor location'},
-            'anchor_x_offset': {'type': 'Optional[str]', 'location': 'body', 'description': 'The x offset position for the anchor'},
-            'anchor_y_offset': {'type': 'Optional[str]', 'location': 'body', 'description': 'The y offset position for the anchor'},
-            'bold': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the information in the tab is bold'},
-            'font': {'type': 'Optional[str]', 'location': 'body', 'description': 'The font to use for the tab value'},
-            'font_color': {'type': 'Optional[str]', 'location': 'body', 'description': 'The font color to use for the tab value'},
-            'font_size': {'type': 'Optional[str]', 'location': 'body', 'description': 'The font size to use for the tab value'},
-            'height': {'type': 'Optional[str]', 'location': 'body', 'description': 'Height of the tab in pixels'},
-            'italic': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the information in the tab is italic'},
-            'max_length': {'type': 'Optional[str]', 'location': 'body', 'description': 'The maximum length of the tab value in characters'},
-            'required': {'type': 'Optional[bool]', 'location': 'body', 'description': 'When true, the signer is required to fill out this tab'},
-            'width': {'type': 'Optional[str]', 'location': 'body', 'description': 'Width of the tab in pixels'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'groupId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The ID of the group being accessed.'}
         },
-        'required': ['account_id', 'custom_tab_id']
+        'request_body': {
+            'groupName': {'type': 'Optional[str]', 'description': 'The name of the group.'},
+            'groupType': {'type': 'Optional[str]', 'description': 'Reserved for DocuSign.'},
+            'permissionProfileId': {'type': 'Optional[str]', 'description': 'The permission profile ID.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    'delete_custom_tab': {
+    'groups_delete': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/tab_definitions/{custom_tab_id}',
-        'description': 'Deletes a custom tab',
+        'path': '/v2.1/accounts/{accountId}/groups/{groupId}',
+        'summary': 'Deletes an existing user group.',
+        'description': 'Deletes an existing user group.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'custom_tab_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the custom tab being accessed'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'groupId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The ID of the group being accessed.'}
         },
-        'required': ['account_id', 'custom_tab_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    # ========================================================================
-    # ESIGNATURE - FOLDERS API
-    # ========================================================================
-    'list_folders': {
+    # GROUP USERS OPERATIONS  
+    'group_users_list': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/folders',
-        'description': 'Gets a list of the folders for the account',
+        'path': '/v2.1/accounts/{accountId}/groups/{groupId}/users',
+        'summary': 'Gets a list of users in a group.',
+        'description': 'Retrieves a list of users in the specified group.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies additional folder information to return'},
-            'include_items': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, the folder items are returned in the response'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Position of the folder items to begin the list'},
-            'template_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'The ID of the template'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'groupId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The ID of the group being accessed.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'}
         },
-        'required': ['account_id']
+        'headers': {'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    'list_items': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/folders/{folder_id}',
-        'description': 'Gets a list of the envelopes in the specified folder',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'folder_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the folder being accessed'},
-            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start of the search date range'},
-            'include_items': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, the folder items are returned in the response'},
-            'owner_email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter items by folder owner email address'},
-            'owner_name': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filter items by folder owner name'},
-            'search_text': {'type': 'Optional[str]', 'location': 'query', 'description': 'Search text to filter items by'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Position of the folder items to begin the list'},
-            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End of the search date range'}
-        },
-        'required': ['account_id', 'folder_id']
-    },
-
-    'move_items': {
+    'group_users_add': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/folders/{folder_id}',
-        'description': 'Moves an envelope or template from its current folder to the specified folder',
+        'path': '/v2.1/accounts/{accountId}/groups/{groupId}/users',
+        'summary': 'Adds one or more users to an existing group.',
+        'description': 'Adds one or more users to an existing group.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'folder_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the folder being accessed'},
-            'envelope_ids': {'type': 'Optional[str]', 'location': 'body', 'description': 'Comma-separated list of envelope IDs to move'},
-            'envelope_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Single envelope ID to move'},
-            'template_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Template ID to move'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'groupId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The ID of the group being accessed.'}
         },
-        'required': ['account_id', 'folder_id']
+        'request_body': {
+            'users': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Array of user objects.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    # ========================================================================
-    # ESIGNATURE - BULK SEND API
-    # ========================================================================
-    'create_bulk_send_list': {
-        'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/bulk_send_lists',
-        'description': 'Creates a bulk send list',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'name': {'type': 'str', 'location': 'body', 'description': 'The name of the bulk send list'},
-            'bulk_copies': {'type': 'List[Dict[str, Union[str, List]]]', 'location': 'body', 'description': 'The list of bulk recipients'}
-        },
-        'required': ['account_id', 'name', 'bulk_copies']
-    },
-
-    'create_bulk_send_request': {
-        'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/bulk_send_lists/{bulk_send_list_id}/send',
-        'description': 'Starts a bulk send operation',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'bulk_send_list_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the bulk send list'},
-            'envelope_or_template_id': {'type': 'str', 'location': 'body', 'description': 'The envelope or template ID associated with the bulk send operation'},
-            'email_subject': {'type': 'Optional[str]', 'location': 'body', 'description': 'The email subject line to use'}
-        },
-        'required': ['account_id', 'bulk_send_list_id', 'envelope_or_template_id']
-    },
-
-    # ========================================================================
-    # ROOMS API
-    # ========================================================================
-    'list_rooms': {
-        'method': 'GET',
-        'path': '/v2/accounts/{account_id}/rooms',
-        'description': 'Gets a list of rooms in the account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return in the response'},
-            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position of records in the response'},
-            'field_data_changed_start_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for field data changes'},
-            'field_data_changed_end_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for field data changes'},
-        },
-        'required': ['account_id']
-    },
-
-    'create_room': {
-        'method': 'POST',
-        'path': '/v2/accounts/{account_id}/rooms',
-        'description': 'Creates a new room',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'name': {'type': 'str', 'location': 'body', 'description': 'The name of the room'},
-            'role_id': {'type': 'str', 'location': 'body', 'description': 'The ID of the role for the room'},
-            'transaction_side_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'The ID of the transaction side for the room'},
-            'room_template_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'The ID of the room template'},
-            'client_user_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'The ID of the client user'},
-        },
-        'required': ['account_id', 'name', 'role_id']
-    },
-
-    'get_room': {
-        'method': 'GET',
-        'path': '/v2/accounts/{account_id}/rooms/{room_id}',
-        'description': 'Gets information about a room',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'room_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the room'}
-        },
-        'required': ['account_id', 'room_id']
-    },
-
-    'update_room': {
-        'method': 'PUT',
-        'path': '/v2/accounts/{account_id}/rooms/{room_id}',
-        'description': 'Updates information about a room',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'room_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the room'},
-            'name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The name of the room'},
-            'transaction_side_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'The ID of the transaction side for the room'},
-        },
-        'required': ['account_id', 'room_id']
-    },
-
-    'delete_room': {
+    'group_users_delete': {
         'method': 'DELETE',
-        'path': '/v2/accounts/{account_id}/rooms/{room_id}',
-        'description': 'Deletes a room',
+        'path': '/v2.1/accounts/{accountId}/groups/{groupId}/users',
+        'summary': 'Deletes one or more users from a group.',
+        'description': 'Deletes one or more users from the specified group.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'room_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the room'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The external account number (int) or account ID GUID.'},
+            'groupId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The ID of the group being accessed.'}
         },
-        'required': ['account_id', 'room_id']
+        'request_body': {
+            'users': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Array of user objects.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        'api_category': 'esignature',
+        'tags': ['Groups']
     },
 
-    # ========================================================================
-    # CLICK API
-    # ========================================================================
-    'list_clickwraps': {
+    # ================================================================================
+    # ADMIN API v2.1 - ORGANIZATION & ENTERPRISE MANAGEMENT
+    # ================================================================================
+
+    # ORGANIZATIONS OPERATIONS
+    'admin_organizations_list': {
         'method': 'GET',
-        'path': '/v1/accounts/{account_id}/clickwraps',
-        'description': 'Gets a list of clickwraps in the account',
+        'path': '/v2.1/organizations',
+        'summary': 'Returns the list of organizations that the authenticated user belongs to.',
+        'description': 'Gets information about organizations associated with the authenticated user.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Status of the clickwraps to return'},
-            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date filter for clickwraps'},
-            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date filter for clickwraps'},
-            'page_number': {'type': 'Optional[str]', 'location': 'query', 'description': 'Page number for paginated results'},
-            'page_size': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return per page'}
+            'mode': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies the mode for the request.'}
         },
-        'required': ['account_id']
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
 
-    'create_clickwrap': {
+    'admin_organizations_get': {
+        'method': 'GET',
+        'path': '/v2.1/organizations/{organizationId}',
+        'summary': 'Returns the details of an organization.',
+        'description': 'Retrieves information about the specified organization.',
+        'parameters': {
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
+    },
+
+    # ORGANIZATION ACCOUNTS OPERATIONS
+    'admin_organization_accounts_list': {
+        'method': 'GET',
+        'path': '/v2.1/organizations/{organizationId}/accounts',
+        'summary': 'Returns the list of accounts in an organization.',
+        'description': 'Gets information about accounts in the specified organization.',
+        'parameters': {
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
+    },
+
+    'admin_organization_accounts_create': {
         'method': 'POST',
-        'path': '/v1/accounts/{account_id}/clickwraps',
-        'description': 'Creates a clickwrap',
+        'path': '/v2.1/organizations/{organizationId}/accounts',
+        'summary': 'Creates a new account for an organization.',
+        'description': 'Creates a new account for the specified organization.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'clickwrap_name': {'type': 'str', 'location': 'body', 'description': 'The name of the clickwrap'},
-            'display_settings': {'type': 'Dict[str, Union[str, bool, int]]', 'location': 'body', 'description': 'Display settings for the clickwrap'},
-            'documents': {'type': 'List[Dict[str, Union[str, int, bytes]]]', 'location': 'body', 'description': 'Documents included in the clickwrap'},
-            'require_reacceptance': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Whether to require reacceptance when the clickwrap is updated'},
-            'status': {'type': 'Optional[str]', 'location': 'body', 'description': 'Status of the clickwrap (active, inactive, draft)'},
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
         },
-        'required': ['account_id', 'clickwrap_name', 'display_settings', 'documents']
+        'request_body': {
+            'accountName': {'type': 'str', 'required': True, 'description': 'The account name.'},
+            'accountSettings': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Account settings.'},
+            'addressInformation': {'type': 'Optional[Dict[str, Any]]', 'description': 'Account address information.'},
+            'subscriptionDetails': {'type': 'Optional[Dict[str, Any]]', 'description': 'Subscription details.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
 
-    'get_clickwrap': {
+    # ORGANIZATION USERS OPERATIONS
+    'admin_organization_users_list': {
         'method': 'GET',
-        'path': '/v1/accounts/{account_id}/clickwraps/{clickwrap_id}',
-        'description': 'Gets a clickwrap by ID',
+        'path': '/v2.1/organizations/{organizationId}/users',
+        'summary': 'Returns the list of users in an organization.',
+        'description': 'Gets information about users in the specified organization.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'clickwrap_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the clickwrap'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'Starting position for the result set.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'Number of records to return.'},
+            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Email address to filter by.'},
+            'email_substring': {'type': 'Optional[str]', 'location': 'query', 'description': 'Email substring to filter by.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'User status to filter by.'},
+            'membership_status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Membership status to filter by.'}
         },
-        'required': ['account_id', 'clickwrap_id']
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
 
-    'update_clickwrap': {
-        'method': 'PUT',
-        'path': '/v1/accounts/{account_id}/clickwraps/{clickwrap_id}',
-        'description': 'Updates a clickwrap by ID',
+    'admin_organization_users_get': {
+        'method': 'GET',
+        'path': '/v2.1/organizations/{organizationId}/users/{userId}',
+        'summary': 'Returns the details of an organization user.',
+        'description': 'Retrieves information about the specified user in the organization.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'clickwrap_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the clickwrap'},
-            'clickwrap_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The name of the clickwrap'},
-            'display_settings': {'type': 'Optional[Dict[str, Union[str, bool, int]]]', 'location': 'body', 'description': 'Display settings for the clickwrap'},
-            'documents': {'type': 'Optional[List[Dict[str, Union[str, int, bytes]]]]', 'location': 'body', 'description': 'Documents included in the clickwrap'},
-            'require_reacceptance': {'type': 'Optional[bool]', 'location': 'body', 'description': 'Whether to require reacceptance when the clickwrap is updated'},
-            'status': {'type': 'Optional[str]', 'location': 'body', 'description': 'Status of the clickwrap (active, inactive, draft)'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'},
+            'userId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The user ID GUID.'}
         },
-        'required': ['account_id', 'clickwrap_id']
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
 
-    'delete_clickwrap': {
-        'method': 'DELETE',
-        'path': '/v1/accounts/{account_id}/clickwraps/{clickwrap_id}',
-        'description': 'Deactivates a clickwrap by ID',
+    'admin_organization_users_update': {
+        'method': 'PATCH',
+        'path': '/v2.1/organizations/{organizationId}/users/{userId}',
+        'summary': 'Updates an organization user\'s details.',
+        'description': 'Updates information about the specified user in the organization.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'clickwrap_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the clickwrap'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'},
+            'userId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The user ID GUID.'}
         },
-        'required': ['account_id', 'clickwrap_id']
-    },
-    
-    'get_clickwrap_agreements': {
-        'method': 'GET',
-        'path': '/v1/accounts/{account_id}/clickwraps/{clickwrap_id}/users',
-        'description': 'Gets the users who have agreed to a clickwrap',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'clickwrap_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the clickwrap'},
-            'client_user_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'The client user ID of the user who agreed to the clickwrap'},
-            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for agreement filter'},
-            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for agreement filter'},
-            'page_number': {'type': 'Optional[str]', 'location': 'query', 'description': 'Page number for paginated results'},
-            'page_size': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return per page'},
-            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Status of the agreements to return'}
+        'request_body': {
+            'id': {'type': 'str', 'required': True, 'description': 'The user ID GUID.'},
+            'site_id': {'type': 'Optional[int]', 'description': 'Reserved for DocuSign.'},
+            'user_name': {'type': 'Optional[str]', 'description': 'The user name.'},
+            'first_name': {'type': 'Optional[str]', 'description': 'The user first name.'},
+            'last_name': {'type': 'Optional[str]', 'description': 'The user last name.'},
+            'email': {'type': 'Optional[str]', 'description': 'The user email address.'},
+            'default_account_id': {'type': 'Optional[str]', 'description': 'The default account ID.'},
+            'language_culture': {'type': 'Optional[str]', 'description': 'The language culture.'},
+            'selected_languages': {'type': 'Optional[List[str]]', 'description': 'Selected languages.'},
+            'fed_auth_required': {'type': 'Optional[str]', 'description': 'Federation authentication required.'},
+            'auto_activate_memberships': {'type': 'Optional[bool]', 'description': 'Auto-activate memberships.'}
         },
-        'required': ['account_id', 'clickwrap_id']
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
 
-    # ========================================================================
-    # ADMIN API - USER MANAGEMENT
-    # ========================================================================
-    'list_permission_profiles': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/permission_profiles',
-        'description': 'Gets a list of permission profiles in the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Additional information to include in the response'}
-        },
-        'required': ['account_id']
-    },
-    
-    'create_permission_profile': {
-        'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/permission_profiles',
-        'description': 'Creates a new permission profile in the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'permission_profile_name': {'type': 'str', 'location': 'body', 'description': 'The name of the permission profile'},
-            'settings': {'type': 'Dict[str, Union[bool, str, Dict]]', 'location': 'body', 'description': 'The permission settings for the profile'}
-        },
-        'required': ['account_id', 'permission_profile_name', 'settings']
-    },
-    
-    'get_permission_profile': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/permission_profiles/{profile_id}',
-        'description': 'Gets a permission profile in the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'profile_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the permission profile'}
-        },
-        'required': ['account_id', 'profile_id']
-    },
-    
-    'update_permission_profile': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/permission_profiles/{profile_id}',
-        'description': 'Updates a permission profile in the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'profile_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the permission profile'},
-            'permission_profile_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The name of the permission profile'},
-            'settings': {'type': 'Optional[Dict[str, Union[bool, str, Dict]]]', 'location': 'body', 'description': 'The permission settings for the profile'}
-        },
-        'required': ['account_id', 'profile_id']
-    },
-    
-    'delete_permission_profile': {
+    'admin_organization_users_delete': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/permission_profiles/{profile_id}',
-        'description': 'Deletes a permission profile from the specified account',
+        'path': '/v2.1/organizations/{organizationId}/users/{userId}',
+        'summary': 'Removes a user from an organization.',
+        'description': 'Removes the specified user from the organization.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'profile_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the permission profile'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'},
+            'userId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The user ID GUID.'}
         },
-        'required': ['account_id', 'profile_id']
-    },
-    
-    # ========================================================================
-    # ADMIN API - GROUP MANAGEMENT
-    # ========================================================================
-    'add_users_to_group': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/groups/{group_id}/users',
-        'description': 'Adds one or more users to an existing group',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'group_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the group being accessed'},
-            'user_ids': {'type': 'List[str]', 'location': 'body', 'description': 'List of user IDs to add to the group'}
+        'request_body': {
+            'id': {'type': 'str', 'required': True, 'description': 'The user ID GUID.'}
         },
-        'required': ['account_id', 'group_id', 'user_ids']
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
-    
-    'list_group_users': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/groups/{group_id}/users',
-        'description': 'Gets a list of users in a group',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'group_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the group being accessed'},
-            'count': {'type': 'Optional[str]', 'location': 'query', 'description': 'Number of records to return'},
-            'start_position': {'type': 'Optional[str]', 'location': 'query', 'description': 'Starting position of the items to return'}
-        },
-        'required': ['account_id', 'group_id']
-    },
-    
-    'delete_user_from_group': {
-        'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/groups/{group_id}/users/{user_id}',
-        'description': 'Removes a user from a group',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'group_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the group being accessed'},
-            'user_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the user to remove from the group'}
-        },
-        'required': ['account_id', 'group_id', 'user_id']
-    },
-    
-    # ========================================================================
-    # ADMIN API - ACCOUNT MANAGEMENT
-    # ========================================================================
-    'create_account': {
+
+    # USER IMPORTS OPERATIONS
+    'admin_organization_user_imports_add': {
         'method': 'POST',
-        'path': '/v2.1/accounts',
-        'description': 'Creates a new account',
+        'path': '/v2.1/organizations/{organizationId}/imports/bulk_users/add',
+        'summary': 'Bulk adds users to an organization.',
+        'description': 'Adds users in bulk to the specified organization using a CSV file.',
         'parameters': {
-            'account_name': {'type': 'str', 'location': 'body', 'description': 'The name of the account'},
-            'initial_user': {'type': 'Dict[str, Union[str, bool]]', 'location': 'body', 'description': 'Information about the initial user for the account'},
-            'distributor_code': {'type': 'Optional[str]', 'location': 'body', 'description': 'The distributor code for the account'},
-            'plan_information': {'type': 'Optional[Dict[str, Union[str, int]]]', 'location': 'body', 'description': 'Plan information for the account'},
-            'referral_information': {'type': 'Optional[Dict[str, str]]', 'location': 'body', 'description': 'Referral information for the account'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
         },
-        'required': ['account_name', 'initial_user']
-    },
-    
-    'get_account_provisioning_information': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/provisioning',
-        'description': 'Gets account provisioning information for the authenticated user',
-        'parameters': {},
-        'required': []
-    },
-    
-    'get_account_billing_plan': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/billing_plan',
-        'description': 'Gets the billing plan information for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'include_credit_card_information': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, includes credit card information in the response'},
-            'include_metadata': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, includes metadata in the response'},
-            'include_successor_plans': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, includes successor plans in the response'}
+        'request_body': {
+            'file_csv': {'type': 'str', 'required': True, 'description': 'The CSV file content as base64.'}
         },
-        'required': ['account_id']
+        'headers': {'Content-Type': 'multipart/form-data', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
-    
-    'update_account_billing_plan': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/billing_plan',
-        'description': 'Updates the billing plan for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'billing_plan_information': {'type': 'Dict[str, Union[str, int, Dict]]', 'location': 'body', 'description': 'The billing plan information for the account'}
-        },
-        'required': ['account_id', 'billing_plan_information']
-    },
-    
-    # ========================================================================
-    # ADMIN API - BRANDING
-    # ========================================================================
-    'list_brands': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/brands',
-        'description': 'Gets a list of brands for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'exclude_distributor_brand': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, excludes the distributor brand from the response'},
-            'include_logos': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, includes logos in the response'}
-        },
-        'required': ['account_id']
-    },
-    
-    'create_brand': {
+
+    'admin_organization_user_imports_update': {
         'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/brands',
-        'description': 'Creates a brand for the specified account',
+        'path': '/v2.1/organizations/{organizationId}/imports/bulk_users/update',
+        'summary': 'Bulk updates users in an organization.',
+        'description': 'Updates users in bulk in the specified organization using a CSV file.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'brand_name': {'type': 'str', 'location': 'body', 'description': 'The name of the brand'},
-            'default_brand_language': {'type': 'str', 'location': 'body', 'description': 'The default language for the brand'},
-            'email_content': {'type': 'Optional[Dict[str, Union[str, Dict]]]', 'location': 'body', 'description': 'Email content for the brand'},
-            'brand_resources': {'type': 'Optional[Dict[str, Union[str, List]]]', 'location': 'body', 'description': 'Resources for the brand'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
         },
-        'required': ['account_id', 'brand_name', 'default_brand_language']
-    },
-    
-    'get_brand': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/brands/{brand_id}',
-        'description': 'Gets a brand for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'brand_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the brand being accessed'},
-            'include_logos': {'type': 'Optional[str]', 'location': 'query', 'description': 'When true, includes logos in the response'}
+        'request_body': {
+            'file_csv': {'type': 'str', 'required': True, 'description': 'The CSV file content as base64.'}
         },
-        'required': ['account_id', 'brand_id']
+        'headers': {'Content-Type': 'multipart/form-data', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
-    
-    'update_brand': {
-        'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/brands/{brand_id}',
-        'description': 'Updates a brand for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'brand_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the brand being accessed'},
-            'brand_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'The name of the brand'},
-            'default_brand_language': {'type': 'Optional[str]', 'location': 'body', 'description': 'The default language for the brand'},
-            'email_content': {'type': 'Optional[Dict[str, Union[str, Dict]]]', 'location': 'body', 'description': 'Email content for the brand'},
-            'brand_resources': {'type': 'Optional[Dict[str, Union[str, List]]]', 'location': 'body', 'description': 'Resources for the brand'}
-        },
-        'required': ['account_id', 'brand_id']
-    },
-    
-    'delete_brand': {
-        'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/brands/{brand_id}',
-        'description': 'Deletes a brand from the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'brand_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the brand being accessed'}
-        },
-        'required': ['account_id', 'brand_id']
-    },
-    
-    # ========================================================================
-    # MONITOR API
-    # ========================================================================
-    'get_monitoring_data': {
-        'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/monitor',
-        'description': 'Gets monitoring data for the specified account',
-        'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'data_type': {'type': 'str', 'location': 'query', 'description': 'The type of monitoring data to return'},
-            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'The start date for the data range'},
-            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'The end date for the data range'}
-        },
-        'required': ['account_id', 'data_type']
-    },
-    
-    'get_monitor_status': {
-        'method': 'GET',
-        'path': '/v2.1/monitor/status',
-        'description': 'Gets DocuSign service status information',
-        'parameters': {},
-        'required': []
-    },
-    
-    # ========================================================================
-    # INVITATION API
-    # ========================================================================
-    'create_invitation': {
+
+    'admin_organization_user_imports_close': {
         'method': 'POST',
-        'path': '/v2.1/accounts/{account_id}/invitations',
-        'description': 'Creates an invitation to join DocuSign',
+        'path': '/v2.1/organizations/{organizationId}/imports/bulk_users/close',
+        'summary': 'Bulk closes users in an organization.',
+        'description': 'Closes users in bulk in the specified organization using a CSV file.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'email': {'type': 'str', 'location': 'body', 'description': 'Email address of the person to invite'},
-            'user_name': {'type': 'str', 'location': 'body', 'description': 'User name of the person to invite'},
-            'role_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Role ID of the person to invite'},
-            'permission_profile_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Permission profile ID of the person to invite'},
-            'groups': {'type': 'Optional[List[Dict[str, str]]]', 'location': 'body', 'description': 'Groups to add the person to'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
         },
-        'required': ['account_id', 'email', 'user_name']
+        'request_body': {
+            'file_csv': {'type': 'str', 'required': True, 'description': 'The CSV file content as base64.'}
+        },
+        'headers': {'Content-Type': 'multipart/form-data', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
-    
-    'get_invitation': {
+
+    # IDENTITY PROVIDERS OPERATIONS
+    'admin_identity_providers_list': {
         'method': 'GET',
-        'path': '/v2.1/accounts/{account_id}/invitations/{invitation_id}',
-        'description': 'Gets information about a specific invitation',
+        'path': '/v2.1/organizations/{organizationId}/identity_providers',
+        'summary': 'Returns the list of identity providers for an organization.',
+        'description': 'Gets information about identity providers for the specified organization.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'invitation_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the invitation'}
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
         },
-        'required': ['account_id', 'invitation_id']
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
     },
-    
-    'update_invitation': {
+
+    # RESERVED DOMAINS OPERATIONS
+    'admin_reserved_domains_list': {
+        'method': 'GET',
+        'path': '/v2.1/organizations/{organizationId}/reserved_domains',
+        'summary': 'Returns the list of reserved domains for an organization.',
+        'description': 'Gets information about reserved domains for the specified organization.',
+        'parameters': {
+            'organizationId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The organization ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'admin',
+        'tags': ['Organizations']
+    },
+
+    # ================================================================================
+    # ROOMS API v2 - REAL ESTATE TRANSACTION MANAGEMENT
+    # ================================================================================
+
+    # ROOMS OPERATIONS
+    'rooms_list': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/rooms',
+        'summary': 'Gets a list of rooms available to the user.',
+        'description': 'Retrieves a list of rooms for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'The maximum number of results to return.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'The position within the total result set.'},
+            'room_status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by room status.'},
+            'office_id': {'type': 'Optional[int]', 'location': 'query', 'description': 'Filters by office ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    'rooms_create': {
+        'method': 'POST',
+        'path': '/v2/accounts/{accountId}/rooms',
+        'summary': 'Creates a room.',
+        'description': 'Creates a new room for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'name': {'type': 'str', 'required': True, 'description': 'The name of the room.'},
+            'templateId': {'type': 'Optional[int]', 'description': 'The template ID to use for the room.'},
+            'officeId': {'type': 'Optional[int]', 'description': 'The office ID for the room.'},
+            'fieldData': {'type': 'Optional[Dict[str, Any]]', 'description': 'Field data for the room.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    'rooms_get': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}',
+        'summary': 'Gets information about a room.',
+        'description': 'Retrieves information about the specified room.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'},
+            'include': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies additional information to include.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    'rooms_update': {
         'method': 'PUT',
-        'path': '/v2.1/accounts/{account_id}/invitations/{invitation_id}',
-        'description': 'Updates an existing invitation',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}',
+        'summary': 'Updates room details.',
+        'description': 'Updates information for the specified room.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'invitation_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the invitation'},
-            'email': {'type': 'Optional[str]', 'location': 'body', 'description': 'Email address of the person to invite'},
-            'user_name': {'type': 'Optional[str]', 'location': 'body', 'description': 'User name of the person to invite'},
-            'role_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Role ID of the person to invite'},
-            'permission_profile_id': {'type': 'Optional[str]', 'location': 'body', 'description': 'Permission profile ID of the person to invite'},
-            'groups': {'type': 'Optional[List[Dict[str, str]]]', 'location': 'body', 'description': 'Groups to add the person to'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'}
         },
-        'required': ['account_id', 'invitation_id']
+        'request_body': {
+            'name': {'type': 'Optional[str]', 'description': 'The name of the room.'},
+            'roomStatus': {'type': 'Optional[str]', 'description': 'The status of the room.'},
+            'fieldData': {'type': 'Optional[Dict[str, Any]]', 'description': 'Field data for the room.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
     },
-    
-    'delete_invitation': {
+
+    'rooms_delete': {
         'method': 'DELETE',
-        'path': '/v2.1/accounts/{account_id}/invitations/{invitation_id}',
-        'description': 'Deletes an invitation',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}',
+        'summary': 'Deletes a room.',
+        'description': 'Deletes the specified room.',
         'parameters': {
-            'account_id': {'type': 'str', 'location': 'path', 'description': 'The external account number (int) or account ID GUID'},
-            'invitation_id': {'type': 'str', 'location': 'path', 'description': 'The ID of the invitation'}
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'}
         },
-        'required': ['account_id', 'invitation_id']
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    # ROOM USERS OPERATIONS
+    'room_users_list': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}/users',
+        'summary': 'Gets users in a room.',
+        'description': 'Retrieves a list of users who have access to the specified room.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'The maximum number of results to return.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'The position within the total result set.'},
+            'filter': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters users by different criteria.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    'room_users_invite': {
+        'method': 'POST',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}/users',
+        'summary': 'Invites a user to a room.',
+        'description': 'Invites the specified user to the room.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'}
+        },
+        'request_body': {
+            'userId': {'type': 'int', 'required': True, 'description': 'The user ID to invite.'},
+            'email': {'type': 'str', 'required': True, 'description': 'The email address of the user to invite.'},
+            'firstName': {'type': 'str', 'required': True, 'description': 'The first name of the user.'},
+            'lastName': {'type': 'str', 'required': True, 'description': 'The last name of the user.'},
+            'accessLevel': {'type': 'Optional[str]', 'description': 'The access level for the user.'},
+            'roleId': {'type': 'Optional[int]', 'description': 'The role ID for the user.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    'room_users_remove': {
+        'method': 'DELETE',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}/users/{userId}',
+        'summary': 'Removes a user from a room.',
+        'description': 'Removes the specified user from the room.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'},
+            'userId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The user ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    # ROOM DOCUMENTS OPERATIONS
+    'room_documents_list': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}/documents',
+        'summary': 'Gets a list of documents in a room.',
+        'description': 'Retrieves a list of documents in the specified room.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'The maximum number of results to return.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'The position within the total result set.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    'room_documents_upload': {
+        'method': 'POST',
+        'path': '/v2/accounts/{accountId}/rooms/{roomId}/documents',
+        'summary': 'Uploads a document to a room.',
+        'description': 'Uploads a document to the specified room.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'roomId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The room ID.'}
+        },
+        'request_body': {
+            'file': {'type': 'str', 'required': True, 'description': 'The document file content as base64.'},
+            'documentData': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Document metadata.'}
+        },
+        'headers': {'Content-Type': 'multipart/form-data', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Rooms']
+    },
+
+    # ROOM TEMPLATES OPERATIONS
+    'room_templates_list': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/room_templates',
+        'summary': 'Gets room templates.',
+        'description': 'Retrieves a list of room templates for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'The maximum number of results to return.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'The position within the total result set.'},
+            'office_id': {'type': 'Optional[int]', 'location': 'query', 'description': 'Filters by office ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['RoomTemplates']
+    },
+
+    'room_templates_get': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/room_templates/{templateId}',
+        'summary': 'Gets a room template.',
+        'description': 'Retrieves information about the specified room template.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'templateId': {'type': 'int', 'location': 'path', 'required': True, 'description': 'The template ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['RoomTemplates']
+    },
+
+    # COMPANY USERS OPERATIONS
+    'rooms_company_users_list': {
+        'method': 'GET',
+        'path': '/v2/accounts/{accountId}/users',
+        'summary': 'Gets users in a company.',
+        'description': 'Retrieves a list of users in the specified company account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'count': {'type': 'Optional[int]', 'location': 'query', 'description': 'The maximum number of results to return.'},
+            'start_position': {'type': 'Optional[int]', 'location': 'query', 'description': 'The position within the total result set.'},
+            'email': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by email address.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by user status.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Users']
+    },
+
+    'rooms_company_users_invite': {
+        'method': 'POST',
+        'path': '/v2/accounts/{accountId}/users',
+        'summary': 'Invites a user to join a company.',
+        'description': 'Invites a user to join the specified company account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'invitee': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Invitee information including email, firstName, lastName, and accessLevel.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'rooms',
+        'tags': ['Users']
+    },
+
+    # ================================================================================
+    # CLICK API v1 - CLICKWRAP AGREEMENT MANAGEMENT
+    # ================================================================================
+
+    # CLICKWRAPS OPERATIONS
+    'clickwraps_list': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/clickwraps',
+        'summary': 'Gets a list of clickwraps.',
+        'description': 'Retrieves a list of clickwraps for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by clickwrap status.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwraps_create': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/clickwraps',
+        'summary': 'Creates a clickwrap.',
+        'description': 'Creates a new clickwrap for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'clickwrapName': {'type': 'str', 'required': True, 'description': 'The clickwrap name.'},
+            'displaySettings': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Display settings for the clickwrap.'},
+            'documents': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Array of document objects.'},
+            'fieldsSettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Field settings for the clickwrap.'},
+            'requireReacceptance': {'type': 'Optional[bool]', 'description': 'When true, requires re-acceptance.'},
+            'status': {'type': 'Optional[str]', 'description': 'The status of the clickwrap.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwraps_get': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}',
+        'summary': 'Gets a specific clickwrap.',
+        'description': 'Retrieves information about the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'},
+            'versions': {'type': 'Optional[str]', 'location': 'query', 'description': 'Specifies which versions to include.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwraps_update': {
+        'method': 'PUT',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}',
+        'summary': 'Updates a clickwrap.',
+        'description': 'Updates the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'}
+        },
+        'request_body': {
+            'clickwrapName': {'type': 'Optional[str]', 'description': 'The clickwrap name.'},
+            'displaySettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Display settings for the clickwrap.'},
+            'documents': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of document objects.'},
+            'status': {'type': 'Optional[str]', 'description': 'The status of the clickwrap.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwraps_delete': {
+        'method': 'DELETE',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}',
+        'summary': 'Deletes a clickwrap.',
+        'description': 'Deletes the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    # CLICKWRAP VERSIONS OPERATIONS
+    'clickwrap_versions_list': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}/versions',
+        'summary': 'Gets clickwrap versions.',
+        'description': 'Retrieves a list of versions for the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwrap_versions_create': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}/versions',
+        'summary': 'Creates a clickwrap version.',
+        'description': 'Creates a new version for the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'}
+        },
+        'request_body': {
+            'documents': {'type': 'List[Dict[str, Any]]', 'required': True, 'description': 'Array of document objects.'},
+            'displaySettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Display settings for the version.'},
+            'status': {'type': 'Optional[str]', 'description': 'The status of the version.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwrap_versions_get': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}/versions/{versionId}',
+        'summary': 'Gets a clickwrap version.',
+        'description': 'Retrieves information about the specified clickwrap version.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'},
+            'versionId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The version ID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwrap_versions_update': {
+        'method': 'PUT',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}/versions/{versionId}',
+        'summary': 'Updates a clickwrap version.',
+        'description': 'Updates the specified clickwrap version.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'},
+            'versionId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The version ID.'}
+        },
+        'request_body': {
+            'documents': {'type': 'Optional[List[Dict[str, Any]]]', 'description': 'Array of document objects.'},
+            'displaySettings': {'type': 'Optional[Dict[str, Any]]', 'description': 'Display settings for the version.'},
+            'status': {'type': 'Optional[str]', 'description': 'The status of the version.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    # CLICKWRAP AGREEMENTS OPERATIONS
+    'clickwrap_agreements_list': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}/agreements',
+        'summary': 'Gets clickwrap agreements.',
+        'description': 'Retrieves a list of agreements for the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'},
+            'client_user_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by client user ID.'},
+            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the date range filter.'},
+            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the date range filter.'},
+            'page_number': {'type': 'Optional[int]', 'location': 'query', 'description': 'The page number for pagination.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    'clickwrap_agreements_create': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/clickwraps/{clickwrapId}/agreements',
+        'summary': 'Creates a clickwrap agreement.',
+        'description': 'Creates a new agreement for the specified clickwrap.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'clickwrapId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The clickwrap ID.'}
+        },
+        'request_body': {
+            'clientUserId': {'type': 'str', 'required': True, 'description': 'The client user ID.'},
+            'documentData': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Document data for the agreement.'},
+            'metadata': {'type': 'Optional[Dict[str, Any]]', 'description': 'Metadata for the agreement.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'click',
+        'tags': ['Clickwraps']
+    },
+
+    # ================================================================================
+    # MAESTRO API v1 - WORKFLOW ORCHESTRATION
+    # ================================================================================
+
+    # MAESTRO WORKFLOWS OPERATIONS
+    'maestro_workflows_list': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/workflows',
+        'summary': 'Gets a list of workflows.',
+        'description': 'Retrieves a list of Maestro workflows for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by workflow status.'},
+            'published': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, returns only published workflows.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['Workflows']
+    },
+
+    'maestro_workflows_create': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/workflows',
+        'summary': 'Creates a workflow.',
+        'description': 'Creates a new Maestro workflow for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'workflowName': {'type': 'str', 'required': True, 'description': 'The name of the workflow.'},
+            'workflowDescription': {'type': 'Optional[str]', 'description': 'The description of the workflow.'},
+            'accountId': {'type': 'str', 'required': True, 'description': 'The account ID.'},
+            'documentVersion': {'type': 'str', 'required': True, 'description': 'The document version.'},
+            'schemaVersion': {'type': 'str', 'required': True, 'description': 'The schema version.'},
+            'participants': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Participant definitions.'},
+            'trigger': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Trigger definition.'},
+            'variables': {'type': 'Optional[Dict[str, Any]]', 'description': 'Variable definitions.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['Workflows']
+    },
+
+    'maestro_workflows_get': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/workflows/{workflowId}',
+        'summary': 'Gets a workflow.',
+        'description': 'Retrieves information about the specified Maestro workflow.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'workflowId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The workflow ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['Workflows']
+    },
+
+    'maestro_workflows_update': {
+        'method': 'PUT',
+        'path': '/v1/accounts/{accountId}/workflows/{workflowId}',
+        'summary': 'Updates a workflow.',
+        'description': 'Updates the specified Maestro workflow.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'workflowId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The workflow ID GUID.'}
+        },
+        'request_body': {
+            'workflowName': {'type': 'Optional[str]', 'description': 'The name of the workflow.'},
+            'workflowDescription': {'type': 'Optional[str]', 'description': 'The description of the workflow.'},
+            'participants': {'type': 'Optional[Dict[str, Any]]', 'description': 'Participant definitions.'},
+            'trigger': {'type': 'Optional[Dict[str, Any]]', 'description': 'Trigger definition.'},
+            'variables': {'type': 'Optional[Dict[str, Any]]', 'description': 'Variable definitions.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['Workflows']
+    },
+
+    'maestro_workflows_delete': {
+        'method': 'DELETE',
+        'path': '/v1/accounts/{accountId}/workflows/{workflowId}',
+        'summary': 'Deletes a workflow.',
+        'description': 'Deletes the specified Maestro workflow.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'workflowId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The workflow ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['Workflows']
+    },
+
+    # MAESTRO WORKFLOW INSTANCES OPERATIONS
+    'maestro_workflow_instances_list': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/workflow_instances',
+        'summary': 'Gets workflow instances.',
+        'description': 'Retrieves a list of workflow instances for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'workflow_id': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by workflow ID.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by instance status.'},
+            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the date range filter.'},
+            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the date range filter.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['WorkflowInstances']
+    },
+
+    'maestro_workflow_instances_get': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/workflow_instances/{instanceId}',
+        'summary': 'Gets a workflow instance.',
+        'description': 'Retrieves information about the specified workflow instance.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'instanceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The instance ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['WorkflowInstances']
+    },
+
+    'maestro_workflow_instances_cancel': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/workflow_instances/{instanceId}/cancel',
+        'summary': 'Cancels a workflow instance.',
+        'description': 'Cancels the specified workflow instance.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'instanceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The instance ID GUID.'}
+        },
+        'request_body': {
+            'reason': {'type': 'Optional[str]', 'description': 'The reason for cancellation.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'maestro',
+        'tags': ['WorkflowInstances']
+    },
+
+    # ================================================================================
+    # WEBFORMS API v1.1 - FORM MANAGEMENT
+    # ================================================================================
+
+    # WEBFORMS OPERATIONS
+    'webforms_list': {
+        'method': 'GET',
+        'path': '/v1.1/accounts/{accountId}/forms',
+        'summary': 'Gets a list of forms.',
+        'description': 'Retrieves a list of web forms for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'search': {'type': 'Optional[str]', 'location': 'query', 'description': 'Text to search for in form names.'},
+            'is_published': {'type': 'Optional[bool]', 'location': 'query', 'description': 'When true, returns only published forms.'},
+            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the date range filter.'},
+            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the date range filter.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['Forms']
+    },
+
+    'webforms_create': {
+        'method': 'POST',
+        'path': '/v1.1/accounts/{accountId}/forms',
+        'summary': 'Creates a form.',
+        'description': 'Creates a new web form for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'formName': {'type': 'str', 'required': True, 'description': 'The name of the form.'},
+            'hasFile': {'type': 'bool', 'required': True, 'description': 'Indicates if the form has a file.'},
+            'isStandAlone': {'type': 'bool', 'required': True, 'description': 'Indicates if the form is standalone.'},
+            'formMetadata': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Form metadata.'},
+            'config': {'type': 'Optional[Dict[str, Any]]', 'description': 'Form configuration.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['Forms']
+    },
+
+    'webforms_get': {
+        'method': 'GET',
+        'path': '/v1.1/accounts/{accountId}/forms/{formId}',
+        'summary': 'Gets a form.',
+        'description': 'Retrieves information about the specified web form.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'formId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The form ID GUID.'},
+            'state': {'type': 'Optional[str]', 'location': 'query', 'description': 'The form state to retrieve.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['Forms']
+    },
+
+    'webforms_update': {
+        'method': 'PUT',
+        'path': '/v1.1/accounts/{accountId}/forms/{formId}',
+        'summary': 'Updates a form.',
+        'description': 'Updates the specified web form.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'formId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The form ID GUID.'}
+        },
+        'request_body': {
+            'formMetadata': {'type': 'Optional[Dict[str, Any]]', 'description': 'Form metadata.'},
+            'config': {'type': 'Optional[Dict[str, Any]]', 'description': 'Form configuration.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['Forms']
+    },
+
+    'webforms_delete': {
+        'method': 'DELETE',
+        'path': '/v1.1/accounts/{accountId}/forms/{formId}',
+        'summary': 'Deletes a form.',
+        'description': 'Deletes the specified web form.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'formId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The form ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['Forms']
+    },
+
+    # WEBFORM INSTANCES OPERATIONS
+    'webform_instances_list': {
+        'method': 'GET',
+        'path': '/v1.1/accounts/{accountId}/forms/{formId}/instances',
+        'summary': 'Gets form instances.',
+        'description': 'Retrieves a list of instances for the specified web form.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'formId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The form ID GUID.'},
+            'from_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'Start date for the date range filter.'},
+            'to_date': {'type': 'Optional[str]', 'location': 'query', 'description': 'End date for the date range filter.'},
+            'status': {'type': 'Optional[str]', 'location': 'query', 'description': 'Filters by instance status.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['FormInstances']
+    },
+
+    'webform_instances_get': {
+        'method': 'GET',
+        'path': '/v1.1/accounts/{accountId}/forms/{formId}/instances/{instanceId}',
+        'summary': 'Gets a form instance.',
+        'description': 'Retrieves information about the specified form instance.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'formId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The form ID GUID.'},
+            'instanceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The instance ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['FormInstances']
+    },
+
+    'webform_instances_refresh': {
+        'method': 'POST',
+        'path': '/v1.1/accounts/{accountId}/forms/{formId}/instances/{instanceId}/refresh',
+        'summary': 'Refreshes a form instance.',
+        'description': 'Refreshes the specified form instance to get the latest data.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'formId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The form ID GUID.'},
+            'instanceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The instance ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'webforms',
+        'tags': ['FormInstances']
+    },
+
+    # ================================================================================
+    # NAVIGATOR API - AGREEMENT ANALYTICS & INTELLIGENCE
+    # ================================================================================
+
+    # NAVIGATOR DATA SOURCES OPERATIONS
+    'navigator_data_sources_list': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/data_sources',
+        'summary': 'Gets data sources.',
+        'description': 'Retrieves a list of data sources for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'navigator',
+        'tags': ['DataSources']
+    },
+
+    'navigator_data_sources_create': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/data_sources',
+        'summary': 'Creates a data source.',
+        'description': 'Creates a new data source for the specified account.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'name': {'type': 'str', 'required': True, 'description': 'The name of the data source.'},
+            'type': {'type': 'str', 'required': True, 'description': 'The type of the data source.'},
+            'configuration': {'type': 'Dict[str, Any]', 'required': True, 'description': 'Configuration settings.'},
+            'description': {'type': 'Optional[str]', 'description': 'Description of the data source.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'navigator',
+        'tags': ['DataSources']
+    },
+
+    'navigator_data_sources_get': {
+        'method': 'GET',
+        'path': '/v1/accounts/{accountId}/data_sources/{dataSourceId}',
+        'summary': 'Gets a data source.',
+        'description': 'Retrieves information about the specified data source.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'dataSourceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The data source ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'navigator',
+        'tags': ['DataSources']
+    },
+
+    'navigator_data_sources_update': {
+        'method': 'PUT',
+        'path': '/v1/accounts/{accountId}/data_sources/{dataSourceId}',
+        'summary': 'Updates a data source.',
+        'description': 'Updates the specified data source.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'dataSourceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The data source ID GUID.'}
+        },
+        'request_body': {
+            'name': {'type': 'Optional[str]', 'description': 'The name of the data source.'},
+            'configuration': {'type': 'Optional[Dict[str, Any]]', 'description': 'Configuration settings.'},
+            'description': {'type': 'Optional[str]', 'description': 'Description of the data source.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'navigator',
+        'tags': ['DataSources']
+    },
+
+    'navigator_data_sources_delete': {
+        'method': 'DELETE',
+        'path': '/v1/accounts/{accountId}/data_sources/{dataSourceId}',
+        'summary': 'Deletes a data source.',
+        'description': 'Deletes the specified data source.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'},
+            'dataSourceId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The data source ID GUID.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'navigator',
+        'tags': ['DataSources']
+    },
+
+    # NAVIGATOR QUERIES OPERATIONS
+    'navigator_queries_execute': {
+        'method': 'POST',
+        'path': '/v1/accounts/{accountId}/queries',
+        'summary': 'Executes a query.',
+        'description': 'Executes a query against the specified data sources.',
+        'parameters': {
+            'accountId': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The account ID GUID.'}
+        },
+        'request_body': {
+            'query': {'type': 'str', 'required': True, 'description': 'The query to execute.'},
+            'dataSourceIds': {'type': 'List[str]', 'required': True, 'description': 'List of data source IDs to query.'},
+            'maxResults': {'type': 'Optional[int]', 'description': 'Maximum number of results to return.'}
+        },
+        'headers': {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'navigator',
+        'tags': ['Queries']
+    },
+
+    # ================================================================================
+    # MONITOR API v2 - SECURITY EVENTS & MONITORING
+    # ================================================================================
+
+    # MONITOR DATASET OPERATIONS
+    'monitor_dataset_stream': {
+        'method': 'GET',
+        'path': '/api/v{version}/datasets/{dataSetName}/stream',
+        'summary': 'Gets customer event data for an organization.',
+        'description': 'Gets customer event data for the organization in a streaming fashion.',
+        'parameters': {
+            'version': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The API version.'},
+            'dataSetName': {'type': 'str', 'location': 'path', 'required': True, 'description': 'The data set name (always "monitor").'},
+            'cursor': {'type': 'Optional[str]', 'location': 'query', 'description': 'The cursor for pagination.'},
+            'limit': {'type': 'Optional[int]', 'location': 'query', 'description': 'The maximum number of records to return.'}
+        },
+        'headers': {'Accept': 'application/json', 'Authorization': 'Bearer {access_token}'},
+        'api_category': 'monitor',
+        'tags': ['DataSet']
     }
 }
 
 
-# ============================================================================
-# CODE GENERATION UTILITIES
-# ============================================================================
-
-_PY_RESERVED = set(keyword.kwlist) | {"from", "global", "async", "await", "None", "self", "cls"}
-_ALWAYS_RESERVED_NAMES = {"self", "headers"}  # Removed "body" and "body_additional"
-
-
-def _sanitize_name(name: str) -> str:
-    """Sanitize parameter names to be valid Python identifiers."""
-    sanitized = name.replace('-', '_').replace('.', '_').replace('[]', '_array')
-
-    if sanitized in _PY_RESERVED or sanitized in _ALWAYS_RESERVED_NAMES:
-        sanitized = f"{sanitized}_param"
-
-    if sanitized[0].isdigit():
-        sanitized = f"param_{sanitized}"
-
-    return sanitized
-
-
-def _build_filter_params(filter_dict: Dict[str, str]) -> str:
-    """Build filter parameters for query string."""
-    lines = []
-    for key, value in filter_dict.items():
-        lines.append(f"            params['filter[{key}]'] = {value}")
-    return '\n'.join(lines) if lines else ''
-
-
-def _generate_method(method_name: str, endpoint_info: Dict) -> str:
-    """Generate a single method for the DocuSignDataSource class."""
-    method = endpoint_info['method']
-    path = endpoint_info['path']
-    description = endpoint_info['description']
-    parameters = endpoint_info.get('parameters', {})
-    required = endpoint_info.get('required', [])
-
-    # Separate parameters by location
-    path_params = []
-    query_params = []
-    body_params = []
-    file_params = []
-
-    for param_name, param_info in parameters.items():
-        location = param_info['location']
+class DocuSignDataSourceGenerator:
+    """Generates a comprehensive DocuSignDataSource class covering all DocuSign APIs."""
+    
+    def __init__(self):
+        self.generated_methods = []
+        
+    def _sanitize_method_name(self, operation_id: str) -> str:
+        """Convert operation ID to valid Python method name."""
+        # Convert to snake_case and sanitize
+        method_name = re.sub(r'([A-Z])', r'_\1', operation_id).lower()
+        method_name = re.sub(r'^_', '', method_name)  # Remove leading underscore
+        method_name = re.sub(r'[^a-zA-Z0-9_]', '_', method_name)  # Replace invalid chars
+        method_name = re.sub(r'__+', '_', method_name)  # Remove double underscores
+        return method_name.strip('_')
+    
+    def _format_parameter_type(self, param_info: Dict[str, Any]) -> str:
+        """Format parameter type annotation."""
         param_type = param_info['type']
-
-        sanitized_name = _sanitize_name(param_name)
-
-        param_data = {
-            'name': param_name,
-            'sanitized': sanitized_name,
-            'type': param_type,
-            'description': param_info['description'],
-            'required': param_name in required
-        }
-
-        if location == 'path':
-            path_params.append(param_data)
-        elif location == 'query':
-            query_params.append(param_data)
-        elif location == 'file':
-            file_params.append(param_data)
-        else:  # body
-            body_params.append(param_data)
-
-    # Build method signature
-    sig_parts = ['self']
-
-    # Add required parameters first
-    for param in path_params:
-        if param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']}")
-
-    for param in body_params:
-        if param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']}")
-
-    # Add optional parameters
-    for param in path_params:
-        if not param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    for param in query_params:
-        sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    for param in body_params:
-        if not param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    for param in file_params:
-        sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    signature = f"    async def {method_name}(\n        " + ",\n        ".join(sig_parts) + "\n    ) -> DocuSignResponse:"
-
-    # Build docstring
-    docstring_lines = [f'        """{description}']
-
-    if parameters:
-        docstring_lines.append('')
-        docstring_lines.append('        Args:')
-        for param in path_params + query_params + body_params + file_params:
-            req_str = ' (required)' if param['required'] else ''
-            docstring_lines.append(f"            {param['sanitized']}: {param['description']}{req_str}")
-
-    docstring_lines.append('')
-    docstring_lines.append('        Returns:')
-    docstring_lines.append('            DocuSignResponse: Response object with success status and data/error')
-    docstring_lines.append('        """')
-
-    docstring = '\n'.join(docstring_lines)
-
-    # Build method body
-    body_lines = []
-
-    # Build query parameters
-    if query_params:
-        body_lines.append('        params: Dict[str, Union[str, int, bool]] = {}')
-        for param in query_params:
-            # Special handling for filter parameter (Dict type)
-            if param['name'] == 'filter' and 'Dict' in param['type']:
-                body_lines.append(f'        if {param["sanitized"]} is not None:')
-                body_lines.append(f'            for key, value in {param["sanitized"]}.items():')
-                body_lines.append("                params[f'filter[{key}]'] = value")
+        if param_info.get('required', False):
+            return param_type
+        else:
+            if param_type.startswith('Optional['):
+                return param_type
             else:
-                body_lines.append(f'        if {param["sanitized"]} is not None:')
-                body_lines.append(f'            params["{param["name"]}"] = {param["sanitized"]}')
-    else:
-        body_lines.append('        params: Dict[str, Union[str, int, bool]] = {}')
-
-    # Build request body
-    has_body_params = len(body_params) > 0
-    has_file_params = len(file_params) > 0
-
-    if has_body_params or has_file_params:
-        body_lines.append('')
-        body_lines.append('        request_body: Dict[str, Union[str, int, bool, List, Dict, None]] = {}')
-
-        for param in body_params:
-            body_lines.append(f'        if {param["sanitized"]} is not None:')
-            body_lines.append(f'            request_body["{param["name"]}"] = {param["sanitized"]}')
-
-        # File params need special handling
-        if has_file_params:
-            body_lines.append('')
-            body_lines.append('        files: Dict[str, bytes] = {}')
-            for param in file_params:
-                body_lines.append(f'        if {param["sanitized"]} is not None:')
-                body_lines.append(f'            files["{param["name"]}"] = {param["sanitized"]}')
-
-    # Build URL
-    body_lines.append('')
-    if path_params:
-        # Format path with parameters
-        format_args = ', '.join([f'{p["name"]}={p["sanitized"]}' for p in path_params])
-        body_lines.append(f'        url = self.base_url + "{path}".format({format_args})')
-    else:
-        body_lines.append(f'        url = self.base_url + "{path}"')
-
-    # Determine content type and body for request
-    body_lines.append('')
-    body_lines.append('        headers = dict(self.http.headers)')
-
-    if has_file_params:
-        body_lines.append('        # Note: multipart/form-data requests need special handling')
-        body_lines.append('        # The HTTPRequest should handle multipart encoding when files are present')
-    elif has_body_params and method in ['POST', 'PUT']:
-        body_lines.append("        headers['Content-Type'] = 'application/json'")
-
-    # Create request
-    body_lines.append('')
-    body_lines.append('        request = HTTPRequest(')
-    body_lines.append(f'            method="{method}",')
-    body_lines.append('            url=url,')
-    body_lines.append('            headers=headers,')
-    body_lines.append('            query_params=params,')
-
-    if has_file_params:
-        body_lines.append('            body=request_body,')
-        body_lines.append('            files=files')
-    elif has_body_params:
-        body_lines.append('            body=request_body')
-    else:
-        body_lines.append('            body=None')
-
-    body_lines.append('        )')
-
-    # Execute request
-    body_lines.append('')
-    body_lines.append('        try:')
-    body_lines.append('            response = await self.http.execute(request)')
-    body_lines.append('            return DocuSignResponse(success=True, data=response)')
-    body_lines.append('        except Exception as e:')
-    body_lines.append('            return DocuSignResponse(success=False, error=str(e))')
-
-    return signature + '\n' + docstring + '\n' + '\n'.join(body_lines)
-
-    """Generate a single method for the DocuSignDataSource class."""
-    method = endpoint_info['method']
-    path = endpoint_info['path']
-    description = endpoint_info['description']
-    parameters = endpoint_info.get('parameters', {})
-    required = endpoint_info.get('required', [])
-
-    # Separate parameters by location
-    path_params = []
-    query_params = []
-    body_params = []
-    file_params = []
-
-    for param_name, param_info in parameters.items():
-        location = param_info['location']
-        param_type = param_info['type']
-
-        sanitized_name = _sanitize_name(param_name)
-
-        param_data = {
-            'name': param_name,
-            'sanitized': sanitized_name,
-            'type': param_type,
-            'description': param_info['description'],
-            'required': param_name in required
-        }
-
-        if location == 'path':
-            path_params.append(param_data)
-        elif location == 'query':
-            query_params.append(param_data)
-        elif location == 'file':
-            file_params.append(param_data)
-        else:  # body
-            body_params.append(param_data)
-
-    # Build method signature
-    sig_parts = ['self']
-
-    # Add required parameters first
-    for param in path_params:
-        if param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']}")
-
-    for param in body_params:
-        if param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']}")
-
-    # Add optional parameters
-    for param in path_params:
-        if not param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    for param in query_params:
-        sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    for param in body_params:
-        if not param['required']:
-            sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    for param in file_params:
-        sig_parts.append(f"{param['sanitized']}: {param['type']} = None")
-
-    signature = f"    async def {method_name}(\n        " + ",\n        ".join(sig_parts) + "\n    ) -> DocuSignResponse:"
-
-    # Build docstring
-    docstring_lines = [f'        """{description}']
-
-    if parameters:
-        docstring_lines.append('')
-        docstring_lines.append('        Args:')
-        for param in path_params + query_params + body_params + file_params:
-            req_str = ' (required)' if param['required'] else ''
-            docstring_lines.append(f"            {param['sanitized']}: {param['description']}{req_str}")
-
-    docstring_lines.append('')
-    docstring_lines.append('        Returns:')
-    docstring_lines.append('            DocuSignResponse: Response object with success status and data/error')
-    docstring_lines.append('        """')
-
-    docstring = '\n'.join(docstring_lines)
-
-    # Build method body
-    body_lines = []
-
-    # Build query parameters
-    if query_params:
-        body_lines.append('        params: Dict[str, Union[str, int, bool]] = {}')
-        for param in query_params:
-            # Special handling for filter parameter (Dict type)
-            if param['name'] == 'filter' and 'Dict' in param['type']:
-                body_lines.append(f'        if {param["sanitized"]} is not None:')
-                body_lines.append(f'            for key, value in {param["sanitized"]}.items():')
-                body_lines.append("                params[f'filter[{key}]'] = value")
+                return f'Optional[{param_type}]'
+    
+    def _generate_method_signature(self, operation_id: str, operation: Dict[str, Any]) -> str:
+        """Generate method signature with proper parameter typing."""
+        method_name = self._sanitize_method_name(operation_id)
+        
+        # Start with self parameter
+        params = ['self']
+        
+        # Add path parameters first (required)
+        path_params = []
+        query_params = []
+        
+        # Separate path and query parameters
+        for param_name, param_info in operation['parameters'].items():
+            if param_info['location'] == 'path':
+                path_params.append((param_name, param_info))
+            elif param_info['location'] == 'query':
+                query_params.append((param_name, param_info))
+        
+        # Add path parameters (all required)
+        for param_name, param_info in path_params:
+            param_type = self._format_parameter_type(param_info)
+            params.append(f'{param_name}: {param_type}')
+        
+        # Add query parameters
+        for param_name, param_info in query_params:
+            param_type = self._format_parameter_type(param_info)
+            if param_info.get('required', False):
+                params.append(f'{param_name}: {param_type}')
             else:
-                body_lines.append(f'        if {param["sanitized"]} is not None:')
-                body_lines.append(f'            params["{param["name"]}"] = {param["sanitized"]}')
+                default_value = 'None'
+                params.append(f'{param_name}: {param_type} = {default_value}')
+        
+        # Add request body parameters if present
+        if 'request_body' in operation:
+            for param_name, param_info in operation['request_body'].items():
+                param_type = self._format_parameter_type(param_info)
+                if param_info.get('required', False):
+                    params.append(f'{param_name}: {param_type}')
+                else:
+                    default_value = 'None'
+                    params.append(f'{param_name}: {param_type} = {default_value}')
+        
+        return f"async def {method_name}(\n        " + ",\n        ".join(params) + "\n    ) -> DocuSignResponse:"
+    
+    def _generate_method_body(self, operation_id: str, operation: Dict[str, Any]) -> str:
+        """Generate method body with proper request construction."""
+        method_name = self._sanitize_method_name(operation_id)
+        lines = []
+        
+        # Add compact docstring
+        lines.append(f'        """{operation["summary"]}"""')
+        
+        # Build URL
+        path_template = operation['path']
+        lines.append(f'        url = self.base_url + "{path_template}"')
+        
+        # Format path parameters
+        path_params = [param for param, info in operation['parameters'].items() 
+                      if info['location'] == 'path']
+        if path_params:
+            for param in path_params:
+                lines.append(f'        url = url.replace("{{{param}}}", str({param}))')
+        
+        # Build query parameters
+        query_params = [param for param, info in operation['parameters'].items() 
+                       if info['location'] == 'query']
+        if query_params:
+            lines.append(f'        params = {{}}')
+            for param in query_params:
+                lines.append(f'        if {param} is not None:')
+                lines.append(f'            params["{param}"] = {param}')
+            lines.append(f'        if params:')
+            lines.append(f'            query_string = "&".join([f"{{k}}={{v}}" for k, v in params.items()])')
+            lines.append(f'            url = f"{{url}}?{{query_string}}"')
+        
+        # Build request body
+        if 'request_body' in operation:
+            lines.append(f'        body = {{}}')
+            for param_name, param_info in operation['request_body'].items():
+                lines.append(f'        if {param_name} is not None:')
+                lines.append(f'            body["{param_name}"] = {param_name}')
+        
+        # Set headers
+        lines.append(f'        headers = self.http.headers.copy()')
+        api_headers = operation.get('headers', {})
+        for header_name, header_value in api_headers.items():
+            if header_name == 'Authorization':
+                lines.append(f'        headers["{header_name}"] = self._client.get_auth_header()')
+            else:
+                lines.append(f'        headers["{header_name}"] = "{header_value}"')
+        
+        # Create and execute request
+        lines.append(f'        request = HTTPRequest(')
+        lines.append(f'            method="{operation["method"]}",')
+        lines.append(f'            url=url,')
+        if 'request_body' in operation:
+            lines.append(f'            headers=headers,')
+            lines.append(f'            body=json.dumps(body) if body else None')
+        else:
+            lines.append(f'            headers=headers')
+        lines.append(f'        )')
+        lines.append(f'        try:')
+        lines.append(f'            response = await self.http.execute(request)')
+        lines.append(f'            return DocuSignResponse(success=True, data=response)')
+        lines.append(f'        except Exception as e:')
+        lines.append(f'            return DocuSignResponse(success=False, error=str(e))')
+        
+        # Track generated method
+        self.generated_methods.append({
+            'name': method_name,
+            'operation_id': operation_id,
+            'api_category': operation['api_category'],
+            'method': operation['method'],
+            'path': operation['path'],
+            'summary': operation['summary']
+        })
+        
+        return "\n".join(lines)
+    
+    def generate_complete_datasource(self) -> str:
+        """Generate the complete DocuSign datasource class."""
+        # Class header and imports
+        lines = [
+            "from typing import Dict, List, Optional, Union, Any",
+            "import json",
+            "",
+            "from app.sources.client.http.http_request import HTTPRequest",
+            "from app.sources.client.docusign.docusign import DocuSignClient, DocuSignResponse",
+            "",
+            "",
+            "class DocuSignDataSource:",
+            '    """Comprehensive DocuSign API client wrapper.',
+            '    ',
+            '    Provides async methods for ALL DocuSign API endpoints across:',
+            '    - eSignature API v2.1 (Accounts, Envelopes, Templates, Users, Groups)',
+            '    - Admin API v2.1 (Organizations, Users, Identity Providers)',
+            '    - Rooms API v2 (Real estate transactions, Users, Documents)',
+            '    - Click API v1 (Clickwrap agreements, Versions)',
+            '    - Maestro API v1 (Workflow orchestration)',
+            '    - WebForms API v1.1 (Form management)',
+            '    - Navigator API (Agreement analytics)',
+            '    - Monitor API v2 (Security events)',
+            '    ',
+            '    All methods return DocuSignResponse objects with standardized format.',
+            '    Every parameter matches DocuSign\'s official API documentation exactly.',
+            '    """',
+            "",
+            "    def __init__(self, client: DocuSignClient) -> None:",
+            "        self._client = client",
+            "        self.http = client.get_client()",
+            "        if self.http is None:",
+            "            raise ValueError('HTTP client is not initialized')",
+            "        try:",
+            "            self.base_url = self.http.get_base_url().rstrip('/')",
+            "        except AttributeError as exc:",
+            "            raise ValueError('HTTP client does not have get_base_url method') from exc",
+            "",
+            "    def get_data_source(self) -> 'DocuSignDataSource':",
+            "        return self",
+            ""
+        ]
+        
+        # Generate methods for each API operation
+        for operation_id, operation in DOCUSIGN_API_OPERATIONS.items():
+            # Add method signature
+            signature = self._generate_method_signature(operation_id, operation)
+            lines.append(f"    {signature}")
+            
+            # Add method body
+            body = self._generate_method_body(operation_id, operation)
+            lines.append(body)
+            lines.append("")
+        
+        return "\n".join(lines)
+
+
+def generate_docusign_datasource(output_dir: Optional[str] = None) -> str:
+    """Generate complete DocuSign datasource code and save to docusign folder."""
+    import os
+    from pathlib import Path
+    
+    # Create docusign directory
+    if output_dir is None:
+        script_dir = Path(__file__).parent if __file__ else Path('.')
+        docusign_dir = script_dir / "docusign"
     else:
-        body_lines.append('        params: Dict[str, Union[str, int, bool]] = {}')
-
-    # Build request body
-    has_body_params = len(body_params) > 0
-    has_file_params = len(file_params) > 0
-
-    if has_body_params or has_file_params:
-        body_lines.append('')
-        body_lines.append('        body: Dict[str, Union[str, int, bool, List, Dict, None]] = {}')
-
-        for param in body_params:
-            body_lines.append(f'        if {param["sanitized"]} is not None:')
-            body_lines.append(f'            body["{param["name"]}"] = {param["sanitized"]}')
-
-        # File params need special handling
-        if has_file_params:
-            body_lines.append('')
-            body_lines.append('        files: Dict[str, bytes] = {}')
-            for param in file_params:
-                body_lines.append(f'        if {param["sanitized"]} is not None:')
-                body_lines.append(f'            files["{param["name"]}"] = {param["sanitized"]}')
-
-    # Build URL
-    body_lines.append('')
-    if path_params:
-        # Format path with parameters
-        format_args = ', '.join([f'{p["name"]}={p["sanitized"]}' for p in path_params])
-        body_lines.append(f'        url = self.base_url + "{path}".format({format_args})')
-    else:
-        body_lines.append(f'        url = self.base_url + "{path}"')
-
-    # Determine content type and body for request
-    body_lines.append('')
-    body_lines.append('        headers = dict(self.http.headers)')
-
-    if has_file_params:
-        body_lines.append('        # Note: multipart/form-data requests need special handling')
-        body_lines.append('        # The HTTPRequest should handle multipart encoding when files are present')
-    elif has_body_params and method in ['POST', 'PUT']:
-        body_lines.append("        headers['Content-Type'] = 'application/json'")
-
-    # Create request
-    body_lines.append('')
-    body_lines.append('        request = HTTPRequest(')
-    body_lines.append(f'            method="{method}",')
-    body_lines.append('            url=url,')
-    body_lines.append('            headers=headers,')
-    body_lines.append('            query_params=params,')
-
-    if has_file_params:
-        body_lines.append('            body=body,')
-        body_lines.append('            files=files')
-    elif has_body_params:
-        body_lines.append('            body=body')
-    else:
-        body_lines.append('            body=None')
-
-    body_lines.append('        )')
-
-    # Execute request
-    body_lines.append('')
-    body_lines.append('        try:')
-    body_lines.append('            response = await self.http.execute(request)')
-    body_lines.append('            return DocuSignResponse(success=True, data=response)')
-    body_lines.append('        except Exception as e:')
-    body_lines.append('            return DocuSignResponse(success=False, error=str(e))')
-
-    return signature + '\n' + docstring + '\n' + '\n'.join(body_lines)
+        docusign_dir = Path(output_dir)
+    
+    docusign_dir.mkdir(exist_ok=True)
+    
+    generator = DocuSignDataSourceGenerator()
+    code = generator.generate_complete_datasource()
+    
+    # Save to docusign.py file
+    output_file = docusign_dir / "docusign.py"
+    output_file.write_text(code, encoding='utf-8')
+    
+    print(f"✅ Generated DocuSign datasource with {len(generator.generated_methods)} methods")
+    print(f"📁 Saved to: {output_file}")
+    
+    # Print summary by API
+    by_category = {}
+    for method in generator.generated_methods:
+        category = method['api_category'].upper()
+        if category not in by_category:
+            by_category[category] = []
+        by_category[category].append(method)
+    
+    print(f"\n📊 Generated methods by API:")
+    total_methods = 0
+    for category, methods in sorted(by_category.items()):
+        print(f"   {category}: {len(methods)} methods")
+        total_methods += len(methods)
+    
+    print(f"\n🚀 Total: {total_methods} methods across {len(by_category)} APIs")
+    print(f"🔧 All parameters explicitly typed (no Any parameters)")
+    print(f"📋 Complete DocuSign API coverage (Business + Personal)")
+    
+    return str(output_file)
 
 
-def generate_docusign_datasource() -> str:
-    """Generate the complete DocuSignDataSource class."""
-
-    lines = [
-        '"""',
-        'DocuSign API DataSource',
-        '',
-        'Auto-generated comprehensive DocuSign API client wrapper.',
-        'Covers all DocuSign API endpoints with explicit type hints.',
-        '',
-        'Generated from DocuSign API documentation at:',
-        'https://developers.docusign.com/docs/esign-rest-api/reference/',
-        '"""',
-        '',
-        'from typing import Dict, List, Optional, Union',
-        'from app.sources.client.http.http_request import HTTPRequest',
-        'from app.sources.docusign.docusign import DocuSignClient, DocuSignResponse',
-        '',
-        '',
-        'class DocuSignDataSource:',
-        '    """Comprehensive DocuSign API client wrapper.',
-        '    ',
-        '    Provides async methods for ALL DocuSign API endpoints:',
-        '    ',
-        '    AUTHENTICATION:',
-        '    - OAuth user information',
-        '    ',
-        '    ESIGNATURE API:',
-        '    - Accounts (information, settings)',
-        '    - Envelopes (create, read, update, delete, list)',
-        '    - Documents (add, get, delete)',
-        '    - Recipients (list, update, delete)',
-        '    - Templates (create, read, update, delete, list)',
-        '    - Users (create, read, update, delete, list)',
-        '    - Groups (create, read, update, delete, list, membership)',
-        '    - Custom Tabs (create, read, update, delete, list)',
-        '    - Folders (list, move items)',
-        '    - Bulk Send (create list, send)',
-        '    ',
-        '    ROOMS API:',
-        '    - Rooms (create, read, update, delete, list)',
-        '    ',
-        '    CLICK API:',
-        '    - Clickwraps (create, read, update, delete, list)',
-        '    - Agreements (list)',
-        '    ',
-        '    ADMIN API:',
-        '    - User Management (permission profiles)',
-        '    - Group Management (add/remove users)',
-        '    - Account Management (create, billing plans)',
-        '    - Branding (create, read, update, delete)',
-        '    ',
-        '    MONITOR API:',
-        '    - Monitoring data',
-        '    - System status',
-        '    ',
-        '    INVITATION API:',
-        '    - Invite users (create, read, update, delete)',
-        '    ',
-        '    All methods return DocuSignResponse objects with standardized format.',
-        '    Every parameter matches DocuSign official API documentation exactly.',
-        '    No Any types - all parameters are explicitly typed.',
-        '    Supports multipart/form-data for file uploads.',
-        '    """',
-        '',
-        '    def __init__(self, client: DocuSignClient) -> None:',
-        '        """Initialize with DocuSignClient.',
-        '        ',
-        '        Args:',
-        '            client: DocuSignClient instance with authentication configured',
-        '        """',
-        '        self._client = client',
-        '        self.http = client.get_client()',
-        '        if self.http is None:',
-        "            raise ValueError('HTTP client is not initialized')",
-        '        try:',
-        "            self.base_url = self.http.get_base_url().rstrip('/')",
-        '        except AttributeError as exc:',
-        "            raise ValueError('HTTP client does not have get_base_url method') from exc",
-        '',
-        "    def get_data_source(self) -> 'DocuSignDataSource':",
-        '        """Return the data source instance."""',
-        '        return self',
-        '',
-    ]
-
-    # Generate all API methods
-    for method_name, endpoint_info in DOCUSIGN_API_ENDPOINTS.items():
-        lines.append(_generate_method(method_name, endpoint_info))
-        lines.append('')
-
-    # Add utility method
-    lines.extend([
-        '    async def get_api_info(self) -> DocuSignResponse:',
-        '        """Get information about the DocuSign API client.',
-        '        ',
-        '        Returns:',
-        '            DocuSignResponse: Information about available API methods',
-        '        """',
-        '        info = {',
-        f"            'total_methods': {len(DOCUSIGN_API_ENDPOINTS)},",
-        "            'base_url': self.base_url,",
-        "            'api_categories': [",
-        "                'Authentication (1 method)',",
-        "                'eSignature - Accounts (4 methods)',",
-        "                'eSignature - Envelopes (5 methods)',",
-        "                'eSignature - Documents (3 methods)',",
-        "                'eSignature - Recipients (3 methods)',",
-        "                'eSignature - Templates (5 methods)',",
-        "                'eSignature - Users (5 methods)',",
-        "                'eSignature - Groups (5 methods)',",
-        "                'eSignature - Custom Tabs (5 methods)',",
-        "                'eSignature - Folders (3 methods)',",
-        "                'eSignature - Bulk Send (2 methods)',",
-        "                'Rooms API (5 methods)',",
-        "                'Click API (5 methods)',",
-        "                'Admin API - User Management (5 methods)',",
-        "                'Admin API - Group Management (3 methods)',",
-        "                'Admin API - Account Management (4 methods)',",
-        "                'Admin API - Branding (5 methods)',",
-        "                'Monitor API (2 methods)',",
-        "                'Invitation API (4 methods)'",
-        "            ]",
-        '        }',
-        '        return DocuSignResponse(success=True, data=info)',
-    ])
-
-    return '\n'.join(lines)
-
-
-def main() -> None:
-    """Generate and save the DocuSign datasource."""
-    parser = argparse.ArgumentParser(
-        description='Generate comprehensive DocuSign API DataSource'
-    )
-    parser.add_argument(
-        '--out',
-        default='docusign/docusign_data_source.py',
-        help='Output path for the generated datasource'
-    )
-    parser.add_argument(
-        '--print',
-        dest='do_print',
-        action='store_true',
-        help='Print generated code to stdout'
-    )
-
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Generate comprehensive DocuSign API datasource')
+    parser.add_argument('--output', '-o', help='Output directory path', default=None)
+    
     args = parser.parse_args()
-
-    print('🚀 Generating comprehensive DocuSign API DataSource...')
-    print(f'📊 Total endpoints: {len(DOCUSIGN_API_ENDPOINTS)}')
-
-    code = generate_docusign_datasource()
-
-    # Create directory if needed
-    output_path = Path(args.out)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write to file
-    output_path.write_text(code, encoding='utf-8')
-
-    print('✅ Generated DocuSignDataSource successfully!')
-    print(f'📁 Saved to: {output_path}')
-    print('\n📋 Summary:')
-    print(f'   ✅ {len(DOCUSIGN_API_ENDPOINTS)} API methods')
-    print('   ✅ All parameters explicitly typed (no Any)')
-    print('   ✅ Comprehensive documentation')
-    print('   ✅ Multipart/form-data support for file uploads')
-    print('   ✅ Matches DocuSign official API exactly')
-    print('\n🎯 Coverage:')
-    print('   • Authentication: 1 method')
-    print('   • eSignature - Accounts: 4 methods')
-    print('   • eSignature - Envelopes: 5 methods')
-    print('   • eSignature - Documents: 3 methods')
-    print('   • eSignature - Recipients: 3 methods')
-    print('   • eSignature - Templates: 5 methods')
-    print('   • eSignature - Users: 5 methods')
-    print('   • eSignature - Groups: 5 methods')
-    print('   • eSignature - Custom Tabs: 5 methods')
-    print('   • eSignature - Folders: 3 methods')
-    print('   • eSignature - Bulk Send: 2 methods')
-    print('   • Rooms API: 5 methods')
-    print('   • Click API: 5 methods')
-    print('   • Admin API - User Management: 5 methods')
-    print('   • Admin API - Group Management: 3 methods')
-    print('   • Admin API - Account Management: 4 methods')
-    print('   • Admin API - Branding: 5 methods')
-    print('   • Monitor API: 2 methods')
-    print('   • Invitation API: 4 methods')
-
-    if args.do_print:
-        print('\n' + '='*80)
-        print('GENERATED CODE:')
-        print('='*80 + '\n')
-        print(code)
-
-
-if __name__ == '__main__':
-    main()
+    
+    generate_docusign_datasource(args.output)
