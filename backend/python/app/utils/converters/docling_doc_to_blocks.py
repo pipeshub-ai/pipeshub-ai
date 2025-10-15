@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 from docling.datamodel.document import DoclingDocument
 from jinja2 import Template
@@ -149,7 +149,7 @@ class DoclingDocToBlocksConverter():
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
 
 
-        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block|None:
+        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
             block = None
             if item.get("text") != "":
                 block = Block(
