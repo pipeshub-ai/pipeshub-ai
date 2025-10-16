@@ -80,16 +80,23 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             org_id = org["_key"]
             accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
             enabled_apps = await arango_service.get_org_apps(org_id)
-            app_names = [app["name"].replace(" ", "").lower() for app in enabled_apps]
+            app_names = [app["type"].replace(" ", "").lower() for app in enabled_apps]
             logger.info(f"App names: {app_names}")
             # Ensure the method is called on the correct object
             for app in enabled_apps:
                 connector_id = app.get("_key")
                 app_group = app.get("appGroup", "")
+
                 if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value or "google" in app_group.lower():
-                    await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, app_names)
+                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                        await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
+                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower():
+                        await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
                 elif accountType == AccountType.INDIVIDUAL.value or "google" in app_group.lower():
-                    await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, app_names)
+                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                        await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
+                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower():
+                        await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
                 else:
                     logger.error("Account Type not valid")
                     continue
@@ -120,12 +127,12 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             for app in enabled_apps:
                 connector_id = app.get("_key")
-                if app["name"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
                     drive_sync_service = app_container.drive_sync_service()  # type: ignore
                     await drive_sync_service.initialize(org_id, connector_id)  # type: ignore
                     logger.info("Drive Service initialized for org %s", org_id)
 
-                if app["name"].lower() == Connectors.GOOGLE_MAIL.value.lower():
+                elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower():
                     gmail_sync_service = app_container.gmail_sync_service()  # type: ignore
                     await gmail_sync_service.initialize(org_id, connector_id)  # type: ignore
                     logger.info("Gmail Service initialized for org %s", org_id)

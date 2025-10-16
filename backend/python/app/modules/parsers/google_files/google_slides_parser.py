@@ -25,8 +25,11 @@ class GoogleSlidesParser:
         self.connector_id = connector_id
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None
+        self, user_email: str = None, org_id: str = None, user_id: str = None, connector_id: str = None
     ) -> None:
+        if connector_id:
+            self.connector_id = connector_id
+
         if self.user_service:
             if not await self.user_service.connect_individual_user(org_id, user_id,self.connector_id):
                 self.logger.error("❌ Failed to connect to Google Slides service")

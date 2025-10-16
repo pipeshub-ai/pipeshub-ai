@@ -343,7 +343,6 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-
         org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
         record_task = arango_service.get_record_by_id(
             record_id
@@ -355,9 +354,9 @@ async def stream_record_internal(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        connector_name = record.connector_name.value.lower().replace(" ", "")
+        connector_id = record.connector_id
         container: ConnectorAppContainer = request.app.container
-        connector = container.connectors_map[connector_name]
+        connector = container.connectors_map[connector_id]
         buffer = await connector.stream_record(record)
         return buffer
 
@@ -416,15 +415,15 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         external_record_id = record.external_record_id
-
+        connector_id = record.connector_id
         creds = None
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
             if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
                 # Use service account credentials
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector)
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector, connector_id)
             else:
                 # Individual account - use stored OAuth credentials
-                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector=connector)
+                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector,connector_id)
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
@@ -444,7 +443,7 @@ async def download_file(
                     logger.info("🚀 Processing Google Slides")
                     google_slides_parser = await get_google_slides_parser(request)
                     await google_slides_parser.connect_service(
-                        user_email, org_id, user_id
+                        user_email, org_id, user_id, connector_id
                     )
                     result = await google_slides_parser.process_presentation(file_id)
 
@@ -458,7 +457,7 @@ async def download_file(
                     logger.info("🚀 Processing Google Docs")
                     google_docs_parser = await get_google_docs_parser(request)
                     await google_docs_parser.connect_service(
-                        user_email, org_id, user_id
+                        user_email, org_id, user_id, connector_id
                     )
                     content = await google_docs_parser.parse_doc_content(file_id)
                     all_content, headers, footers = (
@@ -480,7 +479,7 @@ async def download_file(
                     logger.info("🚀 Processing Google Sheets")
                     google_sheets_parser = await get_google_sheets_parser(request)
                     await google_sheets_parser.connect_service(
-                        user_email, org_id, user_id
+                        user_email, org_id, user_id, connector_id
                     )
                     llm, _ = await get_llm(config_service)
                     # List and process spreadsheets
@@ -761,9 +760,8 @@ async def download_file(
                 )
 
             else:
-                connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_name]
+                connector: BaseConnector = container.connectors_map[connector_id]
                 buffer = await connector.stream_record(record)
                 return buffer
 
@@ -1361,9 +1359,8 @@ async def stream_record(
                             detail="Failed to download file from both Gmail and Drive",
                         )
             else:
-                connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_name]
+                connector: BaseConnector = container.connectors_map[connector_id]
                 buffer = await connector.stream_record(record)
                 return buffer
         except Exception as e:

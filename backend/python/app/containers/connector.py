@@ -211,7 +211,7 @@ async def initialize_individual_drive_account_services_fn(org_id, container,conn
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['drive'] = drive_sync_task
+        container.sync_tasks_registry[connector_id] = drive_sync_task
 
         # Pre-fetch service account credentials for this org
         org_apps = await arango_service.get_org_apps(org_id)
@@ -301,7 +301,7 @@ async def initialize_individual_gmail_account_services_fn(org_id, container,conn
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['gmail'] = gmail_sync_task
+        container.sync_tasks_registry[connector_id] = gmail_sync_task
 
         # Pre-fetch service account credentials for this org
         org_apps = await arango_service.get_org_apps(org_id)
@@ -497,7 +497,7 @@ async def initialize_enterprise_drive_account_services_fn(org_id, container,conn
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['drive'] = drive_sync_task
+        container.sync_tasks_registry[connector_id] = drive_sync_task
 
     except Exception as e:
         logger.error(
@@ -578,7 +578,7 @@ async def initialize_enterprise_gmail_account_services_fn(org_id, container,conn
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['gmail'] = gmail_sync_task
+        container.sync_tasks_registry[connector_id] = gmail_sync_task
 
 
     except Exception as e:

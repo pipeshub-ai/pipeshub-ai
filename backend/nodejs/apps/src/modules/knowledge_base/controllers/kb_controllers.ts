@@ -2393,7 +2393,7 @@ export const reindexFailedRecords =
       }
 
       await validateActiveConnector(
-        app,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
