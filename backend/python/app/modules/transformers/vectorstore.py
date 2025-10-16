@@ -2,7 +2,7 @@ import asyncio
 import base64
 import re
 import uuid
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional
 
 import requests
 import spacy
