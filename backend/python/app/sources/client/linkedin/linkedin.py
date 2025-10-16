@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from linkedin_api.clients.restli.client import RestliClient
 from pydantic import BaseModel
@@ -101,22 +101,36 @@ class LinkedInClient(IClient):
         cls,
         logger: object,
         config_service: ConfigurationService,
-        arango_service: object,
-        org_id: str,
-        user_id: str,
     ) -> 'LinkedInClient':
-        """Build LinkedInClient using configuration service and arango service
+        """Build LinkedInClient using configuration service
 
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: ArangoDB service instance
-            org_id: Organization ID
-            user_id: User ID
 
         Returns:
             LinkedInClient instance
         """
-        # TODO: Implement service-based client construction
-        # This would retrieve credentials from the configuration service
-        raise NotImplementedError("Service-based client construction not yet implemented")
+        config = await cls._get_connector_config(logger, config_service)
+        if not config:
+            raise ValueError("Failed to get LinkedIn connector configuration")
+        auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+        auth_config = config.get("auth", {})
+        if auth_type == "API_TOKEN":
+            token = auth_config.get("token", "")
+            if not token:
+                raise ValueError("Token required for token auth type")
+            client = LinkedInOAuth2Config(access_token=token).create_client()
+        else:
+            raise ValueError(f"Invalid auth type: {auth_type}")
+        return cls(client)
+
+    @staticmethod
+    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for LinkedIn."""
+        try:
+            config = await config_service.get_config("/services/connectors/linkedin/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get LinkedIn connector config: {e}")
+            return {}

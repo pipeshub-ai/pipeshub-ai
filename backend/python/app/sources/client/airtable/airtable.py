@@ -7,7 +7,6 @@ from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
@@ -288,13 +287,11 @@ class AirtableClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        graph_db_service: Optional[IGraphService] = None,
     ) -> "AirtableClient":
         """Build AirtableClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance (optional)
         Returns:
             AirtableClient instance
         """
@@ -307,14 +304,17 @@ class AirtableClient(IClient):
 
             # Extract configuration values
             base_url = config.get("base_url", "https://api.airtable.com/v0")
-            auth_type = config.get("auth_type", "token")  # token or oauth
+
+            auth_type = config.get("authType", "token")  # token or oauth
+            auth_config = config.get("auth", {})
 
             # Create appropriate client based on auth type
-            if auth_type == "oauth":
-                client_id = config.get("client_id", "")
-                client_secret = config.get("client_secret", "")
-                redirect_uri = config.get("redirect_uri", "")
-                access_token = config.get("access_token", "")
+            if auth_type == "OAUTH":
+                client_id = auth_config.get("clientId", "")
+                client_secret = auth_config.get("clientSecret", "")
+                redirect_uri = auth_config.get("redirectUri", "")
+                credentials = config.get("credentials", {})
+                access_token = credentials.get("access_token", "")
 
                 if not client_id or not client_secret or not redirect_uri:
                     raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")
@@ -327,11 +327,14 @@ class AirtableClient(IClient):
                     base_url=base_url
                 )
 
-            else:  # Default to token auth
-                token = config.get("token", "")
+            elif auth_type == "API_TOKEN":  # Default to token auth
+                token = config.get("apiToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client = AirtableRESTClientViaToken(token, base_url)
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
 
             return cls(client)
 

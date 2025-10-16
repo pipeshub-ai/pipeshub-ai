@@ -216,8 +216,18 @@ class Linear:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
+            # Convert string filter (if provided) to dict expected by data source
+            filter_dict = None
+            if filter:
+                try:
+                    parsed = json.loads(filter)
+                    if isinstance(parsed, dict):
+                        filter_dict = parsed
+                except Exception:
+                    filter_dict = None
+
             # Use LinearDataSource method
-            response = self._run_async(self.client.issues(first=first, after=after, filter=filter))
+            response = self._run_async(self.client.issues(first=first, after=after, filter=filter_dict))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -317,14 +327,17 @@ class Linear:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use LinearDataSource method
-            response = self._run_async(self.client.issue_create(
-                team_id=team_id,
-                title=title,
-                description=description,
-                state_id=state_id,
-                assignee_id=assignee_id
-            ))
+            # Build GraphQL input for issueCreate
+            issue_input = {"title": title, "teamId": team_id}
+            if description is not None:
+                issue_input["description"] = description
+            if state_id is not None:
+                issue_input["stateId"] = state_id
+            if assignee_id is not None:
+                issue_input["assigneeId"] = assignee_id
+
+            # Call the correct LinearDataSource method
+            response = self._run_async(self.client.issueCreate(input=issue_input))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -391,14 +404,19 @@ class Linear:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use LinearDataSource method
-            response = self._run_async(self.client.issue_update(
-                id=issue_id,
-                title=title,
-                description=description,
-                state_id=state_id,
-                assignee_id=assignee_id
-            ))
+            # Build GraphQL input for issueUpdate
+            update_input = {}
+            if title is not None:
+                update_input["title"] = title
+            if description is not None:
+                update_input["description"] = description
+            if state_id is not None:
+                update_input["stateId"] = state_id
+            if assignee_id is not None:
+                update_input["assigneeId"] = assignee_id
+
+            # Call the correct LinearDataSource method
+            response = self._run_async(self.client.issueUpdate(id=issue_id, input=update_input))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -430,8 +448,8 @@ class Linear:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use LinearDataSource method
-            response = self._run_async(self.client.issue_delete(id=issue_id))
+            # Use LinearDataSource method with correct name
+            response = self._run_async(self.client.issueDelete(id=issue_id))
 
             if response.success:
                 return True, json.dumps({"data": response.data})

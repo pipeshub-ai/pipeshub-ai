@@ -403,22 +403,18 @@ class EvernoteClient(IClient):
             if not config:
                 raise ValueError("Failed to get Evernote connector configuration")
 
-            # Extract configuration values
-            token = config.get("token", "")
-            if not token:
-                raise ValueError("Token required for Evernote authentication")
-
-            note_store_url = config.get("note_store_url")
-            sandbox = config.get("sandbox", False)
-
-            # Create Thrift client
-            thrift_client = EvernoteThriftClient(
-                token=token,
-                note_store_url=note_store_url,
-                sandbox=sandbox
-            )
-
-            return cls(thrift_client)
+            auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            auth_config = config.get("auth", {})
+            if auth_type == "API_TOKEN":
+                token = auth_config.get("apiToken", "")
+                note_store_url = auth_config.get("noteStoreUrl")
+                sandbox = auth_config.get("sandbox", False)
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = EvernoteTokenConfig(token=token, note_store_url=note_store_url, sandbox=sandbox).create_client()
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+            return cls(client)
 
         except Exception as e:
             logger.error(f"Failed to build Evernote client from services: {str(e)}")

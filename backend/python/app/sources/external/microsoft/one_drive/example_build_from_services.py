@@ -10,6 +10,7 @@ from app.config.configuration_service import ConfigurationService
 import logging
 from app.sources.client.microsoft.microsoft import GraphMode, MSGraphClient, MSGraphClientWithClientIdSecretConfig
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource, OneDriveResponse
+from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 
 async def main():
     # Set up logging

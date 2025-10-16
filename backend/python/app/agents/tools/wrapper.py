@@ -303,7 +303,16 @@ class RegistryToolWrapper(BaseTool):
             )
 
             bound_method = getattr(instance, self.tool_name)
-            return bound_method(**arguments)
+            try:
+                return bound_method(**arguments)
+            finally:
+                # Teardown background resources if the action provides shutdown()
+                shutdown = getattr(instance, 'shutdown', None)
+                if callable(shutdown):
+                    try:
+                        shutdown()
+                    except Exception:
+                        pass
 
         except Exception as e:
             raise RuntimeError(
