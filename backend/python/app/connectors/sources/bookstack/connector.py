@@ -4,12 +4,17 @@ from datetime import datetime, timezone
 from logging import Logger
 from typing import Dict, Optional, List, Tuple, Callable, Awaitable
 from datetime import datetime, timezone
+import json 
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -27,7 +32,7 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
 from app.models.entities import (
-    Record, AppUserGroup, AppUser, RecordGroup, RecordGroupType
+    Record, FileRecord, RecordType, AppUserGroup, AppUser, RecordGroup, RecordGroupType
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.bookstack.bookstack import (
@@ -37,15 +42,58 @@ from app.sources.client.bookstack.bookstack import (
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 from app.sources.client.bookstack.bookstack import BookStackResponse
 from app.utils.streaming import stream_content
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+)
 
 
-
+@ConnectorBuilder("BookStack")\
+    .in_group("BookStack")\
+    .with_auth_type("API_TOKEN")\
+    .with_description("Sync content from your BookStack instance")\
+    .with_categories(["Knowledge Management"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/bookstack.svg")\
+        .add_documentation_link(DocumentationLink(
+            "BookStack API Access",
+            "https://www.bookstackapp.com/docs/admin/api-access/"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="base_url",
+            display_name="Base URL",
+            placeholder="https://bookstack.example.com",
+            description="The base URL of your BookStack instance",
+            field_type="TEXT",
+            max_length=2048
+        ))
+        .add_auth_field(AuthField(
+            name="token_id",
+            display_name="Token ID",
+            placeholder="YourTokenID",
+            description="The Token ID generated from your BookStack profile",
+            field_type="TEXT",
+            max_length=100
+        ))
+        .add_auth_field(AuthField(
+            name="token_secret",
+            display_name="Token Secret",
+            placeholder="YourTokenSecret",
+            description="The Token Secret generated from your BookStack profile",
+            field_type="PASSWORD",
+            max_length=100,
+            is_secret=True
+        ))
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
 class BookStackConnector(BaseConnector):
     """
     Connector for synchronizing data from a BookStack instance.
     Syncs books, chapters, pages, attachments, users, roles, and permissions.
     """
-
+    bookstack_base_url: str
+    
     def __init__(
         self,
         logger: Logger,
@@ -100,8 +148,10 @@ class BookStackConnector(BaseConnector):
                 self.logger.error("BookStack configuration not found.")
                 return False
 
-            credentials_config = config.get("credentials", {})
+            credentials_config = config.get("auth", {})
+            print("!!!!!!!!!!!!!!!!! config", config)
             # Read the correct keys required by BookStackTokenConfig
+            self.bookstack_base_url = credentials_config.get("base_url")
             base_url = credentials_config.get("base_url")
             token_id = credentials_config.get("token_id")
             token_secret = credentials_config.get("token_secret")
@@ -164,11 +214,12 @@ class BookStackConnector(BaseConnector):
         Returns:
             The web URL of the record or None
         """
+        signed_url = f"{self.bookstack_base_url}api/pages/{record.external_record_id}/export/markdown"
         if not record.weburl:
             self.logger.warning(f"No web URL found for record {record.id}")
             return None
         
-        return record.weburl
+        return signed_url
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
@@ -189,18 +240,21 @@ class BookStackConnector(BaseConnector):
                 detail="BookStack connector not initialized"
             )
         
+        print("\n\n\n\n!!!!!!!!!!!!!!!!!!!! called stream_record")
         # For BookStack, we would need to fetch the content based on record type
         # This is a placeholder implementation
-        web_url = await self.get_signed_url(record)
-        if not web_url:
+        # signed_url = await self.get_signed_url(record)
+        record_id = record.external_record_id.split('/')[1]
+        markdown_response = await self.data_source.export_page_markdown(record_id)
+        if not markdown_response.success:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="Record not found or access denied"
             )
-        
+        raw_markdown = markdown_response.data.get("markdown")
         # Stream the content from the URL
         return StreamingResponse(
-            stream_content(web_url),
+            raw_markdown,
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
                 "Content-Disposition": f"attachment; filename={record.record_name}"
@@ -649,10 +703,140 @@ class BookStackConnector(BaseConnector):
     
     async def _sync_records(self) -> None:
         """
-        Sync all records (pages, chapters, attachments) from BookStack.
-        To be implemented.
+        Sync all pages from BookStack as Record objects, processing them in batches.
         """
-        pass
+        self.logger.info("Starting sync for pages as records.")
+        
+        batch_records: List[Tuple[Record, List[Permission]]] = []
+        offset = 0
+
+        while True:
+            response = await self.data_source.list_pages(count=self.batch_size, offset=offset)
+            print("\n\n\n!!!!!!!!!!!!!!!! response", response)
+            
+            pages_data = {}
+            # Handle API response where page data is a JSON string inside the 'content' field
+            if response.success and response.data and 'content' in response.data:
+                try:
+                    pages_data = json.loads(response.data['content'])
+                except json.JSONDecodeError:
+                    self.logger.error(f"Failed to decode JSON content for pages: {response.data['content']}")
+                    break
+            else:
+                self.logger.error(f"Failed to fetch pages or malformed response: {response.error}")
+                break
+
+            pages_page = pages_data.get("data", [])
+            if not pages_page:
+                self.logger.info("No more pages to sync.")
+                break
+
+            self.logger.info(f"Processing page {offset + 1} to {offset + len(pages_page)}...")
+            
+            # Process each page from the current API response
+            for page in pages_page:
+                processed_data = await self._process_bookstack_page(page)
+                if processed_data:
+                    batch_records.append(processed_data)
+
+                # When the batch is full, send it to the data processor
+                if len(batch_records) >= self.batch_size:
+                    self.logger.info(f"Processing batch of {len(batch_records)} page records.")
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    batch_records = [] # Reset the batch
+                    await asyncio.sleep(0.1) # Yield control briefly
+
+            offset += len(pages_page)
+            if offset >= pages_data.get("total", 0):
+                break
+                
+        # Process any remaining records in the final batch
+        if batch_records:
+            self.logger.info(f"Processing final batch of {len(batch_records)} page records.")
+            await self.data_entities_processor.on_new_records(batch_records)
+
+        self.logger.info("✅ Finished syncing all page records.")
+    
+    async def _process_bookstack_page(self, page: Dict) -> Optional[Tuple[Record, List[Permission]]]:
+        """
+        Process a single BookStack page, create a Record object, and fetch its permissions.
+        """
+        try:
+            page_id = page.get("id")
+            if not page_id:
+                self.logger.warning("Skipping page with missing ID.")
+                return None
+
+            existing_record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_name=self.connector_name,
+                    external_id=f"page/{page_id}"
+                )
+
+            # 1. Determine parent relationship (Chapter has priority over Book)
+            parent_external_id = None
+            parent_book_id = None
+            parent_chapter_id = None
+            if page.get("book_id"):
+                parent_book_id = page.get("book_id")
+                parent_external_id = f"book/{page.get('book_id')}"
+            if page.get("chapter_id"):
+                parent_chapter_id = page.get("chapter_id")
+                parent_external_id = f"chapter/{page.get('chapter_id')}"
+            
+
+            # 2. Convert timestamp from ISO 8601 string to epoch milliseconds
+            timestamp_ms = None
+            updated_at_str = page.get("updated_at")
+            if updated_at_str:
+                dt_obj = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
+                timestamp_ms = int(dt_obj.timestamp() * 1000)
+
+            # signed_url = await self.data_source.export_page_markdown(page_id)
+            print("\n\n\!!!!!!!!!!!!!!!!!! signed url:", f"{self.bookstack_base_url}api/pages/{page_id}/export/markdown")
+
+            # 3. Create the Record object
+            # The data processor will handle checking for existing records (upsert logic)
+            file_record = FileRecord(
+                id=existing_record.id if existing_record else str(uuid.uuid4()),
+                record_name=page.get("name"),
+                external_record_id=f"page/{page_id}",
+                connector_name=self.connector_name,
+                record_type=RecordType.FILE.value,
+                external_record_group_id=parent_external_id,
+                origin=OriginTypes.CONNECTOR.value,
+                org_id=self.data_entities_processor.org_id,
+                source_updated_at=timestamp_ms,
+                updated_at=timestamp_ms,
+                version=0,
+                external_revision_id=str(page.get("revision_count")),
+                weburl=f"{self.bookstack_base_url}books/{page.get('book_slug')}/page/{page.get('slug')}",      # Skipped for now
+                # signed_url=f"{self.bookstack_base_url}api/pages/{page_id}/export/markdown",  
+                mime_type=MimeTypes.MARKDOWN, # BookStack pages are primarily HTML
+                extension="md",
+                is_file=True,
+                size_in_bytes=0,
+            )
+
+            # 4. Fetch and parse permissions using the reusable helper
+            permissions_list = []
+            permissions_response = await self.data_source.get_content_permissions(
+                content_type="page", content_id=page_id
+            )
+            if permissions_response.success and permissions_response.data:
+                permissions_list = await self._parse_bookstack_permissions(permissions_response.data)
+            else:
+                self.logger.warning(
+                    f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "
+                    f"{permissions_response.error}"
+                )
+
+            return (file_record, permissions_list)
+
+        except Exception as e:
+            self.logger.error(f"Error processing BookStack page ID {page.get('id')}: {e}", exc_info=True)
+            return None
 
     async def run_incremental_sync(self) -> None:
         """

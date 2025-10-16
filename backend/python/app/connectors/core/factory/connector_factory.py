@@ -34,6 +34,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 )
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.featureflag import FeatureFlagService
+from app.connectors.sources.bookstack.connector import BookStackConnector
 
 
 class ConnectorFactory:
@@ -47,6 +48,7 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "dropbox": DropboxConnector,
+        "bookstack": BookStackConnector,
     }
 
 

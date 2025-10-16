@@ -53,36 +53,40 @@ async def main() -> None:
     users = await data_source.list_users(filter={"email": "admin@admin.com"})
     print(users)
 
-    #List a particular user
-    print("\nList a particular user:")
-    user1 = await data_source.get_user(id=1)
-    user2 = await data_source.get_user(id=2)
-    print(user1)
-    print(user2)
+    # #List a particular user
+    # print("\nList a particular user:")
+    # user1 = await data_source.get_user(id=1)
+    # user2 = await data_source.get_user(id=2)
+    # print(user1)
+    # print(user2)
 
-    print("\nList roles:")
-    roles = await data_source.list_roles()
-    print(roles)
+    # print("\nList roles:")
+    # roles = await data_source.list_roles()
+    # print(roles)
 
-    print("\nList shelves")
-    shelves = await data_source.list_shelves()
-    print(shelves)
+    # print("\nList shelves")
+    # shelves = await data_source.list_shelves()
+    # print(shelves)
 
-    print("\nListing all books:")
-    books = await data_source.list_books()
-    print(books)
+    # print("\nListing all books:")
+    # books = await data_source.list_books()
+    # print(books)
 
-    print("\nList all chapters")
-    chapters = await data_source.list_chapters()
-    print(chapters)
+    # print("\nList all chapters")
+    # chapters = await data_source.list_chapters()
+    # print(chapters)
 
-    print("\nList Pages")
-    pages = await data_source.list_pages()
-    print(pages)
+    # print("\nList Pages")
+    # pages = await data_source.list_pages()
+    # print(pages)
 
-    print("\nList Permissions")
-    permissions = await data_source.get_content_permissions(content_type="bookshelf", content_id=1)
-    print(permissions)
+    # print("\nList Permissions")
+    # permissions = await data_source.get_content_permissions(content_type="page", content_id=3)
+    # print(permissions)
+
+    print("\nExport Page Markdown")
+    markdown = await data_source.export_page_markdown(1)
+    print(markdown)
 
 
 if __name__ == "__main__":
