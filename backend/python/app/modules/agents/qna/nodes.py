@@ -5,6 +5,7 @@ Supports planning, execution, adaptation, and beautiful response formatting
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
@@ -24,6 +25,8 @@ from app.utils.streaming import stream_llm_response
 RESULT_PREVIEW_LENGTH = 150
 MARKDOWN_MIN_LENGTH = 100
 HEADER_LENGTH_THRESHOLD = 50
+STREAMING_CHUNK_DELAY = 0.01  # Delay for streaming effect
+STREAMING_FALLBACK_DELAY = 0.02  # Delay for fallback streaming
 
 # ============================================================================
 # PHASE 1: ENHANCED QUERY ANALYSIS
@@ -90,7 +93,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             if previous_conversations:
                 last_response = previous_conversations[-1].get("content", "")
                 # If last response had citations or knowledge, might not need new retrieval
-                needs_internal_data = "[" not in last_response  # Simple heuristic
+                needs_internal_data = not re.search(r'\s*\[\d+\]', last_response)  # More robustly check for citations
             else:
                 needs_internal_data = False
             logger.info(f"Follow-up detected - needs new retrieval: {needs_internal_data}")
@@ -305,18 +308,18 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
 
         # Status messages
         if iteration_count == 0 and is_complex:
-            writer({"event": "status", "data": {"status": "planning", "message": "📋 Creating execution plan..."}})
+            writer({"event": "status", "data": {"status": "planning", "message": "Creating execution plan..."}})
         elif iteration_count > 0:
-            writer({"event": "status", "data": {"status": "adapting", "message": f"🔄 Adapting plan (step {iteration_count + 1})..."}})
+            writer({"event": "status", "data": {"status": "adapting", "message": f"Adapting plan (step {iteration_count + 1})..."}})
         else:
-            writer({"event": "status", "data": {"status": "thinking", "message": "💭 Processing your request..."}})
+            writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
 
         # Get tools
         from app.modules.agents.qna.tool_registry import get_agent_tools
         tools = get_agent_tools(state)
 
         if tools:
-            logger.debug(f"🛠️ Agent has {len(tools)} tools available")
+            logger.debug(f"Agent has {len(tools)} tools available")
             try:
                 llm_with_tools = llm.bind_tools(tools)
             except (NotImplementedError, AttributeError) as e:
@@ -332,13 +335,13 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
             tool_summary = get_tool_results_summary(state)
 
             tool_context = f"\n\n## Execution Progress\n{tool_summary}"
-            tool_context += "\n\n💡 **Adaptation Point**: Review results. Adjust plan or provide final answer."
+            tool_context += "\n\n **Adaptation Point**: Review results. Adjust plan or provide final answer."
 
             # Remind about output format
             if has_internal_knowledge:
-                tool_context += "\n\n⚠️ **Remember**: You have internal knowledge sources available. If you used them, respond in Structured JSON with citations."
+                tool_context += "\n\n **Remember**: You have internal knowledge sources available. If you used them, respond in Structured JSON with citations."
             else:
-                tool_context += "\n\n💡 **Output**: Use Beautiful Markdown format for your final response."
+                tool_context += "\n\n **Output**: Use Beautiful Markdown format for your final response."
 
             if state["messages"] and isinstance(state["messages"][-1], HumanMessage):
                 state["messages"][-1].content += tool_context
@@ -347,7 +350,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         cleaned_messages = _clean_message_history(state["messages"])
 
         # Call LLM
-        logger.debug(f"🤖 Invoking LLM (iteration {iteration_count})")
+        logger.debug(f" Invoking LLM (iteration {iteration_count})")
         response = await llm_with_tools.ainvoke(cleaned_messages)
 
         # Add response to messages
@@ -429,8 +432,23 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
 
         for tool_call in tool_calls:
             tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
-            tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else tool_call.args
-            tool_id = tool_call.get("id") if isinstance(tool_call, dict) else tool_call.id
+
+            # Handle both tool_call.args and tool_call.function formats
+            if isinstance(tool_call, dict):
+                tool_args = tool_call.get("args", {})
+                # Check for function format (used by some LLM providers like OpenAI)
+                if not tool_args and "function" in tool_call:
+                    function_data = tool_call["function"]
+                    tool_args = function_data.get("arguments", {})
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = {}
+                tool_id = tool_call.get("id")
+            else:
+                tool_args = tool_call.args
+                tool_id = tool_call.id
 
             try:
                 result = None
@@ -449,7 +467,8 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     logger.warning(f"Tool not found: {tool_name}")
                     result = json.dumps({
                         "status": "error",
-                        "message": f"Tool '{tool_name}' not found in registry"
+                        "message": f"Tool '{tool_name}' not found in registry",
+                        "available_tools": list(tools_by_name.keys())
                     })
 
                 tool_result = {
@@ -565,7 +584,7 @@ async def final_response_node(
             for i in range(0, len(answer_text), chunk_size):
                 chunk = answer_text[i:i + chunk_size]
                 writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(STREAMING_CHUNK_DELAY)
 
             # **CRITICAL**: Send complete structure only at the end
             completion_data = {
@@ -654,7 +673,7 @@ async def final_response_node(
                 for i in range(0, len(fallback_content), chunk_size):
                     chunk = fallback_content[i:i + chunk_size]
                     writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(STREAMING_FALLBACK_DELAY)
 
                 # Create completion data with proper format
                 citations = [
@@ -874,7 +893,7 @@ async def _stream_structured_response(content, writer, logger) -> None:
     for i in range(0, len(answer_text), chunk_size):
         chunk = answer_text[i:i + chunk_size]
         writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(STREAMING_CHUNK_DELAY)
 
     # Send complete structured data
     writer({"event": "complete", "data": content})
@@ -890,7 +909,7 @@ async def _stream_conversational_response(content, writer, logger) -> None:
     for i in range(0, len(answer_text), chunk_size):
         chunk = answer_text[i:i + chunk_size]
         writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(STREAMING_CHUNK_DELAY)
 
     # Send complete event with proper format
     complete_data = {
@@ -1005,7 +1024,7 @@ async def _generate_streaming_response(llm, messages, final_results, writer, log
         for i in range(0, len(content), chunk_size):
             chunk = content[i:i + chunk_size]
             writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(STREAMING_FALLBACK_DELAY)
 
         # Build completion data
         if has_internal_knowledge and final_results:
