@@ -92,7 +92,7 @@ class Processor:
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
 
-    async def process_image(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
+    async def process_image(self, record_id, content, virtual_record_id) -> None:
         try:
             # Initialize image parser
             self.logger.debug("📸 Processing image content")

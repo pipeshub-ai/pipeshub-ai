@@ -2,7 +2,7 @@ import asyncio
 import base64
 import re
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 import requests
 import spacy
@@ -457,7 +457,7 @@ class VectorStore(Transformer):
                     co = cohere.ClientV2(api_key=self.api_key)
 
                     # Process images in parallel since Cohere API only allows max 1 image per request
-                    async def embed_single_image(i: int, image_base64: str):
+                    async def embed_single_image(i: int, image_base64: str) -> Optional[PointStruct]:
                         """Embed a single image with Cohere API."""
                         image_input = {
                             "content": [
@@ -505,13 +505,13 @@ class VectorStore(Transformer):
                     concurrency_limit = 10
                     semaphore = asyncio.Semaphore(concurrency_limit)
 
-                    async def limited_embed(i: int, image_base64: str):
+                    async def limited_embed(i: int, image_base64: str) -> Optional[PointStruct]:
                         async with semaphore:
                             return await embed_single_image(i, image_base64)
 
                     tasks = [limited_embed(i, img) for i, img in enumerate(image_base64s)]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
+
                     # Filter out None results and exceptions
                     for result in results:
                         if isinstance(result, PointStruct):
@@ -521,8 +521,8 @@ class VectorStore(Transformer):
                 elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
                     # Process in batches to respect API limits
                     batch_size = getattr(self.dense_embeddings, 'batch_size', 7)
-                    
-                    async def process_voyage_batch(batch_start: int, batch_images: List[str]):
+
+                    async def process_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
                         """Process a single batch of images with Voyage AI."""
                         try:
                             embeddings = await self.dense_embeddings.aembed_documents(batch_images)
@@ -548,25 +548,25 @@ class VectorStore(Transformer):
                                 f"Failed to process Voyage batch starting at {batch_start}: {str(voyage_error)}"
                             )
                             return []
-                    
+
                     # Create batches
                     batches = []
                     for batch_start in range(0, len(image_base64s), batch_size):
                         batch_end = min(batch_start + batch_size, len(image_base64s))
                         batch_images = image_base64s[batch_start:batch_end]
                         batches.append((batch_start, batch_images))
-                    
+
                     # Process batches with concurrency limit
                     concurrency_limit = 5  # Process up to 5 batches concurrently
                     semaphore = asyncio.Semaphore(concurrency_limit)
-                    
-                    async def limited_voyage_batch(batch_start: int, batch_images: List[str]):
+
+                    async def limited_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
                         async with semaphore:
                             return await process_voyage_batch(batch_start, batch_images)
-                    
+
                     tasks = [limited_voyage_batch(start, imgs) for start, imgs in batches]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
+
                     # Collect all points from successful batches
                     for result in results:
                         if isinstance(result, list):
@@ -598,7 +598,7 @@ class VectorStore(Transformer):
                         ) from cred_err
 
                     # Process images in parallel
-                    async def embed_single_bedrock_image(i: int, image_ref: str):
+                    async def embed_single_bedrock_image(i: int, image_ref: str) -> Optional[PointStruct]:
                         """Embed a single image with AWS Bedrock."""
                         normalized_b64 = self._normalize_image_to_base64(image_ref)
                         if not normalized_b64:
@@ -626,7 +626,7 @@ class VectorStore(Transformer):
                             )
                             response_body = json.loads(response['body'].read())
                             image_embedding = response_body['embedding']
-                            
+
                             image_chunk = image_chunks[i]
                             return PointStruct(
                                 id=str(uuid.uuid4()),
@@ -653,13 +653,13 @@ class VectorStore(Transformer):
                     concurrency_limit = 10
                     semaphore = asyncio.Semaphore(concurrency_limit)
 
-                    async def limited_bedrock_embed(i: int, image_ref: str):
+                    async def limited_bedrock_embed(i: int, image_ref: str) -> Optional[PointStruct]:
                         async with semaphore:
                             return await embed_single_bedrock_image(i, image_ref)
 
                     tasks = [limited_bedrock_embed(i, img) for i, img in enumerate(image_base64s)]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
+
                     # Filter out None results and exceptions
                     for result in results:
                         if isinstance(result, PointStruct):
@@ -671,8 +671,8 @@ class VectorStore(Transformer):
 
                     # Process in batches to respect API limits
                     batch_size = 32  # Reasonable batch size for image embeddings
-                    
-                    async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: List[str]):
+
+                    async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: List[str]) -> List[PointStruct]:
                         """Process a single batch of images with Jina AI."""
                         try:
                             url = 'https://api.jina.ai/v1/embeddings'
@@ -683,16 +683,16 @@ class VectorStore(Transformer):
                             data = {
                                 "model": self.model_name,
                                 "input": [
-                                    {"image": self._normalize_image_to_base64(image_base64)} 
+                                    {"image": self._normalize_image_to_base64(image_base64)}
                                     for image_base64 in batch_images
                                 ]
                             }
-                            
+
                             # Make truly async request
                             response = await client.post(url, headers=headers, json=data)
                             response_body = response.json()
                             embeddings = [data["embedding"] for data in response_body["data"]]
-                            
+
                             batch_points = []
                             for i, embedding in enumerate(embeddings):
                                 chunk_idx = batch_start + i
@@ -724,18 +724,18 @@ class VectorStore(Transformer):
                             batch_end = min(batch_start + batch_size, len(image_base64s))
                             batch_images = image_base64s[batch_start:batch_end]
                             batches.append((batch_start, batch_images))
-                        
+
                         # Process batches with concurrency limit
                         concurrency_limit = 5  # Process up to 5 batches concurrently
                         semaphore = asyncio.Semaphore(concurrency_limit)
-                        
-                        async def limited_process_batch(batch_start: int, batch_images: List[str]):
+
+                        async def limited_process_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
                             async with semaphore:
                                 return await process_jina_batch(client, batch_start, batch_images)
-                        
+
                         tasks = [limited_process_batch(start, imgs) for start, imgs in batches]
                         results = await asyncio.gather(*tasks, return_exceptions=True)
-                        
+
                         # Collect all points from successful batches
                         for result in results:
                             if isinstance(result, list):
@@ -1008,7 +1008,7 @@ class VectorStore(Transformer):
                                             page_content=description, metadata=metadata
                                         )
                                     )
-                        elif mime_type in [MimeTypes.PNG.value, MimeTypes.JPG.value, MimeTypes.JPEG.value, MimeTypes.WEBP.value,MimeTypes.SVG.value,MimeTypes.HEIC.value,MimeTypes.HEIF.value]:
+                        elif mime_type in {MimeTypes.PNG.value, MimeTypes.JPG.value, MimeTypes.JPEG.value, MimeTypes.WEBP.value, MimeTypes.SVG.value, MimeTypes.HEIC.value, MimeTypes.HEIF.value}:
                             try:
                                 record = await self.arango_service.get_document(
                                     record_id, CollectionNames.RECORDS.value

@@ -87,7 +87,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
-    logger.info(f"Getting embedding model: {provider}, {model_name},{configuration}")
+    logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     if provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings

@@ -539,8 +539,6 @@ class EventProcessor:
                 # Route image files to the image processor
                 result = await self.processor.process_image(
                     record_id,
-                    record_version,
-                    org_id,
                     file_content,
                     virtual_record_id,
                 )
