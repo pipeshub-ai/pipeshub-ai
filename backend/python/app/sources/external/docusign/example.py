@@ -1,45 +1,78 @@
 
-# ruff: noqa
 """
-DocuSign Integration Example
+DocuSign Integration Example - PAT Authentication
 
-This example demonstrates how to use the DocuSign client and data source.
-Replace the ACCESS_TOKEN and ACCOUNT_ID with your actual credentials.
+This example demonstrates how to use the DocuSign client with Personal Access Token (PAT) authentication.
 
-To get your credentials:
-1. Account ID: Get from OAuth /userinfo endpoint (NOT Integration Key)
-2. User ID: Get from OAuth /userinfo endpoint
-3. Access Token: Generate from DocuSign admin console or OAuth flow
+Configuration:
+- Access Token: Generated using ./get.sh script or from DocuSign Admin Console
+- Account ID: Your DocuSign account ID
 
-For testing purposes, you can use the diagnostic tool:
-    python -m app.sources.external.docusign.diagnose_oauth
+To generate a token:
+    cd /workspaces/pipeshub-ai/backend/python
+    ./get.sh
+
+For JWT setup instructions, see:
+    backend/python/HOW_TO_GET_RSA_KEY.py
 """
 import asyncio
 import os
+from datetime import datetime, timedelta
 
 from app.sources.client.docusign import DocuSignClient, DocuSignPATConfig
 from app.sources.external.docusign import DocuSignDataSource
 
-# Configuration - Replace with your actual credentials
-ACCESS_TOKEN = os.getenv("DOCUSIGN_TOKEN", "your_access_token_here")
-ACCOUNT_ID = os.getenv("DOCUSIGN_ACCOUNT_ID", "your_account_id_here")  # From /userinfo, NOT Integration Key
-USER_ID = os.getenv("DOCUSIGN_USER_ID", "your_user_id_here")  # From /userinfo
+# Configuration - PAT Authentication
+ACCOUNT_ID = os.getenv("DOCUSIGN_ACCOUNT_ID", "4419475f-3161-4b37-9d6f-320cac25d107")
+USER_ID = os.getenv("DOCUSIGN_USER_ID", "1e5e503c-bd20-46f0-a5ad-043cb47d023d")
+TOKEN_FILE = "/workspaces/pipeshub-ai/backend/python/docusign_access_token.txt"
+
+
+def get_access_token() -> str:
+    """Load access token from file."""
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'r') as f:
+            token = f.read().strip()
+            if token and len(token) > 100:
+                return token
+    
+    # Fallback to environment variable
+    token = os.getenv("DOCUSIGN_ACCESS_TOKEN")
+    if token:
+        return token
+    
+    raise ValueError(
+        "Access token not found!\n"
+        "Generate one using: ./get.sh\n"
+        "Or set DOCUSIGN_ACCESS_TOKEN environment variable"
+    )
 
 
 async def main() -> None:
-    """Main example demonstrating DocuSign API usage."""
+    """Main example demonstrating DocuSign API usage with PAT authentication."""
+    
+    print("=" * 80)
+    print("DocuSign API Examples - SDK with PAT Authentication")
+    print("=" * 80)
+    print()
+    
+    # Get access token
+    try:
+        ACCESS_TOKEN = get_access_token()
+        print(f"✅ Access token loaded (length: {len(ACCESS_TOKEN)} chars)")
+        print()
+    except ValueError as e:
+        print(f"❌ {e}")
+        return
     
     # Initialize client with PAT authentication
     config = DocuSignPATConfig(
         access_token=ACCESS_TOKEN,
+        base_path="https://demo.docusign.net/restapi"
     )
     
     client = DocuSignClient.build_with_config(config)
     data_source = DocuSignDataSource(client)
-    
-    print("=" * 80)
-    print("DocuSign API Examples")
-    print("=" * 80)
     
     # Example 1: Get account information
     print("\n1. Getting Account Information:")
@@ -50,13 +83,16 @@ async def main() -> None:
             print(f"   📍 Account ID: {account.data.get('account_id', 'N/A')}")
         else:
             print(f"   ❌ Error: {account.error}")
+            print(f"   Debug: {account}")
     except Exception as e:
         print(f"   ❌ Exception: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Example 2: List users
     print("\n2. Listing Users:")
     try:
-        users = await data_source.users_list(accountId=ACCOUNT_ID)
+        users = await data_source.users_list_users(accountId=ACCOUNT_ID)
         if users.success:
             user_count = len(users.data.get('users', []))
             print(f"   ✅ Found {user_count} user(s)")
@@ -70,7 +106,7 @@ async def main() -> None:
     # Example 3: Get user details
     print("\n3. Getting User Details:")
     try:
-        user_info = await data_source.users_get(accountId=ACCOUNT_ID, userId=USER_ID)
+        user_info = await data_source.users_get_user(accountId=ACCOUNT_ID, userId=USER_ID)
         if user_info.success:
             print(f"   ✅ Name: {user_info.data.get('user_name', 'N/A')}")
             print(f"   📧 Email: {user_info.data.get('email', 'N/A')}")
@@ -83,7 +119,7 @@ async def main() -> None:
     # Example 4: List templates
     print("\n4. Listing Templates:")
     try:
-        templates = await data_source.templates_list(accountId=ACCOUNT_ID)
+        templates = await data_source.templates_list_templates(accountId=ACCOUNT_ID)
         if templates.success:
             template_count = templates.data.get('result_set_size', 0)
             print(f"   ✅ Found {template_count} template(s)")
@@ -95,7 +131,7 @@ async def main() -> None:
     # Example 5: List groups
     print("\n5. Listing Groups:")
     try:
-        groups = await data_source.groups_list(accountId=ACCOUNT_ID)
+        groups = await data_source.groups_list_groups(accountId=ACCOUNT_ID)
         if groups.success:
             group_count = len(groups.data.get('groups', []))
             print(f"   ✅ Found {group_count} group(s)")
@@ -109,14 +145,13 @@ async def main() -> None:
     # Example 6: List envelopes (with from_date parameter)
     print("\n6. Listing Recent Envelopes:")
     try:
-        from datetime import datetime, timedelta
         from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         
-        envelopes = await data_source.envelopes_list_envelopes(
+        envelopes = await data_source.envelopes_list_status_changes(
             accountId=ACCOUNT_ID,
             from_date=from_date,
             status="sent,delivered,completed",
-            count=10
+            count="10"
         )
         if envelopes.success:
             envelope_count = envelopes.data.get('result_set_size', 0)
