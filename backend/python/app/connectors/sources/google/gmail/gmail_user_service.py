@@ -387,7 +387,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_messages(self, query: str = "newer_than:1d") -> List[Dict]:
+    async def list_messages(self, query: str = "newer_than:30d") -> List[Dict]:
         """Get list of messages"""
         try:
             self.logger.info("🚀 Getting list of messages")
@@ -563,7 +563,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_threads(self, query: str = "newer_than:1d") -> List[Dict]:
+    async def list_threads(self, query: str = "newer_than:30d") -> List[Dict]:
         """Get list of unique threads"""
         try:
             self.logger.info("🚀 Getting list of threads")

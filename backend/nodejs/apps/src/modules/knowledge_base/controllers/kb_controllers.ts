@@ -134,7 +134,7 @@ const handleConnectorResponse = (
 
 // Types and helpers for active connector validation
 interface ConnectorInfo {
-  name: string;
+  _key: string;
 }
 
 interface ActiveConnectorsResponse {
@@ -144,7 +144,7 @@ interface ActiveConnectorsResponse {
 const normalizeAppName = (value: string): string => value.replace(' ', '').toLowerCase();
 
 const validateActiveConnector = async (
-  appName: string,
+  connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
@@ -160,10 +160,10 @@ const validateActiveConnector = async (
 
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
-  const allowedApps = connectors.map((connector) => normalizeAppName(connector.name));
+  const isAllowed = connectors.some((connector) => connector._key === connectorId);
 
-  if (!allowedApps.includes(normalizeAppName(appName))) {
-    throw new BadRequestError(`Connector ${appName} not allowed`);
+  if (!isAllowed) {
+    throw new BadRequestError(`Connector ${connectorId} not allowed`);
   }
 };
 
@@ -2435,7 +2435,7 @@ export const resyncConnectorRecords =
       }
 
       await validateActiveConnector(
-        connectorName,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );

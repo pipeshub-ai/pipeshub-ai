@@ -2361,9 +2361,9 @@ async def create_connector_instance(
         return {
             "success": True,
             "connector": {
-                "connector_id": connector_id,
-                "connector_type": connector_type,
-                "instance_name": instance_name,
+                "connectorId": connector_id,
+                "connectorType": connector_type,
+                "instanceName": instance_name,
                 "created": True
             }
         }

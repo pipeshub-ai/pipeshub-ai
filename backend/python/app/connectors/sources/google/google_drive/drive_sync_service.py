@@ -932,15 +932,16 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     user["email"], Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
                 )
                 if sync_state is None:
-                    apps = await self.arango_service.get_org_apps(org_id)
-                    app_key = next(
-                        (
-                            a.get("_key")
-                            for a in apps
-                            if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
-                        ),
-                        None,
-                    )
+                    # apps = await self.arango_service.get_org_apps(org_id)
+                    # app_key = next(
+                    #     (
+                    #         a.get("_key")
+                    #         for a in apps
+                    #         if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
+                    #     ),
+                    #     None,
+                    # )
+                    app_key = self.connector_id
                     if not app_key:
                         # Fallback: fetch app doc by name (DB may have different casing)
                         try:
@@ -1872,15 +1873,16 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             )
 
             if sync_state is None:
-                apps = await self.arango_service.get_org_apps(org_id)
-                app_key = next(
-                    (
-                        a.get("_key")
-                        for a in apps
-                        if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
-                    ),
-                    None,
-                )
+                # apps = await self.arango_service.get_org_apps(org_id)
+                # app_key = next(
+                #     (
+                #         a.get("_key")
+                #         for a in apps
+                #         if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
+                #     ),
+                #     None,
+                # )
+                app_key = self.connector_id
                 if not app_key:
                     # Fallback: fetch app doc by name (DB may have different casing)
                     try:
