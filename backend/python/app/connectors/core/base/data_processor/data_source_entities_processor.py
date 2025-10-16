@@ -3,7 +3,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
@@ -16,6 +21,7 @@ from app.models.entities import (
     FileRecord,
     Record,
     RecordGroup,
+    RecordGroupType,
     RecordType,
     User,
 )
@@ -98,7 +104,7 @@ class DataSourceEntitiesProcessor:
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and
                     record.parent_external_record_id and
-                    record.parent_record_type == RecordType.MAIL):
+                    (record.parent_record_type == RecordType.MAIL or record.parent_record_type == RecordType.WEBPAGE)):
                     relation_type = 'ATTACHMENT'
                 else:
                     relation_type = 'PARENT_CHILD'
@@ -141,55 +147,74 @@ class DataSourceEntitiesProcessor:
         record_permissions = []
 
         try:
-
             for permission in permissions:
-                from_collection = None
+                # Permission edges: Entity (User/Group) → Record
                 to_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
+                from_collection = None
 
                 if permission.entity_type == EntityType.USER.value:
                     user = None
                     if permission.email:
                         user = await tx_store.get_user_by_email(permission.email)
-
-                        # If user doesn't exist (external user), create them as inactive
-                        if not user and permission.email:
-                            user = await self._create_external_user(permission.email, record.connector_name, tx_store)
                     if user:
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                 elif permission.entity_type == EntityType.GROUP.value:
+                    user_group = None
                     if permission.external_id:
-                        user_group = await tx_store.get_user_group_by_external_id(external_id=permission.external_id, connector_name=record.connector_name)
-                    # else:
-                    #     user_group = await tx_store.get_user_group_by_email(email=permission.email, connector_name=record.connector_name)
+                        # Look up group by source_user_group_id (external_id in Permission object)
+                        user_group = await tx_store.get_group_by_source_id(
+                            app_name=record.connector_name.value,
+                            source_group_id=permission.external_id,
+                            org_id=self.org_id,
+                        )
 
                     if user_group:
                         from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-                    else:
-                        self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
-                        continue
-                # if permission.entity_type == EntityType.ORG.value:
-                #     org = await self.data_store.get_org_by_external_id(permission.external_id)
-                #     if org:
-                #         from_collection = f"{CollectionNames.ORGS.value}/{org.id}"
 
-                # if permission.entity_type == EntityType.DOMAIN.value:
-                #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
-                #     if domain:
-                #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
+                    if permission.entity_type == EntityType.USER.value:
+                        user = None
+                        if permission.email:
+                            user = await tx_store.get_user_by_email(permission.email)
 
-                # if permission.entity_type == EntityType.ANYONE.value:
-                #     from_collection = f"{CollectionNames.ANYONE.value}"
+                            # If user doesn't exist (external user), create them as inactive
+                            if not user and permission.email:
+                                user = await self._create_external_user(permission.email, record.connector_name, tx_store)
+                        if user:
+                            from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                    elif permission.entity_type == EntityType.GROUP.value:
+                        if permission.external_id:
+                            user_group = await tx_store.get_user_group_by_external_id(external_id=permission.external_id, connector_name=record.connector_name)
+                        # else:
+                        #     user_group = await tx_store.get_user_group_by_email(email=permission.email, connector_name=record.connector_name)
 
-                # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-                #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
+                        if user_group:
+                            from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                        else:
+                            self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
+                            continue
+                    # if permission.entity_type == EntityType.ORG.value:
+                    #     org = await self.data_store.get_org_by_external_id(permission.external_id)
+                    #     if org:
+                    #         from_collection = f"{CollectionNames.ORGS.value}/{org.id}"
 
-                if from_collection:
-                    record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
+                    # if permission.entity_type == EntityType.DOMAIN.value:
+                    #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
+                    #     if domain:
+                    #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
 
-            if record_permissions:
-                await tx_store.batch_create_edges(
-                    record_permissions, collection=CollectionNames.PERMISSION.value
-                )
+                    # if permission.entity_type == EntityType.ANYONE.value:
+                    #     from_collection = f"{CollectionNames.ANYONE.value}"
+
+                    # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
+                    #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
+
+                    if from_collection:
+                        record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
+
+                if record_permissions:
+                    await tx_store.batch_create_edges(
+                        record_permissions, collection=CollectionNames.PERMISSION.value
+                    )
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
@@ -849,3 +874,313 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
+
+    async def get_user_by_source_id(
+        self,
+        source_user_id: str,
+        connector_name: Connectors,
+        tx_store: TransactionStore
+    ) -> Optional[User]:
+        """
+        Get a user by their source system ID (sourceUserId field).
+
+        Args:
+            source_user_id: The user ID from the source system
+            connector_name: Connector enum for scoped lookup
+            tx_store: Transaction store for database queries
+
+        Returns:
+            User object if found, None otherwise
+        """
+        try:
+            user_query = """
+            FOR user IN @@users_collection
+                FILTER user.appName == @app_name
+                FILTER user.sourceUserId == @source_user_id
+                FILTER user.orgId == @org_id
+                LIMIT 1
+                RETURN user
+            """
+
+            cursor = tx_store.arango_service.db.aql.execute(
+                user_query,
+                bind_vars={
+                    "@users_collection": CollectionNames.USERS.value,
+                    "app_name": connector_name.value,
+                    "source_user_id": source_user_id,
+                    "org_id": self.org_id,
+                },
+            )
+            user_doc = next(cursor, None)
+
+            if user_doc:
+                return User.from_arango_user(user_doc)
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to get user by source_id {source_user_id}: {str(e)}", exc_info=True)
+            return None
+
+    async def create_user_group_hierarchy(
+        self,
+        child_source_id: str,
+        parent_source_id: str,
+        connector_name: Connectors,
+        tx_store: TransactionStore
+    ) -> bool:
+        """
+        Create BELONGS_TO edge between child and parent user groups using source IDs.
+
+        This method enables connectors to establish group hierarchies without knowing
+        internal database IDs. It handles the lookup of both groups and creates the
+        appropriate relationship edge.
+
+        Args:
+            child_source_id: Source system ID of child group
+            parent_source_id: Source system ID of parent group
+            connector_name: Connector enum for scoped lookup
+            tx_store: Transaction store
+
+        Returns:
+            bool: True if edge created successfully, False if skipped
+        """
+        try:
+            # Lookup child group
+            child_group = await tx_store.get_user_group_by_external_id(connector_name, child_source_id)
+            if not child_group:
+                self.logger.warning(
+                    f"Child user group not found: {child_source_id} "
+                    f"(connector: {connector_name.value})"
+                )
+                return False
+
+            # Lookup parent group
+            parent_group = await tx_store.get_user_group_by_external_id(connector_name, parent_source_id)
+            if not parent_group:
+                self.logger.warning(
+                    f"Parent user group not found: {parent_source_id} "
+                    f"(connector: {connector_name.value})"
+                )
+                return False
+
+            # Create BELONGS_TO edge
+            edge = {
+                "_from": f"{CollectionNames.GROUPS.value}/{child_group.id}",
+                "_to": f"{CollectionNames.GROUPS.value}/{parent_group.id}",
+                "entityType": "GROUP",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            await tx_store.batch_create_edges(
+                [edge],
+                collection=CollectionNames.BELONGS_TO.value
+            )
+
+            self.logger.debug(f"Created user group hierarchy: {child_group.name} -> {parent_group.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group hierarchy "
+                f"({child_source_id} -> {parent_source_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def create_user_group_membership(
+        self,
+        user_source_id: str,
+        group_source_id: str,
+        connector_name: Connectors,
+        tx_store: TransactionStore
+    ) -> bool:
+        """
+        Create BELONGS_TO edge from user to group using source IDs.
+
+        This method establishes user-to-group membership relationships without requiring
+        internal database IDs. It handles lookup of both user and group entities.
+
+        Args:
+            user_source_id: Source system ID of user (sourceUserId)
+            group_source_id: Source system ID of group
+            connector_name: Connector enum for scoped lookup
+            tx_store: Transaction store
+
+        Returns:
+            bool: True if edge created successfully, False if skipped
+        """
+        try:
+            # Lookup user by sourceUserId
+            user_query = """
+            FOR user IN @@users_collection
+                FILTER user.appName == @app_name
+                FILTER user.sourceUserId == @source_user_id
+                FILTER user.orgId == @org_id
+                LIMIT 1
+                RETURN user
+            """
+
+            user_cursor = tx_store.arango_service.db.aql.execute(
+                user_query,
+                bind_vars={
+                    "@users_collection": CollectionNames.USERS.value,
+                    "app_name": connector_name.value,
+                    "source_user_id": user_source_id,
+                    "org_id": self.org_id,
+                },
+            )
+            user_doc = next(user_cursor, None)
+
+            if not user_doc:
+                self.logger.warning(f"User not found: {user_source_id} (connector: {connector_name.value})")
+                return False
+
+            # Lookup group
+            group = await tx_store.get_user_group_by_external_id(
+                connector_name, group_source_id
+            )
+            if not group:
+                self.logger.warning(
+                    f"User group not found: {group_source_id} "
+                    f"(connector: {connector_name.value})"
+                )
+                return False
+
+            # Create BELONGS_TO edge
+            edge = {
+                "_from": user_doc["_id"],
+                "_to": f"{CollectionNames.GROUPS.value}/{group.id}",
+                "entityType": "GROUP",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            await tx_store.batch_create_edges([edge], collection=CollectionNames.BELONGS_TO.value)
+
+            self.logger.debug(f"Created user group membership: {user_doc.get('email')} -> {group.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group membership "
+                f"({user_source_id} -> {group_source_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def create_record_group_hierarchy(
+        self,
+        child_external_id: str,
+        parent_external_id: str,
+        child_group_type: RecordGroupType,
+        parent_group_type: RecordGroupType,
+        connector_name: Connectors,
+        tx_store: TransactionStore
+    ) -> bool:
+        """
+        Create PARENT_CHILD edge between record groups using external IDs.
+
+        This method enables connectors to establish folder/category hierarchies without
+        knowing internal database IDs. It validates group types and uses the existing
+        tx_store method for edge creation.
+
+        Args:
+            child_external_id: External ID of child record group
+            parent_external_id: External ID of parent record group
+            child_group_type: Type of child (e.g., RecordGroupType.SERVICENOW_CATEGORY)
+            parent_group_type: Type of parent (e.g., RecordGroupType.SERVICENOWKB)
+            connector_name: Connector enum for scoped lookup
+            tx_store: Transaction store
+
+        Returns:
+            bool: True if edge created successfully, False if skipped
+        """
+        try:
+            # Lookup child record group
+            child_rg = await tx_store.get_record_group_by_external_id(
+                connector_name, child_external_id
+            )
+            if not child_rg:
+                self.logger.warning(
+                    f"Child record group not found: {child_external_id} "
+                    f"(connector: {connector_name.value})"
+                )
+                return False
+
+            # Validate child group type
+            if child_rg.group_type != child_group_type:
+                self.logger.warning(
+                    f"Child record group type mismatch: expected {child_group_type.value}, "
+                    f"got {child_rg.group_type.value} for {child_external_id}"
+                )
+                return False
+
+            # Lookup parent record group
+            parent_rg = await tx_store.get_record_group_by_external_id(
+                connector_name, parent_external_id
+            )
+            if not parent_rg:
+                self.logger.warning(
+                    f"Parent record group not found: {parent_external_id} "
+                    f"(connector: {connector_name.value})"
+                )
+                return False
+
+            # Validate parent group type
+            if parent_rg.group_type != parent_group_type:
+                self.logger.warning(
+                    f"Parent record group type mismatch: expected {parent_group_type.value}, "
+                    f"got {parent_rg.group_type.value} for {parent_external_id}"
+                )
+                return False
+
+            # Use existing method to create PARENT_CHILD edge
+            await tx_store.create_record_groups_relation(child_rg.id, parent_rg.id)
+
+            self.logger.debug(f"Created record group hierarchy: {child_rg.name} -> {parent_rg.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create record group hierarchy "
+                f"({child_external_id} -> {parent_external_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def batch_upsert_record_group_permissions(
+        self,
+        record_group_id: str,
+        permissions: List[Permission],
+        connector_name: Connectors,
+        tx_store: TransactionStore
+    ) -> None:
+        """
+        Batch upsert permissions for a record group.
+
+        This method creates or updates permission edges between a record group and
+        users/groups. It handles the conversion of Permission objects to ArangoDB
+        edges and performs the batch upsert operation.
+
+        Args:
+            record_group_id: Internal ID (_key) of the record group
+            permissions: List of Permission objects to upsert
+            connector_name: Connector enum for scoped lookups
+            tx_store: Transaction store
+        """
+        try:
+            if not permissions:
+                self.logger.debug(f"No permissions to upsert for record group {record_group_id}")
+                return
+
+            # Use the tx_store method which already handles the edge creation
+            await tx_store.batch_upsert_record_group_permissions(
+                record_group_id,
+                permissions,
+                connector_name
+            )
+
+            self.logger.debug(f"Upserted {len(permissions)} permissions for record group {record_group_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to batch upsert permissions for record group {record_group_id}: {str(e)}", exc_info=True)
+            raise

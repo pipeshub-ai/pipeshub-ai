@@ -192,9 +192,6 @@ class ArangoTransactionStore(TransactionStore):
     async def batch_upsert_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
         return await self.arango_service.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
 
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission]) -> None:
-        return await self.arango_service.batch_upsert_record_group_permissions(record_group_id, permissions, transaction=self.txn)
-
     async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
         return await self.arango_service.batch_upsert_nodes(
                             [user_group.to_arango_base_user_group() for user_group in user_groups],
@@ -346,6 +343,72 @@ class ArangoTransactionStore(TransactionStore):
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
         return await self.arango_service.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
+    async def batch_upsert_record_group_permissions(
+        self, record_group_id: str, permissions: List[Permission], connector_name: Connectors
+    ) -> None:
+        """
+        Batch upsert permissions for a record group.
+
+        Creates permission edges from users/groups to the record group.
+        Looks up users by email and groups by external_id, then creates
+        the appropriate permission edges.
+
+        Args:
+            record_group_id: Internal ID (_key) of the record group
+            permissions: List of Permission objects
+            connector_name: Connector enum for scoped group lookups
+        """
+        if not permissions:
+            return
+
+        permission_edges = []
+        to_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}"
+
+        for permission in permissions:
+            from_collection = None
+
+            if permission.entity_type.value == "USER":
+                # Lookup user by email
+                user = None
+                if permission.email:
+                    user = await self.get_user_by_email(permission.email)
+
+                if user:
+                    from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                else:
+                    self.logger.warning(
+                        f"User not found for email: {permission.email}"
+                    )
+                    continue
+
+            elif permission.entity_type.value == "GROUP":
+                # Lookup group by external_id using the provided connector_name
+                user_group = None
+                if permission.external_id:
+                    user_group = await self.get_user_group_by_external_id(
+                        connector_name, permission.external_id
+                    )
+
+                if user_group:
+                    from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                else:
+                    self.logger.warning(
+                        f"Group not found for external_id: {permission.external_id}"
+                    )
+                    continue
+
+            if from_collection:
+                permission_edges.append(
+                    permission.to_arango_permission(from_collection, to_collection)
+                )
+
+        if permission_edges:
+            await self.arango_service.batch_create_edges(
+                permission_edges,
+                collection=CollectionNames.PERMISSION.value,
+                transaction=self.txn
+            )
 
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.arango_service.batch_create_edges(edges, collection=collection, transaction=self.txn)
