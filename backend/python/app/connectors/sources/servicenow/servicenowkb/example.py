@@ -73,11 +73,18 @@ async def test_run() -> None:
     config = {
         "auth": {
             "instanceUrl": os.getenv("SERVICENOW_INSTANCE_URL"),
-            "username": os.getenv("SERVICENOW_USERNAME"),
-            "password": os.getenv("SERVICENOW_PASSWORD"),
+            "authorizeUrl": os.getenv("SERVICENOW_AUTHORIZE_URL"),
+            "tokenUrl": os.getenv("SERVICENOW_TOKEN_URL"),
+            "clientId": os.getenv("SERVICENOW_CLIENT_ID"),
+            "clientSecret": os.getenv("SERVICENOW_CLIENT_SECRET"),
+            "redirectUri": "http://localhost/connectors/oauth/callback/ServiceNowKB",
+        },
+        "credentials": {
+            "access_token": os.getenv("SERVICENOW_ACCESS_TOKEN"),
+            "refresh_token": os.getenv("SERVICENOW_REFRESH_TOKEN"),
         }
     }
-    await key_value_store.create_key("/services/connectors/servicenow/config", config)
+    await key_value_store.create_key("/services/connectors/servicenowkb/config", config)
     connector: BaseConnector = await ServiceNowKBConnector.create_connector(
         logger, data_store_provider, config_service
     )

@@ -2962,8 +2962,8 @@ async def update_connector_config(
         if 'auth' not in merged_config or not isinstance(merged_config['auth'], dict):
             merged_config['auth'] = {}
 
-        merged_config['auth']['authorizeUrl'] = merged_config['auth']['authorizeUrl'] or auth_meta.get('authorizeUrl', '')
-        merged_config['auth']['tokenUrl'] = merged_config['auth']['tokenUrl'] or auth_meta.get('tokenUrl', '')
+        merged_config['auth']['authorizeUrl'] = merged_config['auth'].get('authorizeUrl') or auth_meta.get('authorizeUrl', '')
+        merged_config['auth']['tokenUrl'] = merged_config['auth'].get('tokenUrl') or auth_meta.get('tokenUrl', '')
         merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
         merged_config["auth"]["redirectUri"] = redirect_uri
         merged_config["auth"]["authType"] = auth_type

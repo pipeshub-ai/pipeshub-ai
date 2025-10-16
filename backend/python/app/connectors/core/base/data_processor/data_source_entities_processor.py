@@ -142,7 +142,6 @@ class DataSourceEntitiesProcessor:
                          record.record_name, existing_record.version, record.version)
         await tx_store.batch_upsert_records([record])
 
-
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
 
@@ -156,65 +155,53 @@ class DataSourceEntitiesProcessor:
                     user = None
                     if permission.email:
                         user = await tx_store.get_user_by_email(permission.email)
+
+                        # If user doesn't exist (external user), create them as inactive
+                        if not user and permission.email:
+                            user = await self._create_external_user(permission.email, record.connector_name, tx_store)
+                    
                     if user:
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+
                 elif permission.entity_type == EntityType.GROUP.value:
                     user_group = None
                     if permission.external_id:
-                        # Look up group by source_user_group_id (external_id in Permission object)
-                        user_group = await tx_store.get_group_by_source_id(
-                            app_name=record.connector_name.value,
-                            source_group_id=permission.external_id,
-                            org_id=self.org_id,
+                        # Look up group by external_id
+                        user_group = await tx_store.get_user_group_by_external_id(
+                            external_id=permission.external_id, 
+                            connector_name=record.connector_name
                         )
 
                     if user_group:
                         from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                    else:
+                        self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
+                        continue
 
-                    if permission.entity_type == EntityType.USER.value:
-                        user = None
-                        if permission.email:
-                            user = await tx_store.get_user_by_email(permission.email)
+                # Uncomment and implement these entity types as needed:
+                # elif permission.entity_type == EntityType.ORG.value:
+                #     org = await tx_store.get_org_by_external_id(permission.external_id)
+                #     if org:
+                #         from_collection = f"{CollectionNames.ORGS.value}/{org.id}"
 
-                            # If user doesn't exist (external user), create them as inactive
-                            if not user and permission.email:
-                                user = await self._create_external_user(permission.email, record.connector_name, tx_store)
-                        if user:
-                            from_collection = f"{CollectionNames.USERS.value}/{user.id}"
-                    elif permission.entity_type == EntityType.GROUP.value:
-                        if permission.external_id:
-                            user_group = await tx_store.get_user_group_by_external_id(external_id=permission.external_id, connector_name=record.connector_name)
-                        # else:
-                        #     user_group = await tx_store.get_user_group_by_email(email=permission.email, connector_name=record.connector_name)
+                # elif permission.entity_type == EntityType.DOMAIN.value:
+                #     domain = await tx_store.get_domain_by_external_id(permission.external_id)
+                #     if domain:
+                #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
 
-                        if user_group:
-                            from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-                        else:
-                            self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
-                            continue
-                    # if permission.entity_type == EntityType.ORG.value:
-                    #     org = await self.data_store.get_org_by_external_id(permission.external_id)
-                    #     if org:
-                    #         from_collection = f"{CollectionNames.ORGS.value}/{org.id}"
+                # elif permission.entity_type == EntityType.ANYONE.value:
+                #     from_collection = f"{CollectionNames.ANYONE.value}"
 
-                    # if permission.entity_type == EntityType.DOMAIN.value:
-                    #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
-                    #     if domain:
-                    #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
+                # elif permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
+                #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
 
-                    # if permission.entity_type == EntityType.ANYONE.value:
-                    #     from_collection = f"{CollectionNames.ANYONE.value}"
+                if from_collection:
+                    record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
 
-                    # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-                    #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
-
-                    if from_collection:
-                        record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
-
-                if record_permissions:
-                    await tx_store.batch_create_edges(
-                        record_permissions, collection=CollectionNames.PERMISSION.value
-                    )
+            if record_permissions:
+                await tx_store.batch_create_edges(
+                    record_permissions, collection=CollectionNames.PERMISSION.value
+                )
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
