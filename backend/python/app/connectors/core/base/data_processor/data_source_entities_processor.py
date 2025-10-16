@@ -159,7 +159,7 @@ class DataSourceEntitiesProcessor:
                         # If user doesn't exist (external user), create them as inactive
                         if not user and permission.email:
                             user = await self._create_external_user(permission.email, record.connector_name, tx_store)
-                    
+
                     if user:
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"
 
@@ -168,7 +168,7 @@ class DataSourceEntitiesProcessor:
                     if permission.external_id:
                         # Look up group by external_id
                         user_group = await tx_store.get_user_group_by_external_id(
-                            external_id=permission.external_id, 
+                            external_id=permission.external_id,
                             connector_name=record.connector_name
                         )
 
