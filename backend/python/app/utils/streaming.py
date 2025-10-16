@@ -354,7 +354,7 @@ async def execute_tool_calls(
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
                 message_contents,record_ids = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
-                logger.info("message_contents",len(message_contents))
+                logger.info("message_contents: %s", len(message_contents))
         else:
             for record in records:
                 message_content = record_to_message_content(record,final_results)
