@@ -6,7 +6,7 @@ Supports planning, execution, adaptation, and beautiful response formatting
 import asyncio
 import json
 from datetime import datetime
-from typing import Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import StreamWriter
@@ -19,6 +19,11 @@ from app.modules.qna.agent_prompt import (
 )
 from app.utils.citations import fix_json_string, process_citations
 from app.utils.streaming import stream_llm_response
+
+# Constants
+RESULT_PREVIEW_LENGTH = 150
+MARKDOWN_MIN_LENGTH = 100
+HEADER_LENGTH_THRESHOLD = 50
 
 # ============================================================================
 # PHASE 1: ENHANCED QUERY ANALYSIS
@@ -438,7 +443,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
 
                     # Log result preview
-                    result_preview = str(result)[:150] + "..." if len(str(result)) > 150 else str(result)
+                    result_preview = str(result)[:RESULT_PREVIEW_LENGTH] + "..." if len(str(result)) > RESULT_PREVIEW_LENGTH else str(result)
                     logger.debug(f"  Result preview: {result_preview}")
                 else:
                     logger.warning(f"Tool not found: {tool_name}")
@@ -774,7 +779,7 @@ def _is_beautiful_markdown(text: str) -> bool:
     has_bold = '**' in text
     has_structure = '\n\n' in text  # Paragraph breaks
 
-    return has_headers or (has_lists and has_bold) or (has_structure and len(text) > 100)
+    return has_headers or (has_lists and has_bold) or (has_structure and len(text) > MARKDOWN_MIN_LENGTH)
 
 
 def _beautify_markdown(text: str) -> str:
@@ -801,7 +806,7 @@ def _beautify_markdown(text: str) -> str:
             continue
 
         # Add basic formatting
-        if line.endswith(':') and len(line) < 50:
+        if line.endswith(':') and len(line) < HEADER_LENGTH_THRESHOLD:
             # Likely a header
             formatted_lines.append(f"## {line[:-1]}")
         elif line.startswith('-') or line.startswith('*'):
@@ -842,7 +847,7 @@ def _format_dict_as_markdown(data: dict) -> str:
     return '\n'.join(lines)
 
 
-def _build_workflow_summary(tool_results):
+def _build_workflow_summary(tool_results) -> List[str]:
     """Build a summary of the workflow steps"""
     steps = []
     for idx, result in enumerate(tool_results, 1):
@@ -860,7 +865,7 @@ def _build_workflow_summary(tool_results):
     return steps
 
 
-async def _stream_structured_response(content, writer, logger):
+async def _stream_structured_response(content, writer, logger) -> None:
     """Stream structured response with beautiful markdown answer"""
     answer_text = content.get("answer", "")
     chunk_size = 50
@@ -876,7 +881,7 @@ async def _stream_structured_response(content, writer, logger):
     logger.debug(f"✅ Streamed structured response: {len(answer_text)} chars with citations")
 
 
-async def _stream_conversational_response(content, writer, logger):
+async def _stream_conversational_response(content, writer, logger) -> None:
     """Stream conversational markdown response"""
     answer_text = content.get("answer", str(content))
     chunk_size = 50
@@ -898,7 +903,7 @@ async def _stream_conversational_response(content, writer, logger):
     logger.debug(f"✅ Streamed markdown response: {len(answer_text)} chars")
 
 
-def _prepare_final_messages(state, has_internal_knowledge):
+def _prepare_final_messages(state, has_internal_knowledge) -> List[Dict[str, str]]:
     """Prepare messages for final response generation"""
     validated_messages = []
 
@@ -946,7 +951,7 @@ def _prepare_final_messages(state, has_internal_knowledge):
     return validated_messages
 
 
-async def _generate_streaming_response(llm, messages, final_results, writer, logger, state):
+async def _generate_streaming_response(llm, messages, final_results, writer, logger, state) -> Optional[Dict[str, Any]]:
     """Generate response with streaming and proper format"""
     try:
         writer({"event": "status", "data": {"status": "generating", "message": "✍️ Creating response..."}})
@@ -1037,7 +1042,7 @@ async def _generate_streaming_response(llm, messages, final_results, writer, log
 
         return completion_data
 
-def _clean_response(response):
+def _clean_response(response) -> Dict[str, Any]:
     """Clean response format"""
     if isinstance(response, str):
         try:
@@ -1057,7 +1062,7 @@ def _clean_response(response):
         return _normalize_response_format(response)
 
 
-def _validate_and_fix_message_sequence(messages):
+def _validate_and_fix_message_sequence(messages) -> List[Any]:
     """Validate and fix message sequence"""
     validated = []
     pending_tool_calls = {}
@@ -1098,7 +1103,7 @@ def _validate_and_fix_message_sequence(messages):
     return validated
 
 
-def _clean_message_history(messages):
+def _clean_message_history(messages) -> List[Any]:
     """Clean message history"""
     validated_messages = _validate_and_fix_message_sequence(messages)
     cleaned = []

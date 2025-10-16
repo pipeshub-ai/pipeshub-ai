@@ -20,6 +20,7 @@ from app.modules.agents.qna.nodes import (
 # Constants
 LAST_N_TOOLS = 5
 MAX_TOOL_ITERATIONS = 30
+PING_PONG_PATTERN_THRESHOLD = 2
 
 
 def should_continue_with_planning(state: ChatState) -> str:
@@ -53,7 +54,7 @@ def should_continue_with_planning(state: ChatState) -> str:
                     logger.warning("Forcing termination to prevent infinite loop")
                     return "final"
 
-                elif len(unique_tools) == 2:
+                elif len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
                     # Check for A→B→A→B pattern
                     pattern = "→".join(last_n_tools)
                     logger.warning(f"⚠️ Potential ping-pong detected: {pattern}")

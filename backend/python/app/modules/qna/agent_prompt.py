@@ -4,6 +4,11 @@ Enterprise-grade formatting with intelligent planning capabilities
 """
 
 from datetime import datetime
+from typing import Any, List, Tuple
+
+# Constants
+CONTENT_PREVIEW_LENGTH = 250
+CONVERSATION_PREVIEW_LENGTH = 300
 
 # ============================================================================
 # PROFESSIONAL AGENT SYSTEM PROMPT
@@ -727,7 +732,7 @@ Remember: You're an intelligent AI agent in a professional environment. Your res
 # CONTEXT BUILDERS
 # ============================================================================
 
-def build_internal_context_for_planning(final_results, include_full_content=False):
+def build_internal_context_for_planning(final_results, include_full_content=False) -> str:
     """Build internal knowledge context"""
     if not final_results:
         return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
@@ -749,7 +754,7 @@ def build_internal_context_for_planning(final_results, include_full_content=Fals
         if include_full_content:
             context_parts.append(f"Content: {content}")
         else:
-            preview = content[:250] + "..." if len(content) > 250 else content
+            preview = content[:CONTENT_PREVIEW_LENGTH] + "..." if len(content) > CONTENT_PREVIEW_LENGTH else content
             context_parts.append(f"Preview: {preview}")
 
         if "title" in metadata:
@@ -766,7 +771,7 @@ def build_internal_context_for_planning(final_results, include_full_content=Fals
     return "\n".join(context_parts)
 
 
-def build_conversation_history_context(previous_conversations, max_history=5):
+def build_conversation_history_context(previous_conversations, max_history=5) -> str:
     """Build conversation history"""
     if not previous_conversations:
         return "This is the start of our conversation."
@@ -781,7 +786,7 @@ def build_conversation_history_context(previous_conversations, max_history=5):
         if role == "user_query":
             history_parts.append(f"\nUser (Turn {idx}): {content}")
         elif role == "bot_response":
-            abbreviated = content[:300] + "..." if len(content) > 300 else content
+            abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
             history_parts.append(f"Assistant (Turn {idx}): {abbreviated}")
 
     history_parts.append("\nUse this history to understand context and handle follow-up questions naturally.")
@@ -789,7 +794,7 @@ def build_conversation_history_context(previous_conversations, max_history=5):
     return "\n".join(history_parts)
 
 
-def build_user_context(user_info, org_info):
+def build_user_context(user_info, org_info) -> str:
     """Build user context"""
     if not user_info or not org_info:
         return "No user context available."
@@ -813,7 +818,7 @@ def build_user_context(user_info, org_info):
 # AGENT PROMPT BUILDER
 # ============================================================================
 
-def build_agent_prompt(state, max_iterations=30):
+def build_agent_prompt(state, max_iterations=30) -> str:
     """Build the professional agent prompt"""
     current_datetime = datetime.utcnow().isoformat() + "Z"
 
@@ -853,7 +858,7 @@ def build_agent_prompt(state, max_iterations=30):
     return complete_prompt
 
 
-def create_agent_messages(state):
+def create_agent_messages(state) -> List[Any]:
     """
     Create messages for the agent with enhanced context
     """
@@ -887,7 +892,7 @@ def create_agent_messages(state):
     available_tools = state.get("available_tools") or []
     tool_count = len(available_tools)
     if tool_count > 0:
-        query_with_context = f"{current_query}\n\n💡 You have {tool_count} tools available. Plan your approach before using them."
+        query_with_context = f"{current_query}\n\n💡 You have {', '.join(available_tools)} tools available. Plan your approach before using them."
     else:
         query_with_context = current_query
 
@@ -904,7 +909,7 @@ def create_agent_messages(state):
 # RESPONSE MODE DETECTION
 # ============================================================================
 
-def detect_response_mode(response_content):
+def detect_response_mode(response_content) -> Tuple[str, Any]:
     """Detect if response is structured JSON or conversational"""
     if isinstance(response_content, dict):
         if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content):
@@ -934,7 +939,7 @@ def detect_response_mode(response_content):
     return "conversational", content
 
 
-def should_use_structured_mode(state):
+def should_use_structured_mode(state) -> bool:
     """Determine if structured JSON output is needed"""
     has_internal_results = bool(state.get("final_results"))
     is_follow_up = state.get("query_analysis", {}).get("is_follow_up", False)
