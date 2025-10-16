@@ -1,3 +1,14 @@
+/**
+ * Connectors Page
+ *
+ * Main page for managing connector instances.
+ * Shows all configured connectors with options to:
+ * - View active/inactive/configured instances
+ * - Navigate to available connectors (registry)
+ * - Configure new instances
+ * - Manage existing instances
+ */
+
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Paper,
@@ -19,9 +30,9 @@ import {
   Divider,
   IconButton,
 } from '@mui/material';
+import { useNavigate } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
 import infoIcon from '@iconify-icons/mdi/info-circle';
-import arrowRightIcon from '@iconify-icons/mdi/arrow-right';
 import magniferIcon from '@iconify-icons/mdi/magnify';
 import linkBrokenIcon from '@iconify-icons/mdi/link-off';
 import linkIcon from '@iconify-icons/mdi/link-variant';
@@ -30,7 +41,10 @@ import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
 import settingsIcon from '@iconify-icons/mdi/settings';
 import clearIcon from '@iconify-icons/mdi/close-circle';
+import plusIcon from '@iconify-icons/mdi/plus';
+import appsIcon from '@iconify-icons/mdi/apps';
 import { SnackbarState } from 'src/types/chat-sidebar';
+import { useAccountType } from 'src/hooks/use-account-type';
 import { ConnectorApiService } from './services/api';
 import { Connector } from './types/types';
 import ConnectorCard from './components/connector-card';
@@ -41,29 +55,36 @@ const Connectors = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedFilter, setSelectedFilter] = useState<
-    'all' | 'connected' | 'configured' | 'not-configured'
+    'all' | 'active' | 'configured' | 'not-configured'
   >('all');
   const [snackbar, setSnackbar] = useState<SnackbarState>({
     open: false,
     message: '',
     severity: 'success',
   });
-  const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
 
+  const theme = useTheme();
+  const navigate = useNavigate();
+  const isDark = theme.palette.mode === 'dark';
+  const { isBusiness } = useAccountType();
+
+
+  // Fetch all connector instances
   useEffect(() => {
     const fetchConnectors = async () => {
       try {
-        const fetchedConnectors = await ConnectorApiService.getConnectors();
-        setConnectors(fetchedConnectors);
-        setFilteredConnectors(fetchedConnectors);
-        setLoading(false);
+        setLoading(true);
+        const fetchedConnectors = await ConnectorApiService.getConnectorInstances();
+        setConnectors(fetchedConnectors as Connector[]);
+        setFilteredConnectors(fetchedConnectors as Connector[]);
       } catch (error) {
+        console.error('Error fetching connectors:', error);
         setSnackbar({
           open: true,
           message: 'Failed to fetch connectors',
           severity: 'error',
         });
+      } finally {
         setLoading(false);
       }
     };
@@ -79,6 +100,7 @@ const Connectors = () => {
       filtered = filtered.filter(
         (connector) =>
           connector.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          connector.type.toLowerCase().includes(searchQuery.toLowerCase()) ||
           connector.appGroup.toLowerCase().includes(searchQuery.toLowerCase())
       );
     }
@@ -87,7 +109,7 @@ const Connectors = () => {
     if (selectedFilter !== 'all') {
       filtered = filtered.filter((connector) => {
         switch (selectedFilter) {
-          case 'connected':
+          case 'active':
             return connector.isConfigured && connector.isActive;
           case 'configured':
             return connector.isConfigured && !connector.isActive;
@@ -105,7 +127,7 @@ const Connectors = () => {
   // Get filter counts
   const getFilterCounts = () => ({
     all: connectors.length,
-    connected: connectors.filter((c) => c.isConfigured && c.isActive).length,
+    active: connectors.filter((c) => c.isConfigured && c.isActive).length,
     configured: connectors.filter((c) => c.isConfigured && !c.isActive).length,
     'not-configured': connectors.filter((c) => !c.isConfigured).length,
   });
@@ -114,18 +136,12 @@ const Connectors = () => {
 
   const filterOptions = [
     { key: 'all', label: 'All', count: filterCounts.all, icon: listIcon },
-    { key: 'connected', label: 'Active', count: filterCounts.connected, icon: checkCircleIcon },
+    { key: 'active', label: 'Active', count: filterCounts.active, icon: checkCircleIcon },
     {
       key: 'configured',
       label: 'Configured',
       count: filterCounts.configured,
       icon: clockCircleIcon,
-    },
-    {
-      key: 'not-configured',
-      label: 'Not Configured',
-      count: filterCounts['not-configured'],
-      icon: settingsIcon,
     },
   ];
 
@@ -135,8 +151,11 @@ const Connectors = () => {
     setSearchQuery('');
   };
 
-  const totalConnected = filterCounts.connected;
-  const totalConfigured = filterCounts.configured + filterCounts.connected;
+  const handleBrowseRegistry = () => {
+    navigate(isBusiness ? '/account/company-settings/settings/connector/registry' : '/account/individual/settings/connector/registry');
+  };
+
+  const totalActive = filterCounts.active;
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>
@@ -160,67 +179,85 @@ const Connectors = () => {
         >
           <Fade in={!loading} timeout={600}>
             <Stack spacing={2}>
-              <Stack direction="row" alignItems="center" spacing={1.5}>
-                <Box
+              <Stack direction="row" alignItems="center" justifyContent="space-between">
+                <Stack direction="row" alignItems="center" spacing={1.5}>
+                  <Box
+                    sx={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 1.5,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                      border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Iconify
+                      icon={linkIcon}
+                      width={20}
+                      height={20}
+                      sx={{ color: theme.palette.primary.main }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography
+                      variant="h5"
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '1.5rem',
+                        color: theme.palette.text.primary,
+                        mb: 0.5,
+                      }}
+                    >
+                      My Connectors
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.875rem',
+                      }}
+                    >
+                      Manage your configured connector instances
+                      {totalActive > 0 && (
+                        <Chip
+                          label={`${totalActive} active`}
+                          size="small"
+                          sx={{
+                            ml: 1,
+                            height: 20,
+                            fontSize: '0.6875rem',
+                            fontWeight: 600,
+                            backgroundColor: isDark
+                              ? alpha(theme.palette.success.main, 0.8)
+                              : alpha(theme.palette.success.main, 0.1),
+                            color: isDark
+                              ? theme.palette.success.contrastText
+                              : theme.palette.success.main,
+                            border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
+                          }}
+                        />
+                      )}
+                    </Typography>
+                  </Box>
+                </Stack>
+
+                {/* Browse Registry Button */}
+                <Button
+                  variant="outlined"
+                  startIcon={<Iconify icon={appsIcon} width={18} height={18} />}
+                  onClick={handleBrowseRegistry}
                   sx={{
-                    width: 40,
-                    height: 40,
+                    textTransform: 'none',
+                    fontWeight: 600,
                     borderRadius: 1.5,
-                    backgroundColor: alpha(theme.palette.primary.main, 0.1),
-                    border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
+                    px: 3,
+                    height: 40,
                   }}
                 >
-                  <Iconify
-                    icon={linkIcon}
-                    width={20}
-                    height={20}
-                    sx={{ color: theme.palette.primary.main }}
-                  />
-                </Box>
-                <Box>
-                  <Typography
-                    variant="h5"
-                    sx={{
-                      fontWeight: 700,
-                      fontSize: '1.5rem',
-                      color: theme.palette.text.primary,
-                      mb: 0.5,
-                    }}
-                  >
-                    Data Connectors
-                  </Typography>
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontSize: '0.875rem',
-                    }}
-                  >
-                    Connect and manage integrations with external services
-                    {totalConnected > 0 && (
-                      <Chip
-                        label={`${totalConnected} active`}
-                        size="small"
-                        sx={{
-                          ml: 1,
-                          height: 20,
-                          fontSize: '0.6875rem',
-                          fontWeight: 600,
-                          backgroundColor: isDark
-                            ? alpha(theme.palette.success.main, 0.8)
-                            : alpha(theme.palette.success.main, 0.1),
-                          color: isDark
-                            ? theme.palette.success.contrastText
-                            : theme.palette.success.main,
-                          border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
-                        }}
-                      />
-                    )}
-                  </Typography>
-                </Box>
+                  Available Connectors
+                </Button>
               </Stack>
             </Stack>
           </Fade>
@@ -262,7 +299,7 @@ const Connectors = () => {
                 <Stack spacing={2}>
                   {/* Search Bar */}
                   <TextField
-                    placeholder="Search connectors by name or category..."
+                    placeholder="Search connectors by name, type, or category..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     size="small"
@@ -450,7 +487,7 @@ const Connectors = () => {
                         color: theme.palette.text.primary,
                       }}
                     >
-                      {searchQuery ? 'No connectors found' : 'No connectors available'}
+                      {searchQuery ? 'No connectors found' : 'No connector instances configured'}
                     </Typography>
                     <Typography
                       variant="body2"
@@ -458,6 +495,7 @@ const Connectors = () => {
                         color: theme.palette.text.secondary,
                         maxWidth: 400,
                         mx: 'auto',
+                        mb: 3,
                       }}
                     >
                       {searchQuery ? (
@@ -479,9 +517,23 @@ const Connectors = () => {
                           </Button>
                         </>
                       ) : (
-                        'No connectors match the selected filter. Try selecting a different filter.'
+                        'Get started by browsing available connectors and creating your first instance.'
                       )}
                     </Typography>
+                    {!searchQuery && (
+                      <Button
+                        variant="outlined"
+                        startIcon={<Iconify icon={plusIcon} width={20} height={20} />}
+                        onClick={handleBrowseRegistry}
+                        sx={{
+                          textTransform: 'none',
+                          fontWeight: 600,
+                          borderRadius: 1.5,
+                        }}
+                      >
+                        Available Connectors
+                      </Button>
+                    )}
                   </Paper>
                 )}
 
@@ -499,14 +551,13 @@ const Connectors = () => {
                       {searchQuery
                         ? `Search Results (${filteredConnectors.length})`
                         : selectedFilter === 'all'
-                          ? `All Connectors (${filteredConnectors.length})`
-                          : selectedFilter === 'connected'
-                            ? `Active Connectors (${filteredConnectors.length})`
+                          ? `All Instances (${filteredConnectors.length})`
+                          : selectedFilter === 'active'
+                            ? `Active Instances (${filteredConnectors.length})`
                             : selectedFilter === 'configured'
-                              ? `Ready Connectors (${filteredConnectors.length})`
+                              ? `Ready Instances (${filteredConnectors.length})`
                               : `Setup Required (${filteredConnectors.length})`}
                     </Typography>
-
                     <Grid container spacing={2.5}>
                       {filteredConnectors.map((connector) => (
                         <Grid item xs={12} sm={6} md={4} lg={3} key={connector._key}>
@@ -539,10 +590,9 @@ const Connectors = () => {
                   >
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
                       <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        Click any connector to configure settings and start syncing data
-                        automatically.
+                        Click any connector instance to manage settings, toggle status, or view
+                        synchronization details.
                       </Typography>
-                     
                     </Stack>
                   </Alert>
                 )}
@@ -575,5 +625,4 @@ const Connectors = () => {
     </Container>
   );
 };
-
 export default Connectors;

@@ -1,10 +1,18 @@
+/**
+ * useConnectorConfig Hook
+ *
+ * Hook for managing connector instance configuration.
+ * Handles form state, validation, and saving configuration.
+ */
+
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector, ConnectorConfig } from '../types/types';
 import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
 import { buildCronFromSchedule } from '../utils/cron';
-import { shouldShowElement, evaluateConditionalDisplay } from '../utils/conditional-display';
+import { evaluateConditionalDisplay } from '../utils/conditional-display';
 
 interface FormData {
   auth: Record<string, any>;
@@ -19,9 +27,10 @@ interface FormErrors {
 }
 
 interface UseConnectorConfigProps {
-  connector: Connector;
+  connector: Connector | any; // supports both Connector and ConnectorRegistry shape
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
 }
 
 interface UseConnectorConfigReturn {
@@ -43,6 +52,11 @@ interface UseConnectorConfigReturn {
   fileError: string | null;
   jsonData: Record<string, any> | null;
 
+  // Create mode state
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+
   // Actions
   handleFieldChange: (section: string, fieldName: string, value: any) => void;
   handleNext: () => void;
@@ -55,16 +69,18 @@ interface UseConnectorConfigReturn {
   validateAdminEmail: (email: string) => boolean;
   isBusinessGoogleOAuthValid: () => boolean;
   fileInputRef: React.RefObject<HTMLInputElement>;
+  setInstanceName: (name: string) => void;
 }
 
 export const useConnectorConfig = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName,
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+  const navigate = useNavigate();
   // State
   const [connectorConfig, setConnectorConfig] = useState<ConnectorConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,6 +99,11 @@ export const useConnectorConfig = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conditionalDisplay, setConditionalDisplay] = useState<Record<string, boolean>>({});
 
+  // Create mode
+  const isCreateMode = !connector?._key;
+  const [instanceName, setInstanceName] = useState<string>(initialInstanceName || '');
+  const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
+
   // Business OAuth specific state
   const [adminEmail, setAdminEmail] = useState('');
   const [adminEmailError, setAdminEmailError] = useState<string | null>(null);
@@ -91,12 +112,12 @@ export const useConnectorConfig = ({
   const [fileError, setFileError] = useState<string | null>(null);
   const [jsonData, setJsonData] = useState<Record<string, any> | null>(null);
 
-  // Simplified helper functions - replaces complex nested conditions with readable functions
+  // Helper to check if custom business OAuth logic applies
   const customGoogleBusinessOAuth = useCallback(
     (connectorParam: Connector, accountType: string): boolean =>
-        accountType === 'business' &&
-        connectorParam.appGroup === 'Google Workspace' &&
-        connectorParam.authType === 'OAUTH',
+      accountType === 'business' &&
+      connectorParam.appGroup === 'Google Workspace' &&
+      connectorParam.authType === 'OAUTH',
     []
   );
 
@@ -140,8 +161,7 @@ export const useConnectorConfig = ({
     };
   }, []);
 
-  // Simplified config merger - eliminates complex nested field access patterns
-  // This centralizes the config merging logic in one place for easier maintenance
+  // Config merger
   const mergeConfigWithSchema = useCallback(
     (configResponse: any, schemaResponse: any) => ({
       ...configResponse,
@@ -192,7 +212,6 @@ export const useConnectorConfig = ({
       const text = await file.text();
       const parsed = JSON.parse(text);
 
-      // Validate required fields for Google Cloud Service Account JSON
       const requiredFields = ['client_id', 'project_id', 'type'];
       const missingFields = requiredFields.filter((field) => !parsed[field]);
 
@@ -201,7 +220,6 @@ export const useConnectorConfig = ({
         return null;
       }
 
-      // Validate that it's a service account JSON
       if (parsed.type !== 'service_account') {
         setFileError('This is not a Google Cloud Service Account JSON file');
         return null;
@@ -251,24 +269,46 @@ export const useConnectorConfig = ({
     [adminEmail, jsonData, validateBusinessGoogleOAuth]
   );
 
-  // Load connector configuration
+  // Load connector configuration (create mode: load schema only; edit mode: load instance config + schema)
   useEffect(() => {
     const fetchConnectorConfig = async () => {
       try {
         setLoading(true);
+        let mergedConfig: any = null;
 
-        // Fetch both config and schema
-        const [configResponse, schemaResponse] = await Promise.all([
-          ConnectorApiService.getConnectorConfig(connector.name),
-          ConnectorApiService.getConnectorSchema(connector.name),
-        ]);
-
-        // Use simplified config merger
-        const mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
-
+        if (isCreateMode) {
+          // Create mode: only schema exists; synthesize empty config shape
+          const schemaResponse = await ConnectorApiService.getConnectorSchema(connector.type);
+          const emptyConfigResponse = {
+            name: connector.name,
+            type: connector.type,
+            appGroup: connector.appGroup,
+            appGroupId: connector.appGroupId || '',
+            authType: connector.authType,
+            isActive: false,
+            isConfigured: false,
+            supportsRealtime: !!connector.supportsRealtime,
+            appDescription: connector.appDescription || '',
+            appCategories: connector.appCategories || [],
+            iconPath: connector.iconPath,
+            config: {
+              auth: {},
+              sync: {},
+              filters: {},
+            },
+          };
+          mergedConfig = mergeConfigWithSchema(emptyConfigResponse, schemaResponse);
+        } else {
+          // Edit mode: fetch both config and schema using connectorId
+          const [configResponse, schemaResponse] = await Promise.all([
+            ConnectorApiService.getConnectorInstanceConfig(connector._key),
+            ConnectorApiService.getConnectorSchema(connector.type),
+          ]);
+          mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
+        }
         setConnectorConfig(mergedConfig);
 
-        // Initialize form data with existing values and default values from field definitions
+        // Initialize form data
         const initializeFormData = (config: any) => {
           const authData = { ...(config.config.auth?.values || config.config.auth || {}) };
 
@@ -307,7 +347,7 @@ export const useConnectorConfig = ({
 
         setFormData(initialFormData);
 
-        // Evaluate conditional display rules with proper default values
+        // Evaluate conditional display rules
         if (mergedConfig.config.auth.conditionalDisplay) {
           const displayRules = evaluateConditionalDisplay(
             mergedConfig.config.auth.conditionalDisplay,
@@ -315,7 +355,6 @@ export const useConnectorConfig = ({
           );
           setConditionalDisplay(displayRules);
         } else {
-          // Initialize with empty conditional display if no rules exist
           setConditionalDisplay({});
         }
       } catch (error) {
@@ -333,8 +372,8 @@ export const useConnectorConfig = ({
     mergeConfigWithSchema,
     customGoogleBusinessOAuth,
     getBusinessOAuthData,
+    isCreateMode,
   ]);
-
   // Recalculate conditional display when form data changes
   useEffect(() => {
     if (connectorConfig?.config?.auth?.conditionalDisplay) {
@@ -345,12 +384,10 @@ export const useConnectorConfig = ({
       setConditionalDisplay(displayRules);
     }
   }, [formData.auth, connectorConfig?.config?.auth?.conditionalDisplay]);
-
   const validateField = useCallback((field: any, value: any): string => {
     if (field.required && (!value || (typeof value === 'string' && !value.trim()))) {
       return `${field.displayName} is required`;
     }
-
     if (field.validation) {
       const { minLength, maxLength, pattern, format } = field.validation;
 
@@ -363,7 +400,6 @@ export const useConnectorConfig = ({
       }
 
       if (format && value) {
-        // Handle specific format validations
         switch (format) {
           case 'email': {
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -373,10 +409,17 @@ export const useConnectorConfig = ({
             break;
           }
           case 'url': {
-            try {
-              // eslint-disable-next-line no-new
-              new URL(value);
-            } catch {
+            const isValidUrl = (() => {
+              try {
+                // Constructing URL returns an object; we only care if it throws
+                // Using a variable avoids 'new' for side effects lint rule
+                const parsed = new URL(value);
+                return Boolean(parsed);
+              } catch {
+                return false;
+              }
+            })();
+            if (!isValidUrl) {
               return `${field.displayName} must be a valid URL`;
             }
             break;
@@ -389,11 +432,9 @@ export const useConnectorConfig = ({
 
     return '';
   }, []);
-
   const validateSection = useCallback(
     (section: string, fields: any[], values: Record<string, any>): Record<string, string> => {
       const errors: Record<string, string> = {};
-
       fields.forEach((field) => {
         const error = validateField(field, values[field.name]);
         if (error) {
@@ -405,7 +446,6 @@ export const useConnectorConfig = ({
     },
     [validateField]
   );
-
   const handleFieldChange = useCallback(
     (section: string, fieldName: string, value: any) => {
       setFormData((prev) => {
@@ -416,7 +456,6 @@ export const useConnectorConfig = ({
             [fieldName]: value,
           },
         };
-
         // Re-evaluate conditional display rules for auth section
         if (section === 'auth' && connectorConfig?.config.auth.conditionalDisplay) {
           const displayRules = evaluateConditionalDisplay(
@@ -440,18 +479,14 @@ export const useConnectorConfig = ({
     },
     [connectorConfig]
   );
-
   const handleNext = useCallback(() => {
     if (!connectorConfig) return;
-
     let errors: Record<string, string> = {};
 
     // Validate current step
     switch (activeStep) {
       case 0: // Auth
         {
-          // For business OAuth (service account), skip validating client fields and instead
-          // require adminEmail + valid JSON credentials
           const isBusinessMode = customGoogleBusinessOAuth(
             connector,
             isBusiness ? 'business' : 'individual'
@@ -472,7 +507,6 @@ export const useConnectorConfig = ({
         break;
       case 1: // Sync
         errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
-        // Note: Start time and max repetitions are not supported currently; no validation required
         break;
       default:
         break;
@@ -497,19 +531,30 @@ export const useConnectorConfig = ({
     isBusinessGoogleOAuthValid,
     adminEmailError,
   ]);
-
   const handleBack = useCallback(() => {
     if (activeStep > 0) {
       setActiveStep((prev) => prev - 1);
     }
   }, [activeStep]);
-
   const handleSave = useCallback(async () => {
     if (!connectorConfig) return;
-
     try {
       setSaving(true);
       setSaveError(null);
+
+      // In create mode, validate instance name
+      if (isCreateMode) {
+        const trimmed = (instanceName || '').trim();
+        if (!trimmed) {
+          setInstanceNameError('Instance name is required');
+          return;
+        }
+        if (trimmed.length < 3) {
+          setInstanceNameError('Instance name must be at least 3 characters');
+          return;
+        }
+        setInstanceNameError(null);
+      }
 
       // For business OAuth, validate admin email and JSON file
       if (customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual')) {
@@ -550,7 +595,7 @@ export const useConnectorConfig = ({
         return;
       }
 
-      // Prepare config for API - store values directly in etcd
+      // Prepare config for API
       const configToSave: any = {
         auth: formData.auth,
         sync: {
@@ -561,37 +606,74 @@ export const useConnectorConfig = ({
         filters: formData.filters || {},
       };
 
-      // For business OAuth, merge JSON data and admin email into auth config
+      // For business OAuth, merge JSON data and admin email
       if (
         customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
         jsonData
       ) {
         configToSave.auth = {
           ...configToSave.auth,
-          ...jsonData, // Spread all JSON fields
+          ...jsonData,
           adminEmail,
         };
       }
 
-      await ConnectorApiService.updateConnectorConfig(
-        connector.name,
-        configToSave as any
-      );
+      if (isCreateMode) {
+        // Create new instance with config and instance name
+        const created = await ConnectorApiService.createConnectorInstance(
+          connector.type,
+          instanceName.trim(),
+          configToSave
+        );
+        onSuccess?.();
+        onClose();
+        // After creation, if scheduled, schedule crawling with connectorId
+        const syncStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+        if (syncStrategy === 'SCHEDULED') {
+          const scheduled = (formData.sync.scheduledConfig || {}) as any;
+          const cron = buildCronFromSchedule({
+            startTime: scheduled.startTime,
+            intervalMinutes: scheduled.intervalMinutes,
+            timezone: scheduled.timezone?.toUpperCase() || 'UTC',
+          });
+          await CrawlingManagerApi.schedule(connector.type.toLowerCase(), created.connectorId, {
+            scheduleConfig: {
+              scheduleType: 'custom',
+              isEnabled: true,
+              timezone: scheduled.timezone?.toUpperCase() || 'UTC',
+              cronExpression: cron,
+            },
+            priority: 5,
+            maxRetries: 3,
+            timeout: 300000,
+          });
+        }
+        if (isBusiness) {
+          navigate(`/account/company-settings/settings/connector/${created.connectorId}`);
+        } else {
+          navigate(`/account/individual/settings/connector/${created.connectorId}`);
+        }
+        return;
+      }
+      if (connector._key) {
+        // Update existing connector configuration using connectorId
+        await ConnectorApiService.updateConnectorInstanceConfig(connector._key, configToSave);
+      }
 
-      // After saving config, only schedule crawling when strategy is SCHEDULED
+      // After saving config, schedule crawling if strategy is SCHEDULED
       const syncStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
       if (syncStrategy === 'SCHEDULED') {
         const scheduled = (formData.sync.scheduledConfig || {}) as any;
         const cron = buildCronFromSchedule({
           startTime: scheduled.startTime,
           intervalMinutes: scheduled.intervalMinutes,
-          timezone: scheduled.timezone.toUpperCase() || 'UTC',
+          timezone: scheduled.timezone?.toUpperCase() || 'UTC',
         });
-        await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
+        await CrawlingManagerApi.schedule(connector.type.toLowerCase(), connector._key, {
           scheduleConfig: {
             scheduleType: 'custom',
             isEnabled: true,
-            timezone: scheduled.timezone.toUpperCase() || 'UTC',
+            timezone: scheduled.timezone?.toUpperCase() || 'UTC',
             cronExpression: cron,
           },
           priority: 5,
@@ -610,19 +692,21 @@ export const useConnectorConfig = ({
     }
   }, [
     connectorConfig,
+    connector,
     formData,
     validateSection,
     onClose,
     onSuccess,
-    connector,
     isBusiness,
     adminEmail,
     jsonData,
     isBusinessGoogleOAuthValid,
     customGoogleBusinessOAuth,
-    adminEmailError
+    adminEmailError,
+    isCreateMode,
+    instanceName,
+    navigate
   ]);
-
   // Admin email change handler
   const handleAdminEmailChange = useCallback(
     (email: string) => {
@@ -631,7 +715,6 @@ export const useConnectorConfig = ({
     },
     [validateAdminEmail]
   );
-
   return {
     // State
     connectorConfig,
@@ -642,7 +725,10 @@ export const useConnectorConfig = ({
     formErrors,
     saveError,
     conditionalDisplay,
-
+    // Create mode
+    isCreateMode,
+    instanceName,
+    instanceNameError,
     // Business OAuth state
     adminEmail,
     adminEmailError,
@@ -663,5 +749,6 @@ export const useConnectorConfig = ({
     validateAdminEmail,
     isBusinessGoogleOAuthValid,
     fileInputRef,
+    setInstanceName,
   };
 };

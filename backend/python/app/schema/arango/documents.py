@@ -96,7 +96,6 @@ app_schema = {
             "name": {"type": "string"},
             "type": {"type": "string"},
             "appGroup": {"type": "string"},
-            "appGroupId": {"type": "string"},
             "authType": {"type": "string"},
             "isActive": {"type": "boolean", "default": True},
             "isConfigured": {"type": "boolean", "default": False},
@@ -108,10 +107,8 @@ app_schema = {
             "name",
             "type",
             "appGroup",
-            "appGroupId",
             "isActive",
-            "createdAtTimestamp",
-            "updatedAtTimestamp",
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
@@ -128,6 +125,7 @@ record_schema = {
             "recordName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalRecordId": {"type": "string", "minLength": 1},
+            "connectorId": {"type": ["string", "null"]},
             "externalGroupId": {"type": ["string", "null"]},
             "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
@@ -207,6 +205,7 @@ file_record_schema = {
             "orgId": {"type": "string"},
             "recordGroupId": {"type":"string"},  # kb id
             "name": {"type": "string", "minLength": 1},
+            "connectorId": {"type": ["string", "null"]},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},
             "mimeType": {"type": ["string", "null"]},
@@ -326,6 +325,7 @@ record_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
             "createdBy":{"type": ["string", "null"]},

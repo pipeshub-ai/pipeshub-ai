@@ -68,9 +68,10 @@ class GmailEventService(BaseEventService):
             org_id = payload.get("orgId")
             if not org_id:
                 raise ValueError("orgId is required")
+            connector_id = payload.get("connectorId")
 
             self.logger.info(f"Initializing Gmail sync service for org_id: {org_id}")
-            await self.sync_tasks.gmail_manual_sync_control("init", org_id)
+            await self.sync_tasks.gmail_manual_sync_control("init", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Gmail sync service initialization: %s", str(e))
@@ -84,7 +85,8 @@ class GmailEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Starting Gmail sync service for org_id: {org_id}")
-            await self.sync_tasks.gmail_manual_sync_control("start", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.gmail_manual_sync_control("start", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Gmail sync service start: %s", str(e))
@@ -98,7 +100,8 @@ class GmailEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Pausing Gmail sync service for org_id: {org_id}")
-            await self.sync_tasks.gmail_manual_sync_control("pause", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.gmail_manual_sync_control("pause", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Gmail sync service pause: %s", str(e))
@@ -112,7 +115,8 @@ class GmailEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Resuming Gmail sync service for org_id: {org_id}")
-            await self.sync_tasks.gmail_manual_sync_control("resume", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.gmail_manual_sync_control("resume", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Gmail sync service resume: %s", str(e))
@@ -139,7 +143,8 @@ class GmailEventService(BaseEventService):
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.sync_tasks.gmail_manual_sync_control("init", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.gmail_manual_sync_control("init", org_id, connector_id=connector_id)
 
             user_id = payload.get("userId")
             if user_id:
@@ -149,7 +154,7 @@ class GmailEventService(BaseEventService):
                 if not user:
                     self.logger.error(f"User not found for user_id: {user_id}")
                     return False
-                result = await self.sync_tasks.gmail_manual_sync_control("resync", org_id, user_email=user["email"])
+                result = await self.sync_tasks.gmail_manual_sync_control("resync", org_id, user_email=user["email"], connector_id=connector_id)
                 if not result or result.get("status") != "accepted":
                     self.logger.error(f"Error resyncing Gmail user {user['email']}")
                     return False
@@ -160,7 +165,7 @@ class GmailEventService(BaseEventService):
 
                 users = await self.arango_service.get_users(org_id, active=True)
                 for user in users:
-                    result = await self.sync_tasks.gmail_manual_sync_control("resync", org_id, user_email=user["email"])
+                    result = await self.sync_tasks.gmail_manual_sync_control("resync", org_id, user_email=user["email"], connector_id=connector_id)
                     if not result or result.get("status") != "accepted":
                         self.logger.error(f"Error resyncing Gmail user {user['email']}")
                         continue
@@ -239,7 +244,7 @@ class GmailEventService(BaseEventService):
                 self.logger.info(f"Org ID: {org_id}, Connector: {connector}")
                 raise ValueError("orgId and connector are required")
 
-            if connector == Connectors.GOOGLE_MAIL.value:
+            if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 await self.sync_tasks.gmail_manual_sync_control("reindex", org_id)
             else:
                 self.logger.warning(f"Connector {connector} is not Gmail, skipping reindex")

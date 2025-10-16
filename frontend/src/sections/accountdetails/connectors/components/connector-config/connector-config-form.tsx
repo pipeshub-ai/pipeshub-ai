@@ -14,6 +14,9 @@ import {
   useTheme,
   IconButton,
   Chip,
+  TextField,
+  Stack,
+  Paper
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
@@ -30,12 +33,14 @@ interface ConnectorConfigFormProps {
   connector: Connector;
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
 }
 
 const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName,
 }) => {
   const theme = useTheme();
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
@@ -50,6 +55,9 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     formErrors,
     saveError,
     conditionalDisplay,
+    isCreateMode,
+    instanceName,
+    instanceNameError,
     
     // Business OAuth state
     adminEmail,
@@ -64,6 +72,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handleNext,
     handleBack,
     handleSave,
+    setInstanceName,
     handleFileSelect,
     handleFileUpload,
     handleFileChange,
@@ -71,7 +80,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     validateAdminEmail,
     isBusinessGoogleOAuthValid,
     fileInputRef,
-  } = useConnectorConfig({ connector, onClose, onSuccess });
+  } = useConnectorConfig({ connector, onClose, onSuccess, initialInstanceName });
 
   const steps = ['Authentication', 'Sync Settings'];
 
@@ -188,7 +197,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               variant="h5"
               sx={{ fontWeight: 700, mb: 0.25, color: theme.palette.text.primary }}
             >
-              Configure {connector.name}
+              Configure {(connector.name)[0].toUpperCase() + (connector.name).slice(1).toLowerCase()}
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Chip
@@ -250,6 +259,33 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         )}
 
         <Box sx={{ p: 3 }}>
+          {isCreateMode && (
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 2,
+                mb: 2,
+                borderRadius: 1.5,
+                borderColor: alpha(theme.palette.primary.main, 0.12),
+                bgcolor: alpha(theme.palette.primary.main, 0.02),
+              }}
+            >
+              <Stack spacing={1}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, fontSize: '0.8125rem' }}>
+                  Connector Name
+                </Typography>
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder={`e.g., ${(connector.name)[0].toUpperCase() + (connector.name).slice(1).toLowerCase()} - Production`}
+                  value={instanceName}
+                  onChange={(e) => setInstanceName(e.target.value)}
+                  error={!!instanceNameError}
+                  helperText={instanceNameError || 'Give this connector a unique, descriptive name'}
+                />
+              </Stack>
+            </Paper>
+          )}
           <ConfigStepper activeStep={activeStep} steps={steps} />
           {renderStepContent()}
         </Box>

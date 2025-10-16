@@ -39,11 +39,12 @@ export class CrawlingWorkerService {
   }
 
   private async processJob(job: Job<CrawlingJobData>): Promise<void> {
-    const {  orgId, userId, scheduleConfig, connector } = job.data;
+    const {  orgId, userId, scheduleConfig, connector, connectorId } = job.data;
 
     this.logger.info('Processing crawling job', {
       jobId: job.id,
       connector,
+      connectorId,
       orgId,
       userId,
     });
@@ -59,7 +60,8 @@ export class CrawlingWorkerService {
         orgId, 
         userId, 
         scheduleConfig, 
-        connector
+        connector,
+        connectorId,
       );
 
       await job.updateProgress(100);
@@ -67,6 +69,7 @@ export class CrawlingWorkerService {
       this.logger.info('Crawling job completed successfully', {
         jobId: job.id,
         connector,
+        connectorId,
         orgId,
         result,
       });
@@ -74,6 +77,7 @@ export class CrawlingWorkerService {
       this.logger.error('Crawling job failed', {
         jobId: job.id,
         connector,
+        connectorId,
         orgId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
@@ -86,6 +90,7 @@ export class CrawlingWorkerService {
       this.logger.info('Job completed', {
         jobId: job.id,
         connector: job.data.connector,
+        connectorId: job.data.connectorId,
       });
     });
 
@@ -93,6 +98,7 @@ export class CrawlingWorkerService {
       this.logger.error('Job failed', {
         jobId: job?.id,
         connector: job?.data.connector,
+        connectorId: job?.data.connectorId,
         error: err.message,
       });
     });

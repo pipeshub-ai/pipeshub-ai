@@ -67,12 +67,14 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
         drive_user_service,
         arango_service,
         change_handler,
+        connector_id: str = None,
     ) -> None:
         super().__init__(logger, config_service, arango_service, change_handler)
         self.logger = logger
         self.drive_user_service = drive_user_service
         self.arango_service = arango_service
         self.change_handler = change_handler
+        self.connector_id = connector_id
         self.pending_notifications: Set[str] = set()
 
     async def process_notification(self, headers: Dict) -> bool:
@@ -191,10 +193,12 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
         drive_admin_service,
         arango_service,
         change_handler,
+        connector_id: str = None,
     ) -> None:
         super().__init__(logger, config_service, arango_service, change_handler)
         self.logger = logger
         self.drive_admin_service = drive_admin_service
+        self.connector_id = connector_id
         self.pending_notifications: Set[str] = set()
 
     async def process_notification(self, headers: Dict) -> bool:
@@ -267,7 +271,7 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
                 if not page_token:
                     continue
                 user_service = await self.drive_admin_service.create_drive_user_service(
-                    page_token["userEmail"]
+                    page_token["userEmail"], self.connector_id
                 )
 
                 changes, new_token = await user_service.get_changes(

@@ -21,7 +21,7 @@ export default function ConnectorOAuthCallback() {
   const [error, setError] = useState<string>('');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { connectorName } = useParams<{ connectorName: string }>();
+  const { connectorId } = useParams<{ connectorId: string }>();
   const { user } = useAuthContext();
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export default function ConnectorOAuthCallback() {
         const oauthError = searchParams.get('error');
 
         // Validate connector name from URL params
-        if (!connectorName) {
+        if (!connectorId) {
           throw new Error('No connector name found in URL');
         }
 
@@ -53,7 +53,7 @@ export default function ConnectorOAuthCallback() {
 
         // Call Node.js backend to handle OAuth callback
         const response = await axios.get(
-          `${CONFIG.backendUrl}/api/v1/connectors/${connectorName}/oauth/callback?code=${code}&state=${state}&error=${oauthError}`,
+          `${CONFIG.backendUrl}/api/v1/connectors/oauth/callback?code=${code}&state=${state}&error=${oauthError}`,
           {
             params: {
               baseUrl: window.location.origin,
@@ -84,7 +84,7 @@ export default function ConnectorOAuthCallback() {
         const basePath = isBusiness
           ? '/account/company-settings/settings/connector'
           : '/account/individual/settings/connector';
-        const redirectPath = `${basePath}/${connectorName}`;
+        const redirectPath = `${basePath}/${connectorId}`;
 
         // Redirect after a short delay
         setTimeout(() => {
@@ -98,7 +98,7 @@ export default function ConnectorOAuthCallback() {
     };
 
     handleCallback();
-  }, [searchParams, navigate, user, connectorName]);
+  }, [searchParams, navigate, user, connectorId]);
 
   const handleRetry = () => {
     // Redirect back to connector settings
@@ -106,20 +106,20 @@ export default function ConnectorOAuthCallback() {
     const basePath = isBusiness
       ? '/account/company-settings/settings/connector'
       : '/account/individual/settings/connector';
-    if (connectorName) {
-      navigate(`${basePath}/${connectorName}`, { replace: true });
+    if (connectorId) {
+      navigate(`${basePath}/${connectorId}`, { replace: true });
     } else {
       navigate(basePath, { replace: true });
     }
   };
 
   const handleGoToConnector = () => {
-    if (connectorName) {
+    if (connectorId) {
       const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
       const basePath = isBusiness
         ? '/account/company-settings/settings/connector'
         : '/account/individual/settings/connector';
-      navigate(`${basePath}/${connectorName}`, { replace: true });
+      navigate(`${basePath}/${connectorId}`, { replace: true });
     }
   };
 
@@ -169,9 +169,9 @@ export default function ConnectorOAuthCallback() {
             <Typography variant="body1" sx={{ mb: 3 }}>
               {message}
             </Typography>
-            {connectorName && (
+            {connectorId && (
               <Button variant="contained" onClick={handleGoToConnector} sx={{ mt: 2 }}>
-                Go to {connectorName} Settings
+                Go to {connectorId} Settings
               </Button>
             )}
           </>
@@ -203,7 +203,7 @@ export default function ConnectorOAuthCallback() {
               <Button variant="outlined" onClick={handleRetry}>
                 Back to Connectors
               </Button>
-              {connectorName && (
+              {connectorId && (
                 <Button variant="contained" onClick={handleGoToConnector}>
                   Try Again
                 </Button>

@@ -148,9 +148,11 @@ class IndividualGmailWebhookHandler(AbstractGmailWebhookHandler):
         gmail_user_service,
         arango_service,
         change_handler,
+        connector_id: str = None,
     ) -> None:
         super().__init__(logger, config_service, arango_service, change_handler)
         self.gmail_user_service = gmail_user_service
+        self.connector_id = connector_id
 
     async def _process_notification_data(
         self, headers: Dict, message_data: Dict
@@ -270,9 +272,11 @@ class EnterpriseGmailWebhookHandler(AbstractGmailWebhookHandler):
         gmail_admin_service,
         arango_service,
         change_handler,
+        connector_id: str = None,
     ) -> None:
         super().__init__(logger, config_service, arango_service, change_handler)
         self.gmail_admin_service = gmail_admin_service
+        self.connector_id = connector_id
 
     async def _process_notification_data(
         self, headers: Dict, message_data: Dict
@@ -318,7 +322,7 @@ class EnterpriseGmailWebhookHandler(AbstractGmailWebhookHandler):
                     email_address,
                 )
                 user_service = await self.gmail_admin_service.create_gmail_user_service(
-                    email_address
+                    email_address, self.connector_id
                 )
 
                 if not user_service:
