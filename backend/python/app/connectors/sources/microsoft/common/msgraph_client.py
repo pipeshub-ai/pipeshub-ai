@@ -16,9 +16,8 @@ from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
-from app.models.entities import AppUser, AppUserGroup, FileRecord
+from app.models.entities import AppUser, FileRecord
 from app.models.permission import Permission, PermissionType
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 # Map Microsoft Graph roles to permission type
@@ -114,12 +113,12 @@ class MSGraphClient:
         self.logger = logger
         self.rate_limiter = AsyncLimiter(max_requests_per_second, 1)
 
-    async def get_all_user_groups(self) -> List[AppUserGroup]:
+    async def get_all_user_groups(self) -> List[dict]:
         """
         Retrieves a list of all groups in the organization.
 
         Returns:
-            List[UserGroup]: A list of groups with their details.
+            List[dict]: A list of groups with their details.
         """
         try:
             groups = []
@@ -132,19 +131,9 @@ class MSGraphClient:
                     result = await self.client.groups.get_next_page(result.odata_next_link)
                 groups.extend(result.value)
 
-            user_groups: List[AppUserGroup] = []
-            for group in groups:
-                user_groups.append(AppUserGroup(
-                    source_user_group_id=group.id,
-                    app_name=self.app_name,
-                    name=group.display_name,
-                    mail=group.mail,
-                    description=group.description,
-                    created_at_timestamp=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
-                ))
 
-            self.logger.info(f"Retrieved {len(user_groups)} groups.")
-            return user_groups
+            self.logger.info(f"Retrieved {len(groups)} groups.")
+            return groups
         except ODataError as e:
             self.logger.error(f"Error fetching groups: {e}")
             raise e
@@ -152,7 +141,7 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching groups: {ex}")
             raise ex
 
-    async def get_group_members(self, group_id: str) -> List[str]:
+    async def get_group_members(self, group_id: str) -> List[dict]:
         """
         Get all members of a specific group.
 
@@ -173,10 +162,7 @@ class MSGraphClient:
                     result = await self.client.groups.by_group_id(group_id).members.get_next_page(result.odata_next_link)
                 members.extend(result.value)
 
-            # Extract user IDs from members
-            member_ids = [member.id for member in members if hasattr(member, 'id')]
-            self.logger.info(f"Retrieved {len(member_ids)} members for group {group_id}")
-            return member_ids
+            return members
 
         except Exception as e:
             self.logger.error(f"Error fetching group members for {group_id}: {e}")

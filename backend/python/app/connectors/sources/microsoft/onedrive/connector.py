@@ -40,13 +40,15 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
 )
 from app.models.entities import (
     AppUser,
+    AppUserGroup,
     FileRecord,
     Record,
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission
 from app.utils.streaming import stream_content
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 @dataclass
@@ -439,35 +441,45 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Starting user group synchronization")
 
             # Get all groups
-            user_groups = await self.msgraph_client.get_all_user_groups()
+            groups = await self.msgraph_client.get_all_user_groups()
 
+            group_with_permissions = []
             # Process each group with its members
-            for group in user_groups:
+            for group in groups:
                 try:
                     # Get group members
-                    member_ids = await self.msgraph_client.get_group_members(group.source_user_group_id)
+                    members = await self.msgraph_client.get_group_members(group.id)
+                    user_group = AppUserGroup(
+                        source_user_group_id=group.id,
+                        app_name=self.connector_name,
+                        name=group.display_name,
+                        mail=group.mail or group.user_principal_name,
+                        description=group.description,
+                        created_at_timestamp=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
+                    )
 
                     # Create permissions for group members
-                    member_permissions = []
-                    for member_id in member_ids:
-                        member_permissions.append(Permission(
-                            external_id=member_id,
-                            email=None,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.USER
-                        ))
-
-                    # Send group with permissions to processor
-                    await self.data_entities_processor.on_new_user_groups(
-                        [group],
-                        member_permissions
-                    )
+                    app_users = []
+                    for member in members:
+                        app_user = AppUser(
+                            source_user_id=member.id,
+                            email=member.mail or member.user_principal_name,
+                            full_name=member.display_name,
+                            created_at_timestamp=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
+                            app_name=self.connector_name,
+                        )
+                        app_users.append(app_user)
+                    group_with_permissions.append((user_group, app_users))
 
                 except Exception as e:
                     self.logger.error(f"❌ Error processing group {group.name}: {e}", exc_info=True)
                     continue
 
-            self.logger.info(f"Processed {len(user_groups)} user groups")
+                # Send group with permissions to processor
+                await self.data_entities_processor.on_new_user_groups(
+                    group_with_permissions
+                )
+            self.logger.info(f"Processed {len(groups)} user groups")
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
