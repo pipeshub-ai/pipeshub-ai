@@ -9,6 +9,8 @@ https://bookstack.bassopaolo.com/api/docs
 """
 import base64
 from typing import Dict, List, Optional, Union
+from urllib.parse import quote
+
 
 from app.sources.client.bookstack.bookstack import BookStackClient, BookStackResponse
 from app.sources.client.http.http_request import HTTPRequest
@@ -1897,7 +1899,7 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 
@@ -2547,10 +2549,11 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 
+        print(request)
         try:
             response = await self.http.execute(request)
             return BookStackResponse(success=True, data=response.json())

@@ -86,7 +86,7 @@ async def test_run() -> None:
     api_token = f"{bookstack_token_id}:{bookstack_token_secret}"
 
     config = {
-        "credentials": {
+        "auth": {
             "base_url": bookstack_base_url,
             "token_id": bookstack_token_id,
             "token_secret": bookstack_token_secret

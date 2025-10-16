@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Dict, Optional, List, Tuple, Callable, Awaitable
@@ -46,6 +47,20 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
 )
 
+
+@dataclass
+class RecordUpdate:
+    """Track updates to a record"""
+    record: Optional[FileRecord]
+    is_new: bool
+    is_updated: bool
+    is_deleted: bool
+    metadata_changed: bool
+    content_changed: bool
+    permissions_changed: bool
+    old_permissions: Optional[List[Permission]] = None
+    new_permissions: Optional[List[Permission]] = None
+    external_record_id: Optional[str] = None
 
 @ConnectorBuilder("BookStack")\
     .in_group("BookStack")\
@@ -302,6 +317,48 @@ class BookStackConnector(BaseConnector):
         app_users = self._get_app_users(all_bookstack_users)
         
         return app_users
+
+    async def list_roles_with_details(self) -> Dict[int, Dict]:
+        """
+        Gets a list of all roles with their detailed information, including
+        permissions and assigned users.
+
+        Returns:
+            A dictionary where the key is the role_id and the value is the
+            dictionary containing the role's full details.
+        """
+        self.logger.info("Fetching all roles with details...")
+        
+        # First, get the basic list of all roles
+        list_response = await self.data_source.list_roles()
+        if not list_response.success:
+            self.logger.error(f"Failed to list roles: {list_response.error}")
+            return {}
+
+        basic_roles = list_response.data.get('data', [])
+        if not basic_roles:
+            self.logger.info("No roles found in BookStack.")
+            return {}
+
+        # Create a list of concurrent tasks to get the details for each role
+        tasks = [self.data_source.get_role(role['id']) for role in basic_roles]
+        
+        # Execute all tasks in parallel and wait for them to complete
+        detail_responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process the results into the final dictionary
+        roles_details_map = {}
+        for i, response in enumerate(detail_responses):
+            role_id = basic_roles[i]['id']
+            if isinstance(response, Exception):
+                self.logger.error(f"Exception fetching details for role ID {role_id}: {response}")
+            elif not response.success:
+                self.logger.error(f"Failed to get details for role ID {role_id}: {response.error}")
+            else:
+                roles_details_map[role_id] = response.data
+        
+        self.logger.info(f"Successfully fetched details for {len(roles_details_map)} roles.")
+        return roles_details_map
         
 
     async def run_sync(self) -> None:
@@ -314,6 +371,8 @@ class BookStackConnector(BaseConnector):
             
             users = await self.get_all_users()
 
+            roles_details = await self.list_roles_with_details()
+            
             # Step 1: Sync all users
             self.logger.info("Syncing users...")
             await self._sync_users(users)
@@ -324,11 +383,11 @@ class BookStackConnector(BaseConnector):
             
             # Step 3: Sync record groups (books and shelves)
             self.logger.info("Syncing record groups (chapters/books/shelves)...")
-            await self._sync_record_groups()
+            await self._sync_record_groups(roles_details)
             
             # Step 4: Sync all records (pages, chapters, attachments)
             self.logger.info("Syncing records (pages/chapters)...")
-            await self._sync_records()
+            await self._sync_records(roles_details)
             
             self.logger.info("BookStack full sync completed.")
             
@@ -522,7 +581,7 @@ class BookStackConnector(BaseConnector):
     #     """
     #     pass
 
-    async def _sync_record_groups(self) -> None:
+    async def _sync_record_groups(self, roles_details: Dict[int, Dict]) -> None:
         """
         Sync all record groups (shelves, books, and chapters) from BookStack
         and their associated permissions.
@@ -532,19 +591,22 @@ class BookStackConnector(BaseConnector):
         # Sync all shelves as record groups
         await self._sync_content_type_as_record_group(
             content_type_name="bookshelf",
-            list_method=self.data_source.list_shelves
+            list_method=self.data_source.list_shelves,
+            roles_details=roles_details
         )
 
         # Sync all books as record groups
         await self._sync_content_type_as_record_group(
             content_type_name="book",
-            list_method=self.data_source.list_books
+            list_method=self.data_source.list_books,
+            roles_details=roles_details
         )
 
         # Sync all chapters as record groups
         await self._sync_content_type_as_record_group(
             content_type_name="chapter",
-            list_method=self.data_source.list_chapters
+            list_method=self.data_source.list_chapters,
+            roles_details=roles_details
         )
 
         self.logger.info("✅ Finished syncing all record groups.")
@@ -553,6 +615,7 @@ class BookStackConnector(BaseConnector):
         self,
         content_type_name: str,
         list_method: Callable[..., Awaitable[BookStackResponse]],
+        roles_details: Dict[int, Dict]
     ) -> None:
         """
         Generic function to fetch a list of content items (like shelves, books),
@@ -593,7 +656,7 @@ class BookStackConnector(BaseConnector):
                 parent_external_id = f"book/{item.get('book_id')}"
             
             tasks.append(
-                self._create_record_group_with_permissions(item, content_type_name, parent_external_id)
+                self._create_record_group_with_permissions(item, content_type_name, roles_details, parent_external_id)
             )
         results = await asyncio.gather(*tasks)
 
@@ -609,7 +672,7 @@ class BookStackConnector(BaseConnector):
             self.logger.warning(f"No {content_type_name} record groups were processed.")
 
     async def _create_record_group_with_permissions(
-        self, item: Dict, content_type_name: str, parent_external_id: Optional[str] = None
+        self, item: Dict, content_type_name: str, roles_details: Dict[int, Dict], parent_external_id: Optional[str] = None
     ) -> Optional[Tuple[RecordGroup, List[Permission]]]:
         """Creates a RecordGroup and fetches its permissions for a single BookStack item."""
         try:
@@ -637,7 +700,7 @@ class BookStackConnector(BaseConnector):
 
             permissions_list = []
             if permissions_response.success and permissions_response.data:
-                permissions_list = await self._parse_bookstack_permissions(permissions_response.data)
+                permissions_list = await self._parse_bookstack_permissions(permissions_response.data, roles_details, content_type_name)
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for {content_type_name} '{item_name}' (ID: {item_id}): "
@@ -655,67 +718,102 @@ class BookStackConnector(BaseConnector):
             )
             return None
 
-    async def _parse_bookstack_permissions(self, permissions_data: Dict) -> List[Permission]:
-        """Parses the BookStack permission object into a list of Permission objects."""
+    async def _parse_bookstack_permissions(self, permissions_data: Dict, roles_details: Dict[int, Dict], content_type_name: str) -> List[Permission]:
+        """
+        Parses the BookStack permission object into a list of Permission objects.
+        If explicit role permissions are not set on an item, it calculates permissions
+        based on the default role definitions.
+        """
         permissions_list = []
 
-        # 1. Handle the owner (user permission)
+        # 1. Handle the owner (user permission), which is always explicit
         owner = permissions_data.get("owner")
         if owner and owner.get("id"):
-            user = await self.data_source.get_user(owner.get("id"))
-            user_email = user.data.get("email")
-            permissions_list.append(
-                Permission(
-                    external_id=str(owner.get("id")),
-                    email=user_email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER
-                )
-            )
+            try:
+                user_response = await self.data_source.get_user(owner.get("id"))
+                if user_response.success and user_response.data.get("email"):
+                    permissions_list.append(
+                        Permission(
+                            external_id=str(owner.get("id")),
+                            email=user_response.data.get("email"),
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER
+                        )
+                    )
+            except Exception as e:
+                self.logger.error(f"Failed to fetch owner details for user ID {owner.get('id')}: {e}")
 
         # 2. Handle role permissions (group permissions)
         role_permissions = permissions_data.get("role_permissions", [])
-        for role_perm in role_permissions:
-            role_id = role_perm.get("role_id")
-            if not role_id:
-                continue
+        
+        # CASE A: Explicit permissions are set on the content item
+        if role_permissions:
+            for role_perm in role_permissions:
+                role_id = role_perm.get("role_id")
+                if not role_id:
+                    continue
 
-            # Determine the permission level
-            # WRITE access is granted if update or delete permissions are present
-            if role_perm.get("update") or role_perm.get("delete") or role_perm.get("create"):
-                perm_type = PermissionType.WRITE
-            # READ access is granted if only view permission is present
-            elif role_perm.get("view"):
-                perm_type = PermissionType.READ
-            else:
-                # If no relevant permissions, skip creating a permission object
-                continue
+                # Determine permission level from explicit settings
+                if role_perm.get("update") or role_perm.get("delete") or role_perm.get("create"):
+                    perm_type = PermissionType.WRITE
+                elif role_perm.get("view"):
+                    perm_type = PermissionType.READ
+                else:
+                    continue
 
-            permissions_list.append(
-                Permission(
-                    external_id=str(role_id),
-                    type=perm_type,
-                    entity_type=EntityType.GROUP
+                permissions_list.append(
+                    Permission(
+                        external_id=str(role_id),
+                        type=perm_type,
+                        entity_type=EntityType.GROUP
+                    )
                 )
-            )
+        # CASE B: No explicit permissions; fall back to default role permissions
+        else:
+            for role_id, role_details in roles_details.items():
+                role_system_permissions = set(role_details.get("permissions", []))
+                
+                # Define the required permissions for READ and WRITE access
+                write_perms = {
+                    f"{content_type_name}-create-all",
+                    f"{content_type_name}-update-all",
+                    f"{content_type_name}-delete-all"
+                }
+                read_perm = f"{content_type_name}-view-all"
+
+                perm_type = None
+                # Check for WRITE access first, as it's higher priority
+                if not role_system_permissions.isdisjoint(write_perms):
+                    perm_type = PermissionType.WRITE
+                # If no WRITE access, check for READ access
+                elif read_perm in role_system_permissions:
+                    perm_type = PermissionType.READ
+
+                # If the role has either read or write permissions, create the object
+                if perm_type:
+                    permissions_list.append(
+                        Permission(
+                            external_id=str(role_id),
+                            type=perm_type,
+                            entity_type=EntityType.GROUP
+                        )
+                    )
 
         return permissions_list
     
-    async def _sync_records(self) -> None:
+    async def _sync_records(self, roles_details: Dict[int, Dict]) -> None:
         """
-        Sync all pages from BookStack as Record objects, processing them in batches.
+        Sync all pages from BookStack as Record objects, handling new/updated/deleted records.
         """
         self.logger.info("Starting sync for pages as records.")
         
-        batch_records: List[Tuple[Record, List[Permission]]] = []
+        batch_records: List[Tuple[FileRecord, List[Permission]]] = []
         offset = 0
 
         while True:
             response = await self.data_source.list_pages(count=self.batch_size, offset=offset)
-            print("\n\n\n!!!!!!!!!!!!!!!! response", response)
             
             pages_data = {}
-            # Handle API response where page data is a JSON string inside the 'content' field
             if response.success and response.data and 'content' in response.data:
                 try:
                     pages_data = json.loads(response.data['content'])
@@ -735,31 +833,48 @@ class BookStackConnector(BaseConnector):
             
             # Process each page from the current API response
             for page in pages_page:
-                processed_data = await self._process_bookstack_page(page)
-                if processed_data:
-                    batch_records.append(processed_data)
+                record_update = await self._process_bookstack_page(page, roles_details)
+                
+                if not record_update:
+                    continue
+                    
+                # Handle deleted records
+                if record_update.is_deleted:
+                    await self._handle_record_updates(record_update)
+                    continue
+                
+                # Handle updated records
+                if record_update.is_updated:
+                    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!! got record update")
+                    await self._handle_record_updates(record_update)
+                    continue
+                
+                # Handle new records - add to batch
+                if record_update.record:
+                    batch_records.append((record_update.record, record_update.new_permissions or []))
 
-                # When the batch is full, send it to the data processor
-                if len(batch_records) >= self.batch_size:
-                    self.logger.info(f"Processing batch of {len(batch_records)} page records.")
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    batch_records = [] # Reset the batch
-                    await asyncio.sleep(0.1) # Yield control briefly
+                    # When the batch is full, send it to the data processor
+                    if len(batch_records) >= self.batch_size:
+                        self.logger.info(f"Processing batch of {len(batch_records)} new page records.")
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        batch_records = []
+                        await asyncio.sleep(0.1)
 
             offset += len(pages_page)
             if offset >= pages_data.get("total", 0):
                 break
-                
+                    
         # Process any remaining records in the final batch
         if batch_records:
-            self.logger.info(f"Processing final batch of {len(batch_records)} page records.")
+            self.logger.info(f"Processing final batch of {len(batch_records)} new page records.")
             await self.data_entities_processor.on_new_records(batch_records)
 
         self.logger.info("✅ Finished syncing all page records.")
     
-    async def _process_bookstack_page(self, page: Dict) -> Optional[Tuple[Record, List[Permission]]]:
+    async def _process_bookstack_page(self, page: Dict, roles_details: Dict[int, Dict]) -> Optional[RecordUpdate]:
         """
-        Process a single BookStack page, create a Record object, and fetch its permissions.
+        Process a single BookStack page, create a Record object, detect changes, and fetch its permissions.
+        Returns RecordUpdate object containing the record and change information.
         """
         try:
             page_id = page.get("id")
@@ -767,6 +882,7 @@ class BookStackConnector(BaseConnector):
                 self.logger.warning("Skipping page with missing ID.")
                 return None
 
+            # Check for existing record
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
@@ -774,30 +890,40 @@ class BookStackConnector(BaseConnector):
                     external_id=f"page/{page_id}"
                 )
 
-            # 1. Determine parent relationship (Chapter has priority over Book)
+            # Detect changes
+            is_new = existing_record is None
+            is_updated = False
+            metadata_changed = False
+            content_changed = False
+            permissions_changed = False
+
+            # Check for updates if record exists
+            if existing_record:
+                # Check if name changed
+                if existing_record.record_name != page.get("name"):
+                    metadata_changed = True
+                    is_updated = True
+                
+                # Check if content changed (using revision count)
+                if existing_record.external_revision_id != str(page.get("revision_count")):
+                    content_changed = True
+                    is_updated = True
+
+            # 1. Determine parent relationship
             parent_external_id = None
-            parent_book_id = None
-            parent_chapter_id = None
             if page.get("book_id"):
-                parent_book_id = page.get("book_id")
                 parent_external_id = f"book/{page.get('book_id')}"
             if page.get("chapter_id"):
-                parent_chapter_id = page.get("chapter_id")
                 parent_external_id = f"chapter/{page.get('chapter_id')}"
-            
 
-            # 2. Convert timestamp from ISO 8601 string to epoch milliseconds
+            # 2. Convert timestamp
             timestamp_ms = None
             updated_at_str = page.get("updated_at")
             if updated_at_str:
                 dt_obj = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
                 timestamp_ms = int(dt_obj.timestamp() * 1000)
 
-            # signed_url = await self.data_source.export_page_markdown(page_id)
-            print("\n\n\!!!!!!!!!!!!!!!!!! signed url:", f"{self.bookstack_base_url}api/pages/{page_id}/export/markdown")
-
-            # 3. Create the Record object
-            # The data processor will handle checking for existing records (upsert logic)
+            # 3. Create the FileRecord object
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=page.get("name"),
@@ -809,34 +935,84 @@ class BookStackConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 source_updated_at=timestamp_ms,
                 updated_at=timestamp_ms,
-                version=0,
+                version=0 if is_new else existing_record.version + 1,
                 external_revision_id=str(page.get("revision_count")),
-                weburl=f"{self.bookstack_base_url}books/{page.get('book_slug')}/page/{page.get('slug')}",      # Skipped for now
-                # signed_url=f"{self.bookstack_base_url}api/pages/{page_id}/export/markdown",  
-                mime_type=MimeTypes.MARKDOWN, # BookStack pages are primarily HTML
+                weburl=f"{self.bookstack_base_url}books/{page.get('book_slug')}/page/{page.get('slug')}",
+                mime_type=MimeTypes.MARKDOWN,
                 extension="md",
                 is_file=True,
                 size_in_bytes=0,
             )
 
-            # 4. Fetch and parse permissions using the reusable helper
-            permissions_list = []
+            # 4. Fetch and parse permissions
+            new_permissions = []
             permissions_response = await self.data_source.get_content_permissions(
                 content_type="page", content_id=page_id
             )
             if permissions_response.success and permissions_response.data:
-                permissions_list = await self._parse_bookstack_permissions(permissions_response.data)
+                new_permissions = await self._parse_bookstack_permissions(
+                    permissions_response.data, roles_details, "page"
+                )
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "
                     f"{permissions_response.error}"
                 )
 
-            return (file_record, permissions_list)
+            # Get old permissions if the record exists (you'll need to implement this)
+            old_permissions = []
+            if existing_record:
+                # TODO: Implement fetching old permissions
+                # old_permissions = await tx_store.get_permissions_for_record(existing_record.id)
+                # For now, if permissions changed, mark it
+                if new_permissions:
+                    permissions_changed = True
+                    is_updated = True
+
+            return RecordUpdate(
+                record=file_record,
+                is_new=is_new,
+                is_updated=is_updated,
+                is_deleted=False,
+                metadata_changed=metadata_changed,
+                content_changed=content_changed,
+                permissions_changed=permissions_changed,
+                old_permissions=old_permissions,
+                new_permissions=new_permissions,
+                external_record_id=f"page/{page_id}"
+            )
 
         except Exception as e:
             self.logger.error(f"Error processing BookStack page ID {page.get('id')}: {e}", exc_info=True)
             return None
+
+    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
+        """
+        Handle different types of record updates (new, updated, deleted).
+        """
+        try:
+            if record_update.is_deleted:
+                await self.data_entities_processor.on_record_deleted(
+                    record_id=record_update.external_record_id
+                )
+            elif record_update.is_new:
+                self.logger.info(f"New record detected: {record_update.record.record_name}")
+            elif record_update.is_updated:
+                if record_update.content_changed:
+                    print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!! got content changed")
+                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_record_content_update(record_update.record)
+                if record_update.metadata_changed:
+                    self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_record_metadata_update(record_update.record)
+                if record_update.permissions_changed:
+                    self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_updated_record_permissions(
+                        record_update.record,
+                        record_update.new_permissions
+                    )
+        except Exception as e:
+            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
     async def run_incremental_sync(self) -> None:
         """
