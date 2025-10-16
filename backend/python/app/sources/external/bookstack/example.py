@@ -60,9 +60,13 @@ async def main() -> None:
     # print(user1)
     # print(user2)
 
-    # print("\nList roles:")
-    # roles = await data_source.list_roles()
-    # print(roles)
+    print("\nList roles:")
+    roles = await data_source.list_roles()
+    print(roles)
+
+    print("\nGet role details")
+    role = await data_source.get_role(role_id=2)
+    print(role)
 
     # print("\nList shelves")
     # shelves = await data_source.list_shelves()
@@ -80,13 +84,22 @@ async def main() -> None:
     # pages = await data_source.list_pages()
     # print(pages)
 
-    # print("\nList Permissions")
-    # permissions = await data_source.get_content_permissions(content_type="page", content_id=3)
-    # print(permissions)
+    print("\nList Permissions")
+    permissions = await data_source.get_content_permissions(content_type="chapter", content_id=3)
+    print(permissions)
 
-    print("\nExport Page Markdown")
-    markdown = await data_source.export_page_markdown(1)
-    print(markdown)
+    print("\nAudit log")
+    audit_log = await data_source.list_audit_log(
+        filter={
+            'type': 'page_create',
+            'created_at:gte': '2025-10-16T06:00:00Z'
+        }
+    )
+    print(audit_log)
+
+    # print("\nExport Page Markdown")
+    # markdown = await data_source.export_page_markdown(1)
+    # print(markdown)
 
 
 if __name__ == "__main__":
