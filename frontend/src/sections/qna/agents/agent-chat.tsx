@@ -139,7 +139,6 @@ class StreamingManager {
       clearTimeout(this.notifyTimeout);
     }
     this.notifyTimeout = setTimeout(() => {
-      console.log('Notifying updates, callback count:', this.updateCallbacks.size);
       this.updateCallbacks.forEach((callback) => {
         try {
           callback();
@@ -197,38 +196,14 @@ class StreamingManager {
   // }
 
   getConversationState(conversationKey: string): ConversationStreamingState | null {
-    const state = this.conversationStates[conversationKey] || null;
-    console.log('Getting conversation state:', conversationKey, {
-      hasState: !!state,
-      messageId: state?.messageId,
-      isActive: state?.isActive,
-      content: state?.content?.substring(0, 50),
-    });
-    return state;
+    return this.conversationStates[conversationKey] || null;
   }
 
   getConversationMessages(conversationKey: string): FormattedMessage[] {
-    const messages = this.conversationMessages[conversationKey] || [];
-    console.log('Getting conversation messages:', conversationKey, {
-      messageCount: messages.length,
-      messages: messages.map((m) => ({
-        id: m.id,
-        type: m.type,
-        content: m.content.substring(0, 50),
-      })),
-    });
-    return messages;
+    return this.conversationMessages[conversationKey] || [];
   }
 
   setConversationMessages(conversationKey: string, messages: FormattedMessage[]) {
-    console.log('Setting conversation messages:', conversationKey, {
-      messageCount: messages.length,
-      messages: messages.map((m) => ({
-        id: m.id,
-        type: m.type,
-        content: m.content.substring(0, 50),
-      })),
-    });
     this.conversationMessages[conversationKey] = messages;
     this.notifyUpdates();
   }
@@ -237,19 +212,13 @@ class StreamingManager {
     conversationKey: string,
     updater: (prev: FormattedMessage[]) => FormattedMessage[]
   ) {
-    const prevMessages = this.conversationMessages[conversationKey] || [];
-    const newMessages = updater(prevMessages);
-    console.log('Updating conversation messages:', conversationKey, {
-      prevCount: prevMessages.length,
-      newCount: newMessages.length,
-      newMessages,
-    });
-    this.conversationMessages[conversationKey] = newMessages;
+    this.conversationMessages[conversationKey] = updater(
+      this.conversationMessages[conversationKey] || []
+    );
     this.notifyUpdates();
   }
 
   updateConversationState(conversationKey: string, updates: Partial<ConversationStreamingState>) {
-    console.log('Updating conversation state:', conversationKey, updates);
     if (!this.conversationStates[conversationKey]) {
       this.conversationStates[conversationKey] = StreamingManager.initializeStreamingState();
     }
@@ -261,7 +230,6 @@ class StreamingManager {
   }
 
   updateStatus(conversationKey: string, message: string) {
-    console.log('Updating conversation status:', conversationKey, message);
     this.updateConversationState(conversationKey, {
       statusMessage: message,
       showStatus: true,
@@ -269,7 +237,6 @@ class StreamingManager {
   }
 
   clearStatus(conversationKey: string) {
-    console.log('Clearing conversation status:', conversationKey);
     this.updateConversationState(conversationKey, {
       statusMessage: '',
       showStatus: false,
@@ -277,26 +244,17 @@ class StreamingManager {
   }
 
   mapMessageToConversation(messageId: string, conversationKey: string) {
-    console.log('Mapping message to conversation:', { messageId, conversationKey });
     this.messageToConversationMap[messageId] = conversationKey;
   }
 
   getConversationForMessage(messageId: string): string | null {
-    const conversationKey = this.messageToConversationMap[messageId] || null;
-    console.log('Getting conversation for message:', { messageId, conversationKey });
-    return conversationKey;
+    return this.messageToConversationMap[messageId] || null;
   }
 
   transferNewConversationData(newConversationId: string) {
-    console.log('Transferring new conversation data:', newConversationId);
     const newKey = 'new';
     const actualKey = newConversationId;
     const newMessages = this.getConversationMessages(newKey);
-    console.log('New conversation messages:', {
-      newKey,
-      actualKey,
-      messageCount: newMessages.length,
-    });
     this.setConversationMessages(actualKey, [...newMessages]);
 
     const newState = this.getConversationState(newKey);
@@ -314,7 +272,6 @@ class StreamingManager {
     delete this.conversationStates[newKey];
     delete this.conversationMessages[newKey];
     this.notifyUpdates();
-    console.log('New conversation data transfer completed');
   }
 
   static getPendingNavigation(): { conversationId: string; shouldNavigate: boolean } | null {
@@ -324,21 +281,10 @@ class StreamingManager {
 
   updateStreamingContent(messageId: string, newChunk: string, citations: CustomCitation[] = []) {
     const conversationKey = this.getConversationForMessage(messageId);
-    console.log('updateStreamingContent called:', {
-      messageId,
-      newChunk: newChunk.substring(0, 50),
-      conversationKey,
-      citationsLength: citations.length,
-    });
-
-    if (!conversationKey) {
-      console.error('No conversation key found for message:', messageId);
-      return;
-    }
+    if (!conversationKey) return;
 
     const state = this.conversationStates[conversationKey];
     if (!state?.isActive) {
-      console.log('Initializing streaming state for conversation:', conversationKey);
       this.updateConversationState(conversationKey, {
         messageId,
         isActive: true,
@@ -352,12 +298,6 @@ class StreamingManager {
 
     const currentState = this.conversationStates[conversationKey];
     const updatedAccumulatedContent = (currentState?.accumulatedContent || '') + newChunk;
-
-    console.log('Content accumulation:', {
-      previousLength: currentState?.accumulatedContent?.length || 0,
-      newChunkLength: newChunk.length,
-      totalLength: updatedAccumulatedContent.length,
-    });
 
     // Process the accumulated content to get proper formatting
     const { processedContent, processedCitations } = processStreamingContentLegacy(
@@ -375,54 +315,26 @@ class StreamingManager {
     // Update the conversation messages with the processed content
     this.updateConversationMessages(conversationKey, (prev) => {
       const messageIndex = prev.findIndex((msg) => msg.id === messageId);
-      if (messageIndex === -1) {
-        console.warn('Message not found in conversation for update:', messageId);
-        return prev;
-      }
+      if (messageIndex === -1) return prev;
       const updated = [...prev];
       updated[messageIndex] = {
         ...updated[messageIndex],
         content: processedContent,
         citations: processedCitations,
       };
-
-      console.log('Updated message in conversation:', {
-        messageId,
-        updatedContentLength: processedContent.length,
-        updatedCitationsLength: processedCitations.length,
-      });
-
       return updated;
-    });
-
-    console.log('Streaming content updated for message:', messageId, {
-      processedContentLength: processedContent.length,
-      processedCitationsLength: processedCitations.length,
     });
   }
 
   finalizeStreaming(conversationKey: string, messageId: string, completionData: CompletionData) {
-    console.log('Finalizing streaming for conversation:', conversationKey, {
-      messageId,
-      completionData,
-    });
     const state = this.conversationStates[conversationKey];
     if (state?.isStreamingCompleted) {
-      console.log('Streaming already completed for conversation:', conversationKey);
       return;
     }
 
-    // Align behavior with chat interface: prefer completion data if available
     let finalContent = state?.content || '';
     let finalCitations = state?.citations || [];
     let finalMessageId = messageId;
-
-    console.log('Pre-finalization state:', {
-      hasContent: !!state?.content,
-      contentLength: state?.content?.length || 0,
-      hasCompletionData: !!completionData?.conversation,
-      citationsCount: finalCitations.length,
-    });
 
     if (completionData?.conversation) {
       const finalBotMessage = completionData.conversation.messages
@@ -443,25 +355,15 @@ class StreamingManager {
       }
     }
 
-    // Update the conversation messages with the final processed content
     this.updateConversationMessages(conversationKey, (prev) =>
       prev.map((msg) =>
         msg.id === messageId
-          ? {
-              ...msg,
-              id: finalMessageId,
-              content: finalContent,
-              citations: finalCitations,
-              isStreamingCompleted: true,
-            }
+          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations }
           : msg
       )
     );
-
-    // Map the final message ID to the conversation
     this.mapMessageToConversation(finalMessageId, conversationKey);
 
-    // Update the streaming state
     this.updateConversationState(conversationKey, {
       isActive: false,
       isProcessingCompletion: false,
@@ -474,13 +376,6 @@ class StreamingManager {
       statusMessage: '',
       showStatus: false,
       completionData: null,
-      accumulatedContent: state?.accumulatedContent || finalContent,
-    });
-
-    console.log('Streaming finalized for conversation:', conversationKey, {
-      finalMessageId,
-      contentLength: finalContent.length,
-      citationsCount: finalCitations.length,
     });
   }
 
@@ -524,7 +419,6 @@ class StreamingManager {
   }
 
   clearStreaming(conversationKey: string) {
-    console.log('Clearing streaming for conversation:', conversationKey);
     const state = this.conversationStates[conversationKey];
     if (!state) return;
 
@@ -533,7 +427,6 @@ class StreamingManager {
     }
     this.conversationStates[conversationKey] = StreamingManager.initializeStreamingState();
     this.notifyUpdates();
-    console.log('Streaming cleared for conversation:', conversationKey);
   }
 
   private static initializeStreamingState(): ConversationStreamingState {
@@ -556,7 +449,6 @@ class StreamingManager {
   }
 
   createStreamingMessage(messageId: string, conversationKey: string) {
-    console.log('Creating streaming message:', { messageId, conversationKey });
     const streamingMessage: FormattedMessage = {
       type: 'bot',
       content: '',
@@ -573,28 +465,15 @@ class StreamingManager {
 
     this.mapMessageToConversation(messageId, conversationKey);
     this.updateConversationMessages(conversationKey, (prev) => [...prev, streamingMessage]);
-    console.log('Streaming message created and added to conversation');
   }
 
   resetNavigationTracking() {
-    console.log('Resetting navigation tracking');
     this.completedNavigations.clear();
   }
 
   isConversationLoading(conversationKey: string): boolean {
     const state = this.getConversationState(conversationKey);
-    const isLoading = !!(
-      state &&
-      (state.isActive || state.isProcessingCompletion || state.showStatus)
-    );
-    console.log('Checking if conversation is loading:', conversationKey, {
-      hasState: !!state,
-      isActive: state?.isActive,
-      isProcessingCompletion: state?.isProcessingCompletion,
-      showStatus: state?.showStatus,
-      isLoading,
-    });
-    return isLoading;
+    return !!(state && (state.isActive || state.isProcessingCompletion || state.showStatus));
   }
 }
 
@@ -689,7 +568,7 @@ const AgentChat = () => {
       });
     }
   }, [agentKey]);
-  
+
   const startMessage = agent?.startMessage || '';
 
   // PDF viewer states
@@ -887,18 +766,13 @@ const AgentChat = () => {
 
     const readNextChunk = async (): Promise<void> => {
       const { done, value } = await reader.read();
-      if (done) {
-        console.log('Stream reading completed');
-        return;
-      }
+      if (done) return;
 
       const chunk = decoder.decode(value, { stream: true });
-      console.log('Raw chunk received:', chunk);
       buffer += chunk;
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
-      console.log('Processing lines:', lines);
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
         const trimmedLine = line.trim();
@@ -906,25 +780,19 @@ const AgentChat = () => {
         if (!trimmedLine) continue;
 
         const parsed = parseSSELineFunc(trimmedLine);
-        console.log('Parsed line:', { line: trimmedLine, parsed });
         // eslint-disable-next-line
         if (!parsed) continue;
 
         if (parsed.event) {
           currentEvent = parsed.event;
-          console.log('Current event set to:', currentEvent);
         } else if (parsed.data && currentEvent) {
-          console.log('Processing event data:', { event: currentEvent, data: parsed.data });
           // eslint-disable-next-line
           await handleStreamingEvent(currentEvent, parsed.data, context);
         }
       }
 
       if (!controller.signal.aborted) {
-        console.log('Continuing to read next chunk...');
         await readNextChunk();
-      } else {
-        console.log('Stream processing aborted');
       }
     };
 
@@ -936,7 +804,7 @@ const AgentChat = () => {
     async (url: string, body: any, isNewConversation: boolean): Promise<string | null> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
       const conversationKey = isNewConversation ? 'new' : getConversationKey(currentConversationId);
-      console.log(conversationKey);
+
       // Initialize streaming state
       streamingManager.updateStatus(conversationKey, 'Connecting...');
       const controller = new AbortController();
@@ -957,14 +825,6 @@ const AgentChat = () => {
           conversationIdRef: React.MutableRefObject<string | null>;
         }
       ): Promise<void> => {
-        console.log('🔥 Streaming event received:', {
-          event,
-          dataKeys: Object.keys(data),
-          conversationKey: context.conversationKey,
-          hasCreatedMessage: context.hasCreatedMessage.current,
-          streamingBotMessageId: context.streamingBotMessageId,
-        });
-
         const statusMsg = getEngagingStatusMessage(event, data);
         if (statusMsg) {
           streamingManager.updateStatus(context.conversationKey, statusMsg);
@@ -973,16 +833,7 @@ const AgentChat = () => {
         switch (event) {
           case 'answer_chunk':
             if (data.chunk) {
-              console.log('📝 Answer chunk received:', {
-                chunkLength: data.chunk.length,
-                chunkPreview: data.chunk.substring(0, 50),
-                citationsLength: data.citations?.length || 0,
-                hasCreatedMessage: context.hasCreatedMessage.current,
-                messageId: context.streamingBotMessageId,
-              });
-
               if (!context.hasCreatedMessage.current) {
-                console.log('🆕 Creating streaming message for first chunk');
                 streamingManager.createStreamingMessage(
                   context.streamingBotMessageId,
                   context.conversationKey
@@ -996,38 +847,26 @@ const AgentChat = () => {
                 data.chunk,
                 data.citations || []
               );
-            } else {
-              console.warn('⚠️ Answer chunk event received but no chunk data');
             }
             break;
 
           case 'complete': {
-            console.log('✅ Streaming complete event received:', {
-              hasConversation: !!data.conversation,
-              conversationId: data.conversation?._id,
-              messagesLength: data.conversation?.messages?.length || 0,
-            });
-
             streamingManager.clearStatus(context.conversationKey);
             const completedConversation = data.conversation;
 
             if (completedConversation?._id) {
               let finalKey = context.conversationKey;
               if (context.isNewConversation && context.conversationKey === 'new') {
-                console.log('🔄 Transferring new conversation data:', completedConversation._id);
                 streamingManager.transferNewConversationData(completedConversation._id);
                 finalKey = completedConversation._id;
                 context.conversationIdRef.current = completedConversation._id;
               }
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
-            } else {
-              console.warn('⚠️ Complete event received but no conversation ID found');
             }
             break;
           }
 
           case 'error': {
-            console.error('❌ Streaming error event received:', data);
             streamingManager.clearStreaming(context.conversationKey);
             const errorMessage = data.message || data.error || 'An error occurred';
 
@@ -1067,7 +906,6 @@ const AgentChat = () => {
           }
 
           default:
-            console.log('🤷 Unhandled streaming event:', event, data);
             break;
         }
       };
@@ -1075,14 +913,6 @@ const AgentChat = () => {
       try {
         // Make the HTTP request
         const token = localStorage.getItem('jwt_access_token');
-        console.log('Making HTTP request to:', url);
-        console.log('Request headers:', {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-          Authorization: `Bearer ${token}`,
-        });
-        console.log('Request body:', body);
-
         const response = await fetch(url, {
           method: 'POST',
           headers: {
@@ -1094,8 +924,6 @@ const AgentChat = () => {
           signal: controller.signal,
         });
 
-        console.log('Response received:', { status: response.status, ok: response.ok });
-
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -1105,11 +933,9 @@ const AgentChat = () => {
           throw new Error('Failed to get response reader');
         }
 
-        console.log('Stream reader created successfully');
         const decoder = new TextDecoder();
 
         // Process the stream using the helper function
-        console.log('Starting stream processing for conversation:', conversationKey);
         await processStreamChunk(
           reader,
           decoder,
@@ -1124,8 +950,6 @@ const AgentChat = () => {
           },
           controller
         );
-
-        console.log('Stream processing completed for conversation:', conversationKey);
 
         // Return the conversation ID if it was captured during streaming
         return conversationIdRef.current;
@@ -1439,7 +1263,13 @@ const AgentChat = () => {
         streamingManager.setConversationMessages(conversationKey, [customStartMessage]);
       }
     }
-  }, [currentConversationId, agent?.startMessage, getConversationKey, streamingManager,agent?.name]);
+  }, [
+    currentConversationId,
+    agent?.startMessage,
+    getConversationKey,
+    streamingManager,
+    agent?.name,
+  ]);
 
   useEffect(() => {
     const fetchKBs = async () => {
