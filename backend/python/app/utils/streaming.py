@@ -571,57 +571,41 @@ async def stream_llm_response(
             "data": {"error": f"Error in LLM streaming: {exc}"},
         }
 
-import json
-import re
 
-def extract_json_from_string(input_string):
+
+def extract_json_from_string(input_string: str) -> "Dict[str, Any]":
     """
     Extracts a JSON object from a string that may contain markdown code blocks
-    or other formatting, and returns it as a JSON string.
-    
+    or other formatting, and returns it as a Python dictionary.
+
     Args:
         input_string (str): The input string containing JSON data
-        
+
     Returns:
-        str: The extracted JSON object as a formatted string
-        
+        Dict[str, Any]: The extracted JSON object.
+
     Raises:
-        ValueError: If no valid JSON object is found in the input string
+        ValueError: If no valid JSON object is found in the input string.
     """
     # Remove markdown code block markers if present
-    cleaned = re.sub(r'^```json\s*', '', input_string.strip())
-    cleaned = re.sub(r'\s*```$', '', cleaned.strip())
-    
-    # Try to find JSON object boundaries
-    # Look for outermost { } pair
-    start_idx = cleaned.find('{')
-    if start_idx == -1:
+    cleaned_string = input_string.strip()
+    cleaned_string = re.sub(r"^```json\s*", "", cleaned_string)
+    cleaned_string = re.sub(r"\s*```$", "", cleaned_string)
+    cleaned_string = cleaned_string.strip()
+
+    # Find the first '{' and the last '}'
+    start_index = cleaned_string.find('{')
+    end_index = cleaned_string.rfind('}')
+
+    if start_index == -1 or end_index == -1 or end_index < start_index:
         raise ValueError("No JSON object found in input string")
-    
-    # Find the matching closing brace
-    brace_count = 0
-    end_idx = -1
-    for i in range(start_idx, len(cleaned)):
-        if cleaned[i] == '{':
-            brace_count += 1
-        elif cleaned[i] == '}':
-            brace_count -= 1
-            if brace_count == 0:
-                end_idx = i + 1
-                break
-    
-    if end_idx == -1:
-        raise ValueError("Malformed JSON object - unmatched braces")
-    
-    # Extract the JSON substring
-    json_str = cleaned[start_idx:end_idx]
-    
-    # Validate by parsing and then convert back to string
+
+    json_str = cleaned_string[start_index : end_index + 1]
+
     try:
-        json_obj = json.loads(json_str)
-        return json_obj
+        return json.loads(json_str)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON structure: {e}")
+        raise ValueError(f"Invalid JSON structure: {e}") from e
 
 async def stream_llm_response_with_tools(
     llm,
