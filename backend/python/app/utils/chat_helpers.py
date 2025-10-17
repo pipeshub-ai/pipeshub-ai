@@ -531,17 +531,16 @@ def checkForLargeTable(markdown: str) -> bool:
     return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
 
 
-def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
     Args:
         record: The record JSON object containing block_containers and other metadata
-        user_data: Optional user data for context
-        query: Optional query for context
+        final_results: Optional list of final results for context
 
     Returns:
-        List of message content dictionaries in the same format as get_message_content
+        String of message content in the same format as get_message_content
     """
 
     try:
