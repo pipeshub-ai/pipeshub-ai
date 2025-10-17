@@ -7,7 +7,6 @@ from urllib.parse import urlencode
 from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.http_status_code import HttpStatusCode
 from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
@@ -97,16 +96,17 @@ class DocuSignRESTClientViaJWT:
         """Create DocuSign API client using JWT authentication."""
         try:
             import time
+
             import jwt
             import requests
-            
+
             # Read private key
             if self.private_key_file:
                 with open(self.private_key_file, 'r') as f:
                     private_key = f.read()
             else:
                 private_key = self.private_key_data
-            
+
             # Create JWT payload
             now = int(time.time())
             payload = {
@@ -117,10 +117,10 @@ class DocuSignRESTClientViaJWT:
                 "exp": now + self.expires_in,  # Expires
                 "scope": "signature impersonation"
             }
-            
+
             # Generate JWT
             assertion = jwt.encode(payload, private_key, algorithm='RS256')
-            
+
             # Exchange JWT for access token
             token_url = f"{self.oauth_base_url}/oauth/token"
             response = requests.post(
@@ -133,17 +133,17 @@ class DocuSignRESTClientViaJWT:
                     "Content-Type": "application/x-www-form-urlencoded"
                 }
             )
-            
+
             if response.status_code != 200:
                 raise RuntimeError(f"JWT token exchange failed: HTTP {response.status_code} - {response.text}")
-            
+
             token_data = response.json()
             access_token = token_data.get("access_token")
-            
+
             # Create API client with the access token
             self.api_client = ApiClient(host=self.base_path)
             self.api_client.set_default_header("Authorization", f"Bearer {access_token}")
-            
+
             return self.api_client
         except Exception as e:
             raise RuntimeError("Failed to create DocuSign JWT client") from e
@@ -251,12 +251,12 @@ class DocuSignRESTClientViaOAuth:
         token_data = response.json()
         self.access_token = token_data.get("access_token")
         self.refresh_token = token_data.get("refresh_token", self.refresh_token)
-        
+
         # Track token expiry
         expires_in = token_data.get("expires_in")
         if expires_in:
             self.token_expiry = time.time() + int(expires_in)
-        
+
         return DocuSignResponse(success=True, data=token_data)
         self.access_token = token_data.get("access_token")
         self.refresh_token = token_data.get("refresh_token", self.refresh_token)
@@ -265,26 +265,11 @@ class DocuSignRESTClientViaOAuth:
     async def exchange_code_for_token(self, authorization_code: str) -> DocuSignResponse:
         """Exchange authorization code for access token."""
         data = {"grant_type": "authorization_code", "code": authorization_code, "redirect_uri": self.redirect_uri}
-    async def ensure_valid_token(self) -> None:
-        """Ensure the client has a valid token, refresh if needed."""
-        if not self.access_token:
-            raise RuntimeError("No access token available; call exchange_code_for_token first.")
-        
-        # Check if token is expired or close to expiring
-        if self.token_expiry is not None:
-            time_until_expiry = self.token_expiry - time.time()
-            if time_until_expiry <= self.token_buffer_seconds:
-                # Token is expired or about to expire, refresh it
-                if not self.refresh_token:
-                    raise RuntimeError("Token expired and no refresh token available")
-                
-                refresh_result = await self.refresh_access_token()
-                if not refresh_result.success:
-                    raise RuntimeError(f"Failed to refresh token: {refresh_result.error}")
-                
-                # Update API client with new token
-                if self.api_client is not None:
-                    self.api_client.set_default_header("Authorization", f"Bearer {self.access_token}")
+        return await self._exchange_token(data)
+
+    async def refresh_access_token(self) -> DocuSignResponse:
+        """Refresh the access token using the refresh token."""
+        if not self.refresh_token:
             return DocuSignResponse(success=False, error="missing_refresh_token", message="Refresh token not available")
         data = {"grant_type": "refresh_token", "refresh_token": self.refresh_token}
         return await self._exchange_token(data)

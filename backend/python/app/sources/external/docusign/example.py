@@ -35,12 +35,12 @@ def get_access_token() -> str:
             token = f.read().strip()
             if token and len(token) > 100:
                 return token
-    
+
     # Fallback to environment variable
     token = os.getenv("DOCUSIGN_ACCESS_TOKEN")
     if token:
         return token
-    
+
     raise ValueError(
         "Access token not found!\n"
         "Generate one using: ./get.sh\n"
@@ -50,12 +50,12 @@ def get_access_token() -> str:
 
 async def main() -> None:
     """Main example demonstrating DocuSign API usage with PAT authentication."""
-    
+
     print("=" * 80)
     print("DocuSign API Examples - SDK with PAT Authentication")
     print("=" * 80)
     print()
-    
+
     # Get access token
     try:
         ACCESS_TOKEN = get_access_token()
@@ -64,16 +64,16 @@ async def main() -> None:
     except ValueError as e:
         print(f"❌ {e}")
         return
-    
+
     # Initialize client with PAT authentication
     config = DocuSignPATConfig(
         access_token=ACCESS_TOKEN,
         base_path="https://demo.docusign.net/restapi"
     )
-    
+
     client = DocuSignClient.build_with_config(config)
     data_source = DocuSignDataSource(client)
-    
+
     # Example 1: Get account information
     print("\n1. Getting Account Information:")
     try:
@@ -88,7 +88,7 @@ async def main() -> None:
         print(f"   ❌ Exception: {e}")
         import traceback
         traceback.print_exc()
-    
+
     # Example 2: List users
     print("\n2. Listing Users:")
     try:
@@ -102,7 +102,7 @@ async def main() -> None:
             print(f"   ❌ Error: {users.error}")
     except Exception as e:
         print(f"   ❌ Exception: {e}")
-    
+
     # Example 3: Get user details
     print("\n3. Getting User Details:")
     try:
@@ -115,7 +115,7 @@ async def main() -> None:
             print(f"   ❌ Error: {user_info.error}")
     except Exception as e:
         print(f"   ❌ Exception: {e}")
-    
+
     # Example 4: List templates
     print("\n4. Listing Templates:")
     try:
@@ -127,7 +127,7 @@ async def main() -> None:
             print(f"   ❌ Error: {templates.error}")
     except Exception as e:
         print(f"   ❌ Exception: {e}")
-    
+
     # Example 5: List groups
     print("\n5. Listing Groups:")
     try:
@@ -141,12 +141,12 @@ async def main() -> None:
             print(f"   ❌ Error: {groups.error}")
     except Exception as e:
         print(f"   ❌ Exception: {e}")
-    
+
     # Example 6: List envelopes (with from_date parameter)
     print("\n6. Listing Recent Envelopes:")
     try:
         from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        
+
         envelopes = await data_source.envelopes_list_status_changes(
             accountId=ACCOUNT_ID,
             from_date=from_date,
@@ -160,7 +160,7 @@ async def main() -> None:
             print(f"   ❌ Error: {envelopes.error}")
     except Exception as e:
         print(f"   ❌ Exception: {e}")
-    
+
     print("\n" + "=" * 80)
     print("Examples Complete!")
     print("=" * 80)

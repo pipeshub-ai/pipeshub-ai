@@ -11,7 +11,7 @@ instead of manually constructing HTTP requests. This approach provides:
 
 The SDK provides specialized API classes for each DocuSign service:
 - AccountsApi: Account management
-- EnvelopesApi: Envelope operations  
+- EnvelopesApi: Envelope operations
 - TemplatesApi: Template management
 - UsersApi: User administration
 - GroupsApi: Group management
@@ -20,7 +20,7 @@ The SDK provides specialized API classes for each DocuSign service:
 - WorkspacesApi: Workspace management
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from docusign_esign import (
     AccountsApi,
@@ -38,7 +38,7 @@ from app.sources.client.docusign.docusign import DocuSignClient, DocuSignRespons
 
 class DocuSignDataSource:
     """Comprehensive DocuSign API client using official SDK API classes.
-    
+
     Provides async methods for DocuSign eSignature API v2.1:
     - Accounts API (Account information, settings, billing)
     - Envelopes API (Document sending, signing, status tracking)
@@ -47,28 +47,28 @@ class DocuSignDataSource:
     - Groups API (Group management, member operations)
     - Bulk Envelopes API (Batch sending, status queries)
     - Workspaces API (File storage, folder management)
-    
+
     All methods return DocuSignResponse objects with standardized format.
     Uses official docusign_esign SDK for robust, tested API interactions.
     """
 
     def __init__(self, client: DocuSignClient) -> None:
         """Initialize DocuSignDataSource with SDK API clients.
-        
+
         Args:
             client: DocuSignClient instance (PAT, JWT, or OAuth)
-        
+
         Raises:
             ValueError: If client is not properly initialized
         """
         self._client = client
-        
+
         # Get the underlying ApiClient from the DocuSign client
         try:
             api_client = self._client.get_api_client()
         except Exception as exc:
             raise ValueError("DocuSign client not initialized. Call create_client() first.") from exc
-        
+
         # Initialize SDK API classes
         self.accounts_api = AccountsApi(api_client)
         self.envelopes_api = EnvelopesApi(api_client)
@@ -92,11 +92,11 @@ class DocuSignDataSource:
         include_account_settings: Optional[bool] = None
     ) -> DocuSignResponse:
         """Retrieves the account information for a single account.
-        
+
         Args:
             accountId: The external account ID (GUID)
             include_account_settings: When true, includes account settings
-            
+
         Returns:
             DocuSignResponse with account information
         """
@@ -104,7 +104,7 @@ class DocuSignDataSource:
             options = {}
             if include_account_settings is not None:
                 options['include_account_settings'] = str(include_account_settings).lower()
-            
+
             account_info = self.accounts_api.get_account_information(
                 account_id=accountId,
                 **options
@@ -134,7 +134,7 @@ class DocuSignDataSource:
         socialAccountInformation: Optional[Dict[str, Any]] = None
     ) -> DocuSignResponse:
         """Creates new DocuSign account.
-        
+
         Args:
             accountName: Name for the new account
             initialUser: Initial account administrator user info
@@ -147,19 +147,19 @@ class DocuSignDataSource:
             planInformation: Billing plan information
             referralInformation: Referral tracking
             socialAccountInformation: Social account linking
-            
+
         Returns:
             DocuSignResponse with new account information
         """
         try:
             from docusign_esign import NewAccountDefinition
-            
+
             # Build account definition
             account_def = NewAccountDefinition(
                 account_name=accountName,
                 initial_user=initialUser
             )
-            
+
             if accountSettings:
                 account_def.account_settings = accountSettings
             if addressInformation:
@@ -176,11 +176,11 @@ class DocuSignDataSource:
                 account_def.referral_information = referralInformation
             if socialAccountInformation:
                 account_def.social_account_information = socialAccountInformation
-            
+
             options = {}
             if preview_billing_plan is not None:
                 options['preview_billing_plan'] = str(preview_billing_plan).lower()
-            
+
             result = self.accounts_api.create(
                 new_account_definition=account_def,
                 **options
@@ -201,11 +201,11 @@ class DocuSignDataSource:
         redact_user_data: Optional[str] = None
     ) -> DocuSignResponse:
         """Deletes the specified account.
-        
+
         Args:
             accountId: The external account ID (GUID)
             redact_user_data: Option to redact user data ('true'/'false')
-            
+
         Returns:
             DocuSignResponse indicating deletion success
         """
@@ -213,7 +213,7 @@ class DocuSignDataSource:
             options = {}
             if redact_user_data:
                 options['redact_user_data'] = redact_user_data
-            
+
             self.accounts_api.delete(account_id=accountId, **options)
             return DocuSignResponse(
                 success=True,
@@ -230,7 +230,7 @@ class DocuSignDataSource:
 
     async def accounts_get_provisioning(self) -> DocuSignResponse:
         """Retrieves the account provisioning information.
-        
+
         Returns:
             DocuSignResponse with provisioning information
         """
@@ -260,7 +260,7 @@ class DocuSignDataSource:
         merge_roles_on_draft: Optional[str] = None
     ) -> DocuSignResponse:
         """Creates and sends an envelope.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelope_definition: Complete envelope configuration
@@ -268,13 +268,12 @@ class DocuSignDataSource:
             change_routing_order: Allow routing order changes
             completed_documents_only: Return only completed documents
             merge_roles_on_draft: Merge template roles on draft
-            
+
         Returns:
             DocuSignResponse with envelope ID and status
         """
         try:
-            from docusign_esign import EnvelopeDefinition
-            
+
             # Convert dict to EnvelopeDefinition object
             # The SDK accepts dict format directly
             options = {}
@@ -286,7 +285,7 @@ class DocuSignDataSource:
                 options['completed_documents_only'] = completed_documents_only
             if merge_roles_on_draft:
                 options['merge_roles_on_draft'] = merge_roles_on_draft
-            
+
             result = self.envelopes_api.create_envelope(
                 account_id=accountId,
                 envelope_definition=envelope_definition,
@@ -310,13 +309,13 @@ class DocuSignDataSource:
         include: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets the status of a single envelope.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             advanced_update: Reserved for DocuSign
             include: Additional data to include (e.g., 'recipients,documents')
-            
+
         Returns:
             DocuSignResponse with envelope status and details
         """
@@ -326,7 +325,7 @@ class DocuSignDataSource:
                 options['advanced_update'] = advanced_update
             if include:
                 options['include'] = include
-            
+
             result = self.envelopes_api.get_envelope(
                 account_id=accountId,
                 envelope_id=envelopeId,
@@ -351,14 +350,14 @@ class DocuSignDataSource:
         resend_envelope: Optional[str] = None
     ) -> DocuSignResponse:
         """Send, void, or modify a draft envelope.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             envelope: Envelope update data
             advanced_update: Reserved for DocuSign
             resend_envelope: Resend the envelope
-            
+
         Returns:
             DocuSignResponse with update results
         """
@@ -368,7 +367,7 @@ class DocuSignDataSource:
                 options['advanced_update'] = advanced_update
             if resend_envelope:
                 options['resend_envelope'] = resend_envelope
-            
+
             result = self.envelopes_api.update(
                 account_id=accountId,
                 envelope_id=envelopeId,
@@ -397,7 +396,7 @@ class DocuSignDataSource:
         user_name: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets status changes for one or more envelopes.
-        
+
         Args:
             accountId: The external account ID (GUID)
             from_date: Start date filter (ISO 8601 format)
@@ -407,7 +406,7 @@ class DocuSignDataSource:
             start_position: Starting position for pagination
             folder_ids: Comma-separated folder IDs
             user_name: Filter by user name
-            
+
         Returns:
             DocuSignResponse with list of envelope status changes
         """
@@ -427,7 +426,7 @@ class DocuSignDataSource:
                 options['folder_ids'] = folder_ids
             if user_name:
                 options['user_name'] = user_name
-            
+
             result = self.envelopes_api.list_status_changes(
                 account_id=accountId,
                 **options
@@ -452,7 +451,7 @@ class DocuSignDataSource:
         include_tabs: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets the status of recipients for an envelope.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
@@ -460,7 +459,7 @@ class DocuSignDataSource:
             include_extended: Include extended recipient info
             include_metadata: Include metadata
             include_tabs: Include tab information
-            
+
         Returns:
             DocuSignResponse with recipient details
         """
@@ -474,7 +473,7 @@ class DocuSignDataSource:
                 options['include_metadata'] = include_metadata
             if include_tabs:
                 options['include_tabs'] = include_tabs
-            
+
             result = self.envelopes_api.list_recipients(
                 account_id=accountId,
                 envelope_id=envelopeId,
@@ -498,13 +497,13 @@ class DocuSignDataSource:
         include_tabs: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets a list of envelope documents.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             include_metadata: Include document metadata
             include_tabs: Include tab information
-            
+
         Returns:
             DocuSignResponse with document list
         """
@@ -514,7 +513,7 @@ class DocuSignDataSource:
                 options['include_metadata'] = include_metadata
             if include_tabs:
                 options['include_tabs'] = include_tabs
-            
+
             result = self.envelopes_api.list_documents(
                 account_id=accountId,
                 envelope_id=envelopeId,
@@ -543,7 +542,7 @@ class DocuSignDataSource:
         watermark: Optional[str] = None
     ) -> DocuSignResponse:
         """Retrieves a document from an envelope.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
@@ -554,7 +553,7 @@ class DocuSignDataSource:
             language: Language for certificate
             show_changes: Show changes
             watermark: Include watermark
-            
+
         Returns:
             DocuSignResponse with document content (binary data)
         """
@@ -572,7 +571,7 @@ class DocuSignDataSource:
                 options['show_changes'] = show_changes
             if watermark:
                 options['watermark'] = watermark
-            
+
             # This returns binary data
             result = self.envelopes_api.get_document(
                 account_id=accountId,
@@ -598,12 +597,12 @@ class DocuSignDataSource:
         recipient_view_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the recipient view UI (embedded signing).
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             recipient_view_request: Recipient view configuration
-            
+
         Returns:
             DocuSignResponse with signing URL
         """
@@ -630,12 +629,12 @@ class DocuSignDataSource:
         return_url_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the sender view UI (embedded sending).
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             return_url_request: Return URL configuration
-            
+
         Returns:
             DocuSignResponse with sender view URL
         """
@@ -662,12 +661,12 @@ class DocuSignDataSource:
         correct_view_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the envelope correction UI.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             correct_view_request: Correction view configuration
-            
+
         Returns:
             DocuSignResponse with correction URL
         """
@@ -694,12 +693,12 @@ class DocuSignDataSource:
         return_url_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the envelope edit UI.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelopeId: The envelope's ID (GUID)
             return_url_request: Return URL configuration
-            
+
         Returns:
             DocuSignResponse with edit URL
         """
@@ -751,7 +750,7 @@ class DocuSignDataSource:
         user_id: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets the list of templates for an account.
-        
+
         Args:
             accountId: The external account ID (GUID)
             count: Maximum number of results
@@ -777,7 +776,7 @@ class DocuSignDataSource:
             used_to_date: Filter by usage date (to)
             user_filter: User filter
             user_id: Filter by user ID
-            
+
         Returns:
             DocuSignResponse with template list
         """
@@ -829,7 +828,7 @@ class DocuSignDataSource:
                 options['user_filter'] = user_filter
             if user_id:
                 options['user_id'] = user_id
-            
+
             result = self.templates_api.list_templates(
                 account_id=accountId,
                 **options
@@ -851,12 +850,12 @@ class DocuSignDataSource:
         include: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets a template definition using its ID.
-        
+
         Args:
             accountId: The external account ID (GUID)
             templateId: The template's ID (GUID)
             include: Additional data to include
-            
+
         Returns:
             DocuSignResponse with template details
         """
@@ -864,7 +863,7 @@ class DocuSignDataSource:
             options = {}
             if include:
                 options['include'] = include
-            
+
             result = self.templates_api.get(
                 account_id=accountId,
                 template_id=templateId,
@@ -886,11 +885,11 @@ class DocuSignDataSource:
         envelope_template: Dict[str, Any]
     ) -> DocuSignResponse:
         """Creates a template definition.
-        
+
         Args:
             accountId: The external account ID (GUID)
             envelope_template: Template definition
-            
+
         Returns:
             DocuSignResponse with created template details
         """
@@ -916,12 +915,12 @@ class DocuSignDataSource:
         envelope_template: Dict[str, Any]
     ) -> DocuSignResponse:
         """Updates an existing template.
-        
+
         Args:
             accountId: The external account ID (GUID)
             templateId: The template's ID (GUID)
             envelope_template: Updated template data
-            
+
         Returns:
             DocuSignResponse with update results
         """
@@ -947,11 +946,11 @@ class DocuSignDataSource:
         templateId: str
     ) -> DocuSignResponse:
         """Deletes a template.
-        
+
         Args:
             accountId: The external account ID (GUID)
             templateId: The template's ID (GUID)
-            
+
         Returns:
             DocuSignResponse indicating deletion success
         """
@@ -993,7 +992,7 @@ class DocuSignDataSource:
         user_name_substring: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets user information for an account.
-        
+
         Args:
             accountId: The external account ID (GUID)
             additional_info: Additional user info to include
@@ -1007,7 +1006,7 @@ class DocuSignDataSource:
             start_position: Starting position for pagination
             status: Filter by user status
             user_name_substring: Filter by username substring
-            
+
         Returns:
             DocuSignResponse with user list
         """
@@ -1035,7 +1034,7 @@ class DocuSignDataSource:
                 options['status'] = status
             if user_name_substring:
                 options['user_name_substring'] = user_name_substring
-            
+
             result = self.users_api.list(
                 account_id=accountId,
                 **options
@@ -1057,12 +1056,12 @@ class DocuSignDataSource:
         additional_info: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets information about a specific user.
-        
+
         Args:
             accountId: The external account ID (GUID)
             userId: The user's ID (GUID)
             additional_info: Additional user info to include
-            
+
         Returns:
             DocuSignResponse with user details
         """
@@ -1070,7 +1069,7 @@ class DocuSignDataSource:
             options = {}
             if additional_info:
                 options['additional_info'] = additional_info
-            
+
             result = self.users_api.get_information(
                 account_id=accountId,
                 user_id=userId,
@@ -1092,11 +1091,11 @@ class DocuSignDataSource:
         new_users_definition: Dict[str, Any]
     ) -> DocuSignResponse:
         """Creates one or more users.
-        
+
         Args:
             accountId: The external account ID (GUID)
             new_users_definition: User creation data
-            
+
         Returns:
             DocuSignResponse with created user details
         """
@@ -1122,12 +1121,12 @@ class DocuSignDataSource:
         user: Dict[str, Any]
     ) -> DocuSignResponse:
         """Updates user information.
-        
+
         Args:
             accountId: The external account ID (GUID)
             userId: The user's ID (GUID)
             user: Updated user data
-            
+
         Returns:
             DocuSignResponse with update results
         """
@@ -1153,11 +1152,11 @@ class DocuSignDataSource:
         userId: str
     ) -> DocuSignResponse:
         """Closes a user's account membership.
-        
+
         Args:
             accountId: The external account ID (GUID)
             userId: The user's ID (GUID)
-            
+
         Returns:
             DocuSignResponse indicating deletion success
         """
@@ -1190,7 +1189,7 @@ class DocuSignDataSource:
         start_position: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets information about groups for the account.
-        
+
         Args:
             accountId: The external account ID (GUID)
             count: Maximum number of results
@@ -1198,7 +1197,7 @@ class DocuSignDataSource:
             group_type: Filter by group type
             search_text: Search text for groups
             start_position: Starting position for pagination
-            
+
         Returns:
             DocuSignResponse with group list
         """
@@ -1214,7 +1213,7 @@ class DocuSignDataSource:
                 options['search_text'] = search_text
             if start_position:
                 options['start_position'] = start_position
-            
+
             result = self.groups_api.list_groups(
                 account_id=accountId,
                 **options
@@ -1235,11 +1234,11 @@ class DocuSignDataSource:
         groupId: str
     ) -> DocuSignResponse:
         """Gets information about a specific group.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groupId: The group's ID
-            
+
         Returns:
             DocuSignResponse with group details
         """
@@ -1264,11 +1263,11 @@ class DocuSignDataSource:
         groups: Dict[str, Any]
     ) -> DocuSignResponse:
         """Creates one or more groups.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groups: Group creation data
-            
+
         Returns:
             DocuSignResponse with created group details
         """
@@ -1294,12 +1293,12 @@ class DocuSignDataSource:
         groups: Dict[str, Any]
     ) -> DocuSignResponse:
         """Updates group information.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groupId: The group's ID
             groups: Updated group data
-            
+
         Returns:
             DocuSignResponse with update results
         """
@@ -1325,11 +1324,11 @@ class DocuSignDataSource:
         groupId: str
     ) -> DocuSignResponse:
         """Deletes a group.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groupId: The group's ID
-            
+
         Returns:
             DocuSignResponse indicating deletion success
         """
@@ -1356,13 +1355,13 @@ class DocuSignDataSource:
         start_position: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets group members for a specific group.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groupId: The group's ID
             count: Maximum number of results
             start_position: Starting position for pagination
-            
+
         Returns:
             DocuSignResponse with group member list
         """
@@ -1372,7 +1371,7 @@ class DocuSignDataSource:
                 options['count'] = count
             if start_position:
                 options['start_position'] = start_position
-            
+
             result = self.groups_api.list_group_users(
                 account_id=accountId,
                 group_id=groupId,
@@ -1395,12 +1394,12 @@ class DocuSignDataSource:
         user_info_list: Dict[str, Any]
     ) -> DocuSignResponse:
         """Adds users to a group.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groupId: The group's ID
             user_info_list: List of users to add
-            
+
         Returns:
             DocuSignResponse with operation results
         """
@@ -1427,12 +1426,12 @@ class DocuSignDataSource:
         user_info_list: Dict[str, Any]
     ) -> DocuSignResponse:
         """Removes users from a group.
-        
+
         Args:
             accountId: The external account ID (GUID)
             groupId: The group's ID
             user_info_list: List of users to remove
-            
+
         Returns:
             DocuSignResponse with operation results
         """
@@ -1465,14 +1464,14 @@ class DocuSignDataSource:
         start_position: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets the status of a bulk send batch.
-        
+
         Args:
             accountId: The external account ID (GUID)
             batchId: The batch ID (GUID)
             count: Maximum number of results
             include: Additional data to include
             start_position: Starting position for pagination
-            
+
         Returns:
             DocuSignResponse with batch status
         """
@@ -1484,7 +1483,7 @@ class DocuSignDataSource:
                 options['include'] = include
             if start_position:
                 options['start_position'] = start_position
-            
+
             result = self.bulk_envelopes_api.get(
                 account_id=accountId,
                 batch_id=batchId,
