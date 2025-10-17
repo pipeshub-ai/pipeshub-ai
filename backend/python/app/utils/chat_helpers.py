@@ -595,47 +595,6 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
     return label, first_child_block_index, content
 
 
-def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> Tuple[str, int, str] | None:
-    """Extract grouped text content and first child index for supported group types.
-
-    Returns (label, first_child_block_index, content) or None if invalid or unsupported.
-    """
-    if parent_index is None or parent_index < 0 or parent_index >= len(block_groups):
-        return None
-
-    parent_block = block_groups[parent_index]
-    label = parent_block.get("type")
-    valid_group_labels = [
-        GroupType.LIST.value,
-        GroupType.ORDERED_LIST.value,
-        GroupType.FORM_AREA.value,
-        GroupType.INLINE.value,
-        GroupType.KEY_VALUE_AREA.value,
-    ]
-
-    if label not in valid_group_labels:
-        return None
-
-    children = parent_block.get("children", [])
-    if not children:
-        return None
-
-    first_child_block_index = children[0].get("block_index")
-    if first_child_block_index is None:
-        return None
-
-    content = ""
-    for child in children:
-        block_index = child.get("block_index")
-        if virtual_record_id is not None and seen_chunks is not None:
-            child_id = f"{virtual_record_id}-{block_index}"
-            seen_chunks.add(child_id)
-        if 0 <= block_index < len(blocks):
-            child_block = blocks[block_index]
-            if child_block.get("type") == BlockType.TEXT.value:
-                content += child_block.get("data", "") + "\n"
-
-    return label, first_child_block_index, content
 
 
 def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str:
