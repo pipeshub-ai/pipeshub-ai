@@ -456,19 +456,19 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
 
-    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[Permission]]]) -> None:
+    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
         """
         try:
             async with self.data_store_provider.transaction() as tx_store:
-                for user_group, permissions in user_groups:
+                for user_group, members in user_groups:
                     # Set the org_id on the object, as it's needed for the doc
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name}")
-                    self.logger.info(f"Processing user group permissions: {permissions}")
+                    self.logger.info(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -489,36 +489,32 @@ class DataSourceEntitiesProcessor:
                     # (This uses batch_upsert_user_groups and the to_arango... method)
                     await tx_store.batch_upsert_user_groups([user_group])
 
-                    # 3. Handle User Permissions (from the passed 'permissions' list)
-                    if not permissions:
-                        continue
 
                     user_group_permissions = []
                     # Set the 'to' side of the edge to be this user group
                     to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
 
-                    for permission in permissions:
+                    for member in members:
                         from_collection = None
+                        if member.email:
+                            # Find the user's internal DB ID
+                            user = await tx_store.get_user_by_email(member.email)
 
-                        if permission.entity_type == EntityType.GROUP:
-                            user = None
-                            if permission.email:
-                                # Find the user's internal DB ID
-                                user = await tx_store.get_user_by_email(permission.email)
+                        if not user:
+                            self.logger.warning(f"Could not find user with email {member.email} for UserGroup permission.")
+                            continue
 
-                            if user:
-                                # Set the 'from' side of the edge to be the user
-                                from_collection = f"{CollectionNames.USERS.value}/{user.id}"
-                            else:
-                                self.logger.warning(f"Could not find user with email {permission.email} for UserGroup permission.")
+                        permission = Permission(
+                            external_id=member.id,
+                            email=member.email,
+                            type=PermissionType.READ,
+                            entity_type=EntityType.USER
+                        )
+                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
 
-                        # (Other entity_type cases like GROUP could be added here if needed)
-
-                        if from_collection:
-                            # (Assuming Permission class has this method)
-                            user_group_permissions.append(
-                                permission.to_arango_permission(from_collection, to_collection)
-                            )
+                        user_group_permissions.append(
+                            permission.to_arango_permission(from_collection, to_collection)
+                        )
 
                     # Batch create (upsert) all permission edges for this user group
                     if user_group_permissions:
