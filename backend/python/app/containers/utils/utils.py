@@ -16,6 +16,7 @@ from app.modules.parsers.docx.docx_parser import DocxParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
+from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
@@ -122,6 +123,8 @@ class ContainerUtils:
 
     async def create_parsers(self, logger: Logger) -> dict:
         """Async factory for Parsers"""
+        image_parser = ImageParser(logger)
+
         parsers = {
             ExtensionTypes.DOCX.value: DocxParser(),
             ExtensionTypes.DOC.value: DocParser(),
@@ -133,6 +136,13 @@ class ContainerUtils:
             ExtensionTypes.CSV.value: CSVParser(),
             ExtensionTypes.XLSX.value: ExcelParser(logger),
             ExtensionTypes.XLS.value: XLSParser(),
+            ExtensionTypes.PNG.value: image_parser,
+            ExtensionTypes.JPG.value: image_parser,
+            ExtensionTypes.JPEG.value: image_parser,
+            ExtensionTypes.WEBP.value: image_parser,
+            ExtensionTypes.SVG.value: image_parser,
+            ExtensionTypes.HEIC.value: image_parser,
+            ExtensionTypes.HEIF.value: image_parser,
         }
         return parsers
 

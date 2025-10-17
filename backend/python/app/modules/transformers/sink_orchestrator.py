@@ -11,8 +11,10 @@ class SinkOrchestrator(Transformer):
         self.blob_storage = blob_storage
         self.vector_store = vector_store
 
-    async def apply(self, ctx: TransformContext) -> TransformContext:
+    async def apply(self, ctx: TransformContext) -> None:
         await self.arango.apply(ctx)
-        await self.vector_store.apply(ctx)
+        result = await self.vector_store.apply(ctx)
+        if result is False:
+            return
         await self.blob_storage.apply(ctx)
-        return ctx
+        return
