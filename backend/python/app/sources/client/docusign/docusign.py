@@ -276,9 +276,24 @@ class DocuSignRESTClientViaOAuth:
 
     async def ensure_valid_token(self) -> None:
         """Ensure the client has a valid token, refresh if needed."""
-        # NOTE: This requires token expiry tracking; here we assume caller refreshes proactively
         if not self.access_token:
             raise RuntimeError("No access token available; call exchange_code_for_token first.")
+
+        # Check if token is expired or close to expiring
+        if self.token_expiry is not None:
+            time_until_expiry = self.token_expiry - time.time()
+            # Refresh if less than 5 minutes remaining
+            if time_until_expiry <= 300:
+                if not self.refresh_token:
+                    raise RuntimeError("Token expired and no refresh token available")
+
+                refresh_result = await self.refresh_access_token()
+                if not refresh_result.success:
+                    raise RuntimeError(f"Failed to refresh token: {refresh_result.error}")
+
+                # Update API client with new token
+                if self.api_client is not None:
+                    self.api_client.set_default_header("Authorization", f"Bearer {self.access_token}")
 
 
 # ============================================================
@@ -300,7 +315,7 @@ class DocuSignJWTConfig(BaseModel):
             raise ValueError("Either private_key_data or private_key_file must be provided")
 
     def create_client(self) -> DocuSignRESTClientViaJWT:
-        return DocuSignRESTClientViaJWT(
+        client = DocuSignRESTClientViaJWT(
             client_id=self.client_id,
             user_id=self.user_id,
             oauth_base_url=self.oauth_base_url,
@@ -309,6 +324,8 @@ class DocuSignJWTConfig(BaseModel):
             private_key_data=self.private_key_data,
             private_key_file=self.private_key_file
         )
+        client.create_client()  # Initialize the API client
+        return client
 
 
 class DocuSignOAuthConfig(BaseModel):
@@ -322,7 +339,7 @@ class DocuSignOAuthConfig(BaseModel):
     ssl: bool = True  # unused
 
     def create_client(self) -> DocuSignRESTClientViaOAuth:
-        return DocuSignRESTClientViaOAuth(
+        client = DocuSignRESTClientViaOAuth(
             client_id=self.client_id,
             client_secret=self.client_secret,
             redirect_uri=self.redirect_uri,
@@ -331,6 +348,10 @@ class DocuSignOAuthConfig(BaseModel):
             access_token=self.access_token,
             refresh_token=self.refresh_token
         )
+        # Only initialize if access_token is available
+        if self.access_token:
+            client.create_client()  # Initialize the API client
+        return client
 
 class DocuSignPATConfig(BaseModel):
     access_token: str
