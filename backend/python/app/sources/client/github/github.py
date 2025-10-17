@@ -1,11 +1,10 @@
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from github import Auth, Github
 from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.iclient import IClient
 
 
@@ -100,20 +99,34 @@ class GitHubClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "GitHubClient":
-        """Build GitHubClient using configuration service and graph database service
+        """Build GitHubClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            graph_db_service: Graph database service instance
         Returns:
             GitHubClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored GitHub credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials (token)
+        config = await cls._get_connector_config(logger, config_service)
+        if not config:
+            raise ValueError("Failed to get GitHub connector configuration")
+        auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+        auth_config = config.get("auth", {})
+        if auth_type == "API_TOKEN":
+            token = auth_config.get("token", "")
+            if not token:
+                raise ValueError("Token required for token auth type")
+            client = GitHubClientViaToken(token).create_client()
+        else:
+            raise ValueError(f"Invalid auth type: {auth_type}")
+        return cls(client)
 
-        return cls(client=None)  # type: ignore
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for GitHub."""
+        try:
+            config = await config_service.get_config("/services/connectors/github/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get GitHub connector config: {e}")
+            return {}

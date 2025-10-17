@@ -540,7 +540,7 @@ async def stream_llm_response(
     # Try to bind structured output
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        print(f"LLM bound with structured output: {llm}")
+        logger.info("LLM bound with structured output successfully")
     except Exception as e:
         print(f"LLM provider or api does not support structured output: {e}")
 
@@ -634,6 +634,42 @@ async def stream_llm_response(
             "data": {"error": f"Error in LLM streaming: {exc}"},
         }
 
+
+
+def extract_json_from_string(input_string: str) -> "Dict[str, Any]":
+    """
+    Extracts a JSON object from a string that may contain markdown code blocks
+    or other formatting, and returns it as a Python dictionary.
+
+    Args:
+        input_string (str): The input string containing JSON data
+
+    Returns:
+        Dict[str, Any]: The extracted JSON object.
+
+    Raises:
+        ValueError: If no valid JSON object is found in the input string.
+    """
+    # Remove markdown code block markers if present
+    cleaned_string = input_string.strip()
+    cleaned_string = re.sub(r"^```json\s*", "", cleaned_string)
+    cleaned_string = re.sub(r"\s*```$", "", cleaned_string)
+    cleaned_string = cleaned_string.strip()
+
+    # Find the first '{' and the last '}'
+    start_index = cleaned_string.find('{')
+    end_index = cleaned_string.rfind('}')
+
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        raise ValueError("No JSON object found in input string")
+
+    json_str = cleaned_string[start_index : end_index + 1]
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON structure: {e}") from e
+
 async def stream_llm_response_with_tools(
     llm,
     messages,
@@ -706,7 +742,7 @@ async def stream_llm_response_with_tools(
             existing_content = final_ai_msg.content
             logger.debug("stream_llm_response_with_tools: streaming existing AI content after tools")
             try:
-                parsed = json.loads(existing_content)
+                parsed =   extract_json_from_string(existing_content)
                 final_answer = parsed.get("answer", existing_content)
                 reason = parsed.get("reason")
                 confidence = parsed.get("confidence")
@@ -771,7 +807,7 @@ async def stream_llm_response_with_tools(
     # Try to bind structured output
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        logger.debug(f"LLM bound with structured output: {llm}")
+        logger.info("LLM bound with structured output successfully")
     except Exception as e:
         logger.warning(f"LLM provider or api does not support structured output: {e}")
     try:

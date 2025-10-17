@@ -176,3 +176,38 @@ backend/python/default_config*.json
 test.txt
 image_*.png 
 *.log
+
+
+.cursorignore
+
+# Test artifacts
+.env
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Test outputs
+reports/
+htmlcov/
+.coverage
+coverage.xml
+*.log
+
+# Test data
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db

@@ -1,5 +1,5 @@
 """
-Client factories for Jira, Confluence, Slack, Microsoft, and Notion.
+Client factories for Slack.
 """
 
 from app.agents.tools.factories.base import ClientFactory

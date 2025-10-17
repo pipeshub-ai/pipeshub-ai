@@ -640,16 +640,17 @@ class VectorStore(Transformer):
                         }
                         doc = self.nlp(block_text)
                         sentences = [sent.text for sent in doc.sents]
-                        for sentence in sentences:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=sentence,
-                                    metadata={
-                                        **metadata,
-                                        "isBlock": False,
-                                    },
+                        if len(sentences) > 1:
+                            for sentence in sentences:
+                                documents_to_embed.append(
+                                    Document(
+                                        page_content=sentence,
+                                        metadata={
+                                            **metadata,
+                                            "isBlock": False,
+                                        },
+                                    )
                                 )
-                            )
                         documents_to_embed.append(
                             Document(page_content=block_text, metadata={
                                         **metadata,

@@ -36,6 +36,7 @@ from app.connectors.core.registry.connector_builder import (
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["file.created", "file.modified", "file.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .add_filter_field(CommonFields.file_types_filter(), "static")
@@ -53,160 +54,6 @@ class GoogleDriveConnector:
         """Connect to Google Drive"""
         print(f"Connecting to {self.name}")
         return True
-
-
-# @ConnectorBuilder("SharePoint Online")\
-#     .in_group("Microsoft 365")\
-#     .with_auth_type("OAUTH_ADMIN_CONSENT")\
-#     .with_description("Sync documents and lists from SharePoint Online")\
-#     .with_categories(["Storage", "Documentation"])\
-#     .configure(lambda builder: builder
-#         .with_icon("/assets/icons/connectors/sharepoint.svg")
-#         .add_documentation_link(DocumentationLink(
-#             "SharePoint Online API Setup",
-#             "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
-#         ))
-#         .with_redirect_uri("http://localhost:3001/sharepoint/oauth/callback", False)
-#         .add_auth_field(AuthField(
-#             name="clientId",
-#             display_name="Application (Client) ID",
-#             placeholder="Enter your Azure AD Application ID",
-#             description="The Application (Client) ID from Azure AD App Registration"
-#         ))
-#         .add_auth_field(AuthField(
-#             name="clientSecret",
-#             display_name="Client Secret",
-#             placeholder="Enter your Azure AD Client Secret",
-#             description="The Client Secret from Azure AD App Registration",
-#             field_type="PASSWORD",
-#             is_secret=True
-#         ))
-#         .add_auth_field(AuthField(
-#             name="tenantId",
-#             display_name="Directory (Tenant) ID (Optional)",
-#             placeholder="Enter your Azure AD Tenant ID",
-#             description="The Directory (Tenant) ID from Azure AD"
-#         ))
-#         .add_auth_field(AuthField(
-#             name="hasAdminConsent",
-#             display_name="Has Admin Consent",
-#             description="Check if admin consent has been granted for the application",
-#             field_type="CHECKBOX",
-#             required=True,
-#             default_value=False
-#         ))
-#         .add_auth_field(AuthField(
-#             name="sharepointDomain",
-#             display_name="SharePoint Domain",
-#             placeholder="https://your-domain.sharepoint.com",
-#             description="Your SharePoint domain URL",
-#             field_type="URL",
-#             max_length=2000
-#         ))
-#         .add_auth_field(AuthField(
-#             name="redirectUri",
-#             display_name="Redirect URI",
-#             placeholder="http://localhost:3001/sharepoint/oauth/callback",
-#             description="The redirect URI for OAuth authentication",
-#             field_type="URL",
-#             required=False,
-#             max_length=2000
-#         ))
-#         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
-#         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-#         .with_scheduled_config(True, 60)
-#         .add_filter_field(FilterField(
-#             name="sites",
-#             display_name="SharePoint Sites",
-#             description="Select SharePoint sites to sync content from"
-#         ), "https://graph.microsoft.com/v1.0/sites")
-#         .add_filter_field(FilterField(
-#             name="documentLibraries",
-#             display_name="Document Libraries",
-#             description="Select document libraries to sync from"
-#         ), "https://graph.microsoft.com/v1.0/sites/{siteId}/drives")
-#         .add_filter_field(CommonFields.file_types_filter(), "static")
-#     )\
-#     .build_decorator()
-# class SharePointConnector:
-#     """SharePoint connector built with the builder pattern"""
-
-#     def __init__(self) -> None:
-#         self.name = "SharePoint Online"
-
-#     def connect(self) -> bool:
-#         """Connect to SharePoint"""
-#         print(f"Connecting to {self.name}")
-#         return True
-
-
-# @ConnectorBuilder("OneDrive")\
-#     .in_group("Microsoft 365")\
-#     .with_auth_type("OAUTH_ADMIN_CONSENT")\
-#     .with_description("Sync files and folders from OneDrive")\
-#     .with_categories(["Storage"])\
-#     .configure(lambda builder: builder
-#         .with_icon("/assets/icons/connectors/onedrive.svg")
-#         .add_documentation_link(DocumentationLink(
-#             "Azure AD App Registration Setup",
-#             "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
-#         ))
-#         .with_redirect_uri("http://localhost:3001/onedrive/oauth/callback", False)
-#         .add_auth_field(AuthField(
-#             name="clientId",
-#             display_name="Application (Client) ID",
-#             placeholder="Enter your Azure AD Application ID",
-#             description="The Application (Client) ID from Azure AD App Registration"
-#         ))
-#         .add_auth_field(AuthField(
-#             name="clientSecret",
-#             display_name="Client Secret",
-#             placeholder="Enter your Azure AD Client Secret",
-#             description="The Client Secret from Azure AD App Registration",
-#             field_type="PASSWORD",
-#             is_secret=True
-#         ))
-#         .add_auth_field(AuthField(
-#             name="tenantId",
-#             display_name="Directory (Tenant) ID",
-#             placeholder="Enter your Azure AD Tenant ID",
-#             description="The Directory (Tenant) ID from Azure AD"
-#         ))
-#         .add_auth_field(AuthField(
-#             name="hasAdminConsent",
-#             display_name="Has Admin Consent",
-#             description="Check if admin consent has been granted for the application",
-#             field_type="CHECKBOX",
-#             required=True,
-#             default_value=False
-#         ))
-#         .add_auth_field(AuthField(
-#             name="redirectUri",
-#             display_name="Redirect URI",
-#             placeholder="http://localhost:3001/onedrive/oauth/callback",
-#             description="The redirect URI for OAuth authentication",
-#             field_type="URL",
-#             required=False,
-#             max_length=2000
-#         ))
-#         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
-#         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-#         .with_scheduled_config(True, 60)
-#         .add_filter_field(CommonFields.file_types_filter(), "static")
-#         .add_filter_field(CommonFields.folders_filter(),
-#                           "https://graph.microsoft.com/v1.0/me/drive/root/children")
-#     )\
-#     .build_decorator()
-# class OneDriveConnector:
-#     """OneDrive connector built with the builder pattern"""
-
-#     def __init__(self) -> None:
-#         self.name = "OneDrive"
-
-#     def connect(self) -> bool:
-#         """Connect to OneDrive"""
-#         print(f"Connecting to {self.name}")
-#         return True
 
 
 @ConnectorBuilder("Gmail")\
@@ -235,6 +82,7 @@ class GoogleDriveConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["message.created", "message.modified", "message.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(FilterField(
             name="labels",
@@ -276,6 +124,7 @@ class GmailConnector:
             max_length=8000,
             is_secret=True
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(CommonFields.channels_filter(),
                           "https://slack.com/api/conversations.list")
@@ -314,6 +163,7 @@ class SlackConnector:
             max_length=8000,
             is_secret=True
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -355,6 +205,7 @@ class  NotionConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["event.created", "event.modified", "event.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -397,6 +248,7 @@ class CalendarConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["space.created", "space.modified", "space.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -439,6 +291,7 @@ class MeetConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["document.created", "document.modified", "document.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -478,6 +331,7 @@ class DocsConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["sheet.created", "sheet.modified", "sheet.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -520,6 +374,7 @@ class SheetsConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["form.created", "form.modified", "form.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -560,6 +415,7 @@ class FormsConnector:
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["slide.created", "slide.modified", "slide.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
@@ -571,5 +427,368 @@ class SlidesConnector:
 
     def connect(self) -> bool:
         """Connect to Slides"""
+        print(f"Connecting to {self.name}")
+        return True
+
+
+@ConnectorBuilder("Airtable")\
+    .in_group("Airtable")\
+    .with_auth_type("API_TOKEN")\
+    .with_description("Sync messages, tables and views from Airtable")\
+    .with_categories(["Database"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/airtable.svg")
+        .add_documentation_link(DocumentationLink(
+            "Airtable API Token Setup",
+            "https://api.airtable.com/authentication/basics"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="apiToken",
+            display_name="Api Token",
+            placeholder="atp-...",
+            description="The API Access Token from Airtable App settings",
+            field_type="PASSWORD",
+            max_length=8000,
+            is_secret=True
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class AirtableConnector:
+    """Airtable connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "Airtable"
+
+    def connect(self) -> bool:
+        """Connect to Airtable"""
+        print(f"Connecting to {self.name}")
+        return True
+
+
+@ConnectorBuilder("Azure Blob")\
+    .in_group("Azure")\
+    .with_auth_type("ACCOUNT_KEY")\
+    .with_description("Sync files and folders from Azure Blob Storage")\
+    .with_categories(["Storage"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/azureblob.svg")
+        .add_documentation_link(DocumentationLink(
+            "Azure Blob Storage Connection String Setup",
+            "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="accountName",
+            display_name="Account Name",
+            placeholder="mystorageaccount",
+            description="The Account Name from Azure Blob Storage App settings",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="accountKey",
+            display_name="Account Key",
+            placeholder="Your account key",
+            description="The Account Key from Azure Blob Storage App settings",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="containerName",
+            display_name="Container Name",
+            placeholder="my-container",
+            description="The Container Name from Azure Blob Storage App settings",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="endpointProtocol",
+            display_name="Endpoint Protocol",
+            placeholder="https",
+            description="The Endpoint Protocol from Azure Blob Storage App settings",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="endpointSuffix",
+            display_name="Endpoint Suffix",
+            placeholder="core.windows.net",
+            description="The Endpoint Suffix from Azure Blob Storage App settings",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class AzureBlobConnector:
+    """Azure Blob connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "Azure Blob"
+
+    def connect(self) -> bool:
+        """Connect to Azure Blob"""
+        print(f"Connecting to {self.name}")
+        return True
+
+
+@ConnectorBuilder("BookStack")\
+    .in_group("BookStack")\
+    .with_auth_type("BEARER_TOKEN")\
+    .with_description("Sync books and pages from BookStack")\
+    .with_categories(["Documentation"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/bookstack.svg")
+        .add_documentation_link(DocumentationLink(
+            "BookStack API Token Setup",
+            "https://bookstack.org/docs/admin/authentication/"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="tokenId",
+            display_name="Token ID",
+            placeholder="Enter your Token ID",
+            description="The Token ID from BookStack instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="tokenSecret",
+            display_name="Token Secret",
+            placeholder="Enter your Token Secret",
+            description="The Token Secret from BookStack instance",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="baseURL",
+            display_name="Base URL",
+            placeholder="https://bookstack.example.com",
+            description="The Base URL from BookStack instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class BookStackConnector:
+    """BookStack connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "BookStack"
+
+    def connect(self) -> bool:
+        """Connect to BookStack"""
+        print(f"Connecting to {self.name}")
+        return True
+
+
+@ConnectorBuilder("Linear")\
+    .in_group("Linear")\
+    .with_auth_type("API_TOKEN")\
+    .with_description("Sync issues and projects from Linear")\
+    .with_categories(["Issue Tracking"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/linear.svg")
+        .add_documentation_link(DocumentationLink(
+            "Linear API Token Setup",
+            "https://linear.app/developers/docs/authentication"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="apiToken",
+            display_name="API Token",
+            placeholder="Enter your API Token",
+            description="The API Token from Linear instance (https://linear.app/settings/api)",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class LinearConnector:
+    """Linear connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "Linear"
+
+    def connect(self) -> bool:
+        """Connect to Linear"""
+        print(f"Connecting to {self.name}")
+        return True
+
+
+@ConnectorBuilder("S3")\
+    .in_group("S3")\
+    .with_auth_type("ACCESS_KEY")\
+    .with_description("Sync files and folders from S3")\
+    .with_categories(["Storage"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/s3.svg")
+        .add_documentation_link(DocumentationLink(
+            "S3 Access Key Setup",
+            "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="accessKey",
+            display_name="Access Key",
+            placeholder="Enter your Access Key",
+            description="The Access Key from S3 instance",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="secretKey",
+            display_name="Secret Key",
+            placeholder="Enter your Secret Key",
+            description="The Secret Key from S3 instance",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="region",
+            display_name="Region",
+            placeholder="Enter your Region Name",
+            description="The Region from S3 instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="bucket",
+            display_name="Bucket Name",
+            placeholder="Enter your Bucket Name",
+            description="The Bucket from S3 instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class S3Connector:
+    """S3 connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "S3"
+
+    def connect(self) -> bool:
+        """Connect to S3"""
+        print(f"Connecting to {self.name}")
+        return True
+
+
+@ConnectorBuilder("ServiceNow")\
+    .in_group("ServiceNow")\
+    .with_auth_type("USERNAME_PASSWORD")\
+    .with_description("Sync issues and projects from ServiceNow")\
+    .with_categories(["Issue Tracking"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/servicenow.svg")
+        .add_documentation_link(DocumentationLink(
+            "ServiceNow Username Password Setup",
+            "https://docs.servicenow.com/bundle/rome-it-service-management/page/product/integration/reference/r_ITSMIntegrationAPI.html"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="username",
+            display_name="Username",
+            placeholder="Enter your Username",
+            description="The Username from ServiceNow instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="password",
+            display_name="Password",
+            placeholder="Enter your Password",
+            description="The Password from ServiceNow instance",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="instanceUrl",
+            display_name="Instance URL",
+            placeholder="Enter your Instance URL",
+            description="The Instance URL from ServiceNow instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class ServiceNowConnector:
+    """ServiceNow connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "ServiceNow"
+
+    def connect(self) -> bool:
+        """Connect to ServiceNow"""
+        print(f"Connecting to {self.name}")
+        return True
+
+@ConnectorBuilder("Zendesk")\
+    .in_group("Zendesk")\
+    .with_auth_type("API_TOKEN")\
+    .with_description("Sync tickets and users from Zendesk")\
+    .with_categories(["Issue Tracking"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/zendesk.svg")
+        .add_documentation_link(DocumentationLink(
+            "Zendesk API Token Setup",
+            "https://developer.zendesk.com/documentation/ticketing/introduction/authentication/"
+        ))
+        .with_redirect_uri("", False)
+        .add_auth_field(AuthField(
+            name="apiToken",
+            display_name="API Token",
+            placeholder="Enter your API Token",
+            description="The API Token from Zendesk instance",
+            field_type="PASSWORD",
+            max_length=2000,
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="email",
+            display_name="Email",
+            placeholder="Enter your Email",
+            description="The Email from Zendesk instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="subdomain",
+            display_name="Subdomain",
+            placeholder="Enter your Subdomain",
+            description="The Subdomain from Zendesk instance",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+    )\
+    .build_decorator()
+class ZendeskConnector:
+    """Zendesk connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "Zendesk"
+
+    def connect(self) -> bool:
+        """Connect to Zendesk"""
         print(f"Connecting to {self.name}")
         return True

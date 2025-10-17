@@ -4,8 +4,10 @@ import aiohttp  # type: ignore
 from aiokafka import AIOKafkaConsumer  #type: ignore
 from redis.asyncio import Redis, RedisError  #type: ignore
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import RedisConfig, config_node_constants
+from app.config.constants.service import config_node_constants
+from app.utils.redis_util import build_redis_url
 
 
 class Health:
@@ -151,11 +153,12 @@ class Health:
         logger = container.logger()
         logger.info("🔍 Starting Redis health check...")
         try:
-            config_service = container.config_service()
+            config_service : ConfigurationService = container.config_service()
             redis_config = await config_service.get_config(
                 config_node_constants.REDIS.value
             )
-            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
+            # Build Redis URL with password if provided
+            redis_url = build_redis_url(redis_config)
             logger.debug(f"Checking Redis connection at: {redis_url}")
             # Create Redis client and attempt to ping
             redis_client = Redis.from_url(redis_url, socket_timeout=5.0)

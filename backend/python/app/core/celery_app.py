@@ -6,10 +6,10 @@ from celery import Celery
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import (
     CeleryConfig,
-    RedisConfig,
     WebhookConfig,
     config_node_constants,
 )
+from app.utils.redis_util import build_redis_url
 
 # Create the Celery instance at module level
 celery = Celery("drive_sync")
@@ -33,7 +33,9 @@ class CeleryApp:
             redis_config = await self.config_service.get_config(
                 config_node_constants.REDIS.value
             )
-            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
+            if not redis_config or not isinstance(redis_config, dict):
+                raise ValueError("Redis configuration not found")
+            redis_url = build_redis_url(redis_config)
 
             celery_config = {
                 "broker_url": redis_url,

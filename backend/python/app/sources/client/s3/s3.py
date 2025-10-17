@@ -185,21 +185,27 @@ class S3Client(IClient):
             if not config:
                 raise ValueError("Failed to get S3 connector configuration")
 
-            # Extract configuration values
-            access_key_id = config.get("access_key_id", "")
-            secret_access_key = config.get("secret_access_key", "")
-            region_name = config.get("region_name", "us-east-1")
-            bucket_name = config.get("bucket_name")
+            auth_type = config.get("authType", "ACCESS_KEY")  # ACCESS_KEY or OAUTH
+            auth_config = config.get("auth", {})
+            if auth_type == "ACCESS_KEY":  # Default to access key auth
+                # Extract configuration values
+                access_key_id = auth_config.get("accessKey", "")
+                secret_access_key = auth_config.get("secretKey", "")
+                region_name = auth_config.get("region", "us-east-1")
+                bucket_name = auth_config.get("bucket")
 
-            if not access_key_id or not secret_access_key:
-                raise ValueError("Access key ID and secret access key are required for S3 authentication")
+                if not access_key_id or not secret_access_key:
+                    raise ValueError("Access key ID and secret access key are required for S3 authentication")
 
-            client = S3RESTClientViaAccessKey(
-                access_key_id=access_key_id,
-                secret_access_key=secret_access_key,
-                region_name=region_name,
-                bucket_name=bucket_name
-            )
+                client = S3RESTClientViaAccessKey(
+                    access_key_id=access_key_id,
+                    secret_access_key=secret_access_key,
+                    region_name=region_name,
+                    bucket_name=bucket_name
+                )
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
 
             return cls(client)
 

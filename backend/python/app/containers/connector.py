@@ -52,6 +52,7 @@ from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseServ
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.containers.container import BaseAppContainer
+from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
@@ -713,7 +714,7 @@ class ConnectorAppContainer(BaseAppContainer):
 
     # Override logger with service-specific name
     logger = providers.Singleton(create_logger, "connector_service")
-
+    container_utils = ContainerUtils()
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
 
     # Override config_service to use the service-specific logger
@@ -740,6 +741,7 @@ class ConnectorAppContainer(BaseAppContainer):
         service = BaseArangoService(logger, arango_client, config_service, kafka_service)
         await service.connect()
         return service
+
 
     arango_service = providers.Resource(
         _create_arango_service,
@@ -810,6 +812,8 @@ class ConnectorAppContainer(BaseAppContainer):
         config=signed_url_config,
         config_service=config_service,
     )
+
+    feature_flag_service = providers.Singleton(container_utils.create_feature_flag_service)
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:

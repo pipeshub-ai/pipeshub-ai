@@ -666,7 +666,6 @@ class IndexingPipeline:
 
                 ids = [point.id for point in result[0]] #type: ignore
                 self.logger.info(f"🎯 Filter: {filter_dict}")
-                self.logger.info(f"🎯 Ids: {ids}")
 
                 try:
                     await self.get_embedding_model_instance()

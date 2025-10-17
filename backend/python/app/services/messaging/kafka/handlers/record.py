@@ -24,6 +24,8 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 # from app.connectors.sources.google.common.arango_service import ArangoService
 from app.services.scheduler.interface.scheduler import Scheduler
 from app.services.scheduler.scheduler_factory import SchedulerFactory
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.redis_util import build_redis_url
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
@@ -103,7 +105,8 @@ class RecordEventHandler(BaseEventService):
         redis_config = config_service.get_config(config_node_constants.REDIS.value)
         if not redis_config or not isinstance(redis_config, dict):
             raise ValueError("Redis configuration not found")
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+        # Build Redis URL with password if provided
+        redis_url = build_redis_url(redis_config)
         return SchedulerFactory.scheduler("redis", redis_url, logger, config_service, delay_hours=1)
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -129,12 +132,7 @@ class RecordEventHandler(BaseEventService):
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return False
 
-            if virtual_record_id is None:
-                virtual_record_id = record.get("virtualRecordId")
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -152,6 +150,13 @@ class RecordEventHandler(BaseEventService):
                 # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return False
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
+
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
@@ -159,6 +164,11 @@ class RecordEventHandler(BaseEventService):
                     record_name = payload.get("recordName")
                     if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
+
+            if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
+                derived_extension = get_extension_from_mimetype(mime_type)
+                if derived_extension:
+                    extension = derived_extension
 
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
@@ -387,7 +397,12 @@ class RecordEventHandler(BaseEventService):
         redis_config = await config_service.get_config(config_node_constants.REDIS.value)
         if not redis_config or not isinstance(redis_config, dict):
             raise ValueError("Redis configuration not found")
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+        # Build Redis URL with password if provided
+        password = redis_config.get('password', '')
+        if password:
+            redis_url = f"redis://:{password}@{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+        else:
+            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
         return SchedulerFactory.scheduler(scheduler_type, redis_url, logger, config_service, delay_hours=1)
 
     async def __update_document_status(
