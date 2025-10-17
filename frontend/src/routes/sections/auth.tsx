@@ -3,7 +3,8 @@ import { Outlet } from 'react-router-dom';
 
 import { AuthSplitLayout } from 'src/layouts/auth-split';
 
-import { SplashScreen } from 'src/components/loading-screen';
+import { SplashScreen, LoadingScreen } from 'src/components/loading-screen';
+import { ServicesHealthProvider, useServicesHealth } from 'src/context/ServicesHealthContext';
 
 import { GuestGuard } from 'src/auth/guard';
 
@@ -82,9 +83,21 @@ export const authRoutes = [
     path: 'auth',
     element: (
       <Suspense fallback={<SplashScreen />}>
-        <Outlet />
+        <ServicesHealthProvider>
+          <HealthGate>
+            <Outlet />
+          </HealthGate>
+        </ServicesHealthProvider>
       </Suspense>
     ),
     children: [authJwt],
   },
 ];
+
+function HealthGate({ children }: { children: React.ReactNode }) {
+  const { loading, healthy } = useServicesHealth();
+  if (loading || !healthy) {
+    return <LoadingScreen />;
+  }
+  return <>{children}</>;
+}

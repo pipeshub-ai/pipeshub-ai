@@ -60,6 +60,43 @@ interface ErrorProviderProps {
 // Create axios instance with config
 const axiosInstance = axios.create({ baseURL: CONFIG.backendUrl });
 
+// Request interceptor: pause non-health requests until services are healthy
+function waitForHealthy(maxMs = 15000): Promise<void> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const check = (): void => {
+      const health = (window as any).__servicesHealth as { loading: boolean; healthy: boolean | null } | undefined;
+      if (health && health.healthy === true) {
+        resolve();
+        return;
+      }
+      if (Date.now() - started > maxMs) {
+        resolve();
+        return;
+      }
+      setTimeout(check, 200);
+    };
+    check();
+  });
+}
+
+axiosInstance.interceptors.request.use(async (config) => {
+  try {
+    const url = (config.url || '').toString();
+    // Allow health/services endpoint to pass through
+    const isServicesHealth = url.includes('/api/v1/health/services');
+    if (isServicesHealth) return config;
+
+    const health = (window as any).__servicesHealth as { loading: boolean; healthy: boolean | null } | undefined;
+    if (health && (health.loading || health.healthy === false)) {
+      await waitForHealthy(15000);
+    }
+  } catch {
+    // ignore and proceed
+  }
+  return config;
+});
+
 // Enhanced error handling in interceptor
 axiosInstance.interceptors.response.use(
   (response) => response,

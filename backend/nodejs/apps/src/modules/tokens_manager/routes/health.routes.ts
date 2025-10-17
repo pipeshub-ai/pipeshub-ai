@@ -6,6 +6,8 @@ import { TokenEventProducer } from '../services/token-event.producer';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { Logger }  from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import axios from 'axios';
+import { AppConfig } from '../config/config';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -46,6 +48,8 @@ export function createHealthRouter(
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
     TYPES.KeyValueStoreService,
   );
+
+  const appConfig = container.get<AppConfig>('AppConfig');
 
   router.get('/', async (_req, res, next) => {
     try {
@@ -115,6 +119,43 @@ export function createHealthRouter(
     } catch (exception: any) {
       logger.error("health check status failed", exception.message);
       next()
+    }
+  });
+
+  // Combined services health check (Python query + connector services)
+  router.get('/services', async (_req, res, _next) => {
+    try {
+      const aiHealthUrl = `${appConfig.aiBackend}/health`;
+      const connectorHealthUrl = `${appConfig.connectorBackend}/health`;
+
+      const [aiResp, connectorResp] = await Promise.allSettled([
+        axios.get(aiHealthUrl, { timeout: 3000 }),
+        axios.get(connectorHealthUrl, { timeout: 3000 }),
+      ]);
+
+      const aiOk = aiResp.status === 'fulfilled' && aiResp.value.status === 200 && aiResp.value.data?.status === 'healthy';
+      const connectorOk = connectorResp.status === 'fulfilled' && connectorResp.value.status === 200 && connectorResp.value.data?.status === 'healthy';
+
+      const overallHealthy = aiOk && connectorOk;
+
+      res.status(overallHealthy ? 200 : 503).json({
+        status: overallHealthy ? 'healthy' : 'unhealthy',
+        timestamp: new Date().toISOString(),
+        services: {
+          query: aiOk ? 'healthy' : 'unhealthy',
+          connector: connectorOk ? 'healthy' : 'unhealthy',
+        },
+      });
+    } catch (error: any) {
+      logger.error('Combined services health check failed', error?.message ?? error);
+      res.status(503).json({
+        status: 'unhealthy',
+        timestamp: new Date().toISOString(),
+        services: {
+          query: 'unknown',
+          connector: 'unknown',
+        },
+      });
     }
   });
 

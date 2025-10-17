@@ -8,6 +8,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { DashboardLayout } from 'src/layouts/dashboard';
 
 import { LoadingScreen } from 'src/components/loading-screen';
+import { ServicesHealthProvider, useServicesHealth } from 'src/context/ServicesHealthContext';
 import { ConnectorProvider } from 'src/sections/accountdetails/connectors/context';
 
 import { AuthGuard } from 'src/auth/guard';
@@ -170,14 +171,26 @@ const ProtectedRoute = ({ component: Component }: { component: React.ComponentTy
 );
 
 // Layout with outlet for nested routes
+function HealthGate({ children }: { children: ReactNode }) {
+  const { loading, healthy } = useServicesHealth();
+  if (loading || !healthy) {
+    return <LoadingScreen />;
+  }
+  return <>{children}</>;
+}
+
 const layoutContent = (
-  <ConnectorProvider>
-  <DashboardLayout>
-    <Suspense fallback={<LoadingScreen />}>
-      <Outlet />
-    </Suspense>
-  </DashboardLayout>
-  </ConnectorProvider>
+  <ServicesHealthProvider>
+    <ConnectorProvider>
+      <DashboardLayout>
+        <Suspense fallback={<LoadingScreen />}>
+          <HealthGate>
+            <Outlet />
+          </HealthGate>
+        </Suspense>
+      </DashboardLayout>
+    </ConnectorProvider>
+  </ServicesHealthProvider>
 );
 
 export const dashboardRoutes = [
