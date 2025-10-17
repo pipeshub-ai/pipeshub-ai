@@ -17,6 +17,7 @@ export const modelService = {
           isActive: model.isActive || false,
           isDefault: model.isDefault || false,
           isMultimodal: model.isMultimodal || false,
+          isReasoning: model.isReasoning || false,
         }));
       }
       return [];
@@ -34,6 +35,7 @@ export const modelService = {
         provider: modelData.provider,
         configuration: modelData.configuration,
         isMultimodal: modelData.isMultimodal || false,
+        isReasoning: modelData.isReasoning || false,
         isDefault: modelData.isDefault || false,
       };
 
@@ -62,6 +64,7 @@ export const modelService = {
         configuration: modelData.configuration,
         isMultimodal: modelData.isMultimodal || false,
         isDefault: modelData.isDefault || false,
+        isReasoning: modelData.isReasoning || false,
       };
 
       const response = await axios.put(
@@ -125,6 +128,7 @@ export const modelService = {
         providerType: activeModel.provider,
         modelType: activeModel.provider,
         isMultimodal: activeModel.isMultimodal,
+        isReasoning: activeModel.isReasoning,
       };
     }
     return null;
@@ -149,7 +153,7 @@ export const modelService = {
   },
 
   async updateLlmConfig(config: any): Promise<any> {
-    const { modelType, providerType, _provider, isMultimodal, ...cleanConfig } = config;
+    const { modelType, providerType, _provider, isMultimodal, isReasoning, ...cleanConfig } = config;
     console.log("isMultimodal", isMultimodal);
     console.log("cleanConfig", cleanConfig);
     const provider = providerType || modelType || _provider;
@@ -164,6 +168,7 @@ export const modelService = {
         configuration: cleanConfig,
         isDefault: true,
         isMultimodal: Boolean(isMultimodal),
+        isReasoning: Boolean(isReasoning),
       });
     }
     return this.addModel('llm', {
@@ -171,6 +176,7 @@ export const modelService = {
       configuration: cleanConfig,
       isDefault: true,
       isMultimodal: Boolean(isMultimodal),
+      isReasoning: Boolean(isReasoning),
     });
   },
 

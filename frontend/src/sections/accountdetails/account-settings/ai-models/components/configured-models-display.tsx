@@ -373,6 +373,15 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
                                   sx={{ fontSize: '0.6875rem' }}
                                 />
                               )}
+                              {model.isReasoning && (
+                                <Chip
+                                  label="Reasoning"
+                                  size="small"
+                                  color="info"
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.6875rem' }}
+                                />
+                              )}
 
                               <IconButton
                                 size="small"

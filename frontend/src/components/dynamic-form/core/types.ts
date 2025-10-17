@@ -15,7 +15,8 @@ export interface LlmFormValues extends BaseFormValues {
   region?: string;
   provider?: string;
   isMultimodal?: boolean;
-}
+  isReasoning?: boolean;
+  }
 
 export interface EmbeddingFormValues extends BaseFormValues {
   apiKey?: string;
