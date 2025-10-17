@@ -193,7 +193,9 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]],records: List[Dict[str, Any]],from_agent:bool = False) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]],records: List[Dict[str, Any]]=None,from_agent:bool = False) -> Dict[str, Any]:
+    if records is None:
+        records = []
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
