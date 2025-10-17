@@ -44,6 +44,7 @@ mime_to_extension = {
     "application/csv": "csv",
     "text/markdown": "md",
     "text/mdx": "mdx",
+    "text/gmail_content": "html",
 }
 
 

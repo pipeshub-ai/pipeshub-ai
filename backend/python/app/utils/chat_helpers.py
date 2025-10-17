@@ -17,6 +17,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
+group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value]
 
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
     flattened_results = []
@@ -78,7 +79,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
-        if block_type == BlockType.TEXT.value:
+        if block_type == BlockType.TEXT.value and block.get("parent_index") is None:
             result["content"] = block.get("data","")
             adjacent_chunks[virtual_record_id].append(index-1)
             adjacent_chunks[virtual_record_id].append(index+1)
@@ -157,6 +158,21 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     continue
             else:
                 continue
+        elif block.get("parent_index") is not None:
+            parent_index = block.get("parent_index")
+            group_text_result = build_group_text(block_groups, blocks, parent_index, virtual_record_id, seen_chunks)
+            if group_text_result is None:
+                continue
+            label, first_child_block_index, content = group_text_result
+            result["content"] = content
+            result["block_type"] = label
+            result["virtual_record_id"] = virtual_record_id
+            result["block_index"] = first_child_block_index
+            result["block_group_index"] = parent_index
+            result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+            flattened_results.append(result)
+            continue
+
 
         result["virtual_record_id"] = virtual_record_id
         if "block_index" not in result:
@@ -309,9 +325,14 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             else:
                 block_text = ""
 
+            mime_type = record.get("mime_type")
+            if not mime_type:
+                mime_type = meta.get("mimeType")
+
             extension = meta.get("extension")
             if extension is None:
-                extension = get_extension_from_mimetype(record.get("mime_type"))
+                extension = get_extension_from_mimetype(mime_type)
+
 
             block_num = meta.get("blockNum")
             if block_num is None:
@@ -338,7 +359,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "bounding_box": extract_bounding_boxes(block.get("citation_metadata")),
                         "pageNum":[page_num],
                         "extension": extension,
-                        "mimeType": record.get("mime_type",""),
+                        "mimeType": mime_type,
                         "blockNum":block_num
                     }
             if extension == "xlsx" or meta.get("sheetName"):
@@ -531,6 +552,92 @@ def checkForLargeTable(markdown: str) -> bool:
     return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
 
 
+def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> Tuple[str, int, str] | None:
+    """Extract grouped text content and first child index for supported group types.
+
+    Returns (label, first_child_block_index, content) or None if invalid or unsupported.
+    """
+    if parent_index is None or parent_index < 0 or parent_index >= len(block_groups):
+        return None
+
+    parent_block = block_groups[parent_index]
+    label = parent_block.get("type")
+    valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+    ]
+
+    if label not in valid_group_labels:
+        return None
+
+    children = parent_block.get("children", [])
+    if not children:
+        return None
+
+    first_child_block_index = children[0].get("block_index")
+    if first_child_block_index is None:
+        return None
+
+    content = ""
+    for child in children:
+        block_index = child.get("block_index")
+        if virtual_record_id is not None and seen_chunks is not None:
+            child_id = f"{virtual_record_id}-{block_index}"
+            seen_chunks.add(child_id)
+        if 0 <= block_index < len(blocks):
+            child_block = blocks[block_index]
+            if child_block.get("type") == BlockType.TEXT.value:
+                content += child_block.get("data", "") + "\n"
+
+    return label, first_child_block_index, content
+
+
+def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> Tuple[str, int, str] | None:
+    """Extract grouped text content and first child index for supported group types.
+
+    Returns (label, first_child_block_index, content) or None if invalid or unsupported.
+    """
+    if parent_index is None or parent_index < 0 or parent_index >= len(block_groups):
+        return None
+
+    parent_block = block_groups[parent_index]
+    label = parent_block.get("type")
+    valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+    ]
+
+    if label not in valid_group_labels:
+        return None
+
+    children = parent_block.get("children", [])
+    if not children:
+        return None
+
+    first_child_block_index = children[0].get("block_index")
+    if first_child_block_index is None:
+        return None
+
+    content = ""
+    for child in children:
+        block_index = child.get("block_index")
+        if virtual_record_id is not None and seen_chunks is not None:
+            child_id = f"{virtual_record_id}-{block_index}"
+            seen_chunks.add(child_id)
+        if 0 <= block_index < len(blocks):
+            child_block = blocks[block_index]
+            if child_block.get("type") == BlockType.TEXT.value:
+                content += child_block.get("data", "") + "\n"
+
+    return label, first_child_block_index, content
+
+
 def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str:
     """
     Convert a record JSON object to message content format matching get_message_content.
@@ -598,7 +705,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
             if block_type == BlockType.IMAGE.value:
                 continue
-            elif block_type == BlockType.TEXT.value:
+            elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
@@ -656,7 +763,20 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                 "type": "text",
                                 "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
                             })
-                            record_string += f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
+            elif(block.get("parent_index") is not None):
+                parent_index = block.get("parent_index")
+                block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
+                if block_group_id in seen_block_groups:
+                    continue
+                group_text_result = build_group_text(block_groups, blocks, parent_index)
+                if group_text_result is None:
+                    continue
+                seen_block_groups.add(block_group_id)
+                label, first_child_block_index, text_content = group_text_result
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: R{record_number}-{first_child_block_index}\n* Block Type: {label}\n* Block Content: {text_content}\n\n"
+                })
             else:
                 content.append({
                     "type": "text",
@@ -767,6 +887,11 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 content.append({
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
+                })
+            elif block_type in group_types:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
             else:
                 content.append({
@@ -889,7 +1014,11 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
                 })
-                record_string += f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
+            elif block_type in group_types:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                })
             elif block_type != BlockType.IMAGE.value:
                 content.append({
                     "type": "text",

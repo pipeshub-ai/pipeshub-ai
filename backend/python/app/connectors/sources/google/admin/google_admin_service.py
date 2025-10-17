@@ -63,6 +63,13 @@ class GoogleAdminService:
                 credentials_json = await self.google_token_handler.get_enterprise_token(
                     org_id, app_name
                 )
+
+                self.logger.info(f"🔍 Retrieved credentials for org {org_id}, app {app_name}")
+                self.logger.info(f"🔍 Credentials keys: {list(credentials_json.keys())}")
+                self.logger.info(f"🔍 Admin email: {credentials_json.get('adminEmail')}")
+                self.logger.info(f"🔍 Client email: {credentials_json.get('client_email')}")
+
+                admin_email = credentials_json.get("adminEmail")
                 if not credentials_json:
                     raise AdminAuthError(
                         "Failed to get enterprise credentials",

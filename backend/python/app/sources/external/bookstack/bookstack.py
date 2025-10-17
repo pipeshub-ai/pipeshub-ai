@@ -159,19 +159,19 @@ class BookStackDataSource:
 
     async def get_attachment(
         self,
-        id: int
+        attachment_id: int
     ) -> BookStackResponse:
         """Get details of a single attachment including content
 
         Args:
-            id: Attachment ID (required)
+            attachment_id: Attachment ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/attachments/{id}".format(id=id)
+        url = self.base_url + "/api/attachments/{attachment_id}".format(attachment_id=attachment_id)
 
         headers = dict(self.http.headers)
 
@@ -191,7 +191,7 @@ class BookStackDataSource:
 
     async def update_attachment(
         self,
-        id: int,
+        attachment_id: int,
         name: Optional[str] = None,
         uploaded_to: Optional[int] = None,
         link: Optional[str] = None,
@@ -200,7 +200,7 @@ class BookStackDataSource:
         """Update an attachment. Use multipart/form-data for file updates
 
         Args:
-            id: Attachment ID (required)
+            attachment_id: Attachment ID (required)
             name: Attachment name
             uploaded_to: ID of the page to attach to
             link: URL for link attachments
@@ -223,7 +223,7 @@ class BookStackDataSource:
         if file is not None:
             files["file"] = file
 
-        url = self.base_url + "/api/attachments/{id}".format(id=id)
+        url = self.base_url + "/api/attachments/{attachment_id}".format(attachment_id=attachment_id)
 
         headers = dict(self.http.headers)
         # Note: multipart/form-data requests need special handling
@@ -246,19 +246,19 @@ class BookStackDataSource:
 
     async def delete_attachment(
         self,
-        id: int
+        attachment_id: int
     ) -> BookStackResponse:
         """Delete an attachment
 
         Args:
-            id: Attachment ID (required)
+            attachment_id: Attachment ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/attachments/{id}".format(id=id)
+        url = self.base_url + "/api/attachments/{attachment_id}".format(attachment_id=attachment_id)
 
         headers = dict(self.http.headers)
 
@@ -385,19 +385,19 @@ class BookStackDataSource:
 
     async def get_book(
         self,
-        id: int
+        book_id: int
     ) -> BookStackResponse:
         """Get details of a single book including contents
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/books/{id}".format(id=id)
+        url = self.base_url + "/api/books/{book_id}".format(book_id=book_id)
 
         headers = dict(self.http.headers)
 
@@ -417,7 +417,7 @@ class BookStackDataSource:
 
     async def update_book(
         self,
-        id: int,
+        book_id: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
         description_html: Optional[str] = None,
@@ -428,7 +428,7 @@ class BookStackDataSource:
         """Update a book. Use multipart/form-data for image upload
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
             name: Book name
             description: Plain text description
             description_html: HTML description
@@ -457,7 +457,7 @@ class BookStackDataSource:
         if image is not None:
             files["image"] = image
 
-        url = self.base_url + "/api/books/{id}".format(id=id)
+        url = self.base_url + "/api/books/{book_id}".format(book_id=book_id)
 
         headers = dict(self.http.headers)
         # Note: multipart/form-data requests need special handling
@@ -480,19 +480,19 @@ class BookStackDataSource:
 
     async def delete_book(
         self,
-        id: int
+        book_id: int
     ) -> BookStackResponse:
         """Delete a book (typically sends to recycle bin)
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/books/{id}".format(id=id)
+        url = self.base_url + "/api/books/{book_id}".format(book_id=book_id)
 
         headers = dict(self.http.headers)
 
@@ -512,19 +512,19 @@ class BookStackDataSource:
 
     async def export_book_html(
         self,
-        id: int
+        book_id: int
     ) -> BookStackResponse:
         """Export a book as a contained HTML file
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/books/{id}/export/html".format(id=id)
+        url = self.base_url + "/api/books/{book_id}/export/html".format(book_id=book_id)
 
         headers = dict(self.http.headers)
 
@@ -544,19 +544,19 @@ class BookStackDataSource:
 
     async def export_book_pdf(
         self,
-        id: int
+        book_id: int
     ) -> BookStackResponse:
         """Export a book as a PDF file
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/books/{id}/export/pdf".format(id=id)
+        url = self.base_url + "/api/books/{book_id}/export/pdf".format(book_id=book_id)
 
         headers = dict(self.http.headers)
 
@@ -577,19 +577,19 @@ class BookStackDataSource:
 
     async def export_book_plaintext(
         self,
-        id: int
+        book_id: int
     ) -> BookStackResponse:
         """Export a book as a plain text file
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/books/{id}/export/plaintext".format(id=id)
+        url = self.base_url + "/api/books/{book_id}/export/plaintext".format(book_id=book_id)
 
         headers = dict(self.http.headers)
 
@@ -609,19 +609,19 @@ class BookStackDataSource:
 
     async def export_book_markdown(
         self,
-        id: int
+        book_id: int
     ) -> BookStackResponse:
         """Export a book as a markdown file
 
         Args:
-            id: Book ID (required)
+            book_id: Book ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/books/{id}/export/markdown".format(id=id)
+        url = self.base_url + "/api/books/{book_id}/export/markdown".format(book_id=book_id)
 
         headers = dict(self.http.headers)
 
@@ -750,19 +750,19 @@ class BookStackDataSource:
 
     async def get_chapter(
         self,
-        id: int
+        chapter_id: int
     ) -> BookStackResponse:
         """Get details of a single chapter including pages
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/chapters/{id}".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
 
@@ -782,7 +782,7 @@ class BookStackDataSource:
 
     async def update_chapter(
         self,
-        id: int,
+        chapter_id: int,
         book_id: Optional[int] = None,
         name: Optional[str] = None,
         description: Optional[str] = None,
@@ -794,7 +794,7 @@ class BookStackDataSource:
         """Update a chapter
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
             book_id: Parent book ID (to move chapter)
             name: Chapter name
             description: Plain text description
@@ -824,7 +824,7 @@ class BookStackDataSource:
         if default_template_id is not None:
             body["default_template_id"] = default_template_id
 
-        url = self.base_url + "/api/chapters/{id}".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
         headers['Content-Type'] = 'application/json'
@@ -845,19 +845,19 @@ class BookStackDataSource:
 
     async def delete_chapter(
         self,
-        id: int
+        chapter_id: int
     ) -> BookStackResponse:
         """Delete a chapter (typically sends to recycle bin)
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/chapters/{id}".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
 
@@ -877,19 +877,19 @@ class BookStackDataSource:
 
     async def export_chapter_html(
         self,
-        id: int
+        chapter_id: int
     ) -> BookStackResponse:
         """Export a chapter as a contained HTML file
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/chapters/{id}/export/html".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}/export/html".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
 
@@ -909,19 +909,19 @@ class BookStackDataSource:
 
     async def export_chapter_pdf(
         self,
-        id: int
+        chapter_id: int
     ) -> BookStackResponse:
         """Export a chapter as a PDF file
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/chapters/{id}/export/pdf".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}/export/pdf".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
 
@@ -941,19 +941,19 @@ class BookStackDataSource:
 
     async def export_chapter_plaintext(
         self,
-        id: int
+        chapter_id: int
     ) -> BookStackResponse:
         """Export a chapter as a plain text file
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/chapters/{id}/export/plaintext".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}/export/plaintext".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
 
@@ -974,19 +974,19 @@ class BookStackDataSource:
 
     async def export_chapter_markdown(
         self,
-        id: int
+        chapter_id: int
     ) -> BookStackResponse:
         """Export a chapter as a markdown file
 
         Args:
-            id: Chapter ID (required)
+            chapter_id: Chapter ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/chapters/{id}/export/markdown".format(id=id)
+        url = self.base_url + "/api/chapters/{chapter_id}/export/markdown".format(chapter_id=chapter_id)
 
         headers = dict(self.http.headers)
 
@@ -1116,19 +1116,19 @@ class BookStackDataSource:
 
     async def get_page(
         self,
-        id: int
+        page_id: int
     ) -> BookStackResponse:
         """Get details of a single page including content
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/pages/{id}".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}".format(page_id=page_id)
 
         headers = dict(self.http.headers)
 
@@ -1148,7 +1148,7 @@ class BookStackDataSource:
 
     async def update_page(
         self,
-        id: int,
+        page_id: int,
         book_id: Optional[int] = None,
         chapter_id: Optional[int] = None,
         name: Optional[str] = None,
@@ -1160,7 +1160,7 @@ class BookStackDataSource:
         """Update a page
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
             book_id: Parent book ID (to move page)
             chapter_id: Parent chapter ID (to move page)
             name: Page name
@@ -1190,7 +1190,7 @@ class BookStackDataSource:
         if priority is not None:
             body["priority"] = priority
 
-        url = self.base_url + "/api/pages/{id}".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}".format(page_id=page_id)
 
         headers = dict(self.http.headers)
         headers['Content-Type'] = 'application/json'
@@ -1211,19 +1211,19 @@ class BookStackDataSource:
 
     async def delete_page(
         self,
-        id: int
+        page_id: int
     ) -> BookStackResponse:
         """Delete a page (typically sends to recycle bin)
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/pages/{id}".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}".format(page_id=page_id)
 
         headers = dict(self.http.headers)
 
@@ -1243,19 +1243,19 @@ class BookStackDataSource:
 
     async def export_page_html(
         self,
-        id: int
+        page_id: int
     ) -> BookStackResponse:
         """Export a page as a contained HTML file
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/pages/{id}/export/html".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}/export/html".format(page_id=page_id)
 
         headers = dict(self.http.headers)
 
@@ -1275,19 +1275,19 @@ class BookStackDataSource:
 
     async def export_page_pdf(
         self,
-        id: int
+        page_id: int
     ) -> BookStackResponse:
         """Export a page as a PDF file
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/pages/{id}/export/pdf".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}/export/pdf".format(page_id=page_id)
 
         headers = dict(self.http.headers)
 
@@ -1307,19 +1307,19 @@ class BookStackDataSource:
 
     async def export_page_plaintext(
         self,
-        id: int
+        page_id: int
     ) -> BookStackResponse:
         """Export a page as a plain text file
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/pages/{id}/export/plaintext".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}/export/plaintext".format(page_id=page_id)
 
         headers = dict(self.http.headers)
 
@@ -1340,19 +1340,19 @@ class BookStackDataSource:
 
     async def export_page_markdown(
         self,
-        id: int
+        page_id: int
     ) -> BookStackResponse:
         """Export a page as a markdown file
 
         Args:
-            id: Page ID (required)
+            page_id: Page ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/pages/{id}/export/markdown".format(id=id)
+        url = self.base_url + "/api/pages/{page_id}/export/markdown".format(page_id=page_id)
 
         headers = dict(self.http.headers)
 
@@ -1472,19 +1472,19 @@ class BookStackDataSource:
 
     async def get_image(
         self,
-        id: int
+        image_id: int
     ) -> BookStackResponse:
         """Get details of a single image
 
         Args:
-            id: Image ID (required)
+            image_id: Image ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/image-gallery/{id}".format(id=id)
+        url = self.base_url + "/api/image-gallery/{image_id}".format(image_id=image_id)
 
         headers = dict(self.http.headers)
 
@@ -1504,14 +1504,14 @@ class BookStackDataSource:
 
     async def update_image(
         self,
-        id: int,
+        image_id: int,
         name: Optional[str] = None,
         image: Optional[bytes] = None
     ) -> BookStackResponse:
         """Update image details or file. Use multipart/form-data for file updates
 
         Args:
-            id: Image ID (required)
+            image_id: Image ID (required)
             name: Image name
             image: New image file data
 
@@ -1528,7 +1528,7 @@ class BookStackDataSource:
         if image is not None:
             files["image"] = image
 
-        url = self.base_url + "/api/image-gallery/{id}".format(id=id)
+        url = self.base_url + "/api/image-gallery/{image_id}".format(image_id=image_id)
 
         headers = dict(self.http.headers)
         # Note: multipart/form-data requests need special handling
@@ -1551,19 +1551,19 @@ class BookStackDataSource:
 
     async def delete_image(
         self,
-        id: int
+        image_id: int
     ) -> BookStackResponse:
         """Delete an image from the system
 
         Args:
-            id: Image ID (required)
+            image_id: Image ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/image-gallery/{id}".format(id=id)
+        url = self.base_url + "/api/image-gallery/{image_id}".format(image_id=image_id)
 
         headers = dict(self.http.headers)
 
@@ -1733,19 +1733,19 @@ class BookStackDataSource:
 
     async def get_shelf(
         self,
-        id: int
+        shelf_id: int
     ) -> BookStackResponse:
         """Get details of a single shelf including books
 
         Args:
-            id: Shelf ID (required)
+            shelf_id: Shelf ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/shelves/{id}".format(id=id)
+        url = self.base_url + "/api/shelves/{shelf_id}".format(shelf_id=shelf_id)
 
         headers = dict(self.http.headers)
 
@@ -1765,7 +1765,7 @@ class BookStackDataSource:
 
     async def update_shelf(
         self,
-        id: int,
+        shelf_id: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
         description_html: Optional[str] = None,
@@ -1776,7 +1776,7 @@ class BookStackDataSource:
         """Update a shelf. Use multipart/form-data for image upload
 
         Args:
-            id: Shelf ID (required)
+            shelf_id: Shelf ID (required)
             name: Shelf name
             description: Plain text description
             description_html: HTML description
@@ -1805,7 +1805,7 @@ class BookStackDataSource:
         if image is not None:
             files["image"] = image
 
-        url = self.base_url + "/api/shelves/{id}".format(id=id)
+        url = self.base_url + "/api/shelves/{shelf_id}".format(shelf_id=shelf_id)
 
         headers = dict(self.http.headers)
         # Note: multipart/form-data requests need special handling
@@ -1828,19 +1828,19 @@ class BookStackDataSource:
 
     async def delete_shelf(
         self,
-        id: int
+        shelf_id: int
     ) -> BookStackResponse:
         """Delete a shelf (typically sends to recycle bin)
 
         Args:
-            id: Shelf ID (required)
+            shelf_id: Shelf ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/shelves/{id}".format(id=id)
+        url = self.base_url + "/api/shelves/{shelf_id}".format(shelf_id=shelf_id)
 
         headers = dict(self.http.headers)
 
@@ -1968,19 +1968,19 @@ class BookStackDataSource:
 
     async def get_user(
         self,
-        id: int
+        user_id: int
     ) -> BookStackResponse:
         """Get details of a single user. Requires permission to manage users
 
         Args:
-            id: User ID (required)
+            user_id: User ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/users/{id}".format(id=id)
+        url = self.base_url + "/api/users/{user_id}".format(user_id=user_id)
 
         headers = dict(self.http.headers)
 
@@ -2000,7 +2000,7 @@ class BookStackDataSource:
 
     async def update_user(
         self,
-        id: int,
+        user_id: int,
         name: Optional[str] = None,
         email: Optional[str] = None,
         external_auth_id: Optional[str] = None,
@@ -2011,7 +2011,7 @@ class BookStackDataSource:
         """Update a user. Requires permission to manage users
 
         Args:
-            id: User ID (required)
+            user_id: User ID (required)
             name: User name
             email: User email address
             external_auth_id: External authentication ID
@@ -2038,7 +2038,7 @@ class BookStackDataSource:
         if roles is not None:
             body["roles"] = roles
 
-        url = self.base_url + "/api/users/{id}".format(id=id)
+        url = self.base_url + "/api/users/{user_id}".format(user_id=user_id)
 
         headers = dict(self.http.headers)
         headers['Content-Type'] = 'application/json'
@@ -2059,13 +2059,13 @@ class BookStackDataSource:
 
     async def delete_user(
         self,
-        id: int,
+        user_id: int,
         migrate_ownership_id: Optional[int] = None
     ) -> BookStackResponse:
         """Delete a user. Requires permission to manage users
 
         Args:
-            id: User ID (required)
+            user_id: User ID (required)
             migrate_ownership_id: User ID to migrate content ownership to
 
         Returns:
@@ -2077,7 +2077,7 @@ class BookStackDataSource:
         if migrate_ownership_id is not None:
             body["migrate_ownership_id"] = migrate_ownership_id
 
-        url = self.base_url + "/api/users/{id}".format(id=id)
+        url = self.base_url + "/api/users/{user_id}".format(user_id=user_id)
 
         headers = dict(self.http.headers)
 
@@ -2197,19 +2197,19 @@ class BookStackDataSource:
 
     async def get_role(
         self,
-        id: int
+        role_id: int
     ) -> BookStackResponse:
         """Get details of a single role including permissions. Requires permission to manage roles
 
         Args:
-            id: Role ID (required)
+            role_id: Role ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/roles/{id}".format(id=id)
+        url = self.base_url + "/api/roles/{role_id}".format(role_id=role_id)
 
         headers = dict(self.http.headers)
 
@@ -2229,7 +2229,7 @@ class BookStackDataSource:
 
     async def update_role(
         self,
-        id: int,
+        role_id: int,
         display_name: Optional[str] = None,
         description: Optional[str] = None,
         mfa_enforced: Optional[bool] = None,
@@ -2239,7 +2239,7 @@ class BookStackDataSource:
         """Update a role. Requires permission to manage roles
 
         Args:
-            id: Role ID (required)
+            role_id: Role ID (required)
             display_name: Role display name
             description: Role description
             mfa_enforced: Enforce MFA for this role
@@ -2263,7 +2263,7 @@ class BookStackDataSource:
         if permissions is not None:
             body["permissions"] = permissions
 
-        url = self.base_url + "/api/roles/{id}".format(id=id)
+        url = self.base_url + "/api/roles/{role_id}".format(role_id=role_id)
 
         headers = dict(self.http.headers)
         headers['Content-Type'] = 'application/json'
@@ -2284,19 +2284,19 @@ class BookStackDataSource:
 
     async def delete_role(
         self,
-        id: int
+        role_id: int
     ) -> BookStackResponse:
         """Delete a role. Requires permission to manage roles
 
         Args:
-            id: Role ID (required)
+            role_id: Role ID (required)
 
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
 
-        url = self.base_url + "/api/roles/{id}".format(id=id)
+        url = self.base_url + "/api/roles/{role_id}".format(role_id=role_id)
 
         headers = dict(self.http.headers)
 

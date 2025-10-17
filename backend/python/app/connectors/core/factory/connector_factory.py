@@ -6,14 +6,34 @@ from typing import Dict, Optional, Type
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
+from app.connectors.core.registry.connector import (
+    AirtableConnector,
+    AzureBlobConnector,
+    BookStackConnector,
+    CalendarConnector,
+    DocsConnector,
+    FormsConnector,
+    LinearConnector,
+    MeetConnector,
+    NotionConnector,
+    S3Connector,
+    ServiceNowConnector,
+    SlackConnector,
+    SlidesConnector,
+    ZendeskConnector,
+)
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
+from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.services.featureflag.config.config import CONFIG
+from app.services.featureflag.featureflag import FeatureFlagService
 
 
 class ConnectorFactory:
@@ -23,14 +43,43 @@ class ConnectorFactory:
     _connector_registry: Dict[str, Type[BaseConnector]] = {
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
+        "outlook": OutlookConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
+        "dropbox": DropboxConnector,
     }
+
 
     @classmethod
     def register_connector(cls, name: str, connector_class: Type[BaseConnector]) -> None:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
+
+    @classmethod
+    def initialize_connectors(cls, feature_flag_service: FeatureFlagService) -> None:
+        """Initialize connectors based on feature flags"""
+        # Only one flag for beta connectors
+        if feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS):
+            beta_connectors = {
+                'slack': SlackConnector,
+                'calendar': CalendarConnector,
+                'meet': MeetConnector,
+                'forms': FormsConnector,
+                'slides': SlidesConnector,
+                'docs': DocsConnector,
+                'servicenow': ServiceNowConnector,
+                'zendesk': ZendeskConnector,
+                'linear': LinearConnector,
+                's3': S3Connector,
+                'notion': NotionConnector,
+                'airtable': AirtableConnector,
+                'bookstack': BookStackConnector,
+                'azureblob': AzureBlobConnector,
+            }
+
+            for name, connector in beta_connectors.items():
+                cls.register_connector(name, connector)
+        # No need to check per app; only production connectors are pre-registered
 
     @classmethod
     def get_connector_class(cls, name: str) -> Optional[Type[BaseConnector]]:

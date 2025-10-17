@@ -40,7 +40,7 @@ class Calculator:
             ToolParameter(
                 name="operation",
                 type=ParameterType.STRING,
-                description="The operation to use",
+                description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)",
                 required=True
                 )
             ]
@@ -53,6 +53,7 @@ class Calculator:
         Returns:
             The result of the mathematical operation
         """
+
         if operation in ("square root", "square root of", "sqrt"):
             return self._square_root(a)
         elif operation in ("cube root", "cube root of", "cbrt"):
@@ -79,11 +80,11 @@ class Calculator:
             ToolParameter(
                 name="operation",
                 type=ParameterType.STRING,
-                description="The operation to use",
+                description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'",
                 required=True
                 )
-        ]
-    )
+            ]
+        )
     def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:
@@ -93,6 +94,7 @@ class Calculator:
         Returns:
             The result of the mathematical operation
         """
+
         if operation in ("add", "addition", "plus", "sum", "+"):
             return self._add(a, b)
         elif operation in ("subtract", "subtraction", "minus", "difference", "-"):

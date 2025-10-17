@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import Record, RecordGroup, User
+from app.models.entities import AppUserGroup, FileRecord, Record, RecordGroup, User
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
@@ -147,6 +147,20 @@ class BaseArangoService:
                     CollectionNames.RECORDS.value,
                     CollectionNames.MAILS.value,
                     CollectionNames.FILES.value,  # For attachments
+                ]
+            },
+            Connectors.OUTLOOK.value: {
+                "allowed_roles": ["OWNER", "WRITER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.FILES.value,
                 ]
             },
             Connectors.KNOWLEDGE_BASE.value: {
@@ -613,6 +627,7 @@ class BaseArangoService:
                 "data": None
             }
 
+    # TODO: Update group permission fetch
     async def check_record_access_with_details(
         self, user_id: str, org_id: str, record_id: str
     ) -> Optional[Dict]:
@@ -647,6 +662,15 @@ class BaseArangoService:
                     role: edge.role
                 }}
             )
+            LET directAccessPermissionEdge = (
+                FOR records, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'DIRECT',
+                    source: userDoc,
+                    role: edge.role
+                }}
+            )
             LET groupAccess = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER belongsEdge.entityType == 'GROUP'
@@ -658,10 +682,32 @@ class BaseArangoService:
                     role: permEdge.role
                 }}
             )
+            LET groupAccessPermissionEdge = (
+                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER belongsEdge.type == 'GROUP'
+                FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'GROUP',
+                    source: group,
+                    role: permEdge.role
+                }}
+            )
             LET orgAccess = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER belongsEdge.entityType == 'ORGANIZATION'
                 FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
+                FILTER records._key == @recordId
+                RETURN {{
+                    type: 'ORGANIZATION',
+                    source: org,
+                    role: permEdge.role
+                }}
+            )
+            LET orgAccessPermissionEdge = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER belongsEdge.entityType == 'ORGANIZATION'
+                FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
                     type: 'ORGANIZATION',
@@ -698,8 +744,11 @@ class BaseArangoService:
             )
             LET allAccess = UNION_DISTINCT(
                 directAccess,
+                directAccessPermissionEdge,
                 groupAccess,
+                groupAccessPermissionEdge,
                 orgAccess,
+                orgAccessPermissionEdge,
                 kbAccess,
                 anyoneAccess
             )
@@ -1004,7 +1053,61 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET allRecords = APPEND(kbRecords, connectorRecords)
+            LET connectorRecordsNewPermission = {
+                f'''(
+                    FOR permissionEdge IN @@permission
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        {permission_filter}
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+                        RETURN {{
+                            record: record,
+                            permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                        }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET groupConnectorRecordsNewPermission = {
+                f'''(
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "GROUP"
+
+                        FOR record, permissionEdge IN 1..1 ANY group._id @@permission
+                            FILTER permissionEdge.type == "GROUP"
+                            {permission_filter}
+
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                            }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET allConnectorRecordsNewPermission = UNION_DISTINCT(connectorRecordsNewPermission, groupConnectorRecordsNewPermission)
+            LET allConnectorRecordsDistinct = (
+                FOR item IN allConnectorRecordsNewPermission
+                    COLLECT recordKey = item.record._key
+                    INTO groups
+                    RETURN FIRST(groups[*].item)
+            )
+
+            LET mergeRecords = APPEND(kbRecords, connectorRecords)
+            //LET mergeRecordsNewPermission = APPEND(mergeRecords, connectorRecordsNewPermission)
+            LET allRecords = APPEND(mergeRecords, allConnectorRecordsDistinct)
+
             LET sortedRecords = (
                 FOR item IN allRecords
                     LET record = item.record
@@ -1126,7 +1229,48 @@ class BaseArangoService:
                 )''' if include_connector_records else '0'
             }
 
-            RETURN kbCount + connectorCount
+            // Only return record keys for new permission queries (much lighter)
+            LET connectorKeysNewPermission = {
+                f'''(
+                    FOR permissionEdge IN @@permission
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        {permission_filter}
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+                        RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
+            LET groupConnectorKeysNewPermission = {
+                f'''(
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "GROUP"
+
+                        FOR record, permissionEdge IN 1..1 ANY group._id @@permission
+                            FILTER permissionEdge.type == "GROUP"
+                            {permission_filter}
+
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
+            // Combine all keys and count unique ones
+            LET allNewPermissionKeys = APPEND(connectorKeysNewPermission, groupConnectorKeysNewPermission)
+            LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
+
+            RETURN kbCount + connectorCount + uniqueNewPermissionCount
             """
 
             # ===== FILTERS QUERY (Fixed) =====
@@ -1175,7 +1319,58 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET allRecords = APPEND(allKbRecords, allConnectorRecords)
+            LET allConnectorRecordsNewPermission = {
+                '''(
+                    FOR permissionEdge IN @@permission
+                        FILTER permissionEdge._from == user_from
+                        FILTER permissionEdge.type == "USER"
+                        LET record = DOCUMENT(permissionEdge._to)
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        RETURN {
+                            record: record,
+                            permission: { role: permissionEdge.role }
+                        }
+                )''' if include_connector_records else '[]'
+            }
+
+            LET allGroupConnectorRecordsNewPermission = {
+                f'''(
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "GROUP"
+
+                        FOR record, permissionEdge IN 1..1 ANY group._id @@permission
+                            FILTER permissionEdge.type == "GROUP"
+                            {permission_filter}
+
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: permissionEdge.role, type: permissionEdge.type }}
+                            }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET ConnectorRecords = UNION_DISTINCT(allConnectorRecordsNewPermission, allGroupConnectorRecordsNewPermission)
+            LET allConnectorRecordsDistinct = (
+                FOR item IN ConnectorRecords
+                    COLLECT recordKey = item.record._key
+                    INTO groups
+                    RETURN FIRST(groups[*].item)
+            )
+
+            LET mergeRecords = APPEND(allKbRecords, allConnectorRecords)
+            //LET mergeRecordsNewPermission = APPEND(mergeRecords, connectorRecordsNewPermission)
+            LET allRecords = APPEND(mergeRecords, allConnectorRecordsDistinct)
 
             LET flatRecords = (
                 FOR item IN allRecords
@@ -1230,6 +1425,7 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
@@ -1242,6 +1438,7 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
@@ -1252,8 +1449,10 @@ class BaseArangoService:
                 "org_id": org_id,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
+                **filter_bind_vars,
             }
 
             # Execute queries
@@ -1344,6 +1543,7 @@ class BaseArangoService:
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
 
+            #TODO: implement for DROPBOX
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
                 if connector_name == Connectors.GOOGLE_DRIVE.value:
@@ -1353,7 +1553,7 @@ class BaseArangoService:
                 elif connector_name in (Connectors.ONEDRIVE.value, Connectors.SHAREPOINT_ONLINE.value):
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 else:
-                    user_role = None
+                    user_role = await self._check_record_permissions(record_id, user_key)
 
                 if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
@@ -1510,6 +1710,8 @@ class BaseArangoService:
                 return await self.delete_google_drive_record(record_id, user_id, record)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
                 return await self.delete_gmail_record(record_id, user_id, record)
+            elif connector_name == Connectors.OUTLOOK.value:
+                return await self.delete_outlook_record(record_id, user_id, record)
             else:
                 return {
                     "success": False,
@@ -1525,7 +1727,7 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
         """
@@ -1533,18 +1735,87 @@ class BaseArangoService:
             self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id)
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
                 return
 
-            # Delete record
-            await self.delete_record(record["key"])
+            # Delete record using the record's internal ID and user_id
+            deletion_result = await self.delete_record(record.id, user_id)
 
-            self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            # Check if deletion was successful
+            if deletion_result.get("success"):
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            else:
+                error_reason = deletion_result.get("reason", "Unknown error")
+                self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
+                raise Exception(f"Deletion failed: {error_reason}")
+
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
             raise
+
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions)
+        This removes the user's permissions and belongsTo edges without deleting the record itself
+        """
+        try:
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+
+            # Get record
+            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Remove user's access instead of deleting the entire record
+            result = await self._remove_user_access_from_record(record.id, user_id)
+
+            if result.get("success"):
+                self.logger.info(f"✅ User access removed: {external_id} from {connector_name}")
+            else:
+                self.logger.error(f"❌ Failed to remove user access: {result.get('reason', 'Unknown error')}")
+                raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            raise
+
+    async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
+        """Remove a specific user's access to a record"""
+        try:
+            self.logger.info(f"🚀 Removing user {user_id} access to record {record_id}")
+
+            # Remove user's permission edges
+            user_removal_query = """
+            FOR perm IN permissions
+                FILTER perm._from == @record_from
+                FILTER perm._to == @user_to
+                REMOVE perm IN permissions
+                RETURN OLD
+            """
+
+            cursor = self.db.aql.execute(user_removal_query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "user_to": f"users/{user_id}"
+            })
+
+            removed_permissions = list(cursor)
+
+            if removed_permissions:
+                self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": len(removed_permissions)}
+            else:
+                self.logger.warning(f"⚠️ No permissions found for user {user_id} on record {record_id}")
+                return {"success": True, "removed_permissions": 0}
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Access removal failed: {str(e)}"
+            }
 
     async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
         """
@@ -2065,6 +2336,190 @@ class BaseArangoService:
 
         self.logger.info(f"✅ Gmail edge deletion completed: {total_deleted} total edges deleted for record {record_id}")
 
+    async def delete_outlook_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
+        """
+        Delete an Outlook record - handles email and its attachments.
+        """
+        try:
+            self.logger.info(f"📧 Deleting Outlook record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check if user has OWNER permission
+            user_role = await self._check_record_permission(record_id, user_key)
+            if user_role != "OWNER":
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Only mailbox owner can delete emails. Role: {user_role}"
+                }
+
+            # Execute deletion
+            return await self._execute_outlook_record_deletion(record_id, record)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Outlook record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Outlook record deletion failed: {str(e)}"
+            }
+
+    async def _execute_outlook_record_deletion(self, record_id: str, record: Dict) -> Dict:
+        """Execute Outlook record deletion - deletes email and all attachments"""
+        try:
+            # Define collections
+            outlook_edge_collections = [
+                CollectionNames.IS_OF_TYPE.value,
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.PERMISSIONS.value,
+                CollectionNames.BELONGS_TO.value,
+            ]
+            outlook_doc_collections = [
+                CollectionNames.RECORDS.value,
+                CollectionNames.MAILS.value,
+                CollectionNames.FILES.value,
+            ]
+
+            transaction = self.db.begin_transaction(
+                write=outlook_doc_collections + outlook_edge_collections
+            )
+
+            try:
+                # Get attachments (child records with ATTACHMENT relation)
+                attachments_query = f"""
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == @record_from
+                        AND edge.relationshipType == 'ATTACHMENT'
+                    RETURN PARSE_IDENTIFIER(edge._to).key
+                """
+
+                cursor = transaction.aql.execute(attachments_query, bind_vars={
+                    "record_from": f"records/{record_id}"
+                })
+                attachment_ids = list(cursor)
+
+                # Delete all attachments first
+                for attachment_id in attachment_ids:
+                    self.logger.info(f"Deleting attachment {attachment_id} of email {record_id}")
+                    await self._delete_outlook_edges(transaction, attachment_id)
+                    await self._delete_file_record(transaction, attachment_id)
+                    await self._delete_main_record(transaction, attachment_id)
+
+                # Delete the email itself
+                await self._delete_outlook_edges(transaction, record_id)
+
+                # Delete mail record
+                await self._delete_mail_record(transaction, record_id)
+
+                # Delete main record
+                await self._delete_main_record(transaction, record_id)
+
+                # Commit transaction
+                await asyncio.to_thread(lambda: transaction.commit_transaction())
+
+                self.logger.info(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
+
+                return {
+                    "success": True,
+                    "record_id": record_id,
+                    "attachments_deleted": len(attachment_ids)
+                }
+
+            except Exception as e:
+                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                raise e
+
+        except Exception as e:
+            self.logger.error(f"❌ Outlook deletion transaction failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _delete_outlook_edges(self, transaction, record_id: str) -> None:
+        """Delete Outlook specific edges"""
+        edge_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.RECORD_RELATIONS.value: {
+                "filter": "(edge._from == @record_from OR edge._to == @record_to)",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}",
+                },
+            },
+            CollectionNames.PERMISSIONS.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+        }
+
+        query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+        for collection, strategy in edge_strategies.items():
+            try:
+                query = query_template.format(filter=strategy["filter"])
+                bind_vars = {"@edge_collection": collection}
+                bind_vars.update(strategy["bind_vars"])
+
+                cursor = transaction.aql.execute(query, bind_vars=bind_vars)
+                deleted_count = len(list(cursor))
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"Deleted {deleted_count} edges from {collection}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to delete edges from {collection}: {e}")
+                raise
+
+        self.logger.info(f"Total edges deleted for record {record_id}: {total_deleted}")
+
+    async def _check_record_permission(self, record_id: str, user_key: str) -> Optional[str]:
+        """Check user's permission role on a record"""
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.PERMISSIONS.value}
+                FILTER edge._from == @record_from
+                    AND edge._to == @user_to
+                    AND edge.type == 'USER'
+                LIMIT 1
+                RETURN edge.role
+            """
+
+            cursor = self.db.aql.execute(query, bind_vars={
+                "record_from": f"records/{record_id}",
+                "user_to": f"users/{user_key}"
+            })
+
+            return next(cursor, None)
+
+        except Exception as e:
+            self.logger.error(f"Failed to check record permission: {e}")
+            return None
+
     async def _delete_file_record(self, transaction, record_id: str) -> None:
         """Delete file record from files collection"""
         file_deletion_query = """
@@ -2223,6 +2678,207 @@ class BaseArangoService:
                 "allowed": False,
                 "reason": f"Permission check failed: {str(e)}",
                 "permission_level": "ERROR"
+            }
+
+    async def _check_record_permissions(self, record_id: str, user_key: str, check_drive_inheritance: bool = True) -> Dict:
+        """
+        Generic permission checker for any record type.
+        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+
+        Args:
+            record_id: The record to check permissions for
+            user_key: The user to check permissions for
+            check_drive_inheritance: Whether to check for Drive-level inherited permissions
+
+        Returns:
+            Dict with 'permission' (role) and 'source' (where permission came from)
+        """
+        try:
+            self.logger.info(f"🔍 Checking permissions for record {record_id} and user {user_key}")
+
+            permission_query = """
+            LET user_from = CONCAT('users/', @user_key)
+            LET record_from = CONCAT('records/', @record_id)
+
+            // 1. Check direct user permissions on the record
+            LET direct_permission_old_permissions = FIRST(
+                FOR perm IN @@permissions
+                    FILTER perm._from == record_from
+                    FILTER perm._to == user_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            LET direct_permission_new_permission = FIRST(
+                FOR perm IN @@permission
+                    FILTER perm._from == user_from
+                    FILTER perm._to == record_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            LET direct_permission = direct_permission_old_permissions ? direct_permission_old_permissions : direct_permission_new_permission
+
+            // 2. Check group permissions
+            LET group_permission_old_permission = FIRST(
+                FOR belongs_edge IN @@permission
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "GROUP"
+                    LET group = DOCUMENT(belongs_edge._to)
+                    FILTER group != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == record_from
+                        FILTER perm._to == group._id
+                        FILTER perm.type == "GROUP"
+                        RETURN perm.role
+            )
+
+            LET group_permission_new_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "GROUP"
+                    LET group = DOCUMENT(belongs_edge._to)
+                    FILTER group != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == group._id
+                        FILTER perm._to == record_from
+                        FILTER perm.type == "GROUP"
+                        RETURN perm.role
+            )
+
+            LET group_permission = group_permission_old_permission ? group_permission_old_permission : group_permission_new_permission
+
+            // 3. Check domain/organization permissions
+            LET domain_permission_old_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    FOR perm IN @@permissions
+                        FILTER perm._from == record_from
+                        FILTER perm._to == org._id
+                        FILTER perm.type == "DOMAIN"
+                        RETURN perm.role
+            )
+
+            LET domain_permission_new_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == org._id
+                        FILTER perm._to == record_from
+                        FILTER perm.type == "DOMAIN"
+                        RETURN perm.role
+            )
+
+            LET domain_permission = domain_permission_old_permission ? domain_permission_old_permission : domain_permission_new_permission
+
+            // 4. Check 'anyone' permissions (public sharing)
+            LET user_org_id = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    RETURN org._key
+            )
+
+            LET anyone_permission = user_org_id ? FIRST(
+                FOR anyone_perm IN @@anyone
+                    FILTER anyone_perm.file_key == @record_id
+                    FILTER anyone_perm.organization == user_org_id
+                    FILTER anyone_perm.active == true
+                    RETURN anyone_perm.role
+            ) : null
+
+            // 5. Check Drive-level access (if enabled)
+            LET drive_access = @check_drive_inheritance ? FIRST(
+                // Get the file record to find its drive
+                FOR record IN @@records
+                    FILTER record._key == @record_id
+                    FOR file_edge IN @@is_of_type
+                        FILTER file_edge._from == record._id
+                        LET file = DOCUMENT(file_edge._to)
+                        FILTER file != null
+                        // Get the drive this file belongs to
+                        LET file_drive_id = file.driveId
+                        FILTER file_drive_id != null
+                        // Check if user has access to this drive
+                        FOR drive_edge IN @@user_drive_relation
+                            FILTER drive_edge._from == user_from
+                            LET drive = DOCUMENT(drive_edge._to)
+                            FILTER drive != null
+                            FILTER drive._key == file_drive_id OR drive.driveId == file_drive_id
+                            // Map drive access level to permission role
+                            LET drive_role = (
+                                drive_edge.access_level == "owner" ? "OWNER" :
+                                drive_edge.access_level IN ["writer", "fileOrganizer"] ? "WRITER" :
+                                drive_edge.access_level IN ["commenter", "reader"] ? "READER" :
+                                null
+                            )
+                            RETURN drive_role
+            ) : null
+
+            // Return the highest permission level found (in order of precedence)
+            LET final_permission = (
+                direct_permission ? direct_permission :
+                direct_permission_new_permission ? direct_permission:
+                group_permission ? group_permission :
+                group_permission_new_permission ? group_permission :
+                domain_permission ? domain_permission :
+                domain_permission_new_permission ? domain_permission :
+                anyone_permission ? anyone_permission :
+                drive_access ? drive_access :
+                null
+            )
+
+            RETURN {
+                permission: final_permission,
+                source: (
+                    direct_permission ? "DIRECT" :
+                    group_permission ? "GROUP" :
+                    domain_permission ? "DOMAIN" :
+                    anyone_permission ? "ANYONE" :
+                    drive_access ? "DRIVE_ACCESS" :
+                    "NONE"
+                )
+            }
+            """
+
+            cursor = self.db.aql.execute(permission_query, bind_vars={
+                "record_id": record_id,
+                "user_key": user_key,
+                "check_drive_inheritance": check_drive_inheritance,
+                "@permissions": CollectionNames.PERMISSIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@anyone": CollectionNames.ANYONE.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "@user_drive_relation": CollectionNames.USER_DRIVE_RELATION.value,
+            })
+
+            result = next(cursor, None)
+
+            if result and result.get("permission"):
+                permission = result["permission"]
+                source = result["source"]
+                self.logger.info(f"✅ Drive permission found: {permission} (via {source})")
+                return permission
+            else:
+                self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check permissions: {str(e)}")
+            return {
+                "permission": None,
+                "source": "ERROR",
+                "error": str(e)
             }
 
     async def _check_drive_permissions(self, record_id: str, user_key: str) -> Optional[str]:
@@ -2797,6 +3453,7 @@ class BaseArangoService:
 
             cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
             results = list(cursor)
+
             self.logger.info(
                 "✅ Successfully upserted %d nodes in collection '%s'.",
                 len(results),
@@ -2845,6 +3502,168 @@ class BaseArangoService:
             if transaction:
                 raise
             return False
+
+    async def get_record_by_conversation_index(
+        self,
+        connector_name: Connectors,
+        conversation_index: str,
+        thread_id: str,
+        org_id: str,
+        user_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[Record]:
+        """
+        Get mail record by conversation_index and thread_id for a specific user
+
+        Args:
+            connector_name: Connector name
+            conversation_index: The conversation index to look up
+            thread_id: The thread ID to match
+            org_id: The organization ID
+            user_id: User's id to filter results
+            transaction: Optional database transaction
+
+        Returns:
+            Optional[Record]: Mail record if found, None otherwise
+        """
+        try:
+
+            # Query that joins records, mails, and permissions to find mail by owner
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorName == @connector_name
+                    AND record.orgId == @org_id
+                FOR mail IN {CollectionNames.MAILS.value}
+                    FILTER mail._key == record._key
+                        AND mail.conversationIndex == @conversation_index
+                        AND mail.threadId == @thread_id
+                    FOR edge IN {CollectionNames.PERMISSIONS.value}
+                        FILTER edge._from == record._id
+                            AND edge.role == 'OWNER'
+                            AND edge.type == 'USER'
+                        LET user_key = SPLIT(edge._to, '/')[1]
+                        LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                        FILTER user.userId == @user_id
+                        LIMIT 1
+                    RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "conversation_index": conversation_index,
+                    "thread_id": thread_id,
+                    "connector_name": connector_name.value,
+                    "org_id": org_id,
+                    "user_id": user_id,
+                },
+            )
+            result = next(cursor, None)
+
+            if result:
+                return Record.from_arango_base_record(result)
+            else:
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve mail record for conversation_index %s in thread %s for user %s: %s",
+                conversation_index,
+                thread_id,
+                user_id,
+                str(e),
+            )
+            return None
+
+    async def get_record_owner_source_user_email(
+        self,
+        record_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
+        """
+        Get the owner's source_user_id (Graph User ID) from permission edges.
+
+        Args:
+            record_id: The record ID
+            transaction: Optional database transaction
+
+        Returns:
+            Optional[str]: source_user_id (Graph User ID) of the owner, None if not found
+        """
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.PERMISSION.value}
+                FILTER edge._to == CONCAT('{CollectionNames.RECORDS.value}/', @record_id)
+                FILTER edge.role == 'OWNER'
+                FILTER edge.type == 'USER'
+                LET user_key = SPLIT(edge._from, '/')[1]
+                LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                LIMIT 1
+                RETURN user.email
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"record_id": record_id})
+            result = next(cursor, None)
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to get owner source_user_id for record {record_id}: {e}")
+            return None
+
+
+    async def get_record_by_path(
+        self, connector_name: Connectors, path: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Dict:
+        """
+        Get a record from the FILES collection using its path.
+
+        Args:
+            connector_name (Connectors): The name of the connector.
+            path (str): The path of the file to look up.
+            transaction (Optional[TransactionDatabase]): Optional database transaction.
+
+        Returns:
+            Optional[Record]: The Record object if found, otherwise None.
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving record by path for connector %s and path %s", connector_name.value, path
+            )
+
+            query = f"""
+            FOR fileRecord IN {CollectionNames.FILES.value}
+                FILTER fileRecord.path == @path
+                RETURN fileRecord
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"path": path}
+            )
+            result = next(cursor, None)
+
+            if result:
+
+                self.logger.info(
+                    "✅ Successfully retrieved file record for path: %s", path
+                )
+                # record = await self.get_record_by_id(result["_key"])
+
+                # return record.id
+                return result
+            else:
+                self.logger.warning(
+                    "⚠️ No record found for path: %s", path
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve record for path %s: %s", path, str(e)
+            )
+            return None
 
     async def get_record_by_external_id(
         self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
@@ -2969,6 +3788,54 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e)
+            )
+            return None
+
+    async def get_user_group_by_external_id(
+        self,
+        connector_name: Connectors,
+        external_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[AppUserGroup]:
+        """
+        Get a user group from the GROUPS collection using its external (source) ID.
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving user group for external ID %s %s", connector_name, external_id
+            )
+
+            # Query the GROUPS collection using the schema fields
+            query = f"""
+            FOR group IN {CollectionNames.GROUPS.value}
+                FILTER group.externalGroupId == @external_id AND group.connectorName == @connector_name
+                LIMIT 1
+                RETURN group
+            """
+
+            db = transaction if transaction else self.db
+
+
+            cursor = db.aql.execute(query,
+                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+            )
+
+            result = next(cursor, None)
+
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved user group for external ID %s %s", connector_name, external_id
+                )
+                return AppUserGroup.from_arango_base_user_group(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No user group found for external ID %s %s", connector_name, external_id
+                )
+                return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
             )
             return None
 
@@ -3198,6 +4065,91 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete nodes by keys: %s: %s", keys, str(e))
             return False
 
+    async def delete_nodes_and_edges(
+        self,
+        keys: List[str],
+        collection: str,
+        graph_name: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """
+        Deletes a list of nodes by key and all their connected edges within a named graph.
+
+        This method is efficient for bulk deletions by first discovering all edge
+        collections in the graph and then running one bulk-delete query per collection.
+        """
+        if not keys:
+            self.logger.info("No keys provided for deletion. Skipping.")
+            return True
+
+        # Use the provided transaction or the main DB connection
+        db = transaction if transaction else self.db
+        if not db:
+            self.logger.error("❌ Database connection is not available.")
+            return False
+
+        try:
+            self.logger.info(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
+
+            # --- Step 1: Get all edge collections from the named graph definition ---
+            graph = db.graph(graph_name)
+            edge_definitions = graph.edge_definitions()
+            edge_collections = [e['edge_collection'] for e in edge_definitions]
+
+            if not edge_collections:
+                self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
+            else:
+                self.logger.info(f"🔎 Found edge collections in graph: {edge_collections}")
+
+            # --- Step 2: Delete all edges connected to the target nodes ---
+            # Construct the full node IDs to match against _from and _to fields
+            node_ids = [f"{collection}/{key}" for key in keys]
+
+            edge_delete_query = """
+            FOR edge IN @@edge_collection
+                FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+                REMOVE edge IN @@edge_collection
+                OPTIONS { ignoreErrors: true }
+            """
+
+            for edge_collection in edge_collections:
+                db.aql.execute(
+                    edge_delete_query,
+                    bind_vars={
+                        "node_ids": node_ids,
+                        "@edge_collection": edge_collection
+                    }
+                )
+            self.logger.info(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
+
+            # --- Step 3: Delete the nodes themselves use delete node here---
+            # node_delete_query = """
+            # FOR node IN @@collection
+            #     FILTER node._key IN @keys
+            #     REMOVE node IN @@collection
+            #     RETURN OLD
+            # """
+            # cursor = db.aql.execute(
+            #     node_delete_query,
+            #     bind_vars={"keys": keys, "@collection": collection}
+            # )
+
+            # deleted_nodes = [item for item in cursor]
+
+            deleted_nodes = await self.delete_nodes(keys, collection)
+
+            if deleted_nodes:
+                self.logger.info(f"✅ Successfully deleted nodes and their associated edges: {keys}")
+                return True
+            else:
+                self.logger.warning(f"⚠️ No nodes found in '{collection}' with keys: {keys}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete nodes and edges for keys {keys}: {e}", exc_info=True)
+            return False
+
+
     async def delete_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Delete an edge by from_key and to_key
@@ -3222,6 +4174,113 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to delete edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return False
+
+    async def delete_edges_from(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges originating from a specific source node
+
+        Args:
+            from_key: The source node key (e.g., "groups/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting all edges from source: %s in collection: %s", from_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "@collection": collection})
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges from source: %s", count, from_key)
+            else:
+                self.logger.warning("⚠️ No edges found from source: %s in collection: %s", from_key, collection)
+
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
+            return 0
+
+    async def delete_edges_to(self, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges pointing to a specific target node
+
+        Args:
+            to_key: The target node key (e.g., "groups/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting all edges to target: %s in collection: %s", to_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._to == @to_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"to_key": to_key, "@collection": collection})
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges to target: %s", count, to_key)
+            else:
+                self.logger.warning("⚠️ No edges found to target: %s in collection: %s", to_key, collection)
+
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges to target: %s in collection: %s: %s", to_key, collection, str(e))
+            return 0
+
+    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges connected to a node (both incoming and outgoing)
+
+        Args:
+            node_key: The node key (e.g., "groups/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+
+        Returns:
+            int: Total number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting all edges for node: %s in collection: %s", node_key, collection)
+
+            # Delete both incoming and outgoing edges in a single query
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @node_key OR edge._to == @node_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges for node: %s", count, node_key)
+            else:
+                self.logger.warning("⚠️ No edges found for node: %s in collection: %s", node_key, collection)
+
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges for node: %s in collection: %s: %s", node_key, collection, str(e))
+            return 0
 
     async def get_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """
@@ -5979,6 +7038,23 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
             raise
 
+    async def get_folder_record_by_id(self, folder_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        try:
+            db = transaction if transaction else self.db
+            query = """
+            FOR file IN @@files
+                FILTER file._key == @folder_id
+                RETURN file
+            """
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_id": folder_id,
+                "@files": CollectionNames.FILES.value,
+            })
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch folder record {folder_id}: {str(e)}")
+            return None
+
     async def find_folder_by_name_in_parent(
         self,
         kb_id: str,
@@ -6082,7 +7158,7 @@ class BaseArangoService:
                 current_parent_id = folder["_key"]
 
             # Return the final folder if we successfully navigated the entire path
-            return await self.get_file_record_by_id(current_parent_id, transaction)
+            return await self.get_folder_record_by_id(current_parent_id, transaction)
 
         except Exception as e:
             self.logger.error(f"❌ Failed to navigate to folder by path: {str(e)}")
@@ -6121,7 +7197,7 @@ class BaseArangoService:
             try:
                 # Step 1: Validate parent folder exists (if nested)
                 if parent_folder_id:
-                    parent_folder = await self.get_file_record_by_id(parent_folder_id, transaction)
+                    parent_folder = await self.get_folder_record_by_id(parent_folder_id, transaction)
                     if not parent_folder:
                         raise ValueError(f"Parent folder {parent_folder_id} not found")
                     if parent_folder.get("isFile") is not False:
@@ -6356,23 +7432,6 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to validate record {record_id} in KB {kb_id}: {str(e)}")
             return False
-
-    async def get_file_record_by_id(self, file_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
-        try:
-            db = transaction if transaction else self.db
-            query = """
-            FOR file IN @@files
-                FILTER file._key == @file_id
-                RETURN file
-            """
-            cursor = db.aql.execute(query, bind_vars={
-                "file_id": file_id,
-                "@files": CollectionNames.FILES.value,
-            })
-            return next(cursor, None)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch file record {file_id}: {str(e)}")
-            return None
 
     async def update_record(
         self,
@@ -9830,10 +10889,22 @@ class BaseArangoService:
                 RETURN DISTINCT records
             )
 
+            LET directRecordsPermissionEdge = (
+                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                RETURN DISTINCT records
+            )
+
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FILTER edge.entityType == 'GROUP'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET groupRecordsPermissionEdge = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER edge.type == 'GROUP'
+                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
@@ -9844,7 +10915,14 @@ class BaseArangoService:
                 RETURN DISTINCT records
             )
 
-            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords)
+            LET orgRecordsPermissionEdge = (
+                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER edge.entityType == 'ORGANIZATION'
+                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                RETURN DISTINCT records
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords, directRecordsPermissionEdge, groupRecordsPermissionEdge, orgRecordsPermissionEdge)
 
             LET anyoneRecords = (
                 FOR records IN @@anyone
@@ -11139,4 +12217,196 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(f"Failed to get agent permissions: {str(e)}")
+            return None
+
+
+    async def get_users_with_permission_to_node(
+        self,
+        node_key: str,
+        collection: str =  CollectionNames.PERMISSION.value,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[User]:
+        """
+        Get all users that have permission edges to a specific node/record
+
+        Args:
+            node_key: The record/node key (e.g., "records/12345")
+            collection: The edge collection name (defaults to "permission")
+            transaction: Optional transaction database
+
+        Returns:
+            List[str]: List of user keys that have permissions to the node
+        """
+        try:
+            self.logger.info("🚀 Getting users with permissions to node: %s from collection: %s", node_key, collection)
+
+            query = f"""
+            FOR edge IN @@collection
+                FILTER edge._to == @node_key
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user._id == edge._from
+                    RETURN user
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
+            users = [User.from_arango_user(user_data) for user_data in cursor]
+
+            if users:
+                self.logger.info("✅ Found %d user(s) with permissions to node: %s", len(users), node_key)
+            else:
+                self.logger.warning("⚠️ No users found with permissions to node: %s in collection: %s", node_key, collection)
+
+            return users
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get users with permissions to node: %s in collection: %s: %s",
+                            node_key, collection, str(e))
+            return []
+
+
+    async def get_first_user_with_permission_to_node(
+        self,
+        node_key: str,
+        collection: str = CollectionNames.PERMISSION.value,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[User]:
+        """
+        Get the first user that has a permission edge to a specific node/record
+
+        Args:
+            node_key: The record/node key (e.g., "records/12345")
+            collection: The edge collection name (defaults to "permission")
+            transaction: Optional transaction database
+
+        Returns:
+            Optional[User]: User with permission to the node, or None if not found
+        """
+        try:
+            self.logger.info("🚀 Getting first user with permission to node: %s from collection: %s", node_key, collection)
+
+            query = f"""
+            FOR edge IN @@collection
+                FILTER edge._to == @node_key
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user._id == edge._from
+                    LIMIT 1
+                    RETURN user
+            """
+
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"node_key": node_key, "@collection": collection})
+            result = next(cursor, None)
+
+            if result:
+                user = User.from_arango_user(result)
+                self.logger.info("✅ Found user with permission to node: %s -> %s", node_key, user.email)
+                return user
+            else:
+                self.logger.warning("⚠️ No user found with permission to node: %s in collection: %s", node_key, collection)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get user with permission to node: %s in collection: %s: %s",
+                            node_key, collection, str(e))
+            return None
+
+    async def get_first_user_with_permission_to_node2(
+        self,
+        node_id: str,
+        graph_name: str = "knowledgeGraph",
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[User]:
+        """
+        Get the first user that has a permission edge to a specific node using a graph traversal.
+
+        Args:
+            node_id: The full record/node ID (e.g., "records/12345").
+            graph_name: The name of the graph to traverse.
+            transaction: Optional transaction database.
+
+        Returns:
+            Optional[User]: A User object with permission to the node, or None if not found.
+        """
+        try:
+            self.logger.info("🚀 Getting first user with permission to node: %s in graph: %s", node_id, graph_name)
+
+            # The graph name is safely injected via an f-string because it's a controlled identifier.
+            # The collection name for filtering is passed as a bind parameter for best practice.
+            query = f"""
+            FOR user IN 1..1 INBOUND @node_id GRAPH '{graph_name}'
+                OPTIONS {{ bfs: true, uniqueVertices: 'global' }}
+                FILTER IS_SAME_COLLECTION(@users_collection, user)
+                LIMIT 1
+                RETURN user
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "node_id": node_id,
+                    "users_collection": CollectionNames.USERS.value
+                }
+            )
+            result = next(cursor, None)
+
+            if result:
+                user = User.from_arango_user(result)
+                self.logger.info("✅ Found user with permission to node: %s -> %s", node_id, user.email)
+                return user
+            else:
+                self.logger.warning("⚠️ No user found with permission to node: %s in graph: %s", node_id, graph_name)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get user with permission to node: %s in graph: %s: %s",
+                            node_id, graph_name, str(e))
+            return None
+
+    async def get_file_record_by_id(
+        self, id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[FileRecord]:
+        """
+        Get file record using the id
+
+        Args:
+            id (str): The internal record ID (_key) to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[FileRecord]: FileRecord object if found, None otherwise
+        """
+        try:
+            self.logger.info("🚀 Retrieving file record for id %s", id)
+
+            # Query both the file record and base record
+            query = f"""
+            LET file = DOCUMENT("{CollectionNames.FILES.value}", @id)
+            LET record = DOCUMENT("{CollectionNames.RECORDS.value}", @id)
+            FILTER file != null AND record != null
+            RETURN {{
+                file: file,
+                record: record
+            }}
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"id": id})
+            result = next(cursor, None)
+            if result and result.get("file") and result.get("record"):
+                self.logger.info("✅ Successfully retrieved file record for id %s", id)
+                return FileRecord.from_arango_base_file_record(
+                    arango_base_file_record=result["file"],
+                    arango_base_record=result["record"]
+                )
+            else:
+                self.logger.warning("⚠️ No file record found for id %s", id)
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve file record for id %s: %s", id, str(e)
+            )
             return None

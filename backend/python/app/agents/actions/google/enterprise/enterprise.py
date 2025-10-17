@@ -5,6 +5,7 @@ from app.agents.actions.google.google_drive.google_drive import (
     ToolParameter,
     tool,
 )
+from app.sources.client.google.google import GoogleClient
 
 
 class GoogleDriveEnterprise:
@@ -14,7 +15,7 @@ class GoogleDriveEnterprise:
     Returns:
         None
     """
-    def __init__(self, client: object) -> None:
+    def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Drive Enterprise tool"""
         self.client = client
 

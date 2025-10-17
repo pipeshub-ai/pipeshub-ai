@@ -104,9 +104,6 @@ class GoogleTokenHandler:
                 return
 
             auth_cfg = (config or {}).get("auth") or {}
-            # Get connector OAuth endpoints from the connector DB config for safety
-            connector_doc = await self.arango_service.get_app_by_name(app_name.upper() if app_name.islower() else app_name)
-            connector_auth = (connector_doc or {}).get("config", {}).get("auth", {})
 
             from app.connectors.core.base.token_service.oauth_service import (
                 OAuthConfig,
@@ -116,10 +113,10 @@ class GoogleTokenHandler:
             oauth_config = OAuthConfig(
                 client_id=auth_cfg.get("clientId"),
                 client_secret=auth_cfg.get("clientSecret"),
-                redirect_uri=auth_cfg.get("redirectUri", connector_auth.get("redirectUri", "")),
-                authorize_url=connector_auth.get("authorizeUrl", ""),
-                token_url=connector_auth.get("tokenUrl", ""),
-                scope=' '.join(connector_auth.get("scopes", [])) if connector_auth.get("scopes") else ''
+                redirect_uri=auth_cfg.get("redirectUri", ""),
+                authorize_url=auth_cfg.get("authorizeUrl", ""),
+                token_url=auth_cfg.get("tokenUrl", ""),
+                scope=' '.join(auth_cfg.get("scopes", [])) if auth_cfg.get("scopes") else ''
             )
 
             provider = OAuthProvider(
@@ -158,5 +155,6 @@ class GoogleTokenHandler:
 
     async def get_account_scopes(self, app_name: str) -> list:
         """Get account scopes for a specific connector (gmail/drive)."""
-        config = await self.arango_service.get_app_by_name(app_name.upper() if app_name.islower() else app_name)
-        return config.get("config", {}).get("auth", {}).get("scopes", [])
+        config = await self._get_connector_config(app_name)
+        # Try multiple paths for scopes
+        return config.get("auth", {}).get("scopes", []) or config.get("config", {}).get("auth", {}).get("scopes", [])

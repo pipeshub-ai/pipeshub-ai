@@ -357,8 +357,6 @@ class EventProcessor:
                     orgId=org_id,
                     html_content=file_content,
                     virtual_record_id = virtual_record_id,
-                    origin = origin,
-                    recordType = record_type
                 )
                 return result
 
@@ -457,8 +455,7 @@ class EventProcessor:
                     orgId=org_id,
                     html_content=file_content,
                     virtual_record_id = virtual_record_id,
-                    origin=connector,
-                    recordType=record_type
+
                 )
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:

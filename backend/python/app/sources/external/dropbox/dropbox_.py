@@ -1,6 +1,7 @@
 import asyncio
 from typing import Dict, List, Optional, Union
 
+import dropbox
 from dropbox import Dropbox, DropboxTeam
 from dropbox.file_properties import TemplateFilter  # type: ignore
 from dropbox.file_requests import UpdateFileRequestDeadline  # type: ignore
@@ -19,6 +20,7 @@ from dropbox.paper import (  # type: ignore
     UserOnPaperDocFilter,
 )
 from dropbox.sharing import AccessInheritance, AccessLevel  # type: ignore
+from dropbox.team import GroupSelector, UserSelectorArg
 
 from app.sources.client.dropbox.dropbox_ import DropboxClient, DropboxResponse
 
@@ -44,11 +46,24 @@ class DropboxDataSource:
         self._user_client = None
         self._team_client = None
 
-    async def _get_user_client(self) -> Dropbox:
-        """Get or create user client."""
-        if self._user_client is None:
-            self._user_client = self._dropbox_client.get_client().create_client()
-        return self._user_client
+    async def _get_user_client(self, team_member_id: Optional[str] = None, as_admin: bool = False) -> Union[Dropbox, DropboxTeam]:
+        """
+        Gets a Dropbox client scoped to a specific user or admin.
+        """
+        base_client = self._dropbox_client.get_client().create_client()
+
+        # If this is a team client and a member ID is provided, scope it
+        if isinstance(base_client, DropboxTeam) and team_member_id:
+            if as_admin:
+                # Return a client scoped as an Admin
+                return base_client.as_admin(team_member_id)
+            else:
+                # Return a client scoped as a User
+                return base_client.as_user(team_member_id)
+
+        # Otherwise, return the base client (either non-team or team-level)
+        return base_client
+
 
     async def _get_team_client(self) -> DropboxTeam:
         """Get or create team client."""
@@ -2023,7 +2038,9 @@ class DropboxDataSource:
         include_media_info: str = False,
         include_deleted: str = False,
         include_has_explicit_shared_members: str = False,
-        include_property_groups: Optional[str] = None
+        include_property_groups: Optional[str] = None,
+        team_member_id: Optional[str] = None,
+        team_folder_id: Optional[str] = None,
     ) -> DropboxResponse:
         """Returns the metadata for a file or folder. Note: Metadata for the root
 
@@ -2064,9 +2081,15 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.files.GetMetadataError`
         """
-        client = await self._get_user_client()
         try:
-            response = client.files_get_metadata(path, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_property_groups=include_property_groups)
+            client = await self._get_user_client(team_member_id)
+
+            client_to_use = client
+            if team_folder_id:
+                client_to_use = client.with_path_root(
+                    dropbox.common.PathRoot.namespace_id(team_folder_id)
+                )
+            response = client_to_use.files_get_metadata(path, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_property_groups=include_property_groups)
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2162,7 +2185,9 @@ class DropboxDataSource:
 
     async def files_get_temporary_link(
         self,
-        path: str
+        path: str,
+        team_folder_id: Optional[str] = None,
+        team_member_id: Optional[str] = None,
     ) -> DropboxResponse:
         """Get a temporary link to stream content of a file. This link will expire
 
@@ -2188,9 +2213,17 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.files.GetTemporaryLinkError`
         """
-        client = await self._get_user_client()
+        # client = await self._get_user_client()
         try:
-            response = client.files_get_temporary_link(path)
+            client = await self._get_user_client(team_member_id)
+
+            client_to_use = client
+            if team_folder_id:
+                client_to_use = client.with_path_root(
+                    dropbox.common.PathRoot.namespace_id(team_folder_id)
+                )
+
+            response = client_to_use.files_get_temporary_link(path)
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2536,7 +2569,9 @@ class DropboxDataSource:
         limit: Optional[str] = None,
         shared_link: Optional[str] = None,
         include_property_groups: Optional[str] = None,
-        include_non_downloadable_files: str = True
+        include_non_downloadable_files: str = True,
+        team_folder_id: Optional[str] = None,  # New parameter
+        team_member_id: Optional[str] = None,  # New parameter
     ) -> DropboxResponse:
         """Starts returning the contents of a folder. If the result's
 
@@ -2555,6 +2590,9 @@ class DropboxDataSource:
             shared_link (str, optional): Parameter for files_list_folder
             include_property_groups (str, optional): Parameter for files_list_folder
             include_non_downloadable_files (str, optional): Parameter for files_list_folder
+
+            !!! Important
+            team_folder_id (str, optional): Parameter for files_list_folder that specifies the folder to list from `namespaceID`
 
         Returns:
             DropboxResponse: SDK response
@@ -2619,17 +2657,43 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.files.ListFolderError`
         """
-        client = await self._get_user_client()
         try:
+            # Get the base client instance
+            client = await self._get_user_client(team_member_id)
+
+            # Conditionally scope the client to a team folder
+            client_to_use = client
+            if team_folder_id:
+                client_to_use = client.with_path_root(
+                    dropbox.common.PathRoot.namespace_id(team_folder_id)
+                )
+
+            # Run the synchronous SDK call in a separate thread
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.files_list_folder(path, recursive=recursive, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_mounted_folders=include_mounted_folders, limit=limit, shared_link=shared_link, include_property_groups=include_property_groups, include_non_downloadable_files=include_non_downloadable_files))
+            response = await loop.run_in_executor(
+                None,
+                lambda: client_to_use.files_list_folder(
+                    path=path,
+                    recursive=recursive,
+                    include_media_info=include_media_info,
+                    include_deleted=include_deleted,
+                    include_has_explicit_shared_members=include_has_explicit_shared_members,
+                    include_mounted_folders=include_mounted_folders,
+                    limit=limit,
+                    shared_link=shared_link,
+                    include_property_groups=include_property_groups,
+                    include_non_downloadable_files=include_non_downloadable_files
+                )
+            )
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
 
     async def files_list_folder_continue(
         self,
-        cursor: str
+        cursor: str,
+        team_member_id: Optional[str] = None,
+        team_folder_id: Optional[str] = None,
     ) -> DropboxResponse:
         """Once a cursor has been retrieved from :meth:`files_list_folder`, use
 
@@ -2655,10 +2719,24 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.files.ListFolderContinueError`
         """
-        client = await self._get_user_client()
         try:
+            # Get the base client instance for the correct user
+            client = await self._get_user_client(team_member_id)
+
+            # Conditionally scope the client to the team folder's namespace
+            # This is CRUCIAL to avoid the 'reset' error
+            client_to_use = client
+            if team_folder_id:
+                client_to_use = client.with_path_root(
+                    dropbox.common.PathRoot.namespace_id(team_folder_id)
+                )
+
+            # Run the synchronous SDK call in a separate thread
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.files_list_folder_continue(cursor))
+            response = await loop.run_in_executor(
+                None,
+                lambda: client_to_use.files_list_folder_continue(cursor)
+            )
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3879,7 +3957,7 @@ class DropboxDataSource:
 
     async def files_upload(
         self,
-        f: str,
+        f: bytes,
         path: str,
         mode: str = WriteMode('add', None),
         autorename: str = False,
@@ -3889,14 +3967,14 @@ class DropboxDataSource:
         strict_conflict: str = False,
         content_hash: Optional[str] = None
     ) -> DropboxResponse:
-        """Create a new file with the contents provided in the request. Do not use
+        """Create a new file with the contents provided in the request. You can use ;)
 
         API Endpoint: /2/files/upload
         Namespace: files
         Client type: user
 
         Args:
-            f (str, required): Parameter for files_upload
+            f (bytes, required): Parameter for files_upload
             path (str, required): Parameter for files_upload
             mode (str, optional): Parameter for files_upload
             autorename (str, optional): Parameter for files_upload
@@ -5463,7 +5541,9 @@ class DropboxDataSource:
     async def sharing_create_shared_link_with_settings(
         self,
         path: str,
-        settings: Optional[str] = None
+        settings: Optional[str] = None,
+        team_folder_id: Optional[str] = None,
+        team_member_id: Optional[str] = None,
     ) -> DropboxResponse:
         """Create a shared link with custom settings. If no settings are given then
 
@@ -5492,10 +5572,16 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.CreateSharedLinkWithSettingsError`
         """
-        client = await self._get_user_client()
+
         try:
+            client = await self._get_user_client(team_member_id)
+            client_to_use = client
+            if team_folder_id:
+                client_to_use = client.with_path_root(
+                    dropbox.common.PathRoot.namespace_id(team_folder_id)
+                )
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.sharing_create_shared_link_with_settings(path, settings=settings))
+            response = await loop.run_in_executor(None, lambda: client_to_use.sharing_create_shared_link_with_settings(path, settings=settings))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5583,7 +5669,8 @@ class DropboxDataSource:
     async def sharing_get_folder_metadata(
         self,
         shared_folder_id: str,
-        actions: Optional[str] = None
+        actions: Optional[str] = None,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Returns shared folder metadata by its folder ID.
 
@@ -5612,8 +5699,9 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.SharedFolderAccessError`
         """
-        client = await self._get_user_client()
+
         try:
+            client = await self._get_user_client(team_member_id=team_member_id)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_get_folder_metadata(shared_folder_id, actions=actions))
             return DropboxResponse(success=True, data=response)
@@ -5799,7 +5887,8 @@ class DropboxDataSource:
         file: str,
         actions: Optional[str] = None,
         include_inherited: str = True,
-        limit: str = 100
+        limit: str = 100,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Use to obtain the members who have been invited to a file, both
 
@@ -5832,7 +5921,7 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.ListFileMembersError`
         """
-        client = await self._get_user_client()
+        client = await self._get_user_client(team_member_id=team_member_id)
         try:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_file_members(file, actions=actions, include_inherited=include_inherited, limit=limit))
@@ -5923,7 +6012,9 @@ class DropboxDataSource:
         self,
         shared_folder_id: str,
         actions: Optional[str] = None,
-        limit: str = 1000
+        limit: str = 1000,
+        team_member_id: Optional[str] = None,
+        as_admin: bool = False
     ) -> DropboxResponse:
         """Returns shared folder membership by its folder ID.
 
@@ -5948,8 +6039,9 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.SharedFolderAccessError`
         """
-        client = await self._get_user_client()
+
         try:
+            client = await self._get_user_client(team_member_id=team_member_id, as_admin=as_admin)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_folder_members(shared_folder_id, actions=actions, limit=limit))
             return DropboxResponse(success=True, data=response)
@@ -5958,7 +6050,9 @@ class DropboxDataSource:
 
     async def sharing_list_folder_members_continue(
         self,
-        cursor: str
+        cursor: str,
+        team_member_id: Optional[str] = None,
+        as_admin: bool = False
     ) -> DropboxResponse:
         """Once a cursor has been retrieved from
 
@@ -5968,6 +6062,8 @@ class DropboxDataSource:
 
         Args:
             cursor (str, required): Parameter for sharing_list_folder_members_continue
+            team_member_id (str, optional): Parameter for sharing_list_folder_members_continue
+            as_admin (bool, optional): Parameter for sharing_list_folder_members_continue
 
         Returns:
             DropboxResponse: SDK response
@@ -5985,8 +6081,8 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.ListFolderMembersContinueError`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id=team_member_id, as_admin=as_admin)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_folder_members_continue(cursor))
             return DropboxResponse(success=True, data=response)
@@ -5996,7 +6092,8 @@ class DropboxDataSource:
     async def sharing_list_folders(
         self,
         limit: str = 1000,
-        actions: Optional[str] = None
+        actions: Optional[str] = None,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Return the list of all shared folders the current user has access to.
 
@@ -6022,8 +6119,8 @@ class DropboxDataSource:
             the  authenticated user can perform on the folder.
             :rtype: :class:`dropbox.sharing.ListFoldersResult`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_folders(limit=limit, actions=actions))
             return DropboxResponse(success=True, data=response)
@@ -6032,7 +6129,8 @@ class DropboxDataSource:
 
     async def sharing_list_folders_continue(
         self,
-        cursor: str
+        cursor: str,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Once a cursor has been retrieved from :meth:`sharing_list_folders`, use
 
@@ -6059,8 +6157,8 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.ListFoldersContinueError`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_folders_continue(cursor))
             return DropboxResponse(success=True, data=response)
@@ -6770,7 +6868,9 @@ class DropboxDataSource:
 
     async def sharing_unshare_file(
         self,
-        file: str
+        file: str,
+        team_folder_id: Optional[str] = None,
+        team_member_id: Optional[str] = None
     ) -> DropboxResponse:
         """Remove all members from this file. Does not remove inherited members.
 
@@ -6793,8 +6893,8 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.UnshareFileError`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id)
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_unshare_file(file))
             return DropboxResponse(success=True, data=response)
@@ -7873,74 +7973,48 @@ class DropboxDataSource:
             return DropboxResponse(success=False, error=str(e))
 
     async def team_groups_members_list(
-        self,
-        group: str,
-        limit: str = 1000
-    ) -> DropboxResponse:
+            self,
+            group: str,  # The group_id (string) is the correct input
+            limit: int = 1000  # This must be an integer
+        ) -> DropboxResponse:
         """Lists members of a group. Permission : Team Information.
 
         API Endpoint: /2/team/groups/members_list
-        Namespace: team
-        Client type: team
-
-        Args:
-            group (str, required): Parameter for team_groups_members_list
-            limit (str, optional): Parameter for team_groups_members_list
-
-        Returns:
-            DropboxResponse: SDK response
-
-        Original SDK Documentation:
-            Route attributes:
-            scope: groups.read
-            :param group: The group whose members are to be listed.
-            :type group: :class:`dropbox.team.GroupSelector`
-            :param int limit: Number of results to return per call.
-            :rtype: :class:`dropbox.team.GroupsMembersListResult`
-            :raises: :class:`.exceptions.ApiError`
-            If this raises, ApiError will contain:
-            :class:`dropbox.team.GroupSelectorError`
         """
         client = await self._get_team_client()
         try:
+            # 1. Create the GroupSelector object from the ID string
+            group_selector = GroupSelector.group_id(group)
+
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.team_groups_members_list(group, limit=limit))
+
+            # 2. Pass the selector object and integer limit
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.team_groups_members_list(
+                    group=group_selector,
+                    limit=limit
+                )
+            )
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
 
     async def team_groups_members_list_continue(
-        self,
-        cursor: str
-    ) -> DropboxResponse:
-        """Once a cursor has been retrieved from :meth:`team_groups_members_list`,
+            self,
+            cursor: str
+        ) -> DropboxResponse:
+        """Paginates through members of a group.
 
-        API Endpoint: /2/team/groups/members_list_continue
-        Namespace: team
-        Client type: team
-
-        Args:
-            cursor (str, required): Parameter for team_groups_members_list_continue
-
-        Returns:
-            DropboxResponse: SDK response
-
-        Original SDK Documentation:
-            use this to paginate through all members of the group. Permission : Team
-            information.
-            Route attributes:
-            scope: groups.read
-            :param str cursor: Indicates from what point to get the next set of
-            groups.
-            :rtype: :class:`dropbox.team.GroupsMembersListResult`
-            :raises: :class:`.exceptions.ApiError`
-            If this raises, ApiError will contain:
-            :class:`dropbox.team.GroupsMembersListContinueError`
+        API Endpoint: /2/team/groups/members/list/continue
         """
         client = await self._get_team_client()
         try:
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.team_groups_members_list_continue(cursor))
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.team_groups_members_list_continue(cursor=cursor)
+            )
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9182,7 +9256,7 @@ class DropboxDataSource:
 
     async def team_members_get_info_v2(
         self,
-        members: str
+        members: List[UserSelectorArg]
     ) -> DropboxResponse:
         """Returns information about multiple team members. Permission : Team
 
@@ -9235,6 +9309,9 @@ class DropboxDataSource:
         Returns:
             DropboxResponse: SDK response
 
+        Returns Model:
+            List[User]
+
         Original SDK Documentation:
             Route attributes:
             scope: members.read
@@ -9248,8 +9325,12 @@ class DropboxDataSource:
         client = await self._get_team_client()
         try:
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.team_members_list(limit=limit, include_removed=include_removed))
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.team_members_list(limit=limit, include_removed=include_removed)
+            )
             return DropboxResponse(success=True, data=response)
+
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
 
@@ -10800,7 +10881,7 @@ class DropboxDataSource:
         client = await self._get_team_client()
         try:
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: client.team_folder_list(limit=limit))
+            response = await loop.run_in_executor(None, lambda: client.team_team_folder_list(limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))

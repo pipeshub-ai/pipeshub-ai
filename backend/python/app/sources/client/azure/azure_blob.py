@@ -12,7 +12,6 @@ except ImportError:
     raise ImportError("azure-storage-blob is not installed. Please install it with `pip install azure-storage-blob`")
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.iclient import IClient
 
 
@@ -448,9 +447,62 @@ class AzureBlobClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
-        org_id: str,
-        user_id: str,
     ) -> "AzureBlobClient": # type: ignore
         """Build AzureBlobClient using configuration service and graphdb service"""
-        raise NotImplementedError("build_from_services is not implemented for AzureBlobClient")
+        try:
+            # Get Azure Blob Storage configuration from config service
+            config_data = await cls._get_connector_config(config_service, "azure")
+
+            # Extract configuration parameters
+            auth_type = config_data.get("authType", "CONNECTION_STRING")
+            auth_config = config_data.get("auth", {})
+            container_name = auth_config.get("containerName")
+
+            if not container_name:
+                raise AzureBlobConfigurationError("containerName is required in Azure Blob Storage configuration")
+
+            if auth_type == "CONNECTION_STRING":
+                connection_string = auth_config.get("azureBlobConnectionString")
+                if not connection_string:
+                    raise AzureBlobConfigurationError("azureBlobConnectionString is required for CONNECTION_STRING authType")
+
+                config = AzureBlobConnectionStringConfig(
+                    azureBlobConnectionString=connection_string,
+                    containerName=container_name
+                )
+                return cls.build_with_connection_string_config(config)
+
+            elif auth_type == "ACCOUNT_KEY":
+                account_name = auth_config.get("accountName")
+                account_key = auth_config.get("accountKey")
+                endpoint_protocol = auth_config.get("endpointProtocol", "https")
+                endpoint_suffix = auth_config.get("endpointSuffix", "core.windows.net")
+
+                if not account_name or not account_key:
+                    raise AzureBlobConfigurationError("accountName and accountKey are required for ACCOUNT_KEY authType")
+
+                config = AzureBlobAccountKeyConfig(
+                    accountName=account_name,
+                    accountKey=account_key,
+                    containerName=container_name,
+                    endpointProtocol=endpoint_protocol,
+                    endpointSuffix=endpoint_suffix
+                )
+                return cls.build_with_account_key_config(config)
+
+            else:
+                raise AzureBlobConfigurationError(f"Unsupported authType: {auth_type}")
+
+        except Exception as e:
+            logger.error(f"Failed to build Azure Blob Storage client from services: {e}")
+            raise AzureBlobConfigurationError(f"Failed to build Azure Blob Storage client: {str(e)}")
+
+    @staticmethod
+    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+        """Get connector configuration from config service"""
+        try:
+            config_path = f"/services/connectors/{connector_name}/config"
+            config_data = await config_service.get_config(config_path)
+            return config_data
+        except Exception as e:
+            raise AzureBlobConfigurationError(f"Failed to get {connector_name} configuration: {str(e)}")

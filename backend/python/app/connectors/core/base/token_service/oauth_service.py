@@ -59,6 +59,9 @@ class OAuthToken:
     scope: Optional[str] = None
     id_token: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
+    uid: Optional[str] = None   # used for dropbox
+    account_id: Optional[str] = None
+    team_id: Optional[str] = None
 
     @property
     def is_expired(self) -> bool:
@@ -84,7 +87,9 @@ class OAuthToken:
             "refresh_token": self.refresh_token,
             "scope": self.scope,
             "id_token": self.id_token,
-            "created_at": self.created_at.isoformat()
+            "created_at": self.created_at.isoformat(),
+            "uid": self.uid,
+            "account_id": self.account_id
         }
 
     @classmethod
@@ -183,6 +188,7 @@ class OAuthProvider:
             token_data = await response.json()
 
         # Create new token with current timestamp
+
         token = OAuthToken(**token_data)
 
         # Handle different OAuth providers:
@@ -273,6 +279,17 @@ class OAuthProvider:
 
         # Validate state
         if not stored_state or stored_state != state:
+            # Idempotent handling: if credentials already exist, treat as success
+            existing_creds = config.get('credentials')
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+                try:
+                    token = OAuthToken.from_dict(existing_creds)
+                except (TypeError, ValueError, KeyError):
+                    # If stored creds are malformed, fall back to error
+                    raise ValueError("Invalid or expired state")
+                self.token = token
+                return token
+            # No existing credentials -> genuine invalid/expired state
             raise ValueError("Invalid or expired state")
 
         token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))

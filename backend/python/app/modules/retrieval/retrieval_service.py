@@ -26,6 +26,7 @@ from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
@@ -298,6 +299,7 @@ class RetrievalService:
             search_results = await self._execute_parallel_searches(queries, filter, limit, vector_store)
 
             if not search_results:
+                self.logger.debug("No search results found")
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
@@ -312,8 +314,6 @@ class RetrievalService:
                 and result.get("metadata")
                 and result["metadata"].get("virtualRecordId") is not None
             })
-
-
 
             virtual_record_ids = list(set(virtual_record_ids))
             self.logger.debug(f"Extracted virtual_record_ids: {virtual_record_ids}")
@@ -363,11 +363,22 @@ class RetrievalService:
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
-                        result["metadata"]["mimeType"] = record.get("mimeType")
                         result["metadata"]["recordName"] = record.get("recordName")
-                        ext =  get_extension_from_mimetype(record.get("mimeType"))
-                        if ext:
-                            result["metadata"]["extension"] = ext
+
+                        mime_type = record.get("mimeType")
+                        if not mime_type:
+                            if record.get("recordType", "") == RecordTypes.FILE.value:
+                                file_record_ids_to_fetch.append(record_id)
+                                result_to_record_map[idx] = (record_id, "file")
+                            elif record.get("recordType", "") == RecordTypes.MAIL.value:
+                                mail_record_ids_to_fetch.append(record_id)
+                                result_to_record_map[idx] = (record_id, "mail")
+                            continue
+                        else:
+                            result["metadata"]["mimeType"] = record.get("mimeType")
+                            ext =  get_extension_from_mimetype(record.get("mimeType"))
+                            if ext:
+                                result["metadata"]["extension"] = ext
 
                         # Collect IDs that need additional fetching (instead of fetching immediately)
                         if not weburl:
@@ -436,7 +447,7 @@ class RetrievalService:
             if file_record_ids_to_fetch or mail_record_ids_to_fetch:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
-        # Second pass - apply fetched URLs to results
+            # Second pass - apply fetched URLs to results
             for idx, (record_id, record_type) in result_to_record_map.items():
                 result = search_results[idx]
                 record = record_id_to_record_map.get(record_id)
@@ -444,6 +455,7 @@ class RetrievalService:
                     continue
 
                 weburl = None
+                fallback_mimetype= None
                 if record_type == "file" and record_id in files_map:
                     files = files_map[record_id]
                     weburl = files.get("webUrl")
@@ -451,6 +463,7 @@ class RetrievalService:
                         user_email = user.get("email") if user else None
                         if user_email:
                             weburl = weburl.replace("{user.email}", user_email)
+                    fallback_mimetype = files.get("mimeType")
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
@@ -458,9 +471,17 @@ class RetrievalService:
                         user_email = user.get("email") if user else None
                         if user_email:
                             weburl = weburl.replace("{user.email}", user_email)
+                    fallback_mimetype = "text/html"
 
                 if weburl:
                     result["metadata"]["webUrl"] = weburl
+
+                if fallback_mimetype:
+                    result["metadata"]["mimeType"] = fallback_mimetype
+                    fallback_ext =  get_extension_from_mimetype(fallback_mimetype)
+                    if fallback_ext:
+                        result["metadata"]["extension"] = fallback_ext
+
                 final_search_results.append(result)
 
             # OPTIMIZATION: Get full record documents from Arango using list comprehension
@@ -521,15 +542,14 @@ class RetrievalService:
                 return response_data
             else:
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
-
-        except ValueError as e:
-            # Provide specific, user-friendly errors for known cases
-            # Avoid string matching: detect our dedicated error by class name
-            if e.__class__.__name__ == "VectorDBEmptyError":
-                return self._create_empty_response(
-                    "Vector database is not ready. Please index content and try again.",
+        except VectorDBEmptyError:
+            self.logger.error("VectorDBEmptyError")
+            return self._create_empty_response(
+                    "No records indexed yet. Please upload documents or enable connectors to index content",
                     Status.VECTOR_DB_EMPTY,
                 )
+        except ValueError as e:
+            self.logger.error(f"ValueError: {e}")
             return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
             import traceback
@@ -600,10 +620,6 @@ class RetrievalService:
             )
             self.logger.info(f"Collection info: {collection_info}")
             if not collection_info or collection_info.points_count == 0: # type: ignore
-                # Define a scoped custom error for clarity; safe to identify by class upstream
-                class VectorDBEmptyError(ValueError):
-                    pass
-
                 raise VectorDBEmptyError("Vector DB is empty or collection not found")
 
             # Get cached embedding model

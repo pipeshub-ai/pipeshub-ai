@@ -630,24 +630,73 @@ const AgentChatSidebar = ({
       }}
     >
       {/* Header */}
-      <Box sx={{ p: 1.68, display: 'flex', alignItems: 'center', gap: 1 }}>
-        <IconButton size="small" onClick={onClose}>
+      <Box
+        sx={{
+          px: 1.5,
+          py: 1.25,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          position: 'sticky',
+          top: 0,
+          zIndex: 1,
+          bgcolor: 'background.paper',
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+        }}
+      >
+        <IconButton size="small" onClick={onClose} sx={{ color: 'text.secondary' }}>
           <Icon icon={menuIcon} />
         </IconButton>
-        <Typography variant="h6" sx={{ flex: 1 }}>
+        <Typography
+          variant="subtitle1"
+          sx={{
+            flex: 1,
+            fontWeight: 600,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
           {agent?.name}
         </Typography>
         <>
-          <Tooltip title="New Chat">
-            <IconButton size="small" onClick={handleNewChat}>
+          <Tooltip title="New chat">
+            <IconButton
+              size="small"
+              onClick={handleNewChat}
+              sx={{ color: 'text.secondary' }}
+            >
               <Icon icon={chatIcon} />
             </IconButton>
           </Tooltip>
         </>
       </Box>
 
-      <Box sx={{ p: 1.68, display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Typography variant="body2">{agent?.description}</Typography>
+      <Box
+        sx={{
+          px: 1.5,
+          py: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          bgcolor: 'background.default',
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+        }}
+      >
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}
+        >
+          {agent?.description}
+        </Typography>
       </Box>
       <Divider />
       {/* Conversations List */}
@@ -680,13 +729,13 @@ const AgentChatSidebar = ({
           Object.entries(groupedConversations).map(([group, chats]) => (
             <React.Fragment key={group}>
               <Typography
-                variant="caption"
+                variant="overline"
                 sx={{
-                  px: 2,
+                  px: 1.5,
                   py: 1,
                   display: 'block',
                   color: 'text.secondary',
-                  fontWeight: 500,
+                  letterSpacing: 0.5,
                 }}
               >
                 {group}
@@ -712,9 +761,28 @@ const AgentChatSidebar = ({
         onClose={handleMenuClose}
         anchorOrigin={{ vertical: 'center', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        PaperProps={{
+          elevation: 0,
+          sx: {
+            mt: 1,
+            minWidth: 160,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: 'divider',
+            boxShadow: (themeval) =>
+              themeval.palette.mode === 'light'
+                ? '0 4px 16px rgba(0,0,0,0.06)'
+                : '0 8px 20px rgba(0,0,0,0.5)',
+          },
+        }}
       >
         {menuItems.map((item) => (
-          <MenuItem key={item.label} onClick={item.onClick} sx={{ gap: 1 }}>
+          <MenuItem
+            key={item.label}
+            onClick={item.onClick}
+            dense
+            sx={{ gap: 1, minHeight: 36, px: 1.25 }}
+          >
             <Icon icon={item.icon} />
             {item.label}
           </MenuItem>

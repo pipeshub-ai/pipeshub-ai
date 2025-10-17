@@ -1,10 +1,9 @@
 import logging
-from typing import Union
+from typing import Any, Dict, Union
 
 from pydantic import BaseModel, Field  #type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.graphql.client import GraphQLClient
 from app.sources.client.iclient import IClient
 
@@ -113,27 +112,53 @@ class LinearClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        arango_service: IGraphService,
     ) -> "LinearClient":
-        """Build LinearClient using configuration service and graph service.
+        """Build LinearClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: Graph database service instance
         Returns:
             LinearClient instance
         """
-        # This would typically fetch configuration from the services
-        # For now, placeholder implementation
         try:
-            # Example: Fetch Linear token from configuration service
-            # token = await config_service.get_linear_token(org_id, user_id)
-            # config = LinearTokenConfig(token=token)
-            # return cls.build_with_config(config)
+            # Get Linear configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
 
-            logger.warning("LinearClient.build_from_services not yet implemented")
-            raise NotImplementedError("build_from_services requires implementation with actual services")
+            if not config:
+                raise ValueError("Failed to get Linear connector configuration")
+
+            # Extract configuration values
+            auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            timeout = config.get("timeout", 30)
+
+            # Create appropriate client based on auth type
+            if auth_type == "OAUTH":
+                credentials_config = config.get("credentials", {})
+                oauth_token = credentials_config.get("access_token", "")
+                if not oauth_token:
+                    raise ValueError("OAuth token required for oauth auth type")
+                client = LinearGraphQLClientViaOAuth(oauth_token, timeout)
+
+            elif auth_type == "API_TOKEN":
+                auth_config = config.get("auth", {})
+                token = auth_config.get("apiToken", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = LinearGraphQLClientViaToken(token, timeout)
+
+            return cls(client)
+
         except Exception as e:
-            logger.error(f"Failed to build LinearClient from services: {e}")
+            logger.error(f"Failed to build Linear client from services: {str(e)}")
             raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Linear."""
+        try:
+            config = await config_service.get_config("/services/connectors/linear/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Linear connector config: {e}")
+            return {}
 

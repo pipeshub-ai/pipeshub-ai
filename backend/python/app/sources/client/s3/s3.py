@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
@@ -164,21 +165,60 @@ class S3Client(IClient):
     @classmethod
     async def build_from_services(
         cls,
-        logger,
-        config_service: ConfigurationService,
-        arango_service,
-        org_id: str,
-        user_id: str,
+        logger: logging.Logger,
+        config_service: ConfigurationService
     ) -> "S3Client":
-        """Build S3Client using configuration service and arango service
+        """Build S3Client using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: ArangoDB service instance
-            org_id: Organization ID
-            user_id: User ID
+            arango_service: ArangoDB service instance (optional)
+            org_id: Organization ID (optional)
+            user_id: User ID (optional)
         Returns:
             S3Client instance
         """
-        # TODO: Implement
-        return cls(client=None)  # type: ignore
+        try:
+            # Get S3 configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
+
+            if not config:
+                raise ValueError("Failed to get S3 connector configuration")
+
+            auth_type = config.get("authType", "ACCESS_KEY")  # ACCESS_KEY or OAUTH
+            auth_config = config.get("auth", {})
+            if auth_type == "ACCESS_KEY":  # Default to access key auth
+                # Extract configuration values
+                access_key_id = auth_config.get("accessKey", "")
+                secret_access_key = auth_config.get("secretKey", "")
+                region_name = auth_config.get("region", "us-east-1")
+                bucket_name = auth_config.get("bucket")
+
+                if not access_key_id or not secret_access_key:
+                    raise ValueError("Access key ID and secret access key are required for S3 authentication")
+
+                client = S3RESTClientViaAccessKey(
+                    access_key_id=access_key_id,
+                    secret_access_key=secret_access_key,
+                    region_name=region_name,
+                    bucket_name=bucket_name
+                )
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build S3 client from services: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+        """Fetch connector config from etcd for S3."""
+        try:
+            config = await config_service.get_config("/services/connectors/s3/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get S3 connector config: {e}")
+            return {}

@@ -1,9 +1,8 @@
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
@@ -125,22 +124,43 @@ class DiscordClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
+        logger,
         config_service: ConfigurationService,
-        graph_db_service: IGraphService,
     ) -> "DiscordClient":
-        """Build DiscordClient using configuration service and graph database service.
+        """Build DiscordClient using configuration service.
 
         Args:
-            config_service: Configuration service instance.
-            graph_db_service: Graph database service instance.
+            logger: Logger instance
+            config_service: Configuration service instance
 
         Returns:
-            DiscordClient instance.
+            DiscordClient instance
         """
-        # TODO: Implement - fetch config from services
-        # This would typically:
-        # 1. Query graph_db_service for stored DiscordClient credentials
-        # 2. Use config_service to get environment-specific settings
-        # 3. Return appropriate client based on available credentials
+        try:
+            config = await cls._get_connector_config(logger, config_service)
+            if not config:
+                raise ValueError("Failed to get Discord connector configuration")
+            auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            auth_config = config.get("auth", {})
+            if auth_type == "API_TOKEN":
+                token = auth_config.get("apiToken", "")
+                base_url = auth_config.get("baseURL", "https://discord.com/api/v10")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = DiscordTokenConfig(token=token, base_url=base_url).create_client()
+            else:
+                    raise ValueError(f"Invalid auth type: {auth_type}")
+            return cls(client)
+        except Exception as e:
+            logger.error(f"Failed to build Discord client from services: {str(e)}")
+            raise
 
-        raise NotImplementedError("build_from_services is not yet implemented")
+    @staticmethod
+    async def _get_connector_config(logger, config_service: ConfigurationService) -> dict[str, Any]:
+        """Fetch connector config from etcd for Discord."""
+        try:
+            config = await config_service.get_config("/services/connectors/discord/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Discord connector config: {e}")
+            return {}

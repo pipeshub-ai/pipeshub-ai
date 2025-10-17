@@ -7,8 +7,9 @@ from redis import asyncio as aioredis  # type: ignore
 from redis.asyncio import Redis  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import RedisConfig, config_node_constants
+from app.config.constants.service import config_node_constants
 from app.utils.logger import create_logger
+from app.utils.redis_util import build_redis_url
 
 T = TypeVar("T", bound="BaseAppContainer")
 
@@ -41,7 +42,8 @@ class BaseAppContainer(containers.DeclarativeContainer):
         redis_config = await config_service.get_config(
             config_node_constants.REDIS.value
         )
-        url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
+        # Build Redis URL with password if provided
+        url = build_redis_url(redis_config)
         return await aioredis.from_url(url, encoding="utf-8", decode_responses=True)
 
     # Common external service providers

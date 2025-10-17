@@ -17,7 +17,10 @@ from app.utils.chat_helpers import (
     get_message_content_for_tool,
     record_to_message_content,
 )
-from app.utils.citations import normalize_citations_and_chunks
+from app.utils.citations import (
+    normalize_citations_and_chunks,
+    normalize_citations_and_chunks_for_agent,
+)
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
@@ -89,7 +92,6 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
-    """Stream content from a signed URL"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(signed_url) as response:
@@ -397,7 +399,7 @@ async def execute_tool_calls(
             if status_code in [202, 500, 503]:
                 raise HTTPException(
                     status_code=status_code,
-                    content={
+                    detail={
                         "status": result.get("status", "error"),
                         "message": result.get("message", "No results found"),
                     }
@@ -457,7 +459,6 @@ async def execute_tool_calls(
         }
     }
 
-
 async def stream_llm_response(
     llm,
     messages,
@@ -506,7 +507,7 @@ async def stream_llm_response(
                 reason = None
                 confidence = None
 
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results)
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -539,7 +540,7 @@ async def stream_llm_response(
     # Try to bind structured output
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        print(f"LLM bound with structured output: {llm}")
+        logger.info("LLM bound with structured output successfully")
     except Exception as e:
         print(f"LLM provider or api does not support structured output: {e}")
 
@@ -583,7 +584,7 @@ async def stream_llm_response(
                         if INCOMPLETE_CITE_RE.search(current_raw):
                             continue
 
-                        normalized, cites = normalize_citations_and_chunks(
+                        normalized, cites = normalize_citations_and_chunks_for_agent(
                             current_raw, final_results
                         )
 
@@ -604,7 +605,7 @@ async def stream_llm_response(
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
 
-            normalized, c = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results)
             yield {
                 "event": "complete",
                 "data": {
@@ -616,7 +617,7 @@ async def stream_llm_response(
             }
         except Exception:
             # Fallback if JSON parsing fails
-            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
+            normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results)
             yield {
                 "event": "complete",
                 "data": {
@@ -633,6 +634,42 @@ async def stream_llm_response(
             "data": {"error": f"Error in LLM streaming: {exc}"},
         }
 
+
+
+def extract_json_from_string(input_string: str) -> "Dict[str, Any]":
+    """
+    Extracts a JSON object from a string that may contain markdown code blocks
+    or other formatting, and returns it as a Python dictionary.
+
+    Args:
+        input_string (str): The input string containing JSON data
+
+    Returns:
+        Dict[str, Any]: The extracted JSON object.
+
+    Raises:
+        ValueError: If no valid JSON object is found in the input string.
+    """
+    # Remove markdown code block markers if present
+    cleaned_string = input_string.strip()
+    cleaned_string = re.sub(r"^```json\s*", "", cleaned_string)
+    cleaned_string = re.sub(r"\s*```$", "", cleaned_string)
+    cleaned_string = cleaned_string.strip()
+
+    # Find the first '{' and the last '}'
+    start_index = cleaned_string.find('{')
+    end_index = cleaned_string.rfind('}')
+
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        raise ValueError("No JSON object found in input string")
+
+    json_str = cleaned_string[start_index : end_index + 1]
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON structure: {e}") from e
+
 async def stream_llm_response_with_tools(
     llm,
     messages,
@@ -647,7 +684,6 @@ async def stream_llm_response_with_tools(
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 3,
-
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -694,7 +730,7 @@ async def stream_llm_response_with_tools(
 
             messages = final_messages
         except Exception:
-            logger.exception("stream_llm_response_with_tools: error during execute_tool_calls")
+            logger.error("Error in execute_tool_calls",exc_info=True)
             pass
 
         if len(messages) > 0 and isinstance(messages[-1], AIMessage):
@@ -706,7 +742,7 @@ async def stream_llm_response_with_tools(
             existing_content = final_ai_msg.content
             logger.debug("stream_llm_response_with_tools: streaming existing AI content after tools")
             try:
-                parsed = json.loads(existing_content)
+                parsed =   extract_json_from_string(existing_content)
                 final_answer = parsed.get("answer", existing_content)
                 reason = parsed.get("reason")
                 confidence = parsed.get("confidence")
@@ -771,10 +807,9 @@ async def stream_llm_response_with_tools(
     # Try to bind structured output
     try:
         llm.with_structured_output(AnswerWithMetadata)
-        logger.debug(f"LLM bound with structured output: {llm}")
+        logger.info("LLM bound with structured output successfully")
     except Exception as e:
         logger.warning(f"LLM provider or api does not support structured output: {e}")
-
     try:
         async for token in aiter_llm_stream(llm, messages):
             full_json_buf += token

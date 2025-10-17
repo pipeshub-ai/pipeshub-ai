@@ -76,7 +76,7 @@
 
 <!--Intro-->
 
-<strong>[PipesHub](https://github.com/pipeshub-ai/pipeshub-ai)</strong> is the workplace AI platform for enterprises to improve how businesses operate and help employees and AI agents work more efficiently.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is a fully extensible and explainable workplace AI platform for enterprise search and workflow automation.
 In most companies, important work data is spread across multiple apps like Google Workspace, Microsoft 365, Slack, Jira, Confluence, and more. PipesHub AI helps you quickly find the right information using natural language search—just like Google.
 It can answer questions, provide insights, and more. The platform not only delivers the most relevant results but also shows where the information came from, with proper citations, using Knowledge Graphs and Page Ranking.
 Beyond search, our platform allows enterprises to create custom apps and AI agents using a No-Code interface.
@@ -198,27 +198,6 @@ PipesHub — the Workplace AI Platform — can be run locally or deployed on the
 
 ---
 
-### 📦 Developer Deployment Build
-
-```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services  
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the development deployment with build
-docker compose -f docker-compose.dev.yml -p pipeshub-ai up --build -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.dev.yml -p pipeshub-ai down
-```
-
 ### 📦 Production Deployment
 
 ```bash
@@ -238,6 +217,27 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 # 🛑 To stop the services
 docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+```
+
+### 📦 Developer Deployment Build
+
+```bash
+# Clone the repository
+git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+
+# 📁 Navigate to the deployment folder
+cd pipeshub-ai/deployment/docker-compose
+
+# Set Optional Environment Variables
+> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
+> _(Required for webhook notifications and real-time updates)_
+> Refer to env.template
+
+# 🚀 Start the development deployment with build
+docker compose -f docker-compose.dev.yml -p pipeshub-ai up --build -d
+
+# 🛑 To stop the services
+docker compose -f docker-compose.dev.yml -p pipeshub-ai down
 ```
 
 ## 👥 Contributing

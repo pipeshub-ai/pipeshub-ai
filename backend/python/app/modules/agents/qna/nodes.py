@@ -1,66 +1,137 @@
+"""
+Enhanced Planning-Based Agent Nodes - COMPLETE VERSION
+Supports planning, execution, adaptation, and beautiful response formatting
+"""
+
 import asyncio
 import json
+import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import StreamWriter
 
-from app.config.constants.arangodb import AccountType, CollectionNames
+from app.config.constants.arangodb import CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.qna.prompt_templates import qna_prompt
+from app.modules.qna.agent_prompt import (
+    create_agent_messages,
+    detect_response_mode,
+)
 from app.utils.citations import fix_json_string, process_citations
 from app.utils.streaming import stream_llm_response
 
+# Constants
+RESULT_PREVIEW_LENGTH = 150
+MARKDOWN_MIN_LENGTH = 100
+HEADER_LENGTH_THRESHOLD = 50
+STREAMING_CHUNK_DELAY = 0.01  # Delay for streaming effect
+STREAMING_FALLBACK_DELAY = 0.02  # Delay for fallback streaming
 
-# 1. Query Analysis Node
-async def analyze_query_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Simple analysis to determine if internal data retrieval is needed"""
+# ============================================================================
+# PHASE 1: ENHANCED QUERY ANALYSIS
+# ============================================================================
+
+async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatState:
+    """Analyze query complexity, follow-ups, and determine retrieval needs"""
     try:
         logger = state["logger"]
+        writer({"event": "status", "data": {"status": "analyzing", "message": "🧠 Analyzing your request..."}})
 
-        writer({"event": "status", "data": {"status": "analyzing", "message": "Analyzing query requirements..."}})
+        query = state["query"].lower()
+        previous_conversations = state.get("previous_conversations", [])
 
-        # Simple logic: check for explicit filters or keywords that suggest internal data need
+        # Enhanced follow-up detection
+        follow_up_patterns = [
+            "tell me more", "what about", "and the", "also", "additionally",
+            "the second", "the first", "the third", "next one", "previous",
+            "can you elaborate", "more details", "explain further", "what else",
+            "continue", "go on", "expand on", "about that", "about it",
+            "more info", "details on"
+        ]
+
+        # Check for pronouns that suggest follow-ups
+        pronoun_patterns = ["it", "that", "those", "these", "them", "this"]
+        has_pronoun = any(f" {p} " in f" {query} " or query.startswith(f"{p} ") for p in pronoun_patterns)
+
+        is_follow_up = (
+            any(pattern in query for pattern in follow_up_patterns) or
+            (has_pronoun and len(previous_conversations) > 0)
+        )
+
+        # Complexity detection
+        complexity_indicators = {
+            "multi_step": ["and then", "after that", "followed by", "once you", "first", "then", "finally", "next"],
+            "conditional": ["if", "unless", "in case", "when", "should", "whether"],
+            "comparison": ["compare", "vs", "versus", "difference between", "better than", "contrast"],
+            "aggregation": ["all", "every", "each", "summarize", "total", "average", "list"],
+            "creation": ["create", "make", "generate", "build", "draft", "compose"],
+            "action": ["send", "email", "notify", "schedule", "update", "delete"]
+        }
+
+        detected_complexity = []
+        for complexity_type, indicators in complexity_indicators.items():
+            if any(indicator in query for indicator in indicators):
+                detected_complexity.append(complexity_type)
+
+        is_complex = len(detected_complexity) > 0
+
+        # Internal data need detection
         has_kb_filter = bool(state.get("filters", {}).get("kb"))
         has_app_filter = bool(state.get("filters", {}).get("apps"))
 
-        # Keywords that suggest internal data need
         internal_keywords = [
-            "our", "my", "company", "organization", "internal", "knowledge base",
-            "documents", "files", "emails", "data", "records"
+            "our", "my", "company", "organization", "internal",
+            "knowledge base", "documents", "files", "emails",
+            "data", "records", "slack", "drive", "confluence",
+            "jira", "policy", "procedure", "team", "project"
         ]
 
-        query_lower = state["query"].lower()
-        needs_internal_data = (
-            has_kb_filter or
-            has_app_filter or
-            any(keyword in query_lower for keyword in internal_keywords)
-        )
+        needs_internal_data = False
+        if is_follow_up and previous_conversations and not has_kb_filter and not has_app_filter:
+            # For follow-ups, check if previous turn had internal data
+            if previous_conversations:
+                last_response = previous_conversations[-1].get("content", "")
+                # If last response had citations or knowledge, might not need new retrieval
+                needs_internal_data = not re.search(r'\s*\[\d+\]', last_response)  # More robustly check for citations
+            else:
+                needs_internal_data = False
+            logger.info(f"Follow-up detected - needs new retrieval: {needs_internal_data}")
+        else:
+            needs_internal_data = (
+                has_kb_filter or
+                has_app_filter or
+                any(keyword in query for keyword in internal_keywords)
+            )
 
+        # Store analysis
         state["query_analysis"] = {
             "needs_internal_data": needs_internal_data,
-            "reasoning": f"KB filter: {has_kb_filter}, App filter: {has_app_filter}, Internal keywords detected: {any(keyword in query_lower for keyword in internal_keywords)}"
+            "is_follow_up": is_follow_up,
+            "is_complex": is_complex,
+            "complexity_types": detected_complexity,
+            "requires_beautiful_formatting": True,  # Always format beautifully
+            "reasoning": f"Follow-up: {is_follow_up}, Complex: {is_complex}, Types: {detected_complexity}"
         }
 
-        logger.info(f"Query analysis: needs_internal_data = {needs_internal_data}")
+        logger.info(f"📊 Query analysis: follow_up={is_follow_up}, complex={is_complex}, data_needed={needs_internal_data}")
+        if is_complex:
+            logger.info(f"🔍 Complexity indicators: {', '.join(detected_complexity)}")
+
         return state
 
     except Exception as e:
-        logger.error(f"Error in query analysis node: {str(e)}", exc_info=True)
+        logger.error(f"Error in query analysis: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 2. Conditional Retrieval Node - Only retrieves if analysis suggests it's needed
-async def conditional_retrieve_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Conditionally retrieve data based on simple analysis"""
+# ============================================================================
+# PHASE 2: SMART RETRIEVAL
+# ============================================================================
+
+async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> ChatState:
+    """Smart retrieval based on query analysis"""
     try:
         logger = state["logger"]
 
@@ -69,25 +140,30 @@ async def conditional_retrieve_node(
 
         analysis = state.get("query_analysis", {})
 
-        # Skip retrieval based on analysis
         if not analysis.get("needs_internal_data", False):
-            logger.info("Skipping data retrieval - not needed for this query")
+            logger.info("⏭️ Skipping retrieval - using conversation context")
             state["search_results"] = []
             state["final_results"] = []
             return state
 
-        logger.info("Internal data retrieval needed - proceeding with retrieval")
-        writer({"event": "status", "data": {"status": "retrieving", "message": "Retrieving relevant data..."}})
+        logger.info("📚 Gathering knowledge sources...")
+        writer({"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}})
 
-        # Use original query for retrieval
         retrieval_service = state["retrieval_service"]
         arango_service = state["arango_service"]
+
+        # Adjust limit based on complexity
+        is_complex = analysis.get("is_complex", False)
+        base_limit = state["limit"]
+        adjusted_limit = min(base_limit * 2, 100) if is_complex else base_limit
+
+        logger.debug(f"Using retrieval limit: {adjusted_limit} (complex: {is_complex})")
 
         results = await retrieval_service.search_with_filters(
             queries=[state["query"]],
             org_id=state["org_id"],
             user_id=state["user_id"],
-            limit=state["limit"],
+            limit=adjusted_limit,
             filter_groups=state["filters"],
             arango_service=arango_service,
         )
@@ -97,14 +173,14 @@ async def conditional_retrieve_node(
             state["error"] = {
                 "status_code": status_code,
                 "status": results.get("status", "error"),
-                "message": results.get("message", "No results found"),
+                "message": results.get("message", "Retrieval service unavailable"),
             }
             return state
 
         search_results = results.get("searchResults", [])
-        logger.info(f"Retrieved {len(search_results)} documents from internal data")
+        logger.info(f"✅ Retrieved {len(search_results)} documents")
 
-        # Simple deduplication
+        # Deduplicate
         seen_ids = set()
         final_results = []
         for result in search_results:
@@ -114,17 +190,22 @@ async def conditional_retrieve_node(
                 final_results.append(result)
 
         state["search_results"] = search_results
-        state["final_results"] = final_results[:state["limit"]]
+        state["final_results"] = final_results[:adjusted_limit]
+
+        logger.debug(f"Final deduplicated results: {len(state['final_results'])}")
 
         return state
 
     except Exception as e:
-        logger.error(f"Error in conditional retrieval node: {str(e)}", exc_info=True)
+        logger.error(f"Error in retrieval: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 3. User Info Node
+# ============================================================================
+# PHASE 3: USER CONTEXT
+# ============================================================================
+
 async def get_user_info_node(state: ChatState) -> ChatState:
     """Fetch user info if needed"""
     try:
@@ -143,121 +224,102 @@ async def get_user_info_node(state: ChatState) -> ChatState:
         state["org_info"] = org_info
         return state
     except Exception as e:
-        logger.error(f"Error in user info node: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching user info: {str(e)}", exc_info=True)
         return state
 
 
-# 4. Clean Prompt Creation - Pure tool presentation to LLM
-def prepare_clean_prompt_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Create a clean prompt that presents all available tools to the LLM"""
+# ============================================================================
+# PHASE 4: ENHANCED AGENT PROMPT PREPARATION
+# ============================================================================
+
+def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatState:
+    """Prepare enhanced agent prompt with dual-mode formatting instructions"""
     try:
         logger = state["logger"]
         if state.get("error"):
             return state
 
-        # Build context based on available data
-        context_parts = []
+        logger.debug("🎯 Preparing agent prompt with dual-mode support")
 
-        # Add internal data context if retrieved
-        if state.get("final_results"):
-            from jinja2 import Template
-            template = Template(qna_prompt)
+        is_complex = state.get("query_analysis", {}).get("is_complex", False)
+        complexity_types = state.get("query_analysis", {}).get("complexity_types", [])
+        has_internal_knowledge = bool(state.get("final_results"))
 
-            # Format user info
-            user_data = ""
-            if state["send_user_info"] and state.get("user_info") and state.get("org_info"):
-                if state["org_info"].get("accountType") in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-                    user_data = (
-                        f"User: {state['user_info'].get('fullName', 'a user')} "
-                        f"({state['user_info'].get('designation', '')}) "
-                        f"from {state['org_info'].get('name', 'the organization')}"
-                    )
+        if is_complex:
+            logger.info(f"🔍 Complex workflow detected: {', '.join(complexity_types)}")
+            writer({"event": "status", "data": {"status": "thinking", "message": "🧠 Planning complex workflow..."}})
 
-            internal_context = template.render(
-                user_data=user_data,
-                query=state["query"],
-                rephrased_queries=[],
-                chunks=state["final_results"],
-            )
-            context_parts.append(internal_context)
+        # Determine expected output mode
+        if has_internal_knowledge:
+            expected_mode = "structured_with_citations"
+            logger.info("📋 Expected output: Structured JSON with citations (internal knowledge available)")
+        else:
+            expected_mode = "markdown"
+            logger.info("📝 Expected output: Beautiful Markdown (no internal knowledge)")
 
-        # Build clean system message
-        system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
+        # Store metadata
+        state["expected_response_mode"] = expected_mode
+        state["requires_planning"] = is_complex
+        state["has_internal_knowledge"] = has_internal_knowledge
 
-        # Get ALL available tools from registry - no filtering
-        from app.modules.agents.qna.tool_registry import (
-            get_agent_tools,
-            get_tool_usage_guidance,
-        )
+        # Create messages with planning context
+        messages = create_agent_messages(state)
 
+        # Get tools
+        from app.modules.agents.qna.tool_registry import get_agent_tools
         tools = get_agent_tools(state)
 
-        if tools:
-            # Simple tool presentation - just list them all
-            tool_descriptions = []
-            for tool in tools:
-                tool_descriptions.append(f"- {tool.name}: {tool.description}")
-
-            system_content += f"""
-
-You have access to the following tools:
-
-{chr(10).join(tool_descriptions)}
-
-{get_tool_usage_guidance()}"""
-
-        # Create messages
-        messages = [SystemMessage(content=system_content)]
-
-        # Add conversation history
-        for conversation in state.get("previous_conversations", []):
-            if conversation.get("role") == "user_query":
-                messages.append(HumanMessage(content=conversation.get("content")))
-            elif conversation.get("role") == "bot_response":
-                messages.append(AIMessage(content=conversation.get("content")))
-
-        # Add current query with context
-        if context_parts:
-            full_prompt = "\n\n".join(context_parts)
-        else:
-            full_prompt = f"User Query: {state['query']}\n\nPlease provide a helpful response."
-
-        messages.append(HumanMessage(content=full_prompt))
+        # Expose tool names for context
+        try:
+            state["available_tools"] = [tool.name for tool in tools] if tools else []
+        except Exception:
+            state["available_tools"] = []
 
         state["messages"] = messages
-        logger.debug(f"Prepared prompt with {len(messages)} messages and {len(tools)} available tools")
+
+        logger.debug(f"✅ Prepared {len(messages)} messages with {len(tools)} tools")
+        logger.debug(f"Planning required: {is_complex}, Expected mode: {expected_mode}")
 
         return state
+
     except Exception as e:
-        logger.error(f"Error in prompt preparation: {str(e)}", exc_info=True)
+        logger.error(f"Error preparing prompt: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 5. Agent Node - Complete LLM autonomy
-async def agent_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Pure agent that lets LLM decide everything"""
+# ============================================================================
+# PHASE 5: ENHANCED AGENT WITH DUAL-MODE AWARENESS
+# ============================================================================
+
+async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
+    """Agent with reasoning and dual-mode output capabilities"""
     try:
         logger = state["logger"]
         llm = state["llm"]
 
-        writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
-
         if state.get("error"):
             return state
 
-        # Get ALL available tools - no restrictions
+        # Check iteration and context
+        iteration_count = len(state.get("all_tool_results", []))
+        is_complex = state.get("requires_planning", False)
+        has_internal_knowledge = state.get("has_internal_knowledge", False)
+
+        # Status messages
+        if iteration_count == 0 and is_complex:
+            writer({"event": "status", "data": {"status": "planning", "message": "Creating execution plan..."}})
+        elif iteration_count > 0:
+            writer({"event": "status", "data": {"status": "adapting", "message": f"Adapting plan (step {iteration_count + 1})..."}})
+        else:
+            writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
+
+        # Get tools
         from app.modules.agents.qna.tool_registry import get_agent_tools
         tools = get_agent_tools(state)
 
         if tools:
-            logger.debug(f"Providing {len(tools)} tools to LLM for autonomous decision making")
+            logger.debug(f"Agent has {len(tools)} tools available")
             try:
                 llm_with_tools = llm.bind_tools(tools)
             except (NotImplementedError, AttributeError) as e:
@@ -266,66 +328,87 @@ async def agent_node(
                 tools = []
         else:
             llm_with_tools = llm
-            logger.debug("No tools available")
 
-        # Add previous tool results context if available
+        # Add tool results context with planning insights
         if state.get("all_tool_results"):
             from app.modules.agents.qna.tool_registry import get_tool_results_summary
-            tool_context = "\n\n" + get_tool_results_summary(state)
+            tool_summary = get_tool_results_summary(state)
 
-            # Add context to the last human message
+            tool_context = f"\n\n## Execution Progress\n{tool_summary}"
+            tool_context += "\n\n **Adaptation Point**: Review results. Adjust plan or provide final answer."
+
+            # Remind about output format
+            if has_internal_knowledge:
+                tool_context += "\n\n **Remember**: You have internal knowledge sources available. If you used them, respond in Structured JSON with citations."
+            else:
+                tool_context += "\n\n **Output**: Use Beautiful Markdown format for your final response."
+
             if state["messages"] and isinstance(state["messages"][-1], HumanMessage):
                 state["messages"][-1].content += tool_context
-                logger.debug(f"Added tool execution context from {len(state['all_tool_results'])} previous results")
 
-        # Call the LLM - complete autonomy
+        # Clean messages
         cleaned_messages = _clean_message_history(state["messages"])
+
+        # Call LLM
+        logger.debug(f" Invoking LLM (iteration {iteration_count})")
         response = await llm_with_tools.ainvoke(cleaned_messages)
 
-        # Add the response to messages
+        # Add response to messages
         state["messages"].append(response)
 
-        # Check LLM's decision on tool usage
+        # Check for tool calls
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            logger.debug(f"LLM autonomously decided to use {len(response.tool_calls)} tools")
-            for tool_call in response.tool_calls:
-                tool_name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, 'name', 'unknown')
-                logger.debug(f"  - {tool_name}")
+            tool_count = len(response.tool_calls)
+            logger.info(f"🔧 Agent decided to use {tool_count} tools")
+
+            # Log which tools
+            tool_names = []
+            for tc in response.tool_calls:
+                tool_name = tc.get("name") if isinstance(tc, dict) else tc.name
+                tool_names.append(tool_name)
+            logger.debug(f"Tools to execute: {', '.join(tool_names)}")
+
             state["pending_tool_calls"] = True
         else:
-            logger.debug("LLM autonomously decided to provide final response without tools")
+            logger.info("✅ Agent providing final response")
             state["pending_tool_calls"] = False
 
             if hasattr(response, 'content'):
-                state["response"] = response.content
+                response_content = response.content
             else:
-                state["response"] = str(response)
+                response_content = str(response)
 
-        logger.debug(f"🔥 Agent response: {state['response']}")
+            # Detect mode
+            mode, parsed_content = detect_response_mode(response_content)
+            logger.info(f"📄 Response mode detected: {mode}")
+
+            state["response"] = parsed_content
+            state["response_mode"] = mode
 
         return state
 
     except Exception as e:
-        logger.error(f"Error in agent node: {str(e)}", exc_info=True)
+        logger.error(f"Error in agent: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 6. Tool Execution Node - Execute any tool the LLM chose
-async def tool_execution_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Universal tool execution - handle any tool from registry"""
+# ============================================================================
+# PHASE 6: TOOL EXECUTION
+# ============================================================================
+
+async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatState:
+    """Execute tools with planning context"""
     try:
         logger = state["logger"]
 
-        writer({"event": "status", "data": {"status": "using_tools", "message": "Executing tools..."}})
+        iteration = len(state.get("all_tool_results", []))
+        writer({"event": "status", "data": {"status": "executing", "message": f"⚙️ Executing tools (step {iteration + 1})..."}})
 
         if state.get("error"):
             return state
 
-        # Get the last AI message with tool calls
+        # Get last AI message with tool calls
         last_ai_message = None
         for msg in reversed(state["messages"]):
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
@@ -344,59 +427,70 @@ async def tool_execution_node(
         tools = get_agent_tools(state)
         tools_by_name = {tool.name: tool for tool in tools}
 
-        # Execute tools and create ToolMessage objects
         tool_messages = []
         tool_results = []
 
         for tool_call in tool_calls:
             tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
-            tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else tool_call.args
-            tool_id = tool_call.get("id") if isinstance(tool_call, dict) else tool_call.id
 
-            # Handle function call format
-            if hasattr(tool_call, 'function'):
-                tool_name = tool_call.function.name
-                tool_args = tool_call.function.arguments
-                if isinstance(tool_args, str):
-                    import json
-                    tool_args = json.loads(tool_args)
+            # Handle both tool_call.args and tool_call.function formats
+            if isinstance(tool_call, dict):
+                tool_args = tool_call.get("args", {})
+                # Check for function format (used by some LLM providers like OpenAI)
+                if not tool_args and "function" in tool_call:
+                    function_data = tool_call["function"]
+                    tool_args = function_data.get("arguments", {})
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = {}
+                tool_id = tool_call.get("id")
+            else:
+                tool_args = tool_call.args
+                tool_id = tool_call.id
 
             try:
                 result = None
 
-                # Execute the tool directly - no ToolExecutor
                 if tool_name in tools_by_name:
                     tool = tools_by_name[tool_name]
-                    logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
+                    logger.info(f"▶️ Executing: {tool_name}")
+                    logger.debug(f"  Args: {tool_args}")
+
                     result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
+
+                    # Log result preview
+                    result_preview = str(result)[:RESULT_PREVIEW_LENGTH] + "..." if len(str(result)) > RESULT_PREVIEW_LENGTH else str(result)
+                    logger.debug(f"  Result preview: {result_preview}")
                 else:
-                    # Tool not found in available tools
-                    logger.warning(f"Tool {tool_name} not found in available tools")
+                    logger.warning(f"Tool not found: {tool_name}")
                     result = json.dumps({
                         "status": "error",
-                        "message": f"Tool '{tool_name}' not found in available tools",
+                        "message": f"Tool '{tool_name}' not found in registry",
                         "available_tools": list(tools_by_name.keys())
-                    }, indent=2)
+                    })
 
-                # Store tool result
                 tool_result = {
                     "tool_name": tool_name,
                     "result": result,
                     "status": "success" if "error" not in str(result).lower() else "error",
                     "tool_id": tool_id,
                     "args": tool_args,
-                    "execution_timestamp": datetime.now().isoformat()
+                    "execution_timestamp": datetime.now().isoformat(),
+                    "iteration": iteration
                 }
                 tool_results.append(tool_result)
 
-                # Create ToolMessage
                 tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
                 tool_messages.append(tool_message)
 
-                logger.debug(f"Tool {tool_name} executed")
+                logger.info(f"✅ {tool_name} executed successfully")
 
             except Exception as e:
                 error_result = f"Error executing {tool_name}: {str(e)}"
+                logger.error(f"❌ {tool_name} failed: {e}")
+
                 tool_result = {
                     "tool_name": tool_name,
                     "result": error_result,
@@ -404,30 +498,28 @@ async def tool_execution_node(
                     "tool_id": tool_id,
                     "args": tool_args,
                     "execution_timestamp": datetime.now().isoformat(),
-                    "error_details": str(e)
+                    "error_details": str(e),
+                    "iteration": iteration
                 }
                 tool_results.append(tool_result)
 
                 tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
                 tool_messages.append(tool_message)
 
-                logger.error(f"Tool {tool_name} failed: {e}")
-
-        # Add tool messages to conversation
+        # Add to messages
         state["messages"].extend(tool_messages)
-
-        # Store tool results
         state["tool_results"] = tool_results
 
-        # Accumulate all tool results for the session
+        # Accumulate all results
         if "all_tool_results" not in state:
             state["all_tool_results"] = []
         state["all_tool_results"].extend(tool_results)
 
-        # Reset pending tool calls
         state["pending_tool_calls"] = False
 
-        logger.debug(f"Executed {len(tool_results)} tools. Session total: {len(state['all_tool_results'])}")
+        logger.info(f"✅ Executed {len(tool_results)} tools in iteration {iteration}")
+        logger.debug(f"Total tools executed: {len(state['all_tool_results'])}")
+
         return state
 
     except Exception as e:
@@ -436,12 +528,16 @@ async def tool_execution_node(
         return state
 
 
-# 7. Final Response Node
+# ============================================================================
+# PHASE 7: ENHANCED FINAL RESPONSE WITH DUAL-MODE SUPPORT
+# ============================================================================
+
+# 7. Fixed Final Response Node - Correct Streaming Format
 async def final_response_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Generate final response - handle existing response from agent with bulletproof format handling"""
+    """Generate final response with correct streaming format"""
     try:
         logger = state["logger"]
         llm = state["llm"]
@@ -451,68 +547,65 @@ async def final_response_node(
         if state.get("error"):
             return state
 
-        # ✅ CHECK FOR RESPONSES - Priority: Current node response > Existing response > Generate new
+        # Check for existing response from agent
         existing_response = state.get("response")
-
-        # Check if we have a current node response (from the most recent agent execution)
-        # This happens when the agent node just provided a direct response without needing tools
-        current_node_has_response = (
-            existing_response and
-            not state.get("pending_tool_calls", False) and
-            not state.get("tool_results")  # No tools executed in this iteration
-        )
-
-        # Use existing response if current node didn't generate one but we have a previous response
         use_existing_response = (
             existing_response and
             not state.get("pending_tool_calls", False)
         )
 
         if use_existing_response:
-            if current_node_has_response:
-                logger.debug(f"Using current node response: {len(str(existing_response))} chars")
-            else:
-                logger.debug(f"Using existing response from previous node: {len(str(existing_response))} chars")
+            logger.debug(f"Using existing response: {len(str(existing_response))} chars")
 
-            # Stream the existing response in chunks for consistent behavior
             writer({"event": "status", "data": {"status": "delivering", "message": "Delivering response..."}})
 
-            # Normalize response format - handle both string and dict responses
+            # Normalize response format
             final_content = _normalize_response_format(existing_response)
 
             # Process citations if available
             if state.get("final_results"):
-                # Process citations on the answer text
-                cited_answer = process_citations(final_content["answer"], state["final_results"],from_agent=True)
+                cited_answer = process_citations(
+                    final_content["answer"],
+                    state["final_results"],
+                    [],
+                    from_agent=True
+                )
 
-                # Handle citation processing result
                 if isinstance(cited_answer, str):
                     final_content["answer"] = cited_answer
                 elif isinstance(cited_answer, dict) and "answer" in cited_answer:
                     final_content = cited_answer
 
-            print(f"🔥 Final content: {final_content}")
-
-            # Send content in chunks to simulate streaming
-            chunk_size = 50
+            # **CRITICAL FIX**: Stream only the answer text, not the JSON structure
             answer_text = final_content.get("answer", "")
+            chunk_size = 50
+
+            # Stream answer in chunks
             for i in range(0, len(answer_text), chunk_size):
                 chunk = answer_text[i:i + chunk_size]
                 writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-                await asyncio.sleep(0.01)  # Small delay for streaming effect
+                await asyncio.sleep(STREAMING_CHUNK_DELAY)
 
+            # **CRITICAL**: Send complete structure only at the end
+            completion_data = {
+                "answer": answer_text,
+                "citations": final_content.get("citations", []),
+                "confidence": final_content.get("confidence", "High"),
+                "reason": final_content.get("reason", "Response generated"),
+                "answerMatchType": final_content.get("answerMatchType", "Derived From Tool Execution"),
+                "chunkIndexes": final_content.get("chunkIndexes", []),
+                "workflowSteps": final_content.get("workflowSteps", [])
+            }
 
-            # Send complete event
-            completion_data = final_content
             writer({"event": "complete", "data": completion_data})
 
-            state["response"] = _clean_response(final_content)
+            state["response"] = answer_text  # Store just the answer text
             state["completion_data"] = completion_data
 
             logger.debug(f"Delivered existing response: {len(answer_text)} chars")
             return state
 
-        # ✅ IF NO USABLE RESPONSE EXISTS, GENERATE NEW ONE
+        # Generate new response if needed
         logger.debug("No usable response found, generating new response with LLM")
 
         # Convert LangChain messages to dict format
@@ -533,7 +626,6 @@ async def final_response_node(
             if validated_messages and validated_messages[-1]["role"] == "user":
                 validated_messages[-1]["content"] += f"\n\nTool Execution Results:\n{tool_summary}"
             else:
-                # Add as new user message if no user message exists
                 validated_messages.append({
                     "role": "user",
                     "content": f"Based on the tool execution results:\n{tool_summary}\n\nPlease provide a comprehensive response."
@@ -545,25 +637,20 @@ async def final_response_node(
         writer({"event": "status", "data": {"status": "generating", "message": "Generating response..."}})
 
         # Use stream_llm_response for new generation
-        final_content = ""
-        completion_data = None
+        final_content = None
 
         try:
             async for stream_event in stream_llm_response(llm, validated_messages, final_results, logger):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
-                logger.debug(f"🔥 Stream event: {event_type} {type(event_data)} {event_data}")
 
-                # Forward all events from stream_llm_response
+                # **CRITICAL**: Forward streaming events as-is
+                # stream_llm_response already sends answer_chunk and complete events correctly
                 writer({"event": event_type, "data": event_data})
 
-                # Track the final answer
+                # Track the final complete data
                 if event_type == "complete":
                     final_content = event_data
-                    completion_data = event_data
-                elif event_type == "answer_chunk":
-                    # Accumulate chunks
-                    final_content += event_data
 
         except Exception as stream_error:
             logger.error(f"stream_llm_response failed: {stream_error}")
@@ -575,18 +662,18 @@ async def final_response_node(
 
                 # Process citations
                 if final_results:
-                    cited_fallback = process_citations(fallback_content, final_results,from_agent=True)
+                    cited_fallback = process_citations(fallback_content, final_results, [], from_agent=True)
                     if isinstance(cited_fallback, str):
                         fallback_content = cited_fallback
                     elif isinstance(cited_fallback, dict):
                         fallback_content = cited_fallback.get("answer", fallback_content)
 
-                # Send as chunks
+                # **CRITICAL**: Stream answer text only
                 chunk_size = 100
                 for i in range(0, len(fallback_content), chunk_size):
                     chunk = fallback_content[i:i + chunk_size]
                     writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(STREAMING_FALLBACK_DELAY)
 
                 # Create completion data with proper format
                 citations = [
@@ -604,30 +691,33 @@ async def final_response_node(
                     "answer": fallback_content,
                     "citations": citations,
                     "confidence": "Medium",
-                    "reason": "Fallback response generation"
+                    "reason": "Fallback response generation",
+                    "answerMatchType": "Derived From Tool Execution" if state.get("all_tool_results") else "Direct Response",
+                    "chunkIndexes": []
                 }
+
                 writer({"event": "complete", "data": completion_data})
-                final_content = completion_data  # Store as dict format
+                final_content = completion_data
 
             except Exception as fallback_error:
                 logger.error(f"Fallback generation also failed: {fallback_error}")
-                # Last resort - use a generic error message
                 error_content = "I apologize, but I encountered an issue generating a response. Please try again."
                 error_response = {
                     "answer": error_content,
                     "citations": [],
                     "confidence": "Low",
-                    "reason": "Error fallback"
+                    "reason": "Error fallback",
+                    "answerMatchType": "Error",
+                    "chunkIndexes": []
                 }
                 writer({"event": "answer_chunk", "data": {"chunk": error_content}})
                 writer({"event": "complete", "data": error_response})
                 final_content = error_response
-                completion_data = error_response
 
-        # Store final response - ensure it's in proper format
-        state["response"] = _clean_response(final_content)
-        if completion_data:
-            state["completion_data"] = _clean_response(completion_data)
+        # Store final response - just the answer text
+        if final_content:
+            state["response"] = final_content.get("answer", str(final_content))
+            state["completion_data"] = final_content
 
         response_len = len(str(final_content))
         logger.debug(f"Generated new response: {response_len} chars")
@@ -640,78 +730,370 @@ async def final_response_node(
         return state
 
 
-
-# Helper functions
+# Helper function to normalize response
 def _normalize_response_format(response) -> dict:
     """Normalize response to expected format - handle both string and dict responses"""
     if isinstance(response, str):
-        # Convert string response to expected dict format
+        # Try to parse if it looks like JSON
+        if response.strip().startswith('{'):
+            try:
+                import json
+                parsed = json.loads(response)
+                if isinstance(parsed, dict) and "answer" in parsed:
+                    return {
+                        "answer": parsed.get("answer", ""),
+                        "citations": parsed.get("citations", []),
+                        "confidence": parsed.get("confidence", "High"),
+                        "reason": parsed.get("reason", "Direct response"),
+                        "answerMatchType": parsed.get("answerMatchType", "Derived From Tool Execution"),
+                        "chunkIndexes": parsed.get("chunkIndexes", []),
+                        "workflowSteps": parsed.get("workflowSteps", [])
+                    }
+            except Exception:
+                pass
+
+        # Plain string response
         return {
             "answer": response,
             "citations": [],
             "confidence": "High",
-            "reason": "Direct response"
+            "reason": "Direct response",
+            "answerMatchType": "Direct Response",
+            "chunkIndexes": [],
+            "workflowSteps": []
         }
+
     elif isinstance(response, dict):
         # Already in dict format, ensure required keys exist
         return {
             "answer": response.get("answer", str(response.get("content", response))),
             "citations": response.get("citations", []),
             "confidence": response.get("confidence", "Medium"),
-            "reason": response.get("reason", "Processed response")
+            "reason": response.get("reason", "Processed response"),
+            "answerMatchType": response.get("answerMatchType", "Derived From Tool Execution"),
+            "chunkIndexes": response.get("chunkIndexes", []),
+            "workflowSteps": response.get("workflowSteps", [])
         }
     else:
-        # Fallback for other types - convert to string
+        # Fallback for other types
         return {
             "answer": str(response),
             "citations": [],
             "confidence": "Low",
-            "reason": "Converted response"
+            "reason": "Converted response",
+            "answerMatchType": "Direct Response",
+            "chunkIndexes": [],
+            "workflowSteps": []
         }
 
 
-def _clean_response(response) -> dict:
-    """Clean the response to ensure it is in the expected format"""
+def _is_beautiful_markdown(text: str) -> bool:
+    """Check if text is already beautifully formatted markdown"""
+    if not text or not isinstance(text, str):
+        return False
+
+    # Check for markdown elements
+    has_headers = any(line.startswith('#') for line in text.split('\n'))
+    has_lists = any(line.strip().startswith(('-', '*', '1.', '2.', '3.')) for line in text.split('\n'))
+    has_bold = '**' in text
+    has_structure = '\n\n' in text  # Paragraph breaks
+
+    return has_headers or (has_lists and has_bold) or (has_structure and len(text) > MARKDOWN_MIN_LENGTH)
+
+
+def _beautify_markdown(text: str) -> str:
+    """Transform plain text into beautiful markdown"""
+    if not text:
+        return text
+
+    # If it's JSON, parse and format
+    if text.strip().startswith('{'):
+        try:
+            data = json.loads(text)
+            return _format_dict_as_markdown(data)
+        except Exception:
+            pass
+
+    # Basic beautification
+    lines = text.split('\n')
+    formatted_lines = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            formatted_lines.append('')
+            continue
+
+        # Add basic formatting
+        if line.endswith(':') and len(line) < HEADER_LENGTH_THRESHOLD:
+            # Likely a header
+            formatted_lines.append(f"## {line[:-1]}")
+        elif line.startswith('-') or line.startswith('*'):
+            # Already a list
+            formatted_lines.append(line)
+        else:
+            formatted_lines.append(line)
+
+    return '\n'.join(formatted_lines)
+
+
+def _format_dict_as_markdown(data: dict) -> str:
+    """Format a dictionary as beautiful markdown"""
+    lines = ["# Response\n"]
+
+    for key, value in data.items():
+        if key in ['status', 'error', 'message']:
+            continue
+
+        # Format key as header
+        formatted_key = key.replace('_', ' ').title()
+        lines.append(f"## {formatted_key}\n")
+
+        if isinstance(value, dict):
+            for k, v in value.items():
+                lines.append(f"- **{k}**: {v}")
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    lines.append(f"- {json.dumps(item, indent=2)}")
+                else:
+                    lines.append(f"- {item}")
+        else:
+            lines.append(str(value))
+
+        lines.append("")
+
+    return '\n'.join(lines)
+
+
+def _build_workflow_summary(tool_results) -> List[str]:
+    """Build a summary of the workflow steps"""
+    steps = []
+    for idx, result in enumerate(tool_results, 1):
+        tool_name = result.get("tool_name", "unknown")
+        status = result.get("status", "unknown")
+
+        step_desc = f"{idx}. {tool_name}"
+        if status == "success":
+            step_desc += " ✅"
+        else:
+            step_desc += " ❌"
+
+        steps.append(step_desc)
+
+    return steps
+
+
+async def _stream_structured_response(content, writer, logger) -> None:
+    """Stream structured response with beautiful markdown answer"""
+    answer_text = content.get("answer", "")
+    chunk_size = 50
+
+    # Stream the answer in chunks
+    for i in range(0, len(answer_text), chunk_size):
+        chunk = answer_text[i:i + chunk_size]
+        writer({"event": "answer_chunk", "data": {"chunk": chunk}})
+        await asyncio.sleep(STREAMING_CHUNK_DELAY)
+
+    # Send complete structured data
+    writer({"event": "complete", "data": content})
+    logger.debug(f"✅ Streamed structured response: {len(answer_text)} chars with citations")
+
+
+async def _stream_conversational_response(content, writer, logger) -> None:
+    """Stream conversational markdown response"""
+    answer_text = content.get("answer", str(content))
+    chunk_size = 50
+
+    # Stream in chunks
+    for i in range(0, len(answer_text), chunk_size):
+        chunk = answer_text[i:i + chunk_size]
+        writer({"event": "answer_chunk", "data": {"chunk": chunk}})
+        await asyncio.sleep(STREAMING_CHUNK_DELAY)
+
+    # Send complete event with proper format
+    complete_data = {
+        "answer": answer_text,
+        "citations": [],
+        "confidence": "High",
+        "reason": "Markdown response (no internal knowledge cited)"
+    }
+    writer({"event": "complete", "data": complete_data})
+    logger.debug(f"✅ Streamed markdown response: {len(answer_text)} chars")
+
+
+def _prepare_final_messages(state, has_internal_knowledge) -> List[Dict[str, str]]:
+    """Prepare messages for final response generation"""
+    validated_messages = []
+
+    for msg in state.get("messages", []):
+        if isinstance(msg, SystemMessage):
+            validated_messages.append({"role": "system", "content": msg.content})
+        elif isinstance(msg, HumanMessage):
+            validated_messages.append({"role": "user", "content": msg.content})
+        elif isinstance(msg, AIMessage):
+            validated_messages.append({"role": "assistant", "content": msg.content})
+
+    # Add tool summary and output format reminder
+    if state.get("all_tool_results"):
+        from app.modules.agents.qna.tool_registry import get_tool_results_summary
+        tool_summary = get_tool_results_summary(state)
+
+        summary_message = f"\n\n## Complete Workflow Summary\n{tool_summary}"
+
+        # Add format reminder
+        if has_internal_knowledge:
+            summary_message += "\n\n⚠️ **CRITICAL**: You have internal knowledge sources. Your response MUST be in Structured JSON format with citations [1][2][3]. The 'answer' field should contain beautifully formatted Markdown."
+        else:
+            summary_message += "\n\n💡 **Output Format**: Respond in Beautiful Markdown format (no internal knowledge to cite)."
+
+        summary_message += "\n\nProvide a comprehensive final response based on all information gathered."
+
+        if validated_messages and validated_messages[-1]["role"] == "user":
+            validated_messages[-1]["content"] += summary_message
+        else:
+            validated_messages.append({
+                "role": "user",
+                "content": summary_message
+            })
+    else:
+        # No tools used, just add format reminder
+        format_reminder = ""
+        if has_internal_knowledge:
+            format_reminder = "\n\n⚠️ **Remember**: Respond in Structured JSON with citations since you have internal knowledge."
+        else:
+            format_reminder = "\n\n💡 **Output**: Use Beautiful Markdown format."
+
+        if validated_messages and validated_messages[-1]["role"] == "user":
+            validated_messages[-1]["content"] += format_reminder
+
+    return validated_messages
+
+
+async def _generate_streaming_response(llm, messages, final_results, writer, logger, state) -> Optional[Dict[str, Any]]:
+    """Generate response with streaming and proper format"""
+    try:
+        writer({"event": "status", "data": {"status": "generating", "message": "✍️ Creating response..."}})
+
+        has_internal_knowledge = state.get("has_internal_knowledge", False)
+        final_content = None
+
+        async for stream_event in stream_llm_response(llm, messages, final_results, logger):
+            event_type = stream_event["event"]
+            event_data = stream_event["data"]
+
+            writer({"event": event_type, "data": event_data})
+
+            if event_type == "complete":
+                final_content = event_data
+
+                # Ensure beautiful formatting
+                if isinstance(final_content, dict) and "answer" in final_content:
+                    if not _is_beautiful_markdown(final_content["answer"]):
+                        logger.warning("Beautifying answer...")
+                        final_content["answer"] = _beautify_markdown(final_content["answer"])
+
+                # Add workflow steps if complex
+                if state.get("requires_planning") and state.get("all_tool_results"):
+                    if isinstance(final_content, dict):
+                        final_content["workflowSteps"] = _build_workflow_summary(state["all_tool_results"])
+
+        return final_content
+
+    except Exception as stream_error:
+        logger.error(f"Streaming failed: {stream_error}")
+
+        # Fallback
+        response = await llm.ainvoke(messages)
+        content = response.content if hasattr(response, 'content') else str(response)
+
+        # Process based on mode
+        if has_internal_knowledge and final_results:
+            cited_content = process_citations(content, final_results, [], from_agent=True)
+            if isinstance(cited_content, str):
+                content = cited_content
+            elif isinstance(cited_content, dict):
+                content = cited_content.get("answer", content)
+
+        # Beautify if needed
+        if not _is_beautiful_markdown(content):
+            content = _beautify_markdown(content)
+
+        # Stream fallback
+        chunk_size = 100
+        for i in range(0, len(content), chunk_size):
+            chunk = content[i:i + chunk_size]
+            writer({"event": "answer_chunk", "data": {"chunk": chunk}})
+            await asyncio.sleep(STREAMING_FALLBACK_DELAY)
+
+        # Build completion data
+        if has_internal_knowledge and final_results:
+            citations = [
+                {
+                    "citationId": result["metadata"].get("_id"),
+                    "content": result.get("content", ""),
+                    "metadata": result.get("metadata", {}),
+                    "citationType": result.get("citationType", "vectordb|document"),
+                    "chunkIndex": i + 1
+                }
+                for i, result in enumerate(final_results)
+            ]
+
+            completion_data = {
+                "answer": content,
+                "citations": citations,
+                "confidence": "Medium",
+                "reason": "Fallback response with internal knowledge"
+            }
+        else:
+            completion_data = {
+                "answer": content,
+                "citations": [],
+                "confidence": "Medium",
+                "reason": "Fallback markdown response"
+            }
+
+        # Add workflow if available
+        if state.get("all_tool_results"):
+            completion_data["workflowSteps"] = _build_workflow_summary(state["all_tool_results"])
+
+        writer({"event": "complete", "data": completion_data})
+
+        return completion_data
+
+def _clean_response(response) -> Dict[str, Any]:
+    """Clean response format"""
     if isinstance(response, str):
         try:
-            # Try to parse as JSON first
             cleaned_content = response.strip()
-            # Handle nested JSON (sometimes response is JSON within JSON)
+
             if cleaned_content.startswith('"') and cleaned_content.endswith('"'):
                 cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
 
-            # Handle escaped newlines and other special characters
             cleaned_content = cleaned_content.replace("\\n", "\n").replace("\\t", "\t")
-
-            # Apply our fix for control characters in JSON string values
             cleaned_content = fix_json_string(cleaned_content)
 
-            # Try to parse the cleaned content
             response_data = json.loads(cleaned_content)
             return _normalize_response_format(response_data)
         except (json.JSONDecodeError, Exception):
-            # If JSON parsing fails, treat as plain string
             return _normalize_response_format(response)
     else:
-        # Already a dict or other object
         return _normalize_response_format(response)
 
 
-def _validate_and_fix_message_sequence(messages) -> list:
-    """Validate and fix message sequence to ensure OpenAI API compatibility"""
+def _validate_and_fix_message_sequence(messages) -> List[Any]:
+    """Validate and fix message sequence"""
     validated = []
     pending_tool_calls = {}
 
     for msg in messages:
         if isinstance(msg, (SystemMessage, HumanMessage)):
-            # Clear any pending tool calls when we see a new human message
             if isinstance(msg, HumanMessage):
                 pending_tool_calls.clear()
             validated.append(msg)
 
         elif isinstance(msg, AIMessage):
             validated.append(msg)
-            # Track tool calls from this AI message
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 for tc in msg.tool_calls:
                     tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
@@ -719,98 +1101,72 @@ def _validate_and_fix_message_sequence(messages) -> list:
                         pending_tool_calls[tool_id] = True
 
         elif hasattr(msg, 'tool_call_id'):
-            # Only include tool message if we're expecting it
             if msg.tool_call_id in pending_tool_calls:
                 validated.append(msg)
-                # Mark this tool call as resolved
                 pending_tool_calls.pop(msg.tool_call_id, None)
-            else:
-                # Skip orphaned tool messages
-                continue
 
-    # If there are any unresolved tool calls, we need to remove the AI message that created them
-    # to avoid the OpenAI error
     if pending_tool_calls:
-        # Find and remove the AI message with unresolved tool calls
         final_validated = []
         for msg in validated:
             if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
-                # Check if any tool calls from this message are unresolved
-                has_unresolved = False
-                for tc in msg.tool_calls:
-                    tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
-                    if tool_id and tool_id in pending_tool_calls:
-                        has_unresolved = True
-                        break
-
+                has_unresolved = any(
+                    (tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)) in pending_tool_calls
+                    for tc in msg.tool_calls
+                )
                 if not has_unresolved:
                     final_validated.append(msg)
-                # Skip AI messages with unresolved tool calls
             else:
                 final_validated.append(msg)
-
         validated = final_validated
 
     return validated
 
 
-def _clean_message_history(messages) -> list:
-    """Clean message history for LLM compatibility - ensures proper tool call/response pairing"""
-    # First validate and fix the message sequence
+def _clean_message_history(messages) -> List[Any]:
+    """Clean message history"""
     validated_messages = _validate_and_fix_message_sequence(messages)
-
-    # Then apply the cleaning logic
     cleaned = []
 
     for i, msg in enumerate(validated_messages):
-        # Always include system, human, and AI messages
         if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
 
-        # For tool messages, ensure they follow an AI message with tool calls
         elif hasattr(msg, 'tool_call_id'):
-            # Look backwards to find the most recent AI message with tool calls
             found_matching_ai = False
             for j in range(i-1, -1, -1):
                 prev_msg = validated_messages[j]
                 if isinstance(prev_msg, AIMessage):
-                    # Check if this AI message has tool calls
                     if hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
-                        # Check if our tool_call_id matches any of the tool calls
-                        tool_call_ids = []
-                        for tc in prev_msg.tool_calls:
-                            if isinstance(tc, dict):
-                                tool_call_ids.append(tc.get('id'))
-                            else:
-                                tool_call_ids.append(getattr(tc, 'id', None))
+                        tool_call_ids = [
+                            tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                            for tc in prev_msg.tool_calls
+                        ]
 
                         if msg.tool_call_id in tool_call_ids:
                             found_matching_ai = True
                             break
                     else:
-                        # Found an AI message without tool calls, stop looking
                         break
-
-                # If we encounter another tool message, continue looking backwards
                 elif hasattr(prev_msg, 'tool_call_id'):
                     continue
                 else:
-                    # Found a non-AI, non-tool message, stop looking
                     break
 
-            # Only include the tool message if we found a matching AI message
             if found_matching_ai:
                 cleaned.append(msg)
 
     return cleaned
 
 
-# Routing functions - Simple, no complex logic
+# ============================================================================
+# ROUTING FUNCTIONS
+# ============================================================================
+
 def should_continue(state: ChatState) -> Literal["execute_tools", "final"]:
-    """Simple routing based on LLM's tool call decision"""
+    """Route based on tool calls"""
     return "execute_tools" if state.get("pending_tool_calls", False) else "final"
 
 
 def check_for_error(state: ChatState) -> Literal["error", "continue"]:
-    """Simple error check"""
+    """Check for errors"""
     return "error" if state.get("error") else "continue"

@@ -17,13 +17,12 @@ class GraphQLClient:
         self.endpoint = endpoint
         self.headers = headers or {}
         self.timeout = timeout
-        self._session = None
+        # Intentionally avoid a long-lived session to prevent cross-event-loop issues
+        # (especially on Windows with ProactorEventLoop and SSL transports).
 
-    async def _get_session(self) -> aiohttp.ClientSession: #type: ignore
-        """Get or create aiohttp session."""
-        if self._session is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
-        return self._session
+    # Note: We intentionally do not cache ClientSession instances. Creating a
+    # short-lived session per request keeps session lifecycle bound to the
+    # current event loop and avoids closing a session from a different loop.
 
     async def execute(
         self,
@@ -40,14 +39,15 @@ class GraphQLClient:
             payload["operationName"] = operation_name
 
         try:
-            session = await self._get_session()
-            async with session.post(
-                self.endpoint,
-                json=payload,
-                headers=self.headers
-            ) as response:
-                response_data = await response.json()
-                return GraphQLResponse.from_response(response_data)
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    self.endpoint,
+                    json=payload,
+                    headers=self.headers
+                ) as response:
+                    response_data = await response.json()
+                    return GraphQLResponse.from_response(response_data)
         except aiohttp.ClientError as e:
             return GraphQLResponse(
                 success=False,
@@ -55,7 +55,11 @@ class GraphQLClient:
             )
 
     async def close(self) -> None:
-        """Close the session."""
-        if self._session:
-            await self._session.close()
-            self._session = None
+        """No-op close: sessions are short-lived per request and auto-closed."""
+        return None
+
+    async def __aenter__(self) -> "GraphQLClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None

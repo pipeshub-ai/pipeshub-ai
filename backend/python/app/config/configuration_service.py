@@ -108,10 +108,11 @@ class ConfigurationService:
             # Redis configuration fallback
             redis_host = os.getenv("REDIS_HOST")
             if redis_host:
+                redis_password = os.getenv("REDIS_PASSWORD", "")
                 return {
                     "host": redis_host,
                     "port": int(os.getenv("REDIS_PORT", "6379")),
-                    "password": os.getenv("REDIS_PASSWORD", "")
+                    "password": redis_password if redis_password and redis_password.strip() else None
                 }
         elif key == config_node_constants.QDRANT.value:
             # Qdrant configuration fallback

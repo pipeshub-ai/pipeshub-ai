@@ -2,6 +2,8 @@ import io
 import json
 from datetime import datetime
 
+from html_to_markdown import convert
+
 from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
     OCRProvider,
@@ -14,6 +16,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -21,6 +24,7 @@ from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.llm import get_llm
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:
@@ -565,24 +569,21 @@ class Processor:
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ) -> None:
 
-
         self.logger.info("🚀 Processing Gmail Message")
 
         try:
-            # Convert binary to string
-            html_content = (
-                html_content.decode("utf-8")
-                if isinstance(html_content, bytes)
-                else html_content
-            )
-            self.logger.debug(f"📄 Decoded HTML content length: {len(html_content)}")
 
-            # Initialize HTML parser and parse content
-            self.logger.debug("📄 Processing HTML content")
-            parser = self.parsers["html"]
-            html_bytes = parser.parse_string(html_content)
-            await self.process_html_bytes(recordName, recordId, html_bytes, virtual_record_id)
-            self.logger.info("✅ Gmail Message processing completed successfully.")
+            await self.process_html_document(
+                recordName=recordName,
+                recordId=recordId,
+                version=version,
+                source=source,
+                orgId=orgId,
+                html_content=html_content,
+                virtual_record_id=virtual_record_id
+            )
+
+            self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
@@ -1079,10 +1080,40 @@ class Processor:
         self.logger.debug(f"Processed {len(ordered_items)} items in order")
         return ordered_items
 
+    async def _mark_record_as_completed(self, record_id, virtual_record_id) -> None:
+        record = await self.arango_service.get_document(
+                        record_id, CollectionNames.RECORDS.value
+                    )
+        if not record:
+            raise DocumentProcessingError(
+                "Record not found in database",
+                doc_id=record_id,
+            )
+        doc = dict(record)
+        doc.update(
+            {
+                "indexingStatus": "COMPLETED",
+                "isDirty": False,
+                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                "virtualRecordId": virtual_record_id,
+            }
+        )
+
+        docs = [doc]
+
+        success = await self.arango_service.batch_upsert_nodes(
+            docs, CollectionNames.RECORDS.value
+        )
+        if not success:
+            raise DocumentProcessingError(
+                "Failed to update indexing status", doc_id=record_id
+            )
+        return
+
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id, origin, recordType
+        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ) -> None:
-        """Process HTML document and extract structured content"""
+        """Process HTML document by converting to markdown and using markdown processing"""
         self.logger.info(
             f"🚀 Starting HTML document processing for record: {recordName}"
         )
@@ -1096,12 +1127,39 @@ class Processor:
             )
             self.logger.debug(f"📄 Decoded HTML content length: {len(html_content)}")
 
-            # Initialize HTML parser and parse content
-            self.logger.debug("📄 Processing HTML content")
-            parser = self.parsers[ExtensionTypes.HTML.value]
-            html_bytes = parser.parse_string(html_content)
-            await self.process_html_bytes(recordName, recordId, html_bytes, virtual_record_id)
-            self.logger.info("✅ HTML processing completed successfully.")
+            # Convert HTML to markdown
+            self.logger.debug("📄 Converting HTML to markdown")
+            markdown = convert(html_content)
+            markdown = markdown.strip()
+
+            if markdown is None or markdown == "":
+                try:
+                    await self._mark_record_as_completed(recordId, virtual_record_id)
+                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    return
+                except DocumentProcessingError:
+                    raise
+                except Exception as e:
+                    raise DocumentProcessingError(
+                        "Error updating record status: " + str(e),
+                        doc_id=recordId,
+                        details={"error": str(e)},
+                    )
+            # Convert markdown content to bytes for processing
+            md_binary = markdown.encode("utf-8")
+
+            # Use the existing markdown processing function
+            await self.process_md_document(
+                recordName=recordName,
+                recordId=recordId,
+                version=version,
+                source=source,
+                orgId=orgId,
+                md_binary=md_binary,
+                virtual_record_id=virtual_record_id
+            )
+
+            self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
@@ -1586,28 +1644,3 @@ class Processor:
 
         return {"status": "success", "message": "PPT processed successfully"}
 
-    async def process_html_bytes(self, recordName, recordId, html_bytes, virtual_record_id) -> None:
-        """Process HTML bytes and extract structured content"""
-        self.logger.info(f"🚀 Starting HTML document processing for record: {recordName}")
-        try:
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            record_name = recordName if recordName.endswith(".html") else f"{recordName}.html"
-            block_containers = await processor.load_document(record_name, html_bytes)
-            if block_containers is False:
-                raise Exception("Failed to process HTML document. It might contain scanned pages.")
-
-            record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
-            )
-            if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise Exception(f"Record {recordId} not found in graph db")
-            record = convert_record_dict_to_record(record)
-            record.block_containers = block_containers
-            record.virtual_record_id = virtual_record_id
-            ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
-            await pipeline.apply(ctx)
-        except Exception as e:
-            self.logger.error(f"❌ Error processing HTML bytes: {str(e)}")
-            raise

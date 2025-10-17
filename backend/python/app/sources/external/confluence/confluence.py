@@ -4596,7 +4596,7 @@ class ConfluenceDataSource:
 
     async def get_pages_in_space(
         self,
-        id: int,
+        id: str,
         depth: Optional[str] = None,
         sort: Optional[Dict[str, Any]] = None,
         status: Optional[list[str]] = None,

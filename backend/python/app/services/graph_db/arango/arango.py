@@ -242,7 +242,8 @@ class ArangoService(IGraphService):
 
             result = await self.execute_query(upsert_query, bind_vars)
 
-            if result:
+            # UPSERT without RETURN clause returns empty list on success
+            if result is not None:
                 self.logger.debug(f"Upserted document {document['_key']} in {collection_name}")
                 return True
             else:
@@ -312,7 +313,7 @@ class ArangoService(IGraphService):
 
             result = await self.execute_query(upsert_query, bind_vars)
 
-            if result and len(result) > 0:
+            if result is not None and len(result) > 0:
                 self.logger.debug(f"Upserted document {document['_key']} in {collection_name} with strategy '{merge_strategy}'")
                 return result[0]  # Return the upserted document
             else:
@@ -426,12 +427,12 @@ class ArangoService(IGraphService):
             self.logger.error(f"Failed to delete document {document_key} from {collection_name}: {e}")
             return False
 
-    async def execute_query(self, query: str, bind_vars: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    async def execute_query(self, query: str, bind_vars: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
         """Execute an AQL query"""
         try:
             if not self.db:
                 self.logger.error("Database not connected")
-                return []
+                return None
 
             if bind_vars is None:
                 bind_vars = {}
@@ -444,7 +445,7 @@ class ArangoService(IGraphService):
 
         except Exception as e:
             self.logger.error(f"Failed to execute query: {e}")
-            return []
+            return None
 
     async def create_index(self, collection_name: str, fields: List[str], index_type: str = "persistent") -> bool:
         """Create an index on a collection"""
