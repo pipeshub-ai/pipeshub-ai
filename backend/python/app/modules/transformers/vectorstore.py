@@ -4,6 +4,7 @@ import re
 import uuid
 from typing import List, Optional
 
+import httpx
 import requests
 import spacy
 from langchain.chat_models.base import BaseChatModel
@@ -107,7 +108,7 @@ class VectorStore(Transformer):
                 details={"error": str(e)},
             )
 
-    def _normalize_image_to_base64(self, image_uri: str) -> str | None:
+    async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
         """
         Normalize an image reference into a raw base64-encoded string (no data: prefix).
         - data URLs (data:image/...;base64,xxxxx) -> returns the part after the comma
@@ -136,12 +137,11 @@ class VectorStore(Transformer):
 
             # http(s) URL
             if uri.startswith("http://") or uri.startswith("https://"):
-
-
-                resp = requests.get(uri, timeout=20)
-                if resp.status_code != HTTP_OK or not resp.content:
-                    return None
-                return base64.b64encode(resp.content).decode("ascii")
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(uri)
+                    if resp.status_code != HTTP_OK or not resp.content:
+                        return None
+                    return base64.b64encode(resp.content).decode("ascii")
 
             # Assume raw base64
 
@@ -600,7 +600,7 @@ class VectorStore(Transformer):
                     # Process images in parallel
                     async def embed_single_bedrock_image(i: int, image_ref: str) -> Optional[PointStruct]:
                         """Embed a single image with AWS Bedrock."""
-                        normalized_b64 = self._normalize_image_to_base64(image_ref)
+                        normalized_b64 = await self._normalize_image_to_base64(image_ref)
                         if not normalized_b64:
                             self.logger.warning("Skipping image: unable to normalize to base64 (index=%s)", i)
                             return None
@@ -680,11 +680,17 @@ class VectorStore(Transformer):
                                 'Content-Type': 'application/json',
                                 'Authorization': 'Bearer ' + self.api_key
                             }
+                            # Normalize all images first (async operation)
+                            normalized_images = await asyncio.gather(*[
+                                self._normalize_image_to_base64(image_base64)
+                                for image_base64 in batch_images
+                            ])
                             data = {
                                 "model": self.model_name,
                                 "input": [
-                                    {"image": self._normalize_image_to_base64(image_base64)}
-                                    for image_base64 in batch_images
+                                    {"image": normalized_b64}
+                                    for normalized_b64 in normalized_images
+                                    if normalized_b64 is not None
                                 ]
                             }
 
