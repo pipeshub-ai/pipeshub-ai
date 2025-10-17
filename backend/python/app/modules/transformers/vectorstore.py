@@ -5,7 +5,6 @@ import uuid
 from typing import List, Optional
 
 import httpx
-import requests
 import spacy
 from langchain.chat_models.base import BaseChatModel
 from langchain.schema import Document, HumanMessage
