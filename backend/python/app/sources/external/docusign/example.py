@@ -30,10 +30,11 @@ TOKEN_FILE = "/workspaces/pipeshub-ai/backend/python/docusign_access_token.txt"
 
 def get_access_token() -> str:
     """Load access token from file."""
-    if os.path.exists(TOKEN_FILE):
+    if TOKEN_FILE.exists():
         with open(TOKEN_FILE, 'r') as f:
             token = f.read().strip()
-            if token and len(token) > 100:
+            MIN_TOKEN_LENGTH = 100  # Minimum length for valid access token
+            if token and len(token) > MIN_TOKEN_LENGTH:
                 return token
 
     # Fallback to environment variable

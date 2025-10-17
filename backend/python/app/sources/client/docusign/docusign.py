@@ -134,7 +134,8 @@ class DocuSignRESTClientViaJWT:
                 }
             )
 
-            if response.status_code != 200:
+            HTTP_OK = 200
+            if response.status_code != HTTP_OK:
                 raise RuntimeError(f"JWT token exchange failed: HTTP {response.status_code} - {response.text}")
 
             token_data = response.json()
@@ -283,7 +284,8 @@ class DocuSignRESTClientViaOAuth:
         if self.token_expiry is not None:
             time_until_expiry = self.token_expiry - time.time()
             # Refresh if less than 5 minutes remaining
-            if time_until_expiry <= 300:
+            TOKEN_REFRESH_BUFFER_SECONDS = 300  # 5 minutes
+            if time_until_expiry <= TOKEN_REFRESH_BUFFER_SECONDS:
                 if not self.refresh_token:
                     raise RuntimeError("Token expired and no refresh token available")
 
