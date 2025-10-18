@@ -1,5 +1,4 @@
-import type {
-  ReactNode} from 'react';
+import type { ReactNode } from 'react';
 import type { AxiosRequestConfig } from 'axios';
 
 import axios from 'axios';
@@ -136,10 +135,11 @@ axiosInstance.interceptors.response.use(
     else if (error instanceof Error) {
       processedError.message = error.message;
     }
+    
 
     // Try to show error in snackbar if ErrorContext is available
     try {
-      const errorContext = (window as any).__errorContext;
+      const errorContext = window.__errorContext;
       if (errorContext && errorContext.showError) {
         errorContext.showError(processedError.message);
       }
@@ -172,9 +172,9 @@ export const ErrorProvider: React.FC<ErrorProviderProps> = ({ children }) => {
 
   // Make error handler available globally
   useEffect(() => {
-    (window as any).__errorContext = contextValue;
+    window.__errorContext = contextValue;
     return () => {
-      delete (window as any).__errorContext;
+      delete window.__errorContext;
     };
   }, [contextValue]);
 

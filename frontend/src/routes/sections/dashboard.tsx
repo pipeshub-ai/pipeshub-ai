@@ -172,11 +172,11 @@ const ProtectedRoute = ({ component: Component }: { component: React.ComponentTy
 // Layout with outlet for nested routes
 const layoutContent = (
   <ConnectorProvider>
-  <DashboardLayout>
-    <Suspense fallback={<LoadingScreen />}>
-      <Outlet />
-    </Suspense>
-  </DashboardLayout>
+    <DashboardLayout>
+      <Suspense fallback={<LoadingScreen />}>
+        <Outlet />
+      </Suspense>
+    </DashboardLayout>
   </ConnectorProvider>
 );
 
