@@ -63,7 +63,19 @@ const FILE_CONFIG = {
     jpg: '#E91E63',
     jpeg: '#E91E63',
   },
-  viewableExtensions: ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'mdx', 'ppt', 'pptx'],
+  viewableExtensions: [
+    'pdf',
+    'xlsx',
+    'xls',
+    'csv',
+    'docx',
+    'html',
+    'txt',
+    'md',
+    'mdx',
+    'ppt',
+    'pptx',
+  ],
 };
 
 // Default fallback icon for unknown connectors
@@ -156,7 +168,6 @@ const FileCard = React.memo(
     const connectorInfo = connectorData[file.connector?.toUpperCase()] || {
       iconPath: '/assets/icons/connectors/default.svg',
     };
-    console.log(connectorData);
 
     return (
       <Paper
@@ -274,7 +285,18 @@ const FileCard = React.memo(
             </Box>
 
             {/* Connector Icon */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+            <Box
+              sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}
+            >
+              <Box sx={{ cursor: 'pointer', alignItems: 'center', display: 'flex', gap: 0.5 }} onClick={(e) => {
+                  e.stopPropagation();
+                  window.open(file.webUrl, '_blank', 'noopener,noreferrer');
+                }}>
+              <Icon
+                icon={linkIcon}
+                width={14}
+                height={14}
+              />
               <img
                 src={connectorInfo.iconPath}
                 alt={file.connector || 'UPLOAD'}
@@ -300,6 +322,7 @@ const FileCard = React.memo(
               >
                 {file.connector || 'UPLOAD'}
               </Typography>
+              </Box>
             </Box>
           </Stack>
 
@@ -313,29 +336,6 @@ const FileCard = React.memo(
               justifyContent: 'flex-end',
             }}
           >
-            {file.webUrl && (
-              <Button
-                size="small"
-                variant="text"
-                startIcon={<Icon icon={linkIcon} width={14} height={14} />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onViewDocument(file);
-                }}
-                sx={{
-                  textTransform: 'none',
-                  fontSize: '11px',
-                  fontWeight: 500,
-                  borderRadius: 1.5,
-                  px: 1.25,
-                  py: 0.375,
-                  minHeight: 26,
-                }}
-              >
-                Open
-              </Button>
-            )}
-
             {file.extension && isDocViewable(file.extension) && (
               <Button
                 size="small"
@@ -406,8 +406,9 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   const connectorData = useMemo(() => {
     const allConnectors = [...activeConnectors];
     const data: { [key: string]: { iconPath: string; color?: string } } = {};
-
+    console.log(allConnectors);
     allConnectors.forEach((connector) => {
+      console.log(connector);
       data[connector.name.toUpperCase()] = {
         iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
       };

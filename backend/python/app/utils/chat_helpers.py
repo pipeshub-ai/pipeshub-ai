@@ -360,7 +360,8 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "pageNum":[page_num],
                         "extension": extension,
                         "mimeType": mime_type,
-                        "blockNum":block_num
+                        "blockNum":block_num,
+                        "webUrl": record.get("weburl",""),
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
