@@ -415,8 +415,6 @@ class BookStackConnector(BaseConnector):
         try:
             self.logger.info("Starting BookStack full sync.")
 
-            await self.list_roles_with_details()
-
             # Step 1: Sync all users
             self.logger.info("Syncing users...")
             await self._sync_users()
@@ -637,7 +635,6 @@ class BookStackConnector(BaseConnector):
                         )
                         continue
 
-                    print("user", user)
                     user_email = user.get("email")
 
                 # If user is found, call the data processor to handle removal
@@ -932,7 +929,6 @@ class BookStackConnector(BaseConnector):
 
         # Fetch the full details of the newly created role
         role_details_response = await self.data_source.get_role(role_id)
-        print("role_details_response", role_details_response)
         if not role_details_response.success or not role_details_response.data:
             self.logger.warning(f"Could not fetch details for role ID {role_id}, it may not be available yet. Skipping.")
             return
