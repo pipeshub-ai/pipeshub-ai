@@ -1,4 +1,3 @@
-
 """
 DocuSign Integration Example - PAT Authentication
 
@@ -15,9 +14,11 @@ To generate a token:
 For JWT setup instructions, see:
     backend/python/HOW_TO_GET_RSA_KEY.py
 """
+
 import asyncio
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from app.sources.client.docusign import DocuSignClient, DocuSignPATConfig
 from app.sources.external.docusign import DocuSignDataSource
@@ -25,13 +26,13 @@ from app.sources.external.docusign import DocuSignDataSource
 # Configuration - PAT Authentication
 ACCOUNT_ID = os.getenv("DOCUSIGN_ACCOUNT_ID", "4419475f-3161-4b37-9d6f-320cac25d107")
 USER_ID = os.getenv("DOCUSIGN_USER_ID", "1e5e503c-bd20-46f0-a5ad-043cb47d023d")
-TOKEN_FILE = "/workspaces/pipeshub-ai/backend/python/docusign_access_token.txt"
+TOKEN_FILE = Path("/workspaces/pipeshub-ai/backend/python/docusign_access_token.txt")
 
 
 def get_access_token() -> str:
     """Load access token from file."""
     if TOKEN_FILE.exists():
-        with open(TOKEN_FILE, 'r') as f:
+        with open(TOKEN_FILE, "r") as f:
             token = f.read().strip()
             MIN_TOKEN_LENGTH = 100  # Minimum length for valid access token
             if token and len(token) > MIN_TOKEN_LENGTH:
@@ -68,8 +69,7 @@ async def main() -> None:
 
     # Initialize client with PAT authentication
     config = DocuSignPATConfig(
-        access_token=ACCESS_TOKEN,
-        base_path="https://demo.docusign.net/restapi"
+        access_token=ACCESS_TOKEN, base_path="https://demo.docusign.net/restapi"
     )
 
     client = DocuSignClient.build_with_config(config)
@@ -88,6 +88,7 @@ async def main() -> None:
     except Exception as e:
         print(f"   ❌ Exception: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Example 2: List users
@@ -95,10 +96,12 @@ async def main() -> None:
     try:
         users = await data_source.users_list_users(accountId=ACCOUNT_ID)
         if users.success:
-            user_count = len(users.data.get('users', []))
+            user_count = len(users.data.get("users", []))
             print(f"   ✅ Found {user_count} user(s)")
-            for user in users.data.get('users', [])[:3]:
-                print(f"   👤 {user.get('user_name', 'N/A')} ({user.get('email', 'N/A')})")
+            for user in users.data.get("users", [])[:3]:
+                print(
+                    f"   👤 {user.get('user_name', 'N/A')} ({user.get('email', 'N/A')})"
+                )
         else:
             print(f"   ❌ Error: {users.error}")
     except Exception as e:
@@ -107,7 +110,9 @@ async def main() -> None:
     # Example 3: Get user details
     print("\n3. Getting User Details:")
     try:
-        user_info = await data_source.users_get_user(accountId=ACCOUNT_ID, userId=USER_ID)
+        user_info = await data_source.users_get_user(
+            accountId=ACCOUNT_ID, userId=USER_ID
+        )
         if user_info.success:
             print(f"   ✅ Name: {user_info.data.get('user_name', 'N/A')}")
             print(f"   📧 Email: {user_info.data.get('email', 'N/A')}")
@@ -122,7 +127,7 @@ async def main() -> None:
     try:
         templates = await data_source.templates_list_templates(accountId=ACCOUNT_ID)
         if templates.success:
-            template_count = templates.data.get('result_set_size', 0)
+            template_count = templates.data.get("result_set_size", 0)
             print(f"   ✅ Found {template_count} template(s)")
         else:
             print(f"   ❌ Error: {templates.error}")
@@ -134,10 +139,12 @@ async def main() -> None:
     try:
         groups = await data_source.groups_list_groups(accountId=ACCOUNT_ID)
         if groups.success:
-            group_count = len(groups.data.get('groups', []))
+            group_count = len(groups.data.get("groups", []))
             print(f"   ✅ Found {group_count} group(s)")
-            for group in groups.data.get('groups', [])[:5]:
-                print(f"   📁 {group.get('group_name', 'N/A')} (ID: {group.get('group_id', 'N/A')})")
+            for group in groups.data.get("groups", [])[:5]:
+                print(
+                    f"   📁 {group.get('group_name', 'N/A')} (ID: {group.get('group_id', 'N/A')})"
+                )
         else:
             print(f"   ❌ Error: {groups.error}")
     except Exception as e:
@@ -152,10 +159,10 @@ async def main() -> None:
             accountId=ACCOUNT_ID,
             from_date=from_date,
             status="sent,delivered,completed",
-            count="10"
+            count="10",
         )
         if envelopes.success:
-            envelope_count = envelopes.data.get('result_set_size', 0)
+            envelope_count = envelopes.data.get("result_set_size", 0)
             print(f"   ✅ Found {envelope_count} envelope(s) in last 30 days")
         else:
             print(f"   ❌ Error: {envelopes.error}")
@@ -165,6 +172,7 @@ async def main() -> None:
     print("\n" + "=" * 80)
     print("Examples Complete!")
     print("=" * 80)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
