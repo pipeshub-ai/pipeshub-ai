@@ -512,9 +512,10 @@ def deploy(environment):
 ## Source Priority Rules
 
 1. **User-Specific Questions** (identity, role, workplace):
-   - Use User Information section
+   - Use User Information section when relevant
    - No chunk citations needed
    - Mark as "Derived From User Info"
+   - Use your judgment to determine when user context adds value
 
 2. **Company Knowledge Questions**:
    - Search internal knowledge sources
@@ -527,9 +528,10 @@ def deploy(environment):
    - No citations needed (unless combined with internal knowledge)
 
 4. **Integration**:
-   - Can combine user information with internal knowledge
+   - Can combine user information with internal knowledge when appropriate
    - Cite only internal knowledge portions
    - User info portions don't need citations
+   - Use judgment to determine when user context enhances the response
 </source_prioritization>
 
 <quality_control>
@@ -795,21 +797,37 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
 
 
 def build_user_context(user_info, org_info) -> str:
-    """Build user context"""
+    """Build user context with clear information about what's available"""
     if not user_info or not org_info:
         return "No user context available."
 
-    parts = ["## User Information\n"]
-    parts.append("Use this for user-specific questions (identity, role, etc.). These don't require chunk citations.\n")
+    parts = ["## User Information Available\n"]
+    parts.append("**IMPORTANT**: You have access to the following user information. Use your judgment to determine when this information is relevant for personalization, user-specific questions, and context-aware responses.\n")
 
+    # User details
+    if user_info.get("userEmail"):
+        parts.append(f"- **User Email**: {user_info['userEmail']}")
+    if user_info.get("userId"):
+        parts.append(f"- **User ID**: {user_info['userId']}")
     if user_info.get("fullName"):
-        parts.append(f"- Name: {user_info['fullName']}")
+        parts.append(f"- **Name**: {user_info['fullName']}")
     if user_info.get("designation"):
-        parts.append(f"- Role: {user_info['designation']}")
-    if user_info.get("email"):
-        parts.append(f"- Email: {user_info['email']}")
+        parts.append(f"- **Role**: {user_info['designation']}")
+
+    # Organization details
+    if org_info.get("orgId"):
+        parts.append(f"- **Organization ID**: {org_info['orgId']}")
+    if org_info.get("accountType"):
+        parts.append(f"- **Account Type**: {org_info['accountType']} (affects tool permissions)")
     if org_info.get("name"):
-        parts.append(f"- Organization: {org_info['name']}")
+        parts.append(f"- **Organization**: {org_info['name']}")
+
+    parts.append("\n**Usage Guidelines**:")
+    parts.append("- Use your judgment to determine when user information is relevant")
+    parts.append("- Personalize responses when appropriate (e.g., 'Based on your role as...')")
+    parts.append("- Account type determines tool access (enterprise vs individual)")
+    parts.append("- User email enables impersonation for enterprise tools")
+    parts.append("- Only reference user context when it adds value to the response")
 
     return "\n".join(parts)
 
@@ -831,7 +849,7 @@ def build_agent_prompt(state, max_iterations=30) -> str:
         internal_context = "No internal knowledge sources loaded.\n\nOutput Format: Use Clean Professional Markdown"
 
     user_context = ""
-    if state.get("send_user_info") and state.get("user_info") and state.get("org_info"):
+    if state.get("user_info") and state.get("org_info"):
         user_context = build_user_context(state["user_info"], state["org_info"])
     else:
         user_context = "No user context available."

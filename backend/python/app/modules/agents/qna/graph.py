@@ -12,7 +12,6 @@ from app.modules.agents.qna.nodes import (
     check_for_error,
     conditional_retrieve_node,
     final_response_node,
-    get_user_info_node,
     prepare_agent_prompt_node,
     tool_execution_node,
 )
@@ -105,23 +104,19 @@ def create_agent_graph() -> StateGraph:
     workflow.add_node("retrieve", conditional_retrieve_node)
     # Smart retrieval with complexity-based limit adjustment
 
-    # Phase 3: Context Building
-    workflow.add_node("get_user", get_user_info_node)
-    # Fetches user/org context for personalization
-
-    # Phase 4: Planning Preparation
+    # Phase 3: Planning Preparation
     workflow.add_node("prepare", prepare_agent_prompt_node)
     # Builds agent-enhanced prompt with workflow guidance
 
-    # Phase 5: Agent Planning & Reasoning
+    # Phase 4: Agent Planning & Reasoning
     workflow.add_node("agent", agent_node)
     # Core planning agent that creates execution plans and adapts
 
-    # Phase 6: Tool Execution
+    # Phase 5: Tool Execution
     workflow.add_node("execute_tools", tool_execution_node)
     # Executes tools with planning context and iteration tracking
 
-    # Phase 7: Final Response
+    # Phase 6: Final Response
     workflow.add_node("final", final_response_node)
     # Generates final response with workflow summary
 
@@ -142,18 +137,15 @@ def create_agent_graph() -> StateGraph:
         }
     )
 
-    # Retrieval → User Context (with error handling)
+    # Retrieval → Planning Preparation (with error handling)
     workflow.add_conditional_edges(
         "retrieve",
         check_for_error,
         {
-            "continue": "get_user",
+            "continue": "prepare",
             "error": END
         }
     )
-
-    # User Context → Planning Preparation
-    workflow.add_edge("get_user", "prepare")
 
     # Preparation → Agent (with error handling)
     workflow.add_conditional_edges(

@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Literal, Optional
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import StreamWriter
 
-from app.config.constants.arangodb import CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.agent_prompt import (
     create_agent_messages,
@@ -27,6 +26,15 @@ MARKDOWN_MIN_LENGTH = 100
 HEADER_LENGTH_THRESHOLD = 50
 STREAMING_CHUNK_DELAY = 0.01  # Delay for streaming effect
 STREAMING_FALLBACK_DELAY = 0.02  # Delay for fallback streaming
+
+# Context Management Constants
+LOOP_DETECTION_MIN_CALLS = 5
+LOOP_DETECTION_MAX_UNIQUE_TOOLS = 2
+MAX_ITERATION_COUNT = 15
+MAX_CONTEXT_CHARS = 100000  # Rough estimate: 100k chars ≈ 25k tokens
+MAX_MESSAGES_HISTORY = 20
+MAX_TOOL_RESULT_LENGTH = 2000
+MAX_TOOLS_PER_ITERATION = 5
 
 # ============================================================================
 # PHASE 1: ENHANCED QUERY ANALYSIS
@@ -207,24 +215,17 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
 # ============================================================================
 
 async def get_user_info_node(state: ChatState) -> ChatState:
-    """Fetch user info if needed"""
+    """User info is now populated at router level - this is a no-op"""
     try:
         logger = state["logger"]
-        arango_service = state["arango_service"]
 
-        if state.get("error") or not state["send_user_info"]:
-            return state
+        # User and org info are already populated in the initial state
+        # This node is kept for compatibility but doesn't need to do anything
+        logger.debug("User and org info already populated at router level")
 
-        user_task = arango_service.get_user_by_user_id(state["user_id"])
-        org_task = arango_service.get_document(state["org_id"], CollectionNames.ORGS.value)
-
-        user_info, org_info = await asyncio.gather(user_task, org_task)
-
-        state["user_info"] = user_info
-        state["org_info"] = org_info
         return state
     except Exception as e:
-        logger.error(f"Error fetching user info: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_user_info_node: {str(e)}", exc_info=True)
         return state
 
 
@@ -233,13 +234,13 @@ async def get_user_info_node(state: ChatState) -> ChatState:
 # ============================================================================
 
 def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatState:
-    """Prepare enhanced agent prompt with dual-mode formatting instructions"""
+    """Prepare enhanced agent prompt with dual-mode formatting instructions and user context"""
     try:
         logger = state["logger"]
         if state.get("error"):
             return state
 
-        logger.debug("🎯 Preparing agent prompt with dual-mode support")
+        logger.debug("🎯 Preparing agent prompt with dual-mode support and user context")
 
         is_complex = state.get("query_analysis", {}).get("is_complex", False)
         complexity_types = state.get("query_analysis", {}).get("complexity_types", [])
@@ -261,6 +262,14 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
         state["expected_response_mode"] = expected_mode
         state["requires_planning"] = is_complex
         state["has_internal_knowledge"] = has_internal_knowledge
+
+        # Log user context availability
+        user_info = state.get("user_info")
+        org_info = state.get("org_info")
+        if user_info and org_info:
+            logger.info(f"👤 User context available: {user_info.get('userEmail', 'N/A')} ({org_info.get('accountType', 'N/A')})")
+        else:
+            logger.warning("⚠️ No user context available")
 
         # Create messages with planning context
         messages = create_agent_messages(state)
@@ -306,6 +315,22 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         is_complex = state.get("requires_planning", False)
         has_internal_knowledge = state.get("has_internal_knowledge", False)
 
+        # Loop detection and prevention
+        recent_tool_calls = state.get("all_tool_results", [])[-10:]  # Last 10 tool calls
+        if len(recent_tool_calls) >= LOOP_DETECTION_MIN_CALLS:
+            # Check for repeated tool calls
+            tool_names = [result.get("tool_name", "") for result in recent_tool_calls]
+            if len(set(tool_names)) <= LOOP_DETECTION_MAX_UNIQUE_TOOLS and len(tool_names) >= LOOP_DETECTION_MIN_CALLS:
+                logger.warning(f"⚠️ Loop detected: {tool_names[-LOOP_DETECTION_MIN_CALLS:]} - forcing termination")
+                state["error"] = {"status_code": 400, "detail": "Loop detected - too many repeated tool calls"}
+                return state
+
+        # Context length check
+        if iteration_count > MAX_ITERATION_COUNT:
+            logger.warning(f"⚠️ High iteration count ({iteration_count}) - forcing termination")
+            state["error"] = {"status_code": 400, "detail": "Too many iterations - context may be too large"}
+            return state
+
         # Status messages
         if iteration_count == 0 and is_complex:
             writer({"event": "status", "data": {"status": "planning", "message": "Creating execution plan..."}})
@@ -348,6 +373,14 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
 
         # Clean messages
         cleaned_messages = _clean_message_history(state["messages"])
+
+        # Check context length before LLM call
+        total_chars = sum(len(str(msg.content)) for msg in cleaned_messages if hasattr(msg, 'content'))
+        if total_chars > MAX_CONTEXT_CHARS:  # Rough estimate: 100k chars ≈ 25k tokens
+            logger.warning(f"⚠️ Context too large ({total_chars} chars) - truncating further")
+            # Keep only the most recent messages
+            cleaned_messages = cleaned_messages[:10]  # Keep only last 10 messages
+            logger.info(f"Truncated to {len(cleaned_messages)} messages")
 
         # Call LLM
         logger.debug(f" Invoking LLM (iteration {iteration_count})")
@@ -421,6 +454,11 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
             return state
 
         tool_calls = last_ai_message.tool_calls
+
+        # Limit tool calls per iteration
+        if len(tool_calls) > MAX_TOOLS_PER_ITERATION:
+            logger.warning(f"⚠️ Too many tool calls ({len(tool_calls)}) - limiting to {MAX_TOOLS_PER_ITERATION}")
+            tool_calls = tool_calls[:MAX_TOOLS_PER_ITERATION]
 
         # Get available tools
         from app.modules.agents.qna.tool_registry import get_agent_tools
@@ -1123,39 +1161,90 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
 
 
 def _clean_message_history(messages) -> List[Any]:
-    """Clean message history"""
+    """Clean message history with context length management"""
     validated_messages = _validate_and_fix_message_sequence(messages)
     cleaned = []
 
-    for i, msg in enumerate(validated_messages):
+    # Keep system message (first message)
+    if validated_messages and isinstance(validated_messages[0], SystemMessage):
+        cleaned.append(validated_messages[0])
+
+    # Keep last N messages to manage context length
+    recent_messages = validated_messages[1:] if validated_messages else []
+
+    if len(recent_messages) > MAX_MESSAGES_HISTORY:
+        # Keep the most recent messages
+        recent_messages = recent_messages[-MAX_MESSAGES_HISTORY:]
+
+    # Process recent messages and summarize tool results
+    for i, msg in enumerate(recent_messages):
         if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
-
         elif hasattr(msg, 'tool_call_id'):
-            found_matching_ai = False
-            for j in range(i-1, -1, -1):
-                prev_msg = validated_messages[j]
-                if isinstance(prev_msg, AIMessage):
-                    if hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
-                        tool_call_ids = [
-                            tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
-                            for tc in prev_msg.tool_calls
-                        ]
-
-                        if msg.tool_call_id in tool_call_ids:
-                            found_matching_ai = True
-                            break
-                    else:
-                        break
-                elif hasattr(prev_msg, 'tool_call_id'):
-                    continue
-                else:
-                    break
-
-            if found_matching_ai:
-                cleaned.append(msg)
+            # Summarize tool results to reduce context
+            summarized_msg = _summarize_tool_result(msg)
+            if summarized_msg:
+                cleaned.append(summarized_msg)
 
     return cleaned
+
+
+def _summarize_tool_result(tool_result_msg) -> Optional[object]:
+    """Summarize tool results to reduce context length"""
+    try:
+        from langchain_core.messages import ToolMessage
+
+        # Extract tool result content
+        if hasattr(tool_result_msg, 'content'):
+            content = tool_result_msg.content
+        else:
+            content = str(tool_result_msg)
+
+        # If content is too long, summarize it
+        if len(content) > MAX_TOOL_RESULT_LENGTH:
+            # Try to extract key information
+            if isinstance(content, str):
+                # For JSON responses, try to extract key fields
+                try:
+                    import json
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        # Create summary with key fields
+                        summary_fields = {}
+                        for key in ['id', 'subject', 'snippet', 'from', 'to', 'date', 'status', 'result']:
+                            if key in data:
+                                summary_fields[key] = data[key]
+
+                        # Add truncated content if still too long
+                        summary_content = json.dumps(summary_fields, indent=2)
+                        if len(summary_content) > MAX_TOOL_RESULT_LENGTH:
+                            summary_content = summary_content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+
+                        content = summary_content
+                    else:
+                        content = content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+                except (json.JSONDecodeError, TypeError):
+                    content = content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+            else:
+                content = str(content)[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+
+        # Create summarized tool message
+        return ToolMessage(
+            content=content,
+            tool_call_id=tool_result_msg.tool_call_id
+        )
+
+    except Exception:
+        # If summarization fails, return truncated original
+        try:
+            from langchain_core.messages import ToolMessage
+            content = str(tool_result_msg.content)[:1000] + "... [TRUNCATED]"
+            return ToolMessage(
+                content=content,
+                tool_call_id=tool_result_msg.tool_call_id
+            )
+        except Exception:
+            return None
 
 
 # ============================================================================

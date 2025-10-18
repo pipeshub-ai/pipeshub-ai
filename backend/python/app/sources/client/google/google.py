@@ -87,6 +87,7 @@ class GoogleClient(IClient):
         version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
         scopes: Optional[List[str]] = None, # Scopes of the service to build the client
         calendar_id: Optional[str] = 'primary', # Calendar ID to build the client for
+        user_email: Optional[str] = None, # User email for enterprise impersonation
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service
@@ -146,7 +147,8 @@ class GoogleClient(IClient):
                         service_account.Credentials.from_service_account_info(
                             saved_credentials,
                             scopes=merge_scopes(GOOGLE_CONNECTOR_ENTERPRISE_SCOPES_FULL + GOOGLE_PARSER_SCOPES, scopes),
-                            subject=admin_email
+                            # Impersonate the specific user when provided; otherwise default to admin
+                            subject=(user_email or admin_email)
                         )
                     )
             except Exception as e:
@@ -155,6 +157,7 @@ class GoogleClient(IClient):
                     details={
                         "service_name": service_name,
                         "admin_email": admin_email,
+                        "user_email": user_email,
                         "error": str(e),
                     },
                 )

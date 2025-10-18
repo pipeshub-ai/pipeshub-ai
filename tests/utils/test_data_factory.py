@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from faker import Faker # type: ignore
+from faker import Faker  # type: ignore
 
 fake: Faker = Faker()
 

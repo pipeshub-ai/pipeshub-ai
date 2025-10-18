@@ -5,9 +5,22 @@ This module provides fluent assertion helpers for validating HTTP responses,
 making tests more readable and maintainable.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from httpx import Response # type: ignore
+from httpx import Response  # type: ignore
+
+# HTTP Status Code Constants
+HTTP_OK = 200
+HTTP_CREATED = 201
+HTTP_BAD_REQUEST = 400
+HTTP_UNAUTHORIZED = 401
+HTTP_FORBIDDEN = 403
+HTTP_NOT_FOUND = 404
+HTTP_INTERNAL_SERVER_ERROR = 500
+HTTP_SUCCESS_MIN = 200
+HTTP_SUCCESS_MAX = 300
+HTTP_ERROR_MIN = 400
+HTTP_ERROR_MAX = 600
 
 
 class ResponseAssertion:
@@ -22,7 +35,7 @@ class ResponseAssertion:
             .assert_header_present("Content-Type")
     """
     
-    def __init__(self, response: Response):
+    def __init__(self, response: Response) -> None:
         """
         Initialize response assertion.
         
@@ -76,8 +89,8 @@ class ResponseAssertion:
         Returns:
             Self for method chaining
         """
-        if not 200 <= self.response.status_code < 300:
-            error_msg = message or f"Expected 2xx status, got {self.response.status_code}"
+        if not HTTP_SUCCESS_MIN <= self.response.status_code < HTTP_SUCCESS_MAX:
+            error_msg = message or f"Expected 2xx status, got {self.response.status_code}"        
             error_msg += f"\nResponse body: {self.response.text[:200]}"
             raise AssertionError(error_msg)
         return self
@@ -92,7 +105,7 @@ class ResponseAssertion:
         Returns:
             Self for method chaining
         """
-        if not (400 <= self.response.status_code < 600):
+        if not (HTTP_ERROR_MIN <= self.response.status_code < HTTP_ERROR_MAX):
             error_msg = message or f"Expected error status (4xx/5xx), got {self.response.status_code}"
             raise AssertionError(error_msg)
         return self
@@ -293,7 +306,7 @@ class ResponseAssertion:
         # For now, this is a placeholder
         return self
     
-    def get_json(self) -> Any:
+    def get_json(self) -> Union[Dict[str, Any], List[Any]]:
         """
         Get response JSON data.
         
