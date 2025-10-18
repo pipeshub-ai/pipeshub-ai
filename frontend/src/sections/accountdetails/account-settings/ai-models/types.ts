@@ -11,6 +11,7 @@ export interface ConfiguredModel {
   isActive: boolean;
   isDefault: boolean;
   isMultimodal?: boolean;
+  isReasoning?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -29,6 +30,7 @@ export interface ModelData {
   provider: string;
   configuration: Record<string, any>;
   isMultimodal?: boolean;
+  isReasoning?: boolean;
   isDefault?: boolean;
   name?: string;
 }

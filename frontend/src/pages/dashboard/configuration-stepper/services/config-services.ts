@@ -28,6 +28,7 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
               providerType: model.provider,
               modelType: model.provider, // For backward compatibility
               isMultimodal: model.isMultimodal || false,
+              isReasoning: model.isReasoning || false,
             };
           }
 
@@ -162,7 +163,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         }
 
         // Remove meta fields and prepare clean config
-        const { providerType, modelType, _provider, isMultimodal, ...cleanConfig } = config;
+        const { providerType, modelType, _provider, isMultimodal, isReasoning, ...cleanConfig } = config;
         const provider = providerType || modelType;
 
         if (!provider) {
@@ -175,6 +176,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
           provider,
           configuration: cleanConfig,
           isMultimodal: Boolean(isMultimodal),
+          isReasoning: Boolean(isReasoning),
           isDefault: true,
         };
 
@@ -304,7 +306,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
 };
 
 export const updateOnboardingAiModelsConfig = async (
-  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null,
+  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean; isReasoning?: boolean }[] | null,
   embeddingConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null
 ): Promise<any> => {
   try {
@@ -318,6 +320,7 @@ export const updateOnboardingAiModelsConfig = async (
           provider: config.provider,
           configuration: config.configuration,
           isMultimodal: config.isMultimodal || false,
+          isReasoning: config.isReasoning || false,
           isDefault: true,
         })
       );
@@ -370,6 +373,6 @@ export const getSmtpConfig = () => getUniversalConfig('smtp');
 export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfig('smtp', config);
 
 export const updateStepperAiModelsConfig = async (
-  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null,
+  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean; isReasoning?: boolean }[] | null,
   embeddingConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null
 ): Promise<any> => updateOnboardingAiModelsConfig(llmConfig, embeddingConfig);

@@ -6,6 +6,7 @@ import serverIcon from '@iconify-icons/mdi/server';
 import cubeIcon from '@iconify-icons/mdi/cube-outline';
 import mailLineIcon from '@iconify-icons/ri/mail-line';
 import mediaIcon from '@iconify-icons/mdi/image';
+import brainIcon from '@iconify-icons/mdi/brain';
 import type { IconifyIcon } from '@iconify/react';
 
 export interface FieldTemplate {
@@ -150,6 +151,17 @@ export const FIELD_TEMPLATES = {
     icon: mediaIcon,
     required: false,
     validation: z.boolean().optional().default(true),
+    gridSize: { xs: 12, sm: 6 },
+  },
+
+  isReasoning: {
+    name: 'isReasoning',
+    label: 'Reasoning',
+    type: 'checkbox' as const,
+    placeholder: 'Supports reasoning',
+    icon: brainIcon,
+    required: false,
+    validation: z.boolean().optional().default(false),
     gridSize: { xs: 12, sm: 6 },
   },
 
