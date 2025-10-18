@@ -39,6 +39,14 @@ export const createUrlValidator = (optional: boolean = true) => {
 
 export const URL_VALIDATOR = createUrlValidator(true);
 
+// Common field configuration for basic API providers
+const COMMON_API_FIELDS = [
+  'apiKey',
+  'model',
+  { name: 'isMultimodal', required: false, defaultValue: true },
+  { name: 'isReasoning', required: false, defaultValue: false },
+] as const;
+
 export const ENHANCED_FIELD_TEMPLATES = {
   ...FIELD_TEMPLATES,
   baseUrl: {
@@ -60,21 +68,21 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials to get started.',
     modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'gemini',
     label: 'Gemini API',
     description: 'Enter your Gemini API credentials to get started.',
     modelPlaceholder: 'e.g., gemini-2.5-flash',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'anthropic',
     label: 'Anthropic API',
     description: 'Enter your Anthropic API credentials to get started.',
     modelPlaceholder: 'e.g., claude-3-7-sonnet-20250219',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'azureOpenAI',
@@ -134,14 +142,14 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     label: 'xAI',
     description: 'Enter your XAI API credentials to get started.',
     modelPlaceholder: 'e.g. grok-3-latest',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'mistral',
     label: 'Mistral',
     description: 'Enter your Mistral API credentials to get started.',
     modelPlaceholder: 'e.g. mistral-large-latest',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'together',
@@ -166,21 +174,21 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Groq',
     description: 'Enter your Groq API credentials to get started.',
     modelPlaceholder: 'e.g. meta-llama/llama-4-scout-17b-16e-instruct',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'fireworks',
     label: 'Fireworks',
     description: 'Enter your Fireworks API credentials to get started.',
     modelPlaceholder: 'e.g. accounts/fireworks/models/kimi-k2-instruct',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'cohere',
     label: 'Cohere',
     description: 'Enter your Cohere API credentials to get started.',
     modelPlaceholder: 'e.g. command-a-03-2025',
-    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }, { name: 'isReasoning', required: false, defaultValue: false }],
+    fields: COMMON_API_FIELDS,
   },
   {
     id: 'openAICompatible',
