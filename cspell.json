@@ -46,6 +46,7 @@
         "pkcs",
         "Qdrant",
         "reranker",
+        "restli",
         "roleassignments",
         "scim",
         "smime",
@@ -57,7 +58,8 @@
         "usergroups",
         "userstore",
         "vectordb",
-        "webresource"
+        "webresource",
+        "Zammad"
     ],
     "ignoreWords": [],
     "import": []
