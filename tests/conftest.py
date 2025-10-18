@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Generator
 
-import pytest # type: ignore
-from faker import Faker # type: ignore
+import pytest  # type: ignore
+from faker import Faker  # type: ignore
 
 # Add the project root to Python path
 project_root: Path = Path(__file__).parent.parent
@@ -102,7 +102,7 @@ def temp_dir(tmp_path) -> Path:
 # ============================================================================
 
 
-def pytest_configure(config):
+def pytest_configure(config) -> None:
     """
     Configure pytest with custom settings.
     
@@ -118,7 +118,7 @@ def pytest_configure(config):
     logs_dir.mkdir(exist_ok=True)
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config, items) -> None:
     """
     Modify test items after collection.
     
@@ -141,7 +141,7 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.auth)
 
 
-def pytest_runtest_setup(item):
+def pytest_runtest_setup(item) -> None:
     """
     Run setup before each test.
     
@@ -154,7 +154,7 @@ def pytest_runtest_setup(item):
             pytest.skip("Skipping external test (SKIP_EXTERNAL_TESTS=true)")
 
 
-def pytest_runtest_teardown(item, nextitem):
+def pytest_runtest_teardown(item, nextitem) -> None:
     """
     Run teardown after each test.
     

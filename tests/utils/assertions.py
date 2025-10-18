@@ -7,7 +7,7 @@ making tests more readable and maintainable.
 
 from typing import Any, Dict, List, Optional
 
-from httpx import Response # type: ignore
+from httpx import Response  # type: ignore
 
 
 class ResponseAssertion:
@@ -22,7 +22,7 @@ class ResponseAssertion:
             .assert_header_present("Content-Type")
     """
     
-    def __init__(self, response: Response):
+    def __init__(self, response: Response) -> None:
         """
         Initialize response assertion.
         

@@ -6,8 +6,8 @@ Provides fixtures for authentication tokens, user credentials, and auth helpers.
 
 from typing import Dict, Optional
 
-import pytest # type: ignore
-from httpx import Response # type: ignore
+import pytest  # type: ignore
+from httpx import Response  # type: ignore
 
 from tests.config.settings import get_settings
 from tests.utils.http_client import HTTPClient
@@ -152,7 +152,7 @@ def admin_auth_headers(admin_auth_token: Optional[str]) -> Dict[str, str]:
 class AuthHelper:
     """Helper class for authentication operations in tests."""
     
-    def __init__(self, http_client: HTTPClient):
+    def __init__(self, http_client: HTTPClient) -> None:
         """
         Initialize auth helper.
         

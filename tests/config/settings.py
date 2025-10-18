@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional
 
-from pydantic import BaseModel, Field, field_validator # type: ignore
+from pydantic import BaseModel, Field, field_validator  # type: ignore
 
 
 class Environment(str, Enum):
@@ -231,7 +231,7 @@ def get_settings() -> TestSettings:
     return _settings
 
 
-def reset_settings():
+def reset_settings() -> None:
     """Reset settings singleton (useful for testing)."""
     global _settings
     _settings = None

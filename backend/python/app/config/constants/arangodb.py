@@ -46,7 +46,9 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
+
     DROPBOX = "DROPBOX"
+    BOOKSTACK = "BOOKSTACK"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -54,6 +56,7 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    BOOKSTACK = "BookStack"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"

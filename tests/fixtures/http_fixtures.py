@@ -4,13 +4,18 @@ HTTP client fixtures for integration tests.
 Provides pre-configured HTTP clients for synchronous and asynchronous testing.
 """
 
-from typing import AsyncGenerator, Generator
+from typing import (
+    AsyncGenerator,
+    Generator,
+    Optional,  # type: ignore
+)
 
-import pytest # type: ignore
-from httpx import Response # type: ignore
-from typing import Optional # type: ignore
+import pytest  # type: ignore
+from httpx import Response  # type: ignore
+
 from tests.config.settings import get_settings
 from tests.utils.http_client import AsyncHTTPClient, HTTPClient
+
 
 @pytest.fixture(scope="function")
 def http_client() -> Generator[HTTPClient, None, None]:
