@@ -1367,7 +1367,6 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             response_text = response.text()
-            print("markdown:\n",response_text)
             return BookStackResponse(success=True, data={'markdown': response_text})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
