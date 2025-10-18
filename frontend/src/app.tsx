@@ -19,6 +19,8 @@ import { MotionLazy } from 'src/components/animate/motion-lazy';
 import { SettingsDrawer, defaultSettings, SettingsProvider } from 'src/components/settings';
 
 import { AuthProvider as JwtAuthProvider } from 'src/auth/context/jwt';
+import { ServicesHealthProvider } from 'src/context/ServicesHealthContext';
+import { HealthGate } from 'src/components/guard/HealthGate';
 
 import store from './store/store';
 import { ErrorProvider } from './utils/axios';
@@ -43,7 +45,11 @@ export default function App() {
                     <ProgressBar />
                     <SettingsDrawer />
                     <ErrorProvider>
-                      <Router />
+                      <ServicesHealthProvider>
+                        <HealthGate>
+                          <Router />
+                        </HealthGate>
+                      </ServicesHealthProvider>
                     </ErrorProvider>
                   </MotionLazy>
                 </AdminProvider>

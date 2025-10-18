@@ -6,7 +6,6 @@ type HealthState = {
   loading: boolean;
   healthy: boolean | null;
   services: { query: string; connector: string } | null;
-  refresh: () => Promise<void>;
 };
 
 const ServicesHealthContext = createContext<HealthState | undefined>(undefined);
@@ -15,67 +14,71 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
   const [loading, setLoading] = useState<boolean>(true);
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [services, setServices] = useState<HealthState['services']>(null);
-  const fetchedRef = useRef<boolean>(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const latestHealthyRef = useRef<boolean | null>(null);
   const toastIdRef = useRef<string | number | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchHealth = async () => {
+  // Show loading toast after a small delay to ensure toaster is mounted
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      toastIdRef.current = toast.loading('Initializing services. Please wait...', { duration: Infinity });
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Simple health check function
+  const checkHealth = async () => {
     try {
+      console.log('Checking services health...');
       const resp = await fetch(`${CONFIG.backendUrl}/api/v1/health/services`, { credentials: 'include' });
       const data = await resp.json();
       const ok = resp.ok && data?.status === 'healthy';
+      
       setHealthy(ok);
-      latestHealthyRef.current = ok;
       setServices(data?.services ?? null);
+      setLoading(false);
 
-      if (!ok) {
-        if (toastIdRef.current == null) {
-          toastIdRef.current = toast.loading('Initializing services. Please wait...', { duration: Infinity });
-        }
-      } else if (ok && toastIdRef.current != null) {
+      // Update toast based on result
+      if (ok && toastIdRef.current != null) {
         toast.success('Services are ready', { id: toastIdRef.current });
         toastIdRef.current = null;
+        // Stop polling when services are healthy
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      } else if (!ok) {
+        // Keep showing loading toast while polling
+        if (toastIdRef.current == null) {
+          toastIdRef.current = toast.loading('Waiting for services to become ready...', { duration: Infinity });
+        }
       }
     } catch (err) {
+      console.error('Health check failed:', err);
       setHealthy(false);
-      latestHealthyRef.current = false;
       setServices(null);
-
-      if (toastIdRef.current == null) {
-        toastIdRef.current = toast.loading('Initializing services. Please wait...', { duration: Infinity });
+      setLoading(false);
+      
+      // Show error toast and keep polling
+      if (toastIdRef.current != null) {
+        toast.error('Failed to connect to services. Retrying...', { id: toastIdRef.current });
+        toastIdRef.current = null;
       }
-    } finally {
-      // Keep loading until we are healthy
-      // ok may be undefined here if an exception occurred; treat as not ok
-      // To avoid TS complaint, recompute from latestHealthyRef
-      setLoading(!(latestHealthyRef.current === true));
     }
   };
 
+  // Start polling on mount
   useEffect(() => {
-    if (fetchedRef.current) {
-      return () => {};
-    }
-    fetchedRef.current = true;
-    const startPolling = async () => {
-      await fetchHealth();
-      // Continue polling until healthy === true
-      if (latestHealthyRef.current !== true) {
-        pollRef.current = setInterval(async () => {
-          await fetchHealth();
-          if (latestHealthyRef.current === true && pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-        }, 3000);
-      }
-    };
-    startPolling();
+    // Initial check
+    checkHealth();
+    
+    // Start polling every 5 seconds
+    pollIntervalRef.current = setInterval(checkHealth, 5000);
+    
     return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
       }
       if (toastIdRef.current != null) {
         toast.dismiss(toastIdRef.current);
@@ -84,13 +87,7 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
     };
   }, []);
 
-  const value = useMemo<HealthState>(() => ({ loading, healthy, services, refresh: fetchHealth }), [loading, healthy, services]);
-
-  // Expose health status globally for non-React consumers (e.g., axios interceptors)
-  useEffect(() => {
-    (window as any).__servicesHealth = { loading, healthy };
-    return () => { delete (window as any).__servicesHealth; };
-  }, [loading, healthy]);
+  const value = useMemo<HealthState>(() => ({ loading, healthy, services }), [loading, healthy, services]);
 
   return <ServicesHealthContext.Provider value={value}>{children}</ServicesHealthContext.Provider>;
 }

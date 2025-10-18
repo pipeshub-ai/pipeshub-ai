@@ -1,5 +1,4 @@
-import type {
-  ReactNode} from 'react';
+import type { ReactNode } from 'react';
 import type { AxiosRequestConfig } from 'axios';
 
 import axios from 'axios';
@@ -59,43 +58,6 @@ interface ErrorProviderProps {
 
 // Create axios instance with config
 const axiosInstance = axios.create({ baseURL: CONFIG.backendUrl });
-
-// Request interceptor: pause non-health requests until services are healthy
-function waitForHealthy(maxMs = 15000): Promise<void> {
-  return new Promise((resolve) => {
-    const started = Date.now();
-    const check = (): void => {
-      const health = (window as any).__servicesHealth as { loading: boolean; healthy: boolean | null } | undefined;
-      if (health && health.healthy === true) {
-        resolve();
-        return;
-      }
-      if (Date.now() - started > maxMs) {
-        resolve();
-        return;
-      }
-      setTimeout(check, 200);
-    };
-    check();
-  });
-}
-
-axiosInstance.interceptors.request.use(async (config) => {
-  try {
-    const url = (config.url || '').toString();
-    // Allow health/services endpoint to pass through
-    const isServicesHealth = url.includes('/api/v1/health/services');
-    if (isServicesHealth) return config;
-
-    const health = (window as any).__servicesHealth as { loading: boolean; healthy: boolean | null } | undefined;
-    if (health && (health.loading || health.healthy === false)) {
-      await waitForHealthy(15000);
-    }
-  } catch {
-    // ignore and proceed
-  }
-  return config;
-});
 
 // Enhanced error handling in interceptor
 axiosInstance.interceptors.response.use(
@@ -173,10 +135,11 @@ axiosInstance.interceptors.response.use(
     else if (error instanceof Error) {
       processedError.message = error.message;
     }
+    
 
     // Try to show error in snackbar if ErrorContext is available
     try {
-      const errorContext = (window as any).__errorContext;
+      const errorContext = window.__errorContext;
       if (errorContext && errorContext.showError) {
         errorContext.showError(processedError.message);
       }
@@ -209,9 +172,9 @@ export const ErrorProvider: React.FC<ErrorProviderProps> = ({ children }) => {
 
   // Make error handler available globally
   useEffect(() => {
-    (window as any).__errorContext = contextValue;
+    window.__errorContext = contextValue;
     return () => {
-      delete (window as any).__errorContext;
+      delete window.__errorContext;
     };
   }, [contextValue]);
 

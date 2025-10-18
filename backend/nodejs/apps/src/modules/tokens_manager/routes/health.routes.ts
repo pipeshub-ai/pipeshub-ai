@@ -133,8 +133,11 @@ export function createHealthRouter(
         axios.get(connectorHealthUrl, { timeout: 3000 }),
       ]);
 
-      const aiOk = aiResp.status === 'fulfilled' && aiResp.value.status === 200 && aiResp.value.data?.status === 'healthy';
-      const connectorOk = connectorResp.status === 'fulfilled' && connectorResp.value.status === 200 && connectorResp.value.data?.status === 'healthy';
+      const isServiceHealthy = (res: PromiseSettledResult<any>) => 
+        res.status === 'fulfilled' && res.value.status === 200 && res.value.data?.status === 'healthy';
+      
+      const aiOk = isServiceHealthy(aiResp);
+      const connectorOk = isServiceHealthy(connectorResp);
 
       const overallHealthy = aiOk && connectorOk;
 
