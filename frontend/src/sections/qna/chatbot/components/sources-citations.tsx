@@ -110,7 +110,6 @@ const getFileIcon = (extension: string): IconifyIcon =>
 
 const isDocViewable = (extension: string): boolean => {
   if (!extension) return false;
-  console.log(extension, FILE_CONFIG.viewableExtensions);
   return FILE_CONFIG.viewableExtensions.includes(extension?.toLowerCase());
 };
 
@@ -406,9 +405,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   const connectorData = useMemo(() => {
     const allConnectors = [...activeConnectors];
     const data: { [key: string]: { iconPath: string; color?: string } } = {};
-    console.log(allConnectors);
     allConnectors.forEach((connector) => {
-      console.log(connector);
       data[connector.name.toUpperCase()] = {
         iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
       };
