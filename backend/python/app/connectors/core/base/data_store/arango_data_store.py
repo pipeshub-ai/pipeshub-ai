@@ -101,6 +101,9 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
+    
+    async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
+        return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
@@ -168,16 +171,12 @@ class ArangoTransactionStore(TransactionStore):
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
 
-                print("\n!!!!!!!!!!!!!! B1 updating to records")
                 # Upsert base record
                 await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
-                print("\n!!!!!!!!!!!!!! B2 updating to collection:", config["collection"])
                 # Upsert specific record type if it has a specific method
                 await self.arango_service.batch_upsert_nodes([record.to_arango_record()], collection=config["collection"], transaction=self.txn)
-                print("\n!!!!!!!!!!!!!! B3 updating to edges")
                 # Create IS_OF_TYPE edge
                 await self.arango_service.batch_create_edges([is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=self.txn)
-                print("\n!!!!!!!!!!!!!! B4 All done!")
 
             self.logger.info(" Successfully upserted records ")
             return True
