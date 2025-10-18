@@ -210,7 +210,6 @@ class DocuSignRESTClientViaOAuth:
         self.api_client: Optional[ApiClient] = None
         self.token_expiry: Optional[float] = None  # Unix timestamp when token expires
         self.token_buffer_seconds: int = 300  # Refresh 5 minutes before expiry
-        self.api_client: Optional[ApiClient] = None
 
     def get_authorization_url(
         self, scopes: Optional[list[str]] = None, state: Optional[str] = None

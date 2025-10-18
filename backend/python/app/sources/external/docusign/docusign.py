@@ -55,7 +55,7 @@ def handle_api_errors(func: Callable) -> Callable:
     """
 
     @wraps(func)
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args: Any, **kwargs: Any) -> DocuSignResponse:
         try:
             # Call the original async function
             result = await func(*args, **kwargs)
@@ -124,12 +124,12 @@ class DocuSignDataSource:
 
     @handle_api_errors
     async def accounts_get_account(
-        self, accountId: str, include_account_settings: Optional[bool] = None
+        self, account_id: str, include_account_settings: Optional[bool] = None
     ) -> DocuSignResponse:
         """Retrieves the account information for a single account.
 
         Args:
-        accountId: The external account ID (GUID)
+        account_id: The external account ID (GUID)
         include_account_settings: When true, includes account settings
 
         Returns:
@@ -140,7 +140,7 @@ class DocuSignDataSource:
             options["include_account_settings"] = str(include_account_settings).lower()
 
         account_info = await asyncio.to_thread(
-            self.accounts_api.get_account_information, account_id=accountId, **options
+            self.accounts_api.get_account_information, account_id=account_id, **options
         )
         return DocuSignResponse(success=True, data=account_info.to_dict())
 
@@ -210,12 +210,12 @@ class DocuSignDataSource:
 
     @handle_api_errors
     async def accounts_delete_account(
-        self, accountId: str, redact_user_data: Optional[str] = None
+        self, account_id: str, redact_user_data: Optional[str] = None
     ) -> DocuSignResponse:
         """Deletes the specified account.
 
         Args:
-        accountId: The external account ID (GUID)
+        account_id: The external account ID (GUID)
         redact_user_data: Option to redact user data ('true'/'false')
 
         Returns:
@@ -226,10 +226,10 @@ class DocuSignDataSource:
             options["redact_user_data"] = redact_user_data
 
         await asyncio.to_thread(
-            self.accounts_api.delete, account_id=accountId, **options
+            self.accounts_api.delete, account_id=account_id, **options
         )
         return DocuSignResponse(
-            success=True, message=f"Account {accountId} deleted successfully"
+            success=True, message=f"Account {account_id} deleted successfully"
         )
 
     @handle_api_errors
@@ -251,7 +251,7 @@ class DocuSignDataSource:
     @handle_api_errors
     async def envelopes_create_envelope(
         self,
-        accountId: str,
+        account_id: str,
         envelope_definition: Dict[str, Any],
         cdse_mode: Optional[str] = None,
         change_routing_order: Optional[str] = None,
@@ -261,7 +261,7 @@ class DocuSignDataSource:
         """Creates and sends an envelope.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             envelope_definition: Complete envelope configuration
             cdse_mode: Reserved for DocuSign
             change_routing_order: Allow routing order changes
@@ -286,7 +286,7 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.envelopes_api.create_envelope,
-            account_id=accountId,
+            account_id=account_id,
             envelope_definition=envelope_definition,
             **options,
         )
@@ -295,16 +295,16 @@ class DocuSignDataSource:
     @handle_api_errors
     async def envelopes_get_envelope(
         self,
-        accountId: str,
-        envelopeId: str,
+        account_id: str,
+        envelope_id: str,
         advanced_update: Optional[str] = None,
         include: Optional[str] = None,
     ) -> DocuSignResponse:
         """Gets the status of a single envelope.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             advanced_update: Reserved for DocuSign
             include: Additional data to include (e.g., 'recipients,documents')
 
@@ -319,8 +319,8 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.envelopes_api.get_envelope,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
@@ -328,8 +328,8 @@ class DocuSignDataSource:
     @handle_api_errors
     async def envelopes_update_envelope(
         self,
-        accountId: str,
-        envelopeId: str,
+        account_id: str,
+        envelope_id: str,
         envelope: Dict[str, Any],
         advanced_update: Optional[str] = None,
         resend_envelope: Optional[str] = None,
@@ -337,8 +337,8 @@ class DocuSignDataSource:
         """Send, void, or modify a draft envelope.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             envelope: Envelope update data
             advanced_update: Reserved for DocuSign
             resend_envelope: Resend the envelope
@@ -354,8 +354,8 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.envelopes_api.update,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             envelope=envelope,
             **options,
         )
@@ -364,7 +364,7 @@ class DocuSignDataSource:
     @handle_api_errors
     async def envelopes_list_status_changes(
         self,
-        accountId: str,
+        account_id: str,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         status: Optional[str] = None,
@@ -376,7 +376,7 @@ class DocuSignDataSource:
         """Gets status changes for one or more envelopes.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             from_date: Start date filter (ISO 8601 format)
             to_date: End date filter (ISO 8601 format)
             status: Envelope status filter (e.g., 'sent,completed')
@@ -405,15 +405,15 @@ class DocuSignDataSource:
             options["user_name"] = user_name
 
         result = await asyncio.to_thread(
-            self.envelopes_api.list_status_changes, account_id=accountId, **options
+            self.envelopes_api.list_status_changes, account_id=account_id, **options
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def envelopes_get_recipients(
         self,
-        accountId: str,
-        envelopeId: str,
+        account_id: str,
+        envelope_id: str,
         include_anchor_tab_locations: Optional[str] = None,
         include_extended: Optional[str] = None,
         include_metadata: Optional[str] = None,
@@ -422,8 +422,8 @@ class DocuSignDataSource:
         """Gets the status of recipients for an envelope.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             include_anchor_tab_locations: Include anchor tab locations
             include_extended: Include extended recipient info
             include_metadata: Include metadata
@@ -444,8 +444,8 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.envelopes_api.list_recipients,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
@@ -453,16 +453,16 @@ class DocuSignDataSource:
     @handle_api_errors
     async def envelopes_get_documents(
         self,
-        accountId: str,
-        envelopeId: str,
+        account_id: str,
+        envelope_id: str,
         include_metadata: Optional[str] = None,
         include_tabs: Optional[str] = None,
     ) -> DocuSignResponse:
         """Gets a list of envelope documents.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             include_metadata: Include document metadata
             include_tabs: Include tab information
 
@@ -477,8 +477,8 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.envelopes_api.list_documents,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
@@ -486,9 +486,9 @@ class DocuSignDataSource:
     @handle_api_errors
     async def envelopes_get_document(
         self,
-        accountId: str,
-        envelopeId: str,
-        documentId: str,
+        account_id: str,
+        envelope_id: str,
+        document_id: str,
         certificate: Optional[str] = None,
         encoding: Optional[str] = None,
         encrypt: Optional[str] = None,
@@ -499,9 +499,9 @@ class DocuSignDataSource:
         """Retrieves a document from an envelope.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
-            documentId: The document's ID
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
+            document_id: The document's ID
             certificate: Include certificate of completion
             encoding: Reserved for DocuSign
             encrypt: Reserved for DocuSign
@@ -529,9 +529,9 @@ class DocuSignDataSource:
         # This returns binary data
         result = await asyncio.to_thread(
             self.envelopes_api.get_document,
-            account_id=accountId,
-            envelope_id=envelopeId,
-            document_id=documentId,
+            account_id=account_id,
+            envelope_id=envelope_id,
+            document_id=document_id,
             **options,
         )
         # Return raw bytes - caller should handle appropriately
@@ -539,13 +539,13 @@ class DocuSignDataSource:
 
     @handle_api_errors
     async def envelopes_create_recipient_view(
-        self, accountId: str, envelopeId: str, recipient_view_request: Dict[str, Any]
+        self, account_id: str, envelope_id: str, recipient_view_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the recipient view UI (embedded signing).
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             recipient_view_request: Recipient view configuration
 
         Returns:
@@ -553,21 +553,21 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.envelopes_api.create_recipient_view,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             recipient_view_request=recipient_view_request,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def envelopes_create_sender_view(
-        self, accountId: str, envelopeId: str, return_url_request: Dict[str, Any]
+        self, account_id: str, envelope_id: str, return_url_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the sender view UI (embedded sending).
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             return_url_request: Return URL configuration
 
         Returns:
@@ -575,21 +575,21 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.envelopes_api.create_sender_view,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             return_url_request=return_url_request,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def envelopes_create_correct_view(
-        self, accountId: str, envelopeId: str, correct_view_request: Dict[str, Any]
+        self, account_id: str, envelope_id: str, correct_view_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the envelope correction UI.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             correct_view_request: Correction view configuration
 
         Returns:
@@ -597,21 +597,21 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.envelopes_api.create_correct_view,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             correct_view_request=correct_view_request,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def envelopes_create_edit_view(
-        self, accountId: str, envelopeId: str, return_url_request: Dict[str, Any]
+        self, account_id: str, envelope_id: str, return_url_request: Dict[str, Any]
     ) -> DocuSignResponse:
         """Returns a URL to the envelope edit UI.
 
         Args:
-            accountId: The external account ID (GUID)
-            envelopeId: The envelope's ID (GUID)
+            account_id: The external account ID (GUID)
+            envelope_id: The envelope's ID (GUID)
             return_url_request: Return URL configuration
 
         Returns:
@@ -619,8 +619,8 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.envelopes_api.create_edit_view,
-            account_id=accountId,
-            envelope_id=envelopeId,
+            account_id=account_id,
+            envelope_id=envelope_id,
             return_url_request=return_url_request,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
@@ -632,7 +632,7 @@ class DocuSignDataSource:
     @handle_api_errors
     async def templates_list_templates(
         self,
-        accountId: str,
+        account_id: str,
         count: Optional[str] = None,
         created_from_date: Optional[str] = None,
         created_to_date: Optional[str] = None,
@@ -660,7 +660,7 @@ class DocuSignDataSource:
         """Gets the list of templates for an account.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             count: Maximum number of results
             created_from_date: Filter by creation date (from)
             created_to_date: Filter by creation date (to)
@@ -737,19 +737,19 @@ class DocuSignDataSource:
             options["user_id"] = user_id
 
         result = await asyncio.to_thread(
-            self.templates_api.list_templates, account_id=accountId, **options
+            self.templates_api.list_templates, account_id=account_id, **options
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def templates_get_template(
-        self, accountId: str, templateId: str, include: Optional[str] = None
+        self, account_id: str, template_id: str, include: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets a template definition using its ID.
 
         Args:
-            accountId: The external account ID (GUID)
-            templateId: The template's ID (GUID)
+            account_id: The external account ID (GUID)
+            template_id: The template's ID (GUID)
             include: Additional data to include
 
         Returns:
@@ -761,20 +761,20 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.templates_api.get,
-            account_id=accountId,
-            template_id=templateId,
+            account_id=account_id,
+            template_id=template_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def templates_create_template(
-        self, accountId: str, envelope_template: Dict[str, Any]
+        self, account_id: str, envelope_template: Dict[str, Any]
     ) -> DocuSignResponse:
         """Creates a template definition.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             envelope_template: Template definition
 
         Returns:
@@ -782,20 +782,20 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.templates_api.create_template,
-            account_id=accountId,
+            account_id=account_id,
             envelope_template=envelope_template,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def templates_update_template(
-        self, accountId: str, templateId: str, envelope_template: Dict[str, Any]
+        self, account_id: str, template_id: str, envelope_template: Dict[str, Any]
     ) -> DocuSignResponse:
         """Updates an existing template.
 
         Args:
-            accountId: The external account ID (GUID)
-            templateId: The template's ID (GUID)
+            account_id: The external account ID (GUID)
+            template_id: The template's ID (GUID)
             envelope_template: Updated template data
 
         Returns:
@@ -803,30 +803,30 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.templates_api.update,
-            account_id=accountId,
-            template_id=templateId,
+            account_id=account_id,
+            template_id=template_id,
             envelope_template=envelope_template,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def templates_delete_template(
-        self, accountId: str, templateId: str
+        self, account_id: str, template_id: str
     ) -> DocuSignResponse:
         """Deletes a template.
 
         Args:
-            accountId: The external account ID (GUID)
-            templateId: The template's ID (GUID)
+            account_id: The external account ID (GUID)
+            template_id: The template's ID (GUID)
 
         Returns:
             DocuSignResponse indicating deletion success
         """
         await asyncio.to_thread(
-            self.templates_api.delete, account_id=accountId, template_id=templateId
+            self.templates_api.delete, account_id=account_id, template_id=template_id
         )
         return DocuSignResponse(
-            success=True, message=f"Template {templateId} deleted successfully"
+            success=True, message=f"Template {template_id} deleted successfully"
         )
 
     # ============================================================
@@ -836,7 +836,7 @@ class DocuSignDataSource:
     @handle_api_errors
     async def users_list_users(
         self,
-        accountId: str,
+        account_id: str,
         additional_info: Optional[str] = None,
         count: Optional[str] = None,
         email: Optional[str] = None,
@@ -852,7 +852,7 @@ class DocuSignDataSource:
         """Gets user information for an account.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             additional_info: Additional user info to include
             count: Maximum number of results
             email: Filter by exact email
@@ -893,19 +893,19 @@ class DocuSignDataSource:
             options["user_name_substring"] = user_name_substring
 
         result = await asyncio.to_thread(
-            self.users_api.list, account_id=accountId, **options
+            self.users_api.list, account_id=account_id, **options
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def users_get_user(
-        self, accountId: str, userId: str, additional_info: Optional[str] = None
+        self, account_id: str, user_id: str, additional_info: Optional[str] = None
     ) -> DocuSignResponse:
         """Gets information about a specific user.
 
         Args:
-            accountId: The external account ID (GUID)
-            userId: The user's ID (GUID)
+            account_id: The external account ID (GUID)
+            user_id: The user's ID (GUID)
             additional_info: Additional user info to include
 
         Returns:
@@ -917,20 +917,20 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.users_api.get_information,
-            account_id=accountId,
-            user_id=userId,
+            account_id=account_id,
+            user_id=user_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def users_create_user(
-        self, accountId: str, new_users_definition: Dict[str, Any]
+        self, account_id: str, new_users_definition: Dict[str, Any]
     ) -> DocuSignResponse:
         """Creates one or more users.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             new_users_definition: User creation data
 
         Returns:
@@ -938,43 +938,45 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.users_api.create,
-            account_id=accountId,
+            account_id=account_id,
             new_users_definition=new_users_definition,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def users_update_user(
-        self, accountId: str, userId: str, user: Dict[str, Any]
+        self, account_id: str, user_id: str, user: Dict[str, Any]
     ) -> DocuSignResponse:
         """Updates user information.
 
         Args:
-            accountId: The external account ID (GUID)
-            userId: The user's ID (GUID)
+            account_id: The external account ID (GUID)
+            user_id: The user's ID (GUID)
             user: Updated user data
 
         Returns:
             DocuSignResponse with update results
         """
         result = await asyncio.to_thread(
-            self.users_api.update, account_id=accountId, user_id=userId, user=user
+            self.users_api.update, account_id=account_id, user_id=user_id, user=user
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
-    async def users_delete_user(self, accountId: str, userId: str) -> DocuSignResponse:
+    async def users_delete_user(
+        self, account_id: str, user_id: str
+    ) -> DocuSignResponse:
         """Closes a user's account membership.
 
         Args:
-            accountId: The external account ID (GUID)
-            userId: The user's ID (GUID)
+            account_id: The external account ID (GUID)
+            user_id: The user's ID (GUID)
 
         Returns:
             DocuSignResponse indicating deletion success
         """
         result = await asyncio.to_thread(
-            self.users_api.delete, account_id=accountId, user_id=userId
+            self.users_api.delete, account_id=account_id, user_id=user_id
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
@@ -985,7 +987,7 @@ class DocuSignDataSource:
     @handle_api_errors
     async def groups_list_groups(
         self,
-        accountId: str,
+        account_id: str,
         count: Optional[str] = None,
         group_name: Optional[str] = None,
         group_type: Optional[str] = None,
@@ -995,7 +997,7 @@ class DocuSignDataSource:
         """Gets information about groups for the account.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             count: Maximum number of results
             group_name: Filter by exact group name
             group_type: Filter by group type
@@ -1018,53 +1020,55 @@ class DocuSignDataSource:
             options["start_position"] = start_position
 
         result = await asyncio.to_thread(
-            self.groups_api.list_groups, account_id=accountId, **options
+            self.groups_api.list_groups, account_id=account_id, **options
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
-    async def groups_get_group(self, accountId: str, groupId: str) -> DocuSignResponse:
+    async def groups_get_group(
+        self, account_id: str, group_id: str
+    ) -> DocuSignResponse:
         """Gets information about a specific group.
 
         Args:
-            accountId: The external account ID (GUID)
-            groupId: The group's ID
+            account_id: The external account ID (GUID)
+            group_id: The group's ID
 
         Returns:
             DocuSignResponse with group details
         """
         result = await asyncio.to_thread(
-            self.groups_api.get_groups, account_id=accountId, group_id=groupId
+            self.groups_api.get_groups, account_id=account_id, group_id=group_id
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def groups_create_group(
-        self, accountId: str, groups: Dict[str, Any]
+        self, account_id: str, groups: Dict[str, Any]
     ) -> DocuSignResponse:
         """Creates one or more groups.
 
         Args:
-            accountId: The external account ID (GUID)
+            account_id: The external account ID (GUID)
             groups: Group creation data
 
         Returns:
             DocuSignResponse with created group details
         """
         result = await asyncio.to_thread(
-            self.groups_api.create_groups, account_id=accountId, groups=groups
+            self.groups_api.create_groups, account_id=account_id, groups=groups
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def groups_update_group(
-        self, accountId: str, groupId: str, groups: Dict[str, Any]
+        self, account_id: str, group_id: str, groups: Dict[str, Any]
     ) -> DocuSignResponse:
         """Updates group information.
 
         Args:
-            accountId: The external account ID (GUID)
-            groupId: The group's ID
+            account_id: The external account ID (GUID)
+            group_id: The group's ID
             groups: Updated group data
 
         Returns:
@@ -1072,43 +1076,43 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.groups_api.update_groups,
-            account_id=accountId,
-            group_id=groupId,
+            account_id=account_id,
+            group_id=group_id,
             groups=groups,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def groups_delete_group(
-        self, accountId: str, groupId: str
+        self, account_id: str, group_id: str
     ) -> DocuSignResponse:
         """Deletes a group.
 
         Args:
-            accountId: The external account ID (GUID)
-            groupId: The group's ID
+            account_id: The external account ID (GUID)
+            group_id: The group's ID
 
         Returns:
             DocuSignResponse indicating deletion success
         """
         result = await asyncio.to_thread(
-            self.groups_api.delete_groups, account_id=accountId, group_id=groupId
+            self.groups_api.delete_groups, account_id=account_id, group_id=group_id
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def groups_get_group_users(
         self,
-        accountId: str,
-        groupId: str,
+        account_id: str,
+        group_id: str,
         count: Optional[str] = None,
         start_position: Optional[str] = None,
     ) -> DocuSignResponse:
         """Gets group members for a specific group.
 
         Args:
-            accountId: The external account ID (GUID)
-            groupId: The group's ID
+            account_id: The external account ID (GUID)
+            group_id: The group's ID
             count: Maximum number of results
             start_position: Starting position for pagination
 
@@ -1123,21 +1127,21 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.groups_api.list_group_users,
-            account_id=accountId,
-            group_id=groupId,
+            account_id=account_id,
+            group_id=group_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def groups_add_group_users(
-        self, accountId: str, groupId: str, user_info_list: Dict[str, Any]
+        self, account_id: str, group_id: str, user_info_list: Dict[str, Any]
     ) -> DocuSignResponse:
         """Adds users to a group.
 
         Args:
-            accountId: The external account ID (GUID)
-            groupId: The group's ID
+            account_id: The external account ID (GUID)
+            group_id: The group's ID
             user_info_list: List of users to add
 
         Returns:
@@ -1145,21 +1149,21 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.groups_api.update_group_users,
-            account_id=accountId,
-            group_id=groupId,
+            account_id=account_id,
+            group_id=group_id,
             user_info_list=user_info_list,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
 
     @handle_api_errors
     async def groups_delete_group_users(
-        self, accountId: str, groupId: str, user_info_list: Dict[str, Any]
+        self, account_id: str, group_id: str, user_info_list: Dict[str, Any]
     ) -> DocuSignResponse:
         """Removes users from a group.
 
         Args:
-            accountId: The external account ID (GUID)
-            groupId: The group's ID
+            account_id: The external account ID (GUID)
+            group_id: The group's ID
             user_info_list: List of users to remove
 
         Returns:
@@ -1167,8 +1171,8 @@ class DocuSignDataSource:
         """
         result = await asyncio.to_thread(
             self.groups_api.delete_group_users,
-            account_id=accountId,
-            group_id=groupId,
+            account_id=account_id,
+            group_id=group_id,
             user_info_list=user_info_list,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
@@ -1180,8 +1184,8 @@ class DocuSignDataSource:
     @handle_api_errors
     async def bulk_envelopes_get_batch_status(
         self,
-        accountId: str,
-        batchId: str,
+        account_id: str,
+        batch_id: str,
         count: Optional[str] = None,
         include: Optional[str] = None,
         start_position: Optional[str] = None,
@@ -1189,8 +1193,8 @@ class DocuSignDataSource:
         """Gets the status of a bulk send batch.
 
         Args:
-            accountId: The external account ID (GUID)
-            batchId: The batch ID (GUID)
+            account_id: The external account ID (GUID)
+            batch_id: The batch ID (GUID)
             count: Maximum number of results
             include: Additional data to include
             start_position: Starting position for pagination
@@ -1208,8 +1212,8 @@ class DocuSignDataSource:
 
         result = await asyncio.to_thread(
             self.bulk_envelopes_api.get,
-            account_id=accountId,
-            batch_id=batchId,
+            account_id=account_id,
+            batch_id=batch_id,
             **options,
         )
         return DocuSignResponse(success=True, data=result.to_dict())
