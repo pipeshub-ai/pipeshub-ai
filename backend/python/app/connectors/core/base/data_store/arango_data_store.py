@@ -76,7 +76,7 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
-        return await self.arango_service.get_user_by_user_id(user_id, transaction=self.txn)
+        return await self.arango_service.get_user_by_user_id(user_id)
 
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
