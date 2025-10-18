@@ -83,8 +83,6 @@ async def test_run() -> None:
         logger.info("You can generate a token from BookStack user settings -> API Tokens")
         return
 
-    api_token = f"{bookstack_token_id}:{bookstack_token_secret}"
-
     config = {
         "auth": {
             "base_url": bookstack_base_url,
@@ -107,6 +105,7 @@ async def test_run() -> None:
     logger.info(f"\nDEBUG: All keys in store: {all_keys}")
 
     # 4. Create and run the BookStack connector
+    bookstack_connector = None
     try:
         bookstack_connector = await BookStackConnector.create_connector(
             logger, 
@@ -134,9 +133,8 @@ async def test_run() -> None:
     except Exception as e:
         logger.error(f"An error occurred during the BookStack sync: {e}", exc_info=True)
     finally:
-        # Clean up resources
-        if 'bookstack_connector' in locals():
-            bookstack_connector.cleanup()
+        if bookstack_connector:
+            bookstack_connector.cleanup()   
 
 
 if __name__ == "__main__":
@@ -147,8 +145,9 @@ if __name__ == "__main__":
     #    - Navigate to "API Tokens" section
     #    - Create a new token (you'll get a token ID and secret)
     # 3. Set environment variables:
-    #    export BOOKSTACK_API_URL='https://your-bookstack-instance.com'
-    #    export BOOKSTACK_API_TOKEN='tokenid:tokensecret'
+    #    export BOOKSTACK_BASE_URL='https://your-bookstack-instance.com'
+    #    export BOOKSTACK_TOKEN_ID='tokenid'
+    #    export BOOKSTACK_TOKEN_SECRET='tokensecret'
     # 4. Run this script:
     #    python example.py
     

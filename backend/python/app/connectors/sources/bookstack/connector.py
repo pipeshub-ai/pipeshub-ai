@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Dict, Optional, List, Tuple, Callable, Awaitable
-from datetime import datetime, timezone
 import json 
 
 from fastapi import HTTPException
@@ -326,7 +325,7 @@ class BookStackConnector(BaseConnector):
         
         if not all_bookstack_users:
             self.logger.warning("No users found in BookStack instance.")
-            return
+            return []
 
         self.logger.info(f"Successfully fetched {len(all_bookstack_users)} users from BookStack.")
         
