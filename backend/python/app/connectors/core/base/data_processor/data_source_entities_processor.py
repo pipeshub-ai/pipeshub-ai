@@ -359,10 +359,10 @@ class DataSourceEntitiesProcessor:
                             connector_name=record_group.connector_name,
                             external_id=record_group.parent_external_group_id
                         )
-                        
+
                         if parent_record_group:
                             self.logger.info(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
-                            
+
                             # Define the edge document from child to parent RecordGroup
                             parent_relation = {
                                 "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
@@ -371,7 +371,7 @@ class DataSourceEntitiesProcessor:
                                 "updatedAtTimestamp": record_group.updated_at,
                                 "entityType": "KB",
                             }
-                            
+
                             # Create the edge using the same batch method
                             await tx_store.batch_create_edges(
                                 [parent_relation], collection=CollectionNames.BELONGS_TO.value
