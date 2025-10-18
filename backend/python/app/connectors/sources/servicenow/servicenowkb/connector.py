@@ -185,6 +185,13 @@ class ServiceNowKBConnector(BaseConnector):
         self.category_sync_point = _create_sync_point(SyncDataPointType.RECORD_GROUPS)
         self.article_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
+        # Role sync points (roles are represented as special user groups)
+        self.role_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
+        self.role_assignment_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
+
+        # Role name to sys_id mapping (loaded from DB before article sync)
+        self.role_name_to_id_map: Dict[str, str] = {}
+
         # Batch processing configuration
         self.batch_size = 100
         self.max_concurrent_batches = 3
@@ -220,7 +227,14 @@ class ServiceNowKBConnector(BaseConnector):
             self.access_token = credentials.get("access_token")
             self.refresh_token = credentials.get("refresh_token")
 
-            if not all([self.instance_url, self.client_id, self.client_secret, self.redirect_uri]):
+            if not all(
+                [
+                    self.instance_url,
+                    self.client_id,
+                    self.client_secret,
+                    self.redirect_uri,
+                ]
+            ):
                 self.logger.error(
                     "❌ Incomplete ServiceNow OAuth configuration. "
                     "Ensure instanceUrl, clientId, clientSecret, and redirectUri are configured."
@@ -574,7 +588,7 @@ class ServiceNowKBConnector(BaseConnector):
 
     async def _sync_users_and_groups(self) -> None:
         """
-        Sync users and groups from ServiceNow.
+        Sync users, groups, and roles from ServiceNow.
 
         This is the foundation for permission management.
 
@@ -582,6 +596,9 @@ class ServiceNowKBConnector(BaseConnector):
         - /api/now/table/sys_user - Users
         - /api/now/table/sys_user_group - Groups
         - /api/now/table/sys_user_grmember - Group memberships
+        - /api/now/table/sys_user_role - Roles
+        - /api/now/table/sys_user_role_contains - Role hierarchy
+        - /api/now/table/sys_user_has_role - User-role assignments
         """
         try:
             # Step 1: Sync users
@@ -593,7 +610,16 @@ class ServiceNowKBConnector(BaseConnector):
             # Step 3: Sync group memberships (user-group relationships)
             await self._sync_group_memberships()
 
-            self.logger.info("✅ Users and groups synced successfully")
+            # Step 4: Sync roles (creates role-based usergroups)
+            await self._sync_roles()
+
+            # Step 5: Sync role hierarchy (parent-child edges between roles)
+            await self._sync_role_hierarchy()
+
+            # Step 6: Sync user-role assignments (user-to-role membership edges)
+            await self._sync_user_role_assignments()
+
+            self.logger.info("✅ Users, groups, and roles synced successfully")
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing users/groups: {e}", exc_info=True)
@@ -923,6 +949,391 @@ class ServiceNowKBConnector(BaseConnector):
             self.logger.error(f"❌ Group memberships sync failed: {e}", exc_info=True)
             raise
 
+    async def _sync_roles(self) -> None:
+        """
+        Sync roles from ServiceNow sys_user_role table.
+
+        Creates AppUserGroup entities for each ServiceNow role with ROLE_ prefix
+        to distinguish them from regular user groups.
+
+        Supports incremental sync using sys_updated_on timestamp.
+        """
+        try:
+            self.logger.info("Starting role sync")
+
+            # Get last sync checkpoint for incremental sync
+            last_sync_data = await self.role_sync_point.read_sync_point("roles")
+            last_sync_time = (
+                last_sync_data.get("last_sync_time") if last_sync_data else None
+            )
+
+            if last_sync_time:
+                self.logger.info(
+                    f"🔄 Delta sync: fetching roles updated after {last_sync_time}"
+                )
+                query = f"sys_updated_on>{last_sync_time}^ORDERBYsys_updated_on"
+            else:
+                self.logger.info("🆕 Full sync: fetching all roles")
+                query = "ORDERBYsys_updated_on"
+
+            # Pagination variables
+            batch_size = 100
+            offset = 0
+            total_synced = 0
+            latest_update_time = None
+
+            # Paginate through all roles
+            while True:
+                response = await self.servicenow_datasource.get_now_table_tableName(
+                    tableName="sys_user_role",
+                    sysparm_query=query,
+                    sysparm_fields="sys_id,name,description,sys_created_on,sys_updated_on",
+                    sysparm_limit=str(batch_size),
+                    sysparm_offset=str(offset),
+                    sysparm_display_value="false",
+                    sysparm_no_count="true",
+                    sysparm_exclude_reference_link="true",
+                )
+
+                # Check for errors
+                if not response.success or not response.data:
+                    if response.error:
+                        self.logger.error(f"❌ API error: {response.error}")
+                    break
+
+                # Extract roles from response
+                roles_data = response.data.get("result", [])
+
+                if not roles_data:
+                    break
+
+                # Transform to AppUserGroup entities
+                role_groups = []
+                for role_data in roles_data:
+                    try:
+                        role_sys_id = role_data.get("sys_id")
+                        role_name = role_data.get("name", "")
+                        role_description = role_data.get("description", "")
+
+                        if not role_name:
+                            self.logger.warning(
+                                f"Role {role_sys_id} has no name, skipping"
+                            )
+                            continue
+
+                        # Parse timestamps
+                        created_on = role_data.get("sys_created_on")
+                        updated_on = role_data.get("sys_updated_on")
+
+                        # Track latest update time
+                        if updated_on and (
+                            not latest_update_time or updated_on > latest_update_time
+                        ):
+                            latest_update_time = updated_on
+
+                        # Create AppUserGroup with ROLE_ prefix
+                        role_group = AppUserGroup(
+                            app_name=Connectors.SERVICENOWKB,
+                            source_user_group_id=role_sys_id,
+                            name=f"ROLE_{role_name}",
+                            description=(
+                                f"ServiceNow Role: {role_description}"
+                                if role_description
+                                else f"ServiceNow Role: {role_name}"
+                            ),
+                            org_id=self.data_entities_processor.org_id,
+                            created_at=self._parse_servicenow_datetime(created_on),
+                            updated_at=self._parse_servicenow_datetime(updated_on),
+                        )
+
+                        role_groups.append(role_group)
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error transforming role {role_data.get('sys_id')}: {e}"
+                        )
+                        continue
+
+                # Batch upsert roles
+                if role_groups:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        await tx_store.batch_upsert_user_groups(role_groups)
+                        total_synced += len(role_groups)
+                        self.logger.info(f"Upserted {len(role_groups)} roles")
+
+                # Move to next page
+                offset += batch_size
+
+                # If this page has fewer records than batch_size, we're done
+                if len(roles_data) < batch_size:
+                    break
+
+            # Save checkpoint
+            if latest_update_time:
+                await self.role_sync_point.update_sync_point(
+                    "roles", {"last_sync_time": latest_update_time}
+                )
+
+            self.logger.info(f"✅ Role sync complete. Total synced: {total_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Role sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_role_hierarchy(self) -> None:
+        """
+        Sync role hierarchy from sys_user_role_contains table.
+
+        ServiceNow roles use a many-to-many containment model where:
+        - One role can contain multiple child roles
+        - One role can be contained by multiple parent roles
+
+        The sys_user_role_contains table stores these relationships:
+        - contains field = parent role sys_id
+        - role field = child role sys_id
+
+        Note: This is a full sync each time (no incremental) since role hierarchy
+        changes are rare and the table is typically small.
+        """
+        try:
+            self.logger.info("Starting role hierarchy sync")
+
+            # Fetch all role containment relationships (full sync)
+            batch_size = 100
+            offset = 0
+            all_containment_records = []
+
+            while True:
+                response = await self.servicenow_datasource.get_now_table_tableName(
+                    tableName="sys_user_role_contains",
+                    sysparm_query=None,
+                    sysparm_fields="sys_id,contains,role",
+                    sysparm_limit=str(batch_size),
+                    sysparm_offset=str(offset),
+                    sysparm_display_value="false",
+                    sysparm_no_count="true",
+                    sysparm_exclude_reference_link="true",
+                )
+
+                if not response.success or not response.data:
+                    if response.error:
+                        self.logger.error(f"❌ API error: {response.error}")
+                    break
+
+                containment_data = response.data.get("result", [])
+
+                if not containment_data:
+                    break
+
+                all_containment_records.extend(containment_data)
+
+                offset += batch_size
+
+                if len(containment_data) < batch_size:
+                    break
+
+            if not all_containment_records:
+                self.logger.info("No role hierarchy relationships found")
+                return
+
+            self.logger.info(
+                f"Fetched {len(all_containment_records)} role containment relationships"
+            )
+
+            # Create hierarchy edges
+            async with self.data_store_provider.transaction() as tx_store:
+                hierarchy_count = 0
+
+                for record in all_containment_records:
+                    try:
+                        # Extract sys_ids from reference fields
+                        parent_role_ref = record.get("contains", {})
+                        child_role_ref = record.get("role", {})
+
+                        parent_role_sys_id = (
+                            parent_role_ref.get("value")
+                            if isinstance(parent_role_ref, dict)
+                            else parent_role_ref
+                        )
+                        child_role_sys_id = (
+                            child_role_ref.get("value")
+                            if isinstance(child_role_ref, dict)
+                            else child_role_ref
+                        )
+
+                        if not parent_role_sys_id or not child_role_sys_id:
+                            self.logger.warning(
+                                f"Invalid containment record {record.get('sys_id')}: "
+                                f"parent={parent_role_sys_id}, child={child_role_sys_id}"
+                            )
+                            continue
+
+                        # Create parent-child hierarchy edge
+                        success = await self.data_entities_processor.create_user_group_hierarchy(
+                            child_source_id=child_role_sys_id,
+                            parent_source_id=parent_role_sys_id,
+                            connector_name=Connectors.SERVICENOWKB,
+                            tx_store=tx_store,
+                        )
+
+                        if success:
+                            hierarchy_count += 1
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error creating hierarchy for record {record.get('sys_id')}: {e}"
+                        )
+                        continue
+
+                self.logger.info(
+                    f"✅ Role hierarchy sync complete. Created {hierarchy_count} relationships"
+                )
+
+        except Exception as e:
+            self.logger.error(f"❌ Role hierarchy sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_user_role_assignments(self) -> None:
+        """
+        Sync user-role assignments from sys_user_has_role table.
+
+        Creates membership edges between users and role-based usergroups.
+        Includes both direct and inherited role assignments.
+
+        Supports incremental sync using sys_updated_on timestamp.
+        """
+        try:
+            self.logger.info("Starting user-role assignment sync")
+
+            # Get last sync checkpoint
+            last_sync_data = await self.role_assignment_sync_point.read_sync_point(
+                "role_assignments"
+            )
+            last_sync_time = (
+                last_sync_data.get("last_sync_time") if last_sync_data else None
+            )
+
+            # Build query for active assignments with incremental sync
+            if last_sync_time:
+                self.logger.info(
+                    f"🔄 Delta sync: fetching assignments updated after {last_sync_time}"
+                )
+                query = f"state=active^sys_updated_on>{last_sync_time}^ORDERBYsys_updated_on"
+            else:
+                self.logger.info("🆕 Full sync: fetching all active assignments")
+                query = "state=active^ORDERBYsys_updated_on"
+
+            # Pagination variables
+            batch_size = 100
+            offset = 0
+            latest_update_time = None
+            all_assignments = []
+
+            # Paginate through all assignments
+            while True:
+                response = await self.servicenow_datasource.get_now_table_tableName(
+                    tableName="sys_user_has_role",
+                    sysparm_query=query,
+                    sysparm_fields="sys_id,user,role,state,inherited,sys_updated_on",
+                    sysparm_limit=str(batch_size),
+                    sysparm_offset=str(offset),
+                    sysparm_display_value="false",
+                    sysparm_no_count="true",
+                    sysparm_exclude_reference_link="true",
+                )
+
+                if not response.success or not response.data:
+                    if response.error:
+                        self.logger.error(f"❌ API error: {response.error}")
+                    break
+
+                assignments_data = response.data.get("result", [])
+
+                if not assignments_data:
+                    break
+
+                # Extract and validate assignments
+                for assignment in assignments_data:
+                    try:
+                        updated_on = assignment.get("sys_updated_on")
+                        if updated_on and (
+                            not latest_update_time or updated_on > latest_update_time
+                        ):
+                            latest_update_time = updated_on
+
+                        # Extract sys_ids from reference fields
+                        user_ref = assignment.get("user", {})
+                        role_ref = assignment.get("role", {})
+
+                        user_sys_id = (
+                            user_ref.get("value")
+                            if isinstance(user_ref, dict)
+                            else user_ref
+                        )
+                        role_sys_id = (
+                            role_ref.get("value")
+                            if isinstance(role_ref, dict)
+                            else role_ref
+                        )
+
+                        if not user_sys_id or not role_sys_id:
+                            self.logger.warning(
+                                f"Invalid assignment {assignment.get('sys_id')}: "
+                                f"user={user_sys_id}, role={role_sys_id}"
+                            )
+                            continue
+
+                        all_assignments.append(
+                            {"user_sys_id": user_sys_id, "role_sys_id": role_sys_id}
+                        )
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error processing assignment {assignment.get('sys_id')}: {e}"
+                        )
+                        continue
+
+                offset += batch_size
+
+                if len(assignments_data) < batch_size:
+                    break
+
+            # Create user-role membership edges
+            if all_assignments:
+                async with self.data_store_provider.transaction() as tx_store:
+                    membership_count = 0
+
+                    for assignment in all_assignments:
+                        success = await self.data_entities_processor.create_user_group_membership(
+                            assignment["user_sys_id"],
+                            assignment["role_sys_id"],
+                            Connectors.SERVICENOWKB,
+                            tx_store,
+                        )
+
+                        if success:
+                            membership_count += 1
+
+                    self.logger.info(
+                        f"Created {membership_count} user-role membership edges"
+                    )
+
+            # Save checkpoint
+            if latest_update_time:
+                await self.role_assignment_sync_point.update_sync_point(
+                    "role_assignments", {"last_sync_time": latest_update_time}
+                )
+
+            self.logger.info(
+                f"✅ User-role assignment sync complete. Total processed: {len(all_assignments)}"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ User-role assignment sync failed: {e}", exc_info=True
+            )
+            raise
+
     async def _sync_knowledge_bases(self) -> None:
         """
         Sync knowledge bases from ServiceNow kb_knowledge_base table using offset-based pagination.
@@ -1219,6 +1630,41 @@ class ServiceNowKBConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing categories: {e}", exc_info=True)
             raise
 
+    async def _load_role_name_mapping_from_db(self) -> None:
+        """
+        Load role name to sys_id mapping from database.
+
+        Queries existing role-based usergroups (with ROLE_ prefix) and builds
+        an in-memory mapping for quick lookups during permission extraction.
+
+        This is called before article sync to enable role-based permission creation.
+        """
+        self.role_name_to_id_map = {}
+
+        try:
+            # Get all usergroups for this connector from database
+            async with self.data_store_provider.transaction() as tx_store:
+                all_groups = await tx_store.get_user_groups(
+                    app_name=Connectors.SERVICENOWKB,
+                    org_id=self.data_entities_processor.org_id,
+                )
+
+            # Filter to role-based groups and build mapping
+            for group in all_groups:
+                if group.name and group.name.startswith("ROLE_"):
+                    # Extract role name: "ROLE_admin" -> "admin"
+                    role_name = group.name.replace("ROLE_", "", 1)
+                    role_sys_id = group.source_user_group_id
+                    self.role_name_to_id_map[role_name] = role_sys_id
+
+            self.logger.info(
+                f"Loaded {len(self.role_name_to_id_map)} role name mappings from database"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to load role name mappings: {e}")
+            # Continue with empty map - role permissions will be skipped
+
     async def _sync_articles(self) -> None:
         """
         Sync KB articles and attachments from ServiceNow using batch processing.
@@ -1238,6 +1684,9 @@ class ServiceNowKBConnector(BaseConnector):
         - /api/now/attachment - Attachments
         """
         try:
+            # Load role name mapping from database (needed for permission extraction)
+            await self._load_role_name_mapping_from_db()
+
             # Get last sync checkpoint
             last_sync_data = await self.article_sync_point.read_sync_point("articles")
             last_sync_time = (last_sync_data.get("last_sync_time") if last_sync_data else None)
@@ -1417,7 +1866,7 @@ class ServiceNowKBConnector(BaseConnector):
             response = await self.servicenow_datasource.get_now_table_tableName(
                 tableName="user_criteria",
                 sysparm_query=query,
-                sysparm_fields="sys_id,users,groups",
+                sysparm_fields="sys_id,users,groups,roles",
                 sysparm_display_value="false",
                 sysparm_no_count="true",
                 sysparm_exclude_reference_link="true",
@@ -1433,12 +1882,18 @@ class ServiceNowKBConnector(BaseConnector):
                 sys_id = criteria_data.get("sys_id")
                 users_str = criteria_data.get("users", "")
                 groups_str = criteria_data.get("groups", "")
+                roles = criteria_data.get("roles", "")
 
                 # Parse comma-separated lists
                 users = [u.strip() for u in users_str.split(",") if u.strip()]
                 groups = [g.strip() for g in groups_str.split(",") if g.strip()]
+                roles = [r.strip() for r in roles.split(",") if r.strip()]
 
-                criteria_map[sys_id] = {"users": users, "groups": groups}
+                criteria_map[sys_id] = {
+                    "users": users,
+                    "groups": groups,
+                    "roles": roles,
+                }
 
             return criteria_map
 
@@ -1479,6 +1934,47 @@ class ServiceNowKBConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Failed to fetch attachments for article {article_sys_id}: {e}")
             return []
+
+    def _extract_roles_from_user_criteria(
+        self, criteria: Dict[str, Any], permission_type: PermissionType
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract role-based permissions from a user_criteria record.
+
+        Args:
+            criteria: User criteria dictionary containing roles list
+            permission_type: Type of permission (READER, WRITER, etc.)
+
+        Returns:
+            List of permission dictionaries for roles
+        """
+        permissions = []
+
+        # Get roles from criteria (these are role names, not sys_ids)
+        role_names = criteria.get("roles", [])
+
+        if not role_names:
+            return permissions
+
+        for role_name in role_names:
+            # Look up role sys_id from name using our mapping
+            role_sys_id = self.role_name_to_id_map.get(role_name)
+
+            if role_sys_id:
+                permissions.append(
+                    {
+                        "entity_type": EntityType.GROUP.value,
+                        "source_sys_id": role_sys_id,
+                        "role": permission_type.value,
+                    }
+                )
+            else:
+                self.logger.warning(
+                    f"Role '{role_name}' referenced in user_criteria but not found in database. "
+                    f"Role may need to be synced first."
+                )
+
+        return permissions
 
     async def _extract_article_permissions(
         self, article_data: Dict[str, Any], criteria_map: Dict[str, Dict]
@@ -1531,7 +2027,7 @@ class ServiceNowKBConnector(BaseConnector):
                     for user_sys_id in criteria_data.get("users", []):
                         permissions.append(
                             {
-                                "entity_type": "USER",
+                                "entity_type": EntityType.USER.value,
                                 "source_sys_id": user_sys_id,
                                 "role": PermissionType.READER.value,
                             }
@@ -1541,11 +2037,17 @@ class ServiceNowKBConnector(BaseConnector):
                     for group_sys_id in criteria_data.get("groups", []):
                         permissions.append(
                             {
-                                "entity_type": "GROUP",
+                                "entity_type": EntityType.GROUP.value,
                                 "source_sys_id": group_sys_id,
                                 "role": PermissionType.READER.value,
                             }
                         )
+
+                    # Add role permissions
+                    role_permissions = self._extract_roles_from_user_criteria(
+                        criteria_data, PermissionType.READER
+                    )
+                    permissions.extend(role_permissions)
 
             return permissions
 

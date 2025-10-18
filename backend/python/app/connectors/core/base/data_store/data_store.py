@@ -82,6 +82,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[UserGroup]:
+        pass
+
+    @abstractmethod
     async def delete_record_by_key(self, key: str) -> None:
         pass
 

@@ -111,6 +111,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
 
+    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[AppUserGroup]:
+        return await self.arango_service.get_user_groups(app_name, org_id, transaction=self.txn)
+
     async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[str]:
         return await self.arango_service.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
 

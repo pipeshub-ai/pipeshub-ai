@@ -3905,6 +3905,58 @@ class BaseArangoService:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
 
+    async def get_user_groups(
+        self,
+        app_name: Connectors,
+        org_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[AppUserGroup]:
+        """
+        Get all user groups for a specific connector and organization.
+
+        Args:
+            app_name: Connector name
+            org_id: Organization ID
+            transaction: Optional transaction database context
+
+        Returns:
+            List[AppUserGroup]: List of user group entities
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving user groups for connector %s and org %s", app_name.value, org_id
+            )
+
+            query = f"""
+            FOR group IN {CollectionNames.GROUPS.value}
+                FILTER group.connectorName == @connector_name
+                    AND group.orgId == @org_id
+                RETURN group
+            """
+
+            db = transaction if transaction else self.db
+
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "connector_name": app_name.value,
+                    "org_id": org_id
+                }
+            )
+
+            groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in cursor]
+
+            self.logger.info(
+                "✅ Successfully retrieved %d user groups for connector %s", len(groups), app_name.value
+            )
+            return groups
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve user groups for connector %s: %s", app_name.value, str(e)
+            )
+            return []
+
     async def upsert_sync_point(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Upsert a sync point node based on sync_point_key
