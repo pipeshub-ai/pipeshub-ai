@@ -1,14 +1,24 @@
 import asyncio
-from app.sources.client.sqs import AmazonSQSClient
+import os
+
+from dotenv import load_dotenv
+
+from app.sources.client.sqs.amazon_sqs import AmazonSQSClient
 from app.sources.external.amazon_sqs.amazon_sqs_data_source import AmazonSQSDataSource
+
+load_dotenv()
+
+ACCESS_KEY = os.getenv("ACCESS_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY")
+REGION_NAME = os.getenv("REGION_NAME")
 
 
 async def main() -> None:
 
     sqs_client = AmazonSQSClient(
-        access_key="YOUR_ACCESS_KEY",
-        secret_key="YOUR_SECRET_KEY",
-        region_name="us-east-1"
+        access_key=ACCESS_KEY,
+        secret_key=SECRET_KEY,
+        region_name=REGION_NAME,
     )
 
     data_source = AmazonSQSDataSource(sqs_client)
@@ -30,7 +40,7 @@ async def main() -> None:
         queue_url = get_url_resp.data["QueueUrl"]
         send_resp = await data_source.send_message(
             queue_url=queue_url,
-            message_body="Hello from PipesHub AmazonSQSDataSource example!"
+            message_body="Hello from PipesHub AmazonSQSDataSource example!",
         )
         print(send_resp.to_json())
     else:
@@ -42,7 +52,7 @@ async def main() -> None:
         recv_resp = await data_source.receive_message(
             queue_url=get_url_resp.data["QueueUrl"],
             max_messages=1,
-            wait_time=2
+            wait_time=2,
         )
         print(recv_resp.to_json())
     else:

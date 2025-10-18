@@ -1,19 +1,20 @@
-from typing import Any, Dict, Optional, List
-from dataclasses import dataclass, asdict
 import json
+from dataclasses import asdict, dataclass
+from typing import Any
+
 from botocore.exceptions import BotoCoreError, ClientError
 
-from app.sources.client.amazon_sqs import AmazonSQSClient
+from app.sources.client.sqs.amazon_sqs import AmazonSQSClient
 
 
 @dataclass
 class AmazonSQSResponse:
     success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
@@ -21,8 +22,7 @@ class AmazonSQSResponse:
 
 
 class AmazonSQSDataSource:
-    """
-    Amazon SQS Data Source
+    """Amazon SQS Data Source
     Provides async-compatible methods that wrap SQS client operations.
     """
 
@@ -36,13 +36,13 @@ class AmazonSQSDataSource:
         self,
         queue_url: str,
         message_body: str,
-        attributes: Optional[Dict[str, Any]] = None,
-        delay_seconds: Optional[int] = None,
-        message_group_id: Optional[str] = None,
-        message_deduplication_id: Optional[str] = None,
+        attributes: dict[str, Any] | None = None,
+        delay_seconds: int | None = None,
+        message_group_id: str | None = None,
+        message_deduplication_id: str | None = None,
     ) -> AmazonSQSResponse:
         try:
-            params: Dict[str, Any] = {"QueueUrl": queue_url, "MessageBody": message_body}
+            params: dict[str, Any] = {"QueueUrl": queue_url, "MessageBody": message_body}
             if attributes:
                 params["MessageAttributes"] = attributes
             if delay_seconds is not None:
@@ -57,19 +57,19 @@ class AmazonSQSDataSource:
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")
 
     async def receive_message(
         self,
         queue_url: str,
         max_messages: int = 1,
         wait_time: int = 0,
-        visibility_timeout: Optional[int] = None,
-        attribute_names: Optional[List[str]] = None,
-        message_attribute_names: Optional[List[str]] = None,
+        visibility_timeout: int | None = None,
+        attribute_names: list[str] | None = None,
+        message_attribute_names: list[str] | None = None,
     ) -> AmazonSQSResponse:
         try:
-            params: Dict[str, Any] = {
+            params: dict[str, Any] = {
                 "QueueUrl": queue_url,
                 "MaxNumberOfMessages": max_messages,
                 "WaitTimeSeconds": wait_time,
@@ -86,20 +86,20 @@ class AmazonSQSDataSource:
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")
 
     async def delete_message(self, queue_url: str, receipt_handle: str) -> AmazonSQSResponse:
         try:
             resp = self._client.get_client().delete_message(
-                QueueUrl=queue_url, ReceiptHandle=receipt_handle
+                QueueUrl=queue_url, ReceiptHandle=receipt_handle,
             )
             return AmazonSQSResponse(success=True, data=resp)
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")
 
-    async def list_queues(self, prefix: Optional[str] = None) -> AmazonSQSResponse:
+    async def list_queues(self, prefix: str | None = None) -> AmazonSQSResponse:
         try:
             params = {}
             if prefix:
@@ -109,7 +109,7 @@ class AmazonSQSDataSource:
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")
 
     async def get_queue_url(self, queue_name: str) -> AmazonSQSResponse:
         try:
@@ -118,9 +118,9 @@ class AmazonSQSDataSource:
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")
 
-    async def get_queue_attributes(self, queue_url: str, attribute_names: Optional[List[str]] = None) -> AmazonSQSResponse:
+    async def get_queue_attributes(self, queue_url: str, attribute_names: list[str] | None = None) -> AmazonSQSResponse:
         try:
             params = {"QueueUrl": queue_url}
             if attribute_names:
@@ -130,7 +130,7 @@ class AmazonSQSDataSource:
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")
 
     async def purge_queue(self, queue_url: str) -> AmazonSQSResponse:
         try:
@@ -139,4 +139,4 @@ class AmazonSQSDataSource:
         except (BotoCoreError, ClientError) as e:
             return AmazonSQSResponse(success=False, error=str(e))
         except Exception as e:
-            return AmazonSQSResponse(success=False, error=f"Unexpected error: {str(e)}")
+            return AmazonSQSResponse(success=False, error=f"Unexpected error: {e!s}")

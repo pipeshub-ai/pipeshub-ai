@@ -1,6 +1,7 @@
 import json
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
+
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -11,11 +12,11 @@ from app.sources.client.iclient import IClient
 @dataclass
 class SQSResponse:
     success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
@@ -28,7 +29,7 @@ class AmazonSQSClient(IClient):
         access_key: str,
         secret_key: str,
         region_name: str,
-        session_token: Optional[str] = None,
+        session_token: str | None = None,
     ) -> None:
         self.client = boto3.client(
             "sqs",
@@ -41,7 +42,7 @@ class AmazonSQSClient(IClient):
     def get_client(self):
         return self.client
 
-    def send_message(self, queue_url: str, message_body: str, attributes: Optional[Dict[str, Any]] = None) -> SQSResponse:
+    def send_message(self, queue_url: str, message_body: str, attributes: dict[str, Any] | None = None) -> SQSResponse:
         try:
             resp = self.client.send_message(
                 QueueUrl=queue_url,
