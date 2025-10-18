@@ -852,6 +852,12 @@ class DataSourceEntitiesProcessor:
                     )
                     return False
 
+                if user.is_active:
+                    self.logger.warning(
+                        f"Cannot delete user: User with email {user_email} is still active"
+                    )
+                    return False
+
                 user_internal_id = user.id
                 user_name = user.full_name
 
