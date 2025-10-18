@@ -32,6 +32,9 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.servicenow.servicenowkb.connector import (
+    ServiceNowKBConnector,
+)
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.featureflag import FeatureFlagService
 
@@ -47,6 +50,7 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "dropbox": DropboxConnector,
+        "servicenowkb": ServiceNowKBConnector,
     }
 
 

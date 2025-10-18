@@ -18,6 +18,10 @@ class RecordGroupType(str, Enum):
     JIRA_PROJECT = "JIRA_PROJECT"
     SHAREPOINT_SITE = "SHAREPOINT_SITE"
     SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
+    USER_GROUP = "USER_GROUP"
+    SERVICENOWKB = "SERVICENOWKB"
+    SERVICENOW_CATEGORY = "SERVICENOW_CATEGORY"
+
     MAILBOX = "MAILBOX"
 
 class RecordType(str, Enum):
@@ -642,6 +646,8 @@ class AppUser(BaseModel):
         return {
             "_key": self.id,
             "orgId": self.org_id,
+            "appName": self.app_name.value,
+            "sourceUserId": self.source_user_id,
             "email": self.email,
             "fullName": self.full_name,
             "userId": self.source_user_id,
@@ -670,6 +676,7 @@ class AppUserGroup(BaseModel):
             "_key": self.id,
             "orgId": self.org_id,
             "name": self.name,
+            "appName": self.app_name.value,
             "externalGroupId": self.source_user_group_id,
             "connectorName": self.app_name.value,
             "createdAtTimestamp": self.created_at,

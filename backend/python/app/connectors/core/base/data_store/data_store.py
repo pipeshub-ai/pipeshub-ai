@@ -82,6 +82,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[UserGroup]:
+        pass
+
+    @abstractmethod
     async def delete_record_by_key(self, key: str) -> None:
         pass
 
@@ -118,7 +122,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission]) -> None:
+    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission], connector_name: Connectors) -> None:
         pass
 
     @abstractmethod

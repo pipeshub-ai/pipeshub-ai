@@ -48,12 +48,16 @@ class Connectors(Enum):
     JIRA = "JIRA"
     DROPBOX = "DROPBOX"
 
+    SERVICENOWKB = "SERVICENOWKB"
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    SERVICENOW = "Servicenow"
+
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
