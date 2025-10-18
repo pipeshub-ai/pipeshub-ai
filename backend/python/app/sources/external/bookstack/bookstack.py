@@ -9,8 +9,6 @@ https://bookstack.bassopaolo.com/api/docs
 """
 import base64
 from typing import Dict, List, Optional, Union
-from urllib.parse import quote
-
 
 from app.sources.client.bookstack.bookstack import BookStackClient, BookStackResponse
 from app.sources.client.http.http_request import HTTPRequest
@@ -1025,11 +1023,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, str] = {} 
+        params: Dict[str, str] = {}
         if count is not None:
-            params["count"] = str(count) 
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = str(offset) 
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -1902,7 +1900,7 @@ class BookStackDataSource:
             query=params,
             body=None
         )
-        
+
         try:
             response = await self.http.execute(request)
             return BookStackResponse(success=True, data=response.json())
@@ -2232,7 +2230,7 @@ class BookStackDataSource:
             if 'error' in response_data:
                 error_message = response_data.get('error', {}).get('message', 'Unknown API error')
                 return BookStackResponse(success=False, error=error_message)
-            
+
             return BookStackResponse(success=True, data=response_data)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))

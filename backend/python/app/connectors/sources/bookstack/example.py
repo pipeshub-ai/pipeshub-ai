@@ -108,19 +108,19 @@ async def test_run() -> None:
     bookstack_connector = None
     try:
         bookstack_connector = await BookStackConnector.create_connector(
-            logger, 
-            data_store_provider, 
+            logger,
+            data_store_provider,
             config_service
         )
-        
+
         # Initialize the connector
         if await bookstack_connector.init():
             logger.info("BookStack connector initialized successfully.")
-            
+
             # Test the connection
             if await bookstack_connector.test_connection_and_access():
                 logger.info("BookStack connection test passed.")
-                
+
                 # Run the full sync
                 logger.info("Starting BookStack sync...")
                 await bookstack_connector.run_sync()
@@ -129,12 +129,12 @@ async def test_run() -> None:
                 logger.error("BookStack connection test failed. Check your API URL and token.")
         else:
             logger.error("BookStack connector initialization failed.")
-            
+
     except Exception as e:
         logger.error(f"An error occurred during the BookStack sync: {e}", exc_info=True)
     finally:
         if bookstack_connector:
-            bookstack_connector.cleanup()   
+            bookstack_connector.cleanup()
 
 
 if __name__ == "__main__":
@@ -150,5 +150,5 @@ if __name__ == "__main__":
     #    export BOOKSTACK_TOKEN_SECRET='tokensecret'
     # 4. Run this script:
     #    python example.py
-    
+
     asyncio.run(test_run())
