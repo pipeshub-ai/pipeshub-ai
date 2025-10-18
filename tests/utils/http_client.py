@@ -8,16 +8,17 @@ and built-in assertions.
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from types import TracebackType
+from typing import Any, Dict, Optional, Union
 from urllib.parse import urljoin
 
-import httpx # type: ignore
-from httpx import Response # type: ignore
+import httpx  # type: ignore
+from httpx import Response  # type: ignore
 
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_sensitive_data(data: Any) -> Any:
+def _sanitize_sensitive_data(data: Union[Dict[str, Any], list, str, int, float, bool, None]) -> Union[Dict[str, Any], list, str, int, float, bool, None]:
     """Remove sensitive fields from data for logging."""
     if not isinstance(data, dict):
         return data
@@ -54,7 +55,7 @@ class HTTPClient:
         verify_ssl: bool = True,
         default_headers: Optional[Dict[str, str]] = None,
         follow_redirects: bool = True,
-    ):
+    ) -> None:
         """
         Initialize HTTP client.
         
@@ -90,7 +91,7 @@ class HTTPClient:
             headers.update(custom_headers)
         return headers
     
-    def _log_request(self, method: str, url: str, **kwargs):
+    def _log_request(self, method: str, url: str, **kwargs) -> None:
         """Log outgoing request details."""
         logger.debug(f"→ {method} {url}")
         if "json" in kwargs:
@@ -99,7 +100,7 @@ class HTTPClient:
         if "params" in kwargs:
             logger.debug(f"  Params: {kwargs['params']}")
     
-    def _log_response(self, response: Response):
+    def _log_response(self, response: Response) -> None:
         """Log response details."""
         logger.debug(f"← {response.status_code} {response.url}")
         try:
@@ -293,7 +294,7 @@ class HTTPClient:
         
         return response
     
-    def set_auth_token(self, token: str, token_type: str = "Bearer"):
+    def set_auth_token(self, token: str, token_type: str = "Bearer") -> None:
         """
         Set authentication token in default headers.
         
@@ -303,27 +304,27 @@ class HTTPClient:
         """
         self.default_headers["Authorization"] = f"{token_type} {token}"
     
-    def clear_auth_token(self):
+    def clear_auth_token(self) -> None:
         """Remove authentication token from default headers."""
         self.default_headers.pop("Authorization", None)
     
-    def set_cookie(self, name: str, value: str):
+    def set_cookie(self, name: str, value: str) -> None:
         """Set a cookie for subsequent requests."""
         self._cookies[name] = value
     
-    def clear_cookies(self):
+    def clear_cookies(self) -> None:
         """Clear all cookies."""
         self._cookies.clear()
     
-    def close(self):
+    def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
     
-    def __enter__(self):
+    def __enter__(self) -> "HTTPClient":
         """Context manager entry."""
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Optional[type], exc_val: Optional[BaseException], exc_tb: Optional[TracebackType]) -> None:
         """Context manager exit."""
         self.close()
 
@@ -343,7 +344,7 @@ class AsyncHTTPClient:
         verify_ssl: bool = True,
         default_headers: Optional[Dict[str, str]] = None,
         follow_redirects: bool = True,
-    ):
+    ) -> None:
         """
         Initialize async HTTP client.
         
@@ -379,7 +380,7 @@ class AsyncHTTPClient:
             headers.update(custom_headers)
         return headers
     
-    def _log_request(self, method: str, url: str, **kwargs):
+    def _log_request(self, method: str, url: str, **kwargs) -> None:
         """Log outgoing request details."""
         logger.debug(f"→ {method} {url}")
         if "json" in kwargs:
@@ -388,7 +389,7 @@ class AsyncHTTPClient:
         if "params" in kwargs:
             logger.debug(f"  Params: {kwargs['params']}")
     
-    def _log_response(self, response: Response):
+    def _log_response(self, response: Response) -> None:
         """Log response details."""
         logger.debug(f"← {response.status_code} {response.url}")
         try:
@@ -553,31 +554,31 @@ class AsyncHTTPClient:
         
         return response
     
-    def set_auth_token(self, token: str, token_type: str = "Bearer"):
+    def set_auth_token(self, token: str, token_type: str = "Bearer") -> None:
         """Set authentication token in default headers."""
         self.default_headers["Authorization"] = f"{token_type} {token}"
     
-    def clear_auth_token(self):
+    def clear_auth_token(self) -> None:
         """Remove authentication token from default headers."""
         self.default_headers.pop("Authorization", None)
     
-    def set_cookie(self, name: str, value: str):
+    def set_cookie(self, name: str, value: str) -> None:
         """Set a cookie for subsequent requests."""
         self._cookies[name] = value
     
-    def clear_cookies(self):
+    def clear_cookies(self) -> None:
         """Clear all cookies."""
         self._cookies.clear()
     
-    async def close(self):
+    async def close(self) -> None:
         """Close the async HTTP client."""
         await self._client.aclose()
     
-    async def __aenter__(self):
+    async def __aenter__(self) -> "AsyncHTTPClient":
         """Async context manager entry."""
         return self
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Optional[type], exc_val: Optional[BaseException], exc_tb: Optional[TracebackType]) -> None:
         """Async context manager exit."""
         await self.close()
 

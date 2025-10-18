@@ -4,13 +4,19 @@ HTTP client fixtures for integration tests.
 Provides pre-configured HTTP clients for synchronous and asynchronous testing.
 """
 
-from typing import AsyncGenerator, Generator
+from typing import (
+    AsyncGenerator,
+    Generator,
+    Optional,  # type: ignore
+)
 
-import pytest # type: ignore
-from httpx import Response # type: ignore
-from typing import Optional # type: ignore
+import pytest  # type: ignore
+from httpx import Response  # type: ignore
+
 from tests.config.settings import get_settings
+from tests.utils.assertions import HTTP_OK
 from tests.utils.http_client import AsyncHTTPClient, HTTPClient
+
 
 @pytest.fixture(scope="function")
 def http_client() -> Generator[HTTPClient, None, None]:
@@ -132,7 +138,7 @@ def authenticated_http_client(http_client: HTTPClient) -> Generator[HTTPClient, 
         }
     )
     
-    if login_response.status_code == 200:
+    if login_response.status_code == HTTP_OK:
         token: Optional[str] = login_response.json().get("access_token") or login_response.json().get("token")
         if token:
             http_client.set_auth_token(token)
@@ -173,7 +179,7 @@ async def authenticated_async_http_client(async_http_client: AsyncHTTPClient) ->
         }
     )
     
-    if login_response.status_code == 200:
+    if login_response.status_code == HTTP_OK:
         token: Optional[str] = login_response.json().get("access_token") or login_response.json().get("token")
         if token:
             async_http_client.set_auth_token(token)
@@ -211,7 +217,7 @@ def admin_http_client(http_client: HTTPClient) -> Generator[HTTPClient, None, No
         }
     )
     
-    if login_response.status_code == 200:
+    if login_response.status_code == HTTP_OK:
         token: Optional[str] = login_response.json().get("access_token") or login_response.json().get("token")
         if token:
             http_client.set_auth_token(token)

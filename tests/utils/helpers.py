@@ -8,7 +8,7 @@ retries, polling, data validation, and more.
 import asyncio
 import time
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, Union
 
 T = TypeVar('T')
 
@@ -17,7 +17,7 @@ def retry(
     delay: float = 1.0,
     backoff: float = 2.0,
     exceptions: tuple = (Exception,)
-):
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator to retry a function on failure.
     
@@ -34,9 +34,9 @@ def retry(
             response.raise_for_status()
             return response
     """
-    def decorator(func):
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args, **kwargs) -> T:
             current_delay: float = delay
             last_exception: Optional[Exception] = None
             
@@ -60,7 +60,7 @@ def async_retry(
     delay: float = 1.0,
     backoff: float = 2.0,
     exceptions: tuple = (Exception,)
-):
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator to retry an async function on failure.
     
@@ -78,9 +78,9 @@ def async_retry(
                 response.raise_for_status()
                 return response
     """
-    def decorator(func):
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs) -> T:
             current_delay: float = delay
             last_exception: Optional[Exception] = None
             
@@ -196,7 +196,7 @@ def poll_until_status(
         
         poll_until_status(get_job_status, "completed", timeout=120)
     """
-    def condition():
+    def condition() -> bool:
         return get_status_func() == expected_status
     
     return wait_for_condition(
@@ -207,7 +207,7 @@ def poll_until_status(
     )
 
 
-def deep_compare(obj1: Any, obj2: Any, ignore_keys: Optional[List[str]] = None) -> bool:
+def deep_compare(obj1: Union[Dict[str, Any], List[Any]], obj2: Union[Dict[str, Any], List[Any]], ignore_keys: Optional[List[str]] = None) -> bool:
     """
     Deep comparison of two objects, optionally ignoring certain keys.
     
@@ -325,7 +325,7 @@ def filter_items(
         ]
         admins = filter_items(users, role="admin")
     """
-    def matches_filters(item):
+    def matches_filters(item: Dict[str, Any]) -> bool:
         return all(item.get(key) == value for key, value in filters.items())
     
     return [item for item in items if matches_filters(item)]

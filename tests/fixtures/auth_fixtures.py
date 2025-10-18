@@ -6,10 +6,11 @@ Provides fixtures for authentication tokens, user credentials, and auth helpers.
 
 from typing import Dict, Optional
 
-import pytest # type: ignore
-from httpx import Response # type: ignore
+import pytest  # type: ignore
+from httpx import Response  # type: ignore
 
 from tests.config.settings import get_settings
+from tests.utils.assertions import HTTP_OK
 from tests.utils.http_client import HTTPClient
 
 
@@ -73,7 +74,7 @@ def auth_token(http_client: HTTPClient, test_user_credentials: Dict[str, str]) -
     """
     response: Response = http_client.post("/auth/login", json=test_user_credentials)
     
-    if response.status_code == 200:
+    if response.status_code == HTTP_OK:
         data: Dict = response.json()
         return data.get("access_token") or data.get("token")
     
@@ -100,7 +101,7 @@ def admin_auth_token(http_client: HTTPClient, admin_user_credentials: Dict[str, 
     """
     response: Response = http_client.post("/auth/login", json=admin_user_credentials)
     
-    if response.status_code == 200:
+    if response.status_code == HTTP_OK:
         data: Dict = response.json()
         return data.get("access_token") or data.get("token")
     
@@ -152,7 +153,7 @@ def admin_auth_headers(admin_auth_token: Optional[str]) -> Dict[str, str]:
 class AuthHelper:
     """Helper class for authentication operations in tests."""
     
-    def __init__(self, http_client: HTTPClient):
+    def __init__(self, http_client: HTTPClient) -> None:
         """
         Initialize auth helper.
         
@@ -178,7 +179,7 @@ class AuthHelper:
             json={"username": username, "password": password}
         )
         
-        if response.status_code == 200:
+        if response.status_code == HTTP_OK:
             data: Dict = response.json()
             return data.get("access_token") or data.get("token")
         
@@ -215,7 +216,7 @@ class AuthHelper:
             json={"refresh_token": refresh_token}
         )
         
-        if response.status_code == 200:
+        if response.status_code == HTTP_OK:
             data: Dict = response.json()
             return data.get("access_token") or data.get("token")
         

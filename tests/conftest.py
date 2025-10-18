@@ -9,10 +9,10 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Generator
+from typing import Any, Dict, Generator, List, Optional, Union
 
-import pytest # type: ignore
-from faker import Faker # type: ignore
+import pytest  # type: ignore
+from faker import Faker  # type: ignore
 
 # Add the project root to Python path
 project_root: Path = Path(__file__).parent.parent
@@ -102,7 +102,7 @@ def temp_dir(tmp_path) -> Path:
 # ============================================================================
 
 
-def pytest_configure(config):
+def pytest_configure(config) -> None:
     """
     Configure pytest with custom settings.
     
@@ -118,7 +118,7 @@ def pytest_configure(config):
     logs_dir.mkdir(exist_ok=True)
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config, items) -> None:
     """
     Modify test items after collection.
     
@@ -141,7 +141,7 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.auth)
 
 
-def pytest_runtest_setup(item):
+def pytest_runtest_setup(item) -> None:
     """
     Run setup before each test.
     
@@ -154,7 +154,7 @@ def pytest_runtest_setup(item):
             pytest.skip("Skipping external test (SKIP_EXTERNAL_TESTS=true)")
 
 
-def pytest_runtest_teardown(item, nextitem):
+def pytest_runtest_teardown(item, nextitem) -> None:
     """
     Run teardown after each test.
     
@@ -170,7 +170,7 @@ def pytest_runtest_teardown(item, nextitem):
 
 
 @pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Generator[Any, None, None]:
     """
     Create custom test report with additional information.
     
@@ -194,7 +194,7 @@ def pytest_runtest_makereport(item, call):
 # ============================================================================
 
 
-def pytest_assertrepr_compare(op, left, right):
+def pytest_assertrepr_compare(op: str, left: Union[str, int, float, bool, list, dict, None], right: Union[str, int, float, bool, list, dict, None]) -> Optional[List[str]]:
     """
     Custom assertion representation for better error messages.
     
