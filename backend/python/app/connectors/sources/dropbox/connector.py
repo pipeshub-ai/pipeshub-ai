@@ -2580,7 +2580,6 @@ class DropboxConnector(BaseConnector):
                 team_folder_id = record.external_record_group_id
 
             response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
-            # print("!!!!!!!!!!!!!!!!!!! response:", response)
             return response.data.link
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}")

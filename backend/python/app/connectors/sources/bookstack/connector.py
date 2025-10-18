@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -253,10 +253,6 @@ class BookStackConnector(BaseConnector):
                 detail="BookStack connector not initialized"
             )
 
-        print("\n\n\n\n!!!!!!!!!!!!!!!!!!!! called stream_record")
-        # For BookStack, we would need to fetch the content based on record type
-        # This is a placeholder implementation
-        # signed_url = await self.get_signed_url(record)
         record_id = record.external_record_id.split('/')[1]
         markdown_response = await self.data_source.export_page_markdown(record_id)
         if not markdown_response.success:
@@ -572,6 +568,20 @@ class BookStackConnector(BaseConnector):
                 user_details = user_response.data
                 roles = user_details.get('roles', [])
 
+                user_email = user_details.get('email')
+                if not user_email:
+                    self.logger.warning(f"User {name} (ID: {user_id}) has no email, skipping role updates.")
+                    continue
+
+                # Delete edges to groups for the user
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_email(user_email)
+                    if not user:
+                        self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
+                        continue
+                    user_key = f"{CollectionNames.USERS.value}/{user.id}"
+                    await tx_store.delete_edges_to_groups(user_key, CollectionNames.PERMISSION.value)
+                
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
                     continue
@@ -889,24 +899,16 @@ class BookStackConnector(BaseConnector):
 
         if roles_create_events.success and roles_create_events.data and roles_create_events.data.get('data'):
             for event in roles_create_events.data['data']:
-                print("\n\n\n!!!!!!!!!!!!!!!!!!!! got role create event")
                 role_id, _ = self._parse_id_and_name_from_event(event)
-                print("role_id", role_id)
                 await self._handle_role_create_event(role_id, user_email_map)
 
         if role_update_events.success and role_update_events.data and role_update_events.data.get('data'):
             for event in role_update_events.data['data']:
-                print("\n\n\n!!!!!!!!!!!!!!!!!!!! got role update event")
                 role_id, _ = self._parse_id_and_name_from_event(event)
-                print("role_id", role_id)
-                await self._handle_role_create_event(role_id, user_email_map)
-                await self._sync_record_groups(full_sync=True)
-                await self._sync_records(full_sync=True)
+                await self._handle_role_update_event(role_id, user_email_map)
 
         if role_delete_events.success and role_delete_events.data and role_delete_events.data.get('data'):
             for event in role_delete_events.data['data']:
-                print("\n\n\n!!!!!!!!!!!!!!!!!!!! got role delete event")
-                print("event", event)
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_delete_event(role_id)
                 await self._sync_user_groups_full()
@@ -957,6 +959,13 @@ class BookStackConnector(BaseConnector):
         # Process the new group and its permissions
         self.logger.info(f"Processing newly created user group '{app_user_group.name}'...")
         await self.data_entities_processor.on_new_user_groups([(app_user_group, permissions)])
+    
+    async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
+        await self._handle_role_delete_event(role_id)
+        await self._handle_role_create_event(role_id, user_email_map)
+        await self._sync_record_groups(full_sync=True)
+        await self._sync_records(full_sync=True)
+        
 
     async def _handle_role_delete_event(self, role_id: int) -> None:
         """
@@ -1253,7 +1262,6 @@ class BookStackConnector(BaseConnector):
         create_response = event_responses.get("create")
         if create_response and create_response.success and create_response.data.get('data'):
             self.logger.info(f"Found {len(create_response.data['data'])} new {content_type}(s) to create.")
-            print("\n\n\n!!!!!!!!!!!!!!!!!!! got create events")
             for event in create_response.data['data']:
                 await self._handle_record_group_create_event(event, content_type, roles_details)
 
@@ -1261,7 +1269,6 @@ class BookStackConnector(BaseConnector):
         update_response = event_responses.get("update")
         if update_response and update_response.success and update_response.data.get('data'):
             self.logger.info(f"Found {len(update_response.data['data'])} updated {content_type}(s) to update.")
-            print("\n\n\n!!!!!!!!!!!!!!!!!!! got update events")
             for event in update_response.data['data']:
                 await self._handle_record_group_create_event(event, content_type, roles_details)
 
@@ -1269,7 +1276,6 @@ class BookStackConnector(BaseConnector):
         delete_response = event_responses.get("delete")
         if delete_response and delete_response.success and delete_response.data.get('data'):
             self.logger.info(f"Found {len(delete_response.data['data'])} deleted {content_type}(s) to delete.")
-            print("\n\n\n!!!!!!!!!!!!!!!!!!! got delete events")
             for event in delete_response.data['data']:
                 await self._handle_record_group_delete_event(event, content_type)
 
@@ -1394,7 +1400,6 @@ class BookStackConnector(BaseConnector):
 
                 # Handle updated records
                 if record_update.is_updated:
-                    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!! got record update")
                     await self._handle_record_updates(record_update)
                     continue
 
@@ -1548,7 +1553,6 @@ class BookStackConnector(BaseConnector):
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:
                 if record_update.content_changed:
-                    print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!! got content changed")
                     self.logger.info(f"Content changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_record_content_update(record_update.record)
                 if record_update.metadata_changed:
@@ -1584,7 +1588,6 @@ class BookStackConnector(BaseConnector):
         create_response = event_responses.get("create")
         if create_response and create_response.success and create_response.data.get('data'):
             self.logger.info(f"Found {len(create_response.data['data'])} new page(s) to create.")
-            print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! page create")
             for event in create_response.data['data']:
                 await self._handle_page_upsert_event(event, roles_details)
 
@@ -1592,7 +1595,6 @@ class BookStackConnector(BaseConnector):
         update_response = event_responses.get("update")
         if update_response and update_response.success and update_response.data.get('data'):
             self.logger.info(f"Found {len(update_response.data['data'])} page(s) to update.")
-            print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! page update")
             for event in update_response.data['data']:
                 await self._handle_page_upsert_event(event, roles_details)
 
@@ -1600,7 +1602,6 @@ class BookStackConnector(BaseConnector):
         delete_response = event_responses.get("delete")
         if delete_response and delete_response.success and delete_response.data.get('data'):
             self.logger.info(f"Found {len(delete_response.data['data'])} page(s) to delete.")
-            print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! page delete")
             # for event in delete_response.data['data']:
             #     await self._handle_page_delete_event(event)
 
@@ -1628,7 +1629,6 @@ class BookStackConnector(BaseConnector):
         # Fetch the full, most recent details of the page
         page_response = await self.data_source.list_pages(filter={"id": str(page_id)})
 
-        print("\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!page_response", page_response)
         if not page_response.success or not page_response.data:
             self.logger.warning(f"Could not fetch details for page ID {page_id}. Skipping.")
             return

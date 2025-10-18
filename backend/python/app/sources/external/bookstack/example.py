@@ -82,21 +82,21 @@ async def main() -> None:
     # user = await data_source.get_user(user_id=6)
     # print(user)
 
-    print("\nList shelves")
-    shelves = await data_source.list_shelves()
-    print(shelves)
+    # print("\nList shelves")
+    # shelves = await data_source.list_shelves()
+    # print(shelves)
 
-    print("\n get bookshelf")
-    shelf = await data_source.get_shelf(shelf_id=3)
-    print(shelf)
+    # print("\n get bookshelf")
+    # shelf = await data_source.get_shelf(shelf_id=3)
+    # print(shelf)
 
-    print("\nListing all books:")
-    books = await data_source.list_books()
-    print(books)
+    # print("\nListing all books:")
+    # books = await data_source.list_books()
+    # print(books)
 
-    print("\n get book")
-    book = await data_source.get_book(book_id=1)
-    print(book)
+    # print("\n get book")
+    # book = await data_source.get_book(book_id=1)
+    # print(book)
 
     
     # print("\nList all chapters")
@@ -107,13 +107,13 @@ async def main() -> None:
     # chapter = await data_source.get_chapter(chapter_id=1)
     # print(chapter)
 
-    print("\nList Pages")
-    pages = await data_source.list_pages(filter={"id": "1"})
-    print(pages)
+    # print("\nList Pages")
+    # pages = await data_source.list_pages(filter={"id": "1"})
+    # print(pages)
 
-    print("\nGet page")
-    page = await data_source.get_page(page_id=1)
-    print(page)
+    # print("\nGet page")
+    # page = await data_source.get_page(page_id=1)
+    # print(page)
 
     # print("\nList Permissions")
     # permissions = await data_source.get_content_permissions(content_type="chapter", content_id=3)

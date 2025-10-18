@@ -4299,6 +4299,49 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to delete edges to target: %s in collection: %s: %s", to_key, collection, str(e))
             return 0
+    
+    async def delete_edges_to_groups(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges from the given node if those edges are pointing to nodes in the groups collection
+        
+        Args:
+            from_key: The source node key (e.g., "users/12345")
+            collection: The edge collection name to search in
+            transaction: Optional transaction database
+        
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting edges from %s to groups collection in %s", from_key, collection)
+            
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                FILTER IS_SAME_COLLECTION("groups", edge._to)
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={
+                "from_key": from_key,
+                "@collection": collection
+            })
+            
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+            
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges from %s to groups", count, from_key)
+            else:
+                self.logger.warning("⚠️ No edges found from %s to groups in collection: %s", from_key, collection)
+            
+            return count
+            
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges from %s to groups in %s: %s", from_key, collection, str(e))
+            return 0
 
     async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
         """
