@@ -10,7 +10,12 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -581,7 +586,7 @@ class BookStackConnector(BaseConnector):
                         continue
                     user_key = f"{CollectionNames.USERS.value}/{user.id}"
                     await tx_store.delete_edges_to_groups(user_key, CollectionNames.PERMISSION.value)
-                
+
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
                     continue
@@ -959,13 +964,13 @@ class BookStackConnector(BaseConnector):
         # Process the new group and its permissions
         self.logger.info(f"Processing newly created user group '{app_user_group.name}'...")
         await self.data_entities_processor.on_new_user_groups([(app_user_group, permissions)])
-    
+
     async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
         await self._handle_role_delete_event(role_id)
         await self._handle_role_create_event(role_id, user_email_map)
         await self._sync_record_groups(full_sync=True)
         await self._sync_records(full_sync=True)
-        
+
 
     async def _handle_role_delete_event(self, role_id: int) -> None:
         """

@@ -101,7 +101,7 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
-    
+
     async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
 
