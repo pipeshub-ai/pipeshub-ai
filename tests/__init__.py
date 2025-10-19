@@ -1,2 +1,0 @@
-"""PipesHub Integration Tests Package"""
-
