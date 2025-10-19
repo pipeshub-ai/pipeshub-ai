@@ -23,23 +23,16 @@ class SQSResponse:
         return json.dumps(self.to_dict())
 
 
-class AmazonSQSClient(IClient):
-    def __init__(
-        self,
-        access_key: str,
-        secret_key: str,
-        region_name: str,
-        session_token: str | None = None,
-    ) -> None:
+class AmazonSQSClient:
+    def __init__(self, access_key: str, secret_key: str, region_name: str):
         self.client = boto3.client(
             "sqs",
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            aws_session_token=session_token,
             region_name=region_name,
         )
 
-    def get_client(self):
+    def get_client(self) -> boto3.client:
         return self.client
 
     def send_message(self, queue_url: str, message_body: str, attributes: dict[str, Any] | None = None) -> SQSResponse:
