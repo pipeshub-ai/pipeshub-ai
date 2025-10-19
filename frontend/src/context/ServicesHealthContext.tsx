@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { CONFIG } from 'src/config-global';
 import { toast } from 'src/components/snackbar';
 
@@ -17,17 +17,28 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
   const toastIdRef = useRef<string | number | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Show loading toast after a small delay to ensure toaster is mounted
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      toastIdRef.current = toast.loading('Checking services health. Please wait...', { duration: Infinity });
-    }, 100);
-    
-    return () => clearTimeout(timer);
-  }, []);
+  // Check localStorage for cached health status
+  const checkLocalStorageHealth = (): boolean => {
+    try {
+      const healthCheck = localStorage.getItem('healthCheck');
+      return healthCheck === 'true';
+    } catch (err) {
+      console.error('Failed to read from localStorage:', err);
+      return false;
+    }
+  };
+
+  // Save health status to localStorage
+  const saveHealthToLocalStorage = (isHealthy: boolean) => {
+    try {
+      localStorage.setItem('healthCheck', isHealthy.toString());
+    } catch (err) {
+      console.error('Failed to save to localStorage:', err);
+    }
+  };
 
   // Simple health check function
-  const checkHealth = async () => {
+  const checkHealth = useCallback(async () => {
     try {
       console.log('Checking services health...');
       const resp = await fetch(`${CONFIG.backendUrl}/api/v1/health/services`, { credentials: 'include' });
@@ -42,6 +53,8 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
       if (ok && toastIdRef.current != null) {
         toast.success('Services are healthy', { id: toastIdRef.current });
         toastIdRef.current = null;
+        // Save to localStorage when services are healthy
+        saveHealthToLocalStorage(true);
         // Stop polling when services are healthy
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
@@ -65,15 +78,41 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
         toastIdRef.current = null;
       }
     }
-  };
+  }, []);
+
+  // Show loading toast after a small delay to ensure toaster is mounted
+  useEffect(() => {
+    // Check if health is already cached
+    const cachedHealthy = checkLocalStorageHealth();
+    
+    if (!cachedHealthy) {
+      // Show loading toast only if we need to check health
+      const timer = setTimeout(() => {
+        toastIdRef.current = toast.loading('Checking services health. Please wait...', { duration: Infinity });
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+
+    // If cached, skip health check
+    console.log('Health check skipped - using cached value from localStorage');
+    setHealthy(true);
+    setLoading(false);
+    return undefined;
+  }, []);
 
   // Start polling on mount
   useEffect(() => {
-    // Initial check
-    checkHealth();
+    // Check if health is already cached
+    const cachedHealthy = checkLocalStorageHealth();
     
-    // Start polling every 5 seconds
-    pollIntervalRef.current = setInterval(checkHealth, 5000);
+    if (!cachedHealthy) {
+      // Initial check
+      checkHealth();
+      
+      // Start polling every 5 seconds
+      pollIntervalRef.current = setInterval(checkHealth, 5000);
+    }
     
     return () => {
       if (pollIntervalRef.current) {
@@ -85,7 +124,7 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
         toastIdRef.current = null;
       }
     };
-  }, []);
+  }, [checkHealth]);
 
   const value = useMemo<HealthState>(() => ({ loading, healthy, services }), [loading, healthy, services]);
 

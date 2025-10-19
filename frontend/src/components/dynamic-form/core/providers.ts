@@ -67,7 +67,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     id: 'openAI',
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials to get started.',
-    modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
+    modelPlaceholder: 'e.g., gpt-5, gpt-5-mini, gpt-5-nano',
     fields: COMMON_API_FIELDS,
   },
   {
@@ -81,14 +81,14 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     id: 'anthropic',
     label: 'Anthropic API',
     description: 'Enter your Anthropic API credentials to get started.',
-    modelPlaceholder: 'e.g., claude-3-7-sonnet-20250219',
+    modelPlaceholder: 'e.g., claude-sonnet-4-5-20250929,claude-haiku-4-5-20251001',
     fields: COMMON_API_FIELDS,
   },
   {
     id: 'azureOpenAI',
     label: 'Azure OpenAI',
     description: 'You need an active Azure subscription with Azure OpenAI Service enabled.',
-    modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
+    modelPlaceholder: 'e.g., gpt-5, gpt-5-mini, gpt-5-nano',
     fields: [
       'endpoint',
       'apiKey',
