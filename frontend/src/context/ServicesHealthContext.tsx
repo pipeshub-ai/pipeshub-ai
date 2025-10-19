@@ -20,7 +20,7 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
   // Show loading toast after a small delay to ensure toaster is mounted
   useEffect(() => {
     const timer = setTimeout(() => {
-      toastIdRef.current = toast.loading('Initializing services. Please wait...', { duration: Infinity });
+      toastIdRef.current = toast.loading('Checking services health. Please wait...', { duration: Infinity });
     }, 100);
     
     return () => clearTimeout(timer);
@@ -40,7 +40,7 @@ export function ServicesHealthProvider({ children }: { children: React.ReactNode
 
       // Update toast based on result
       if (ok && toastIdRef.current != null) {
-        toast.success('Services are ready', { id: toastIdRef.current });
+        toast.success('Services are healthy', { id: toastIdRef.current });
         toastIdRef.current = null;
         // Stop polling when services are healthy
         if (pollIntervalRef.current) {
