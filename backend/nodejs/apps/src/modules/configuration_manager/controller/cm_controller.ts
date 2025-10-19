@@ -2075,6 +2075,7 @@ export const createAIModelsConfig =
           const modelKey = uuidv4();
           llm.modelKey = modelKey;
           llm.isMultimodal = false;
+          llm.isReasoning = false;
           llm.isDefault = index === 0;
         });
       }
@@ -2360,6 +2361,7 @@ export const getAvailableModelsByType =
             modelName,
             modelKey: config.modelKey,
             isMultimodal: config.isMultimodal || false,
+            isReasoning: config.isReasoning || false,
             isDefault: markDefault,
           };
           markDefault = false; // Only mark first model as default
@@ -2393,6 +2395,7 @@ export const addAIModelProvider =
         configuration,
         isMultimodal = false,
         isDefault = false,
+        isReasoning = false,
       } = req.body;
 
       // Validate required fields
@@ -2504,6 +2507,7 @@ export const addAIModelProvider =
         modelKey,
         isMultimodal,
         isDefault,
+        isReasoning,
       };
 
       // If this is set as default, remove default flag from other models
@@ -2567,6 +2571,7 @@ export const updateAIModelProvider =
         provider,
         configuration,
         isMultimodal = false,
+        isReasoning = false,
         isDefault = false,
       } = req.body;
 
@@ -2576,6 +2581,7 @@ export const updateAIModelProvider =
         provider,
         configuration,
         isMultimodal,
+        isReasoning,
         isDefault,
       });
 
@@ -2680,7 +2686,7 @@ export const updateAIModelProvider =
       targetModel.configuration = configuration;
       targetModel.isMultimodal = isMultimodal;
       targetModel.isDefault = isDefault;
-
+      targetModel.isReasoning = isReasoning;
       // If this is set as default, remove default flag from other models of the same type
       if (isDefault) {
         for (const config of aiModels[targetModelType]) {
@@ -2798,7 +2804,7 @@ export const deleteAIModelProvider =
       }
 
       const wasDefault = deletedModel.isDefault || false;
-
+      
       // Remove the model from the configuration
       aiModels[targetModelType].splice(modelIndex, 1);
 

@@ -442,6 +442,7 @@ export const modelConfigurationSchema = z.object({
   provider: providerType,
   configuration: configurationSchema,
   isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
+  isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
   isDefault: z.boolean().default(false).describe("Whether this should be the default model")
 });
 
@@ -454,6 +455,7 @@ export const updateProviderRequestSchema = z.object({
     provider: providerType,
     configuration: configurationSchema,
     isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
+    isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
     isDefault: z.boolean().default(false).describe("Whether this should be the default model")
   }),
 });
@@ -464,6 +466,7 @@ export const addProviderRequestSchema = z.object({
     provider: providerType,
     configuration: configurationSchema,
     isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
+    isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
     isDefault: z.boolean().default(false).describe("Whether this should be the default model")
   }),
 });
