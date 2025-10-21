@@ -30,6 +30,9 @@ from app.sources.client.pagerduty.pagerduty import PagerDutyClient, PagerDutyRes
 
 logger = logging.getLogger(__name__)
 
+# HTTP status codes
+HTTP_NO_CONTENT = 204  # Successful deletion with no response body
+
 
 class PagerDutyDataSource:
     """PagerDuty REST API DataSource using official SDK.
@@ -604,7 +607,7 @@ class PagerDutyDataSource:
         try:
             response = self.sdk.delete(f"/services/{service_id}")
             # Handle case where response might be None or not have status_code
-            success = getattr(response, "status_code", None) == 204
+            success = getattr(response, "status_code", None) == HTTP_NO_CONTENT
             return PagerDutyResponse(success=success, data={"deleted": success})
         except Exception as e:
             logger.exception("Error deleting service {service_id}")
