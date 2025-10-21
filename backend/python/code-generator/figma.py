@@ -391,7 +391,6 @@ def generate_method_body(endpoint: Dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
-    return "\n".join(lines)
 
 
 def generate_figma_client() -> str:

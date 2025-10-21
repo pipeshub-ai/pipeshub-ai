@@ -27,12 +27,8 @@ def safe_format_url(template: str, params: Dict[str, object]) -> str:
 def to_bool_str(value: Union[bool, str, int, float]) -> str:
     if isinstance(value, bool):
         return str(value).lower()
-    if isinstance(value, str):
-        return (
-            value.lower()
-            if value.lower() in ("true", "false")
-            else str(bool(value)).lower()
-        )
+    if isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower()
     return str(bool(value)).lower()
 
 

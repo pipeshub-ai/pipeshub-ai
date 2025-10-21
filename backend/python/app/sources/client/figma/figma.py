@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import time
+import types
 from typing import Any, Dict, Generic, List, Optional, TypedDict, TypeVar, Union, Unpack
 from urllib.parse import urlencode
 
@@ -144,7 +145,12 @@ class FigmaOAuthClient(HTTPClient):
             self._client = httpx.AsyncClient()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[types.TracebackType],
+    ) -> None:
         if self._client:
             await self._client.aclose()
             self._client = None
@@ -296,7 +302,12 @@ class FigmaRESTClient(HTTPClient):
         timeout: Optional[float]
         ssl: Optional[bool]
 
-    async def request(self, method: str, endpoint: str, **kwargs: Unpack[RequestKwargs]) -> Dict[str, Any]:
+    async def request(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs: Unpack[RequestKwargs]
+    ) -> Union[Dict[str, Any], List[Any]]:
         """Make an HTTP request to the Figma API.
 
         Args:
@@ -337,12 +348,9 @@ class FigmaRESTClient(HTTPClient):
 
         try:
             return http_response.json()
-        except (json.JSONDecodeError, TypeError) as e:
-            self.logger.error(f"Failed to parse JSON response: {e}", exc_info=True)
-            return http_response.text()
-        except AttributeError as e:
-            self.logger.error(f"Invalid response object: {e}", exc_info=True)
-            return http_response.text() if hasattr(http_response, 'text') else str(http_response)
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+            self.logger.error(f"Failed to parse response: {e}", exc_info=True)
+            raise
 
 
 class FigmaRateLimiter:
@@ -408,12 +416,8 @@ class FigmaClient(IClient):
         """
         Close the underlying HTTP client and release resources.
         """
-        if hasattr(self.client, '_client') and self.client._client is not None:
-            if hasattr(self.client._client, 'aclose'):
-                await self.client._client.aclose()
-            elif hasattr(self.client._client, 'close'):
-                self.client._client.close()
-            self.client._client = None
+        if hasattr(self.client, 'close'):
+            await self.client.close()
 
     @classmethod
     def build_with_config(cls, config: FigmaConfig) -> "FigmaClient":
