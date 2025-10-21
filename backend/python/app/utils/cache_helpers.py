@@ -87,7 +87,7 @@ async def get_cached_user_info(
         return None, None
 
 
-async def clear_user_info_cache(user_id: Optional[str] = None, org_id: Optional[str] = None):
+async def clear_user_info_cache(user_id: Optional[str] = None, org_id: Optional[str] = None) -> None:
     """
     Clear user info cache entries.
 
@@ -102,7 +102,7 @@ async def clear_user_info_cache(user_id: Optional[str] = None, org_id: Optional[
         else:
             # Clear specific entries
             keys_to_remove = []
-            for key in _user_info_cache.keys():
+            for key in _user_info_cache:
                 key_user_id, key_org_id = key.split(':')
                 if (user_id is None or key_user_id == user_id) and \
                    (org_id is None or key_org_id == org_id):
