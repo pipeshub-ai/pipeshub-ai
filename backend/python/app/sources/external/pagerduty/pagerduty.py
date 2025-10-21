@@ -603,7 +603,8 @@ class PagerDutyDataSource:
         """
         try:
             response = self.sdk.delete(f"/services/{service_id}")
-            success = response.status_code == 204
+            # Handle case where response might be None or not have status_code
+            success = getattr(response, "status_code", None) == 204
             return PagerDutyResponse(success=success, data={"deleted": success})
         except Exception as e:
             logger.exception("Error deleting service {service_id}")
