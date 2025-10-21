@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AccountType, CollectionNames
+from app.config.constants.arangodb import AccountType
 from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
@@ -17,6 +17,7 @@ from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import get_generator_model
+from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import get_flattened_results, get_message_content
 from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
@@ -71,7 +72,7 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
         "quick": {
             "temperature": 0.1,
             "max_tokens": 4096,
-            "system_prompt": "You are an assistant. Provide brief, accurate answers."
+            "system_prompt": "You are an assistant. Provide answers in a professional, enterprise-appropriate format."
         },
         "analysis": {
             "temperature": 0.3,
@@ -166,17 +167,20 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
 
-async def process_chat_query(
+async def process_chat_query_with_status(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
     arango_service: BaseArangoService,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
-    logger
-) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict]:
-    """Shared logic for processing chat queries (used by both streaming and non-streaming)"""
-
+    logger,
+    yield_status=None
+) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict, List[dict], List[dict], BlobStorage, bool]:
+    """
+    Process chat query with optional status updates.
+    If yield_status is provided, it should be an async function that accepts (event_type, data).
+    """
     # Get LLM based on user selection or fallback to default
     llm, config = await get_llm_for_chat(
         config_service,
@@ -191,6 +195,8 @@ async def process_chat_query(
 
     # Handle conversation history and query transformation
     if len(query_info.previousConversations) > 0:
+        if yield_status:
+            await yield_status("status", {"status": "transforming", "message": "Understanding conversation context..."})
         followup_query_transformation = setup_followup_query_transformation(llm)
         formatted_history = "\n".join(
             f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
@@ -205,6 +211,8 @@ async def process_chat_query(
     # Query decomposition based on mode
     decomposed_queries = []
     if not query_info.quickMode and query_info.chatMode != "quick":
+        if yield_status:
+            await yield_status("status", {"status": "analyzing", "message": "Analyzing your question..."})
         decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
         decomposition_result = await decomposition_service.transform_query(query_info.query)
         decomposed_queries = decomposition_result["queries"]
@@ -214,6 +222,9 @@ async def process_chat_query(
     # Execute search
     org_id = request.state.user.get('orgId')
     user_id = request.state.user.get('userId')
+
+    if yield_status:
+        await yield_status("status", {"status": "searching", "message": "Searching knowledge base..."})
 
     result = await retrieval_service.search_with_filters(
         queries=all_queries,
@@ -230,6 +241,8 @@ async def process_chat_query(
     if status_code in [202, 500, 503]:
         raise HTTPException(status_code=status_code, detail=result)
 
+    if yield_status:
+        await yield_status("status", {"status": "processing", "message": "Processing search results..."})
 
     blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
 
@@ -240,6 +253,8 @@ async def process_chat_query(
 
     # Re-rank results
     if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
+        if yield_status:
+            await yield_status("status", {"status": "ranking", "message": "Ranking relevant information..."})
         final_results = await reranker_service.rerank(
             query=query_info.query,
             documents=flattened_results,
@@ -255,8 +270,8 @@ async def process_chat_query(
     user_data = ""
 
     if send_user_info:
-        user_info = await arango_service.get_user_by_user_id(user_id)
-        org_info = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+        # Use cached user/org info for better performance (saves 0.5-1s per request)
+        user_info, org_info = await get_cached_user_info(arango_service, user_id, org_id)
 
         if (org_info is not None and (
             org_info.get("accountType") == AccountType.ENTERPRISE.value
@@ -264,17 +279,15 @@ async def process_chat_query(
         )):
             user_data = (
                 "I am the user of the organization. "
-                f"My name is {user_info.get('fullName', 'a user')} "
-                f"({user_info.get('designation', '')}) "
-                f"from {org_info.get('name', 'the organization')}. "
-                "Please provide accurate and relevant information based on the available context."
+                f"User's full name is {user_info.get('fullName', 'a user')} "
+                f"User's designation is {user_info.get('designation', 'unknown')} "
+                f"and part of the organization {org_info.get('name', 'the organization')}. "
             )
         else:
             user_data = (
                 "I am the user. "
-                f"My name is {user_info.get('fullName', 'a user')} "
-                f"({user_info.get('designation', '')}) "
-                "Please provide accurate and relevant information based on the available context."
+                f"User's full name is {user_info.get('fullName', 'a user')} "
+                f"User's designation is {user_info.get('designation', 'unknown')} "
             )
 
     # Prepare messages
@@ -305,14 +318,59 @@ async def process_chat_query(
     return llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm
 
 
+async def process_chat_query(
+    query_info: ChatQuery,
+    request: Request,
+    retrieval_service: RetrievalService,
+    arango_service: BaseArangoService,
+    reranker_service: RerankerService,
+    config_service: ConfigurationService,
+    logger
+) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict]:
+    """Wrapper for non-streaming endpoint (without status updates)"""
+    return await process_chat_query_with_status(
+        query_info, request, retrieval_service, arango_service,
+        reranker_service, config_service, logger, yield_status=None
+    )
+
+
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
-    """Handle tool calls for non-streaming responses"""
+    """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
+    from langchain_core.messages import HumanMessage
+
     llm_with_tools = llm.bind_tools(tools)
-    ai: AIMessage = await llm_with_tools.ainvoke(messages)
+
+    # Initial call with provider-level error handling
+    try:
+        ai: AIMessage = await llm_with_tools.ainvoke(messages)
+    except Exception as e:
+        error_str = str(e).lower()
+        # Check if this is a tool-related error from the provider
+        if any(keyword in error_str for keyword in ['tool_use_failed', 'tool use failed', 'failed to call a function', 'invalid tool', 'function call failed']):
+            valid_tool_names = [t.name for t in tools]
+            reflection_content = (
+                f"Error: The AI provider rejected the function call. This usually means:\n"
+                f"1. Invalid arguments were provided to the tool\n"
+                f"2. A non-existent tool was called\n"
+                f"3. The function call format was incorrect\n\n"
+                f"Available tools: {', '.join(valid_tool_names)}\n\n"
+                f"Please provide your final answer directly as a JSON object with this structure:\n"
+                f'{{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
+                f'"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}}.\n\n'
+                f"Do NOT attempt to call any tools. Provide your answer based on the blocks already provided in the context."
+            )
+            messages.append(HumanMessage(content=reflection_content))
+            # Retry without tools binding
+            ai: AIMessage = await llm.ainvoke(messages)
+            return ai
+        else:
+            raise
 
     hops = 0
     while isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None) and hops < max_hops:
         tool_msgs = []
+        valid_tool_names = [t.name for t in tools]
+
         for call in ai.tool_calls:
             name = call["name"]
             args = call.get("args", {}) or {}
@@ -320,9 +378,18 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 
             tool = next((t for t in tools if t.name == name), None)
             if tool is None:
+                # Use reflection to guide the LLM when it makes invalid tool calls
+                reflection_message = (
+                    f"Error: Tool '{name}' is not a valid tool. "
+                    f"Available tools are: {', '.join(valid_tool_names)}. "
+                    "Please provide your final answer directly as a JSON object with the following structure: "
+                    '{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
+                    '"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}. '
+                    "Do NOT wrap your response in any tool call."
+                )
                 tool_msgs.append(
                     ToolMessage(
-                        content=json.dumps({"ok": False, "error": f"Unknown tool: {name}"}),
+                        content=reflection_message,
                         tool_call_id=call_id,
                     )
                 )
@@ -339,8 +406,23 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
         messages.append(ai)
         messages.extend(tool_msgs)
 
-        # ask model again (now with tool outputs)
-        ai = await llm_with_tools.ainvoke(messages)
+        # ask model again (now with tool outputs) with error handling
+        try:
+            ai = await llm_with_tools.ainvoke(messages)
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in ['tool_use_failed', 'tool use failed', 'failed to call a function', 'invalid tool', 'function call failed']):
+                reflection_content = (
+                    "Error: The AI provider rejected the function call. "
+                    "Please provide your final answer directly as a JSON object without using any tools. "
+                    "Use only the information from the blocks already provided in the context."
+                )
+                messages.append(HumanMessage(content=reflection_content))
+                # Retry without tools binding
+                ai = await llm.ainvoke(messages)
+                return ai
+            else:
+                raise
         hops += 1
 
     return ai
@@ -364,14 +446,144 @@ async def askAIStream(
             container = request.app.container
             logger = container.logger()
 
-            # Send initial event
-            yield create_sse_event("status", {"status": "started", "message": "Starting AI processing..."})
+            # Send initial status immediately upon connection
+            yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
 
-            # Process query using shared logic
+            # Process query inline with real-time status updates
             try:
-                llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
-                    query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
+                # Get LLM based on user selection or fallback to default
+                llm, config = await get_llm_for_chat(
+                    config_service,
+                    query_info.modelKey,
+                    query_info.modelName,
+                    query_info.chatMode
                 )
+                is_multimodal_llm = config.get("isMultimodal")
+
+                if llm is None:
+                    raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+
+                # Handle conversation history and query transformation
+                if len(query_info.previousConversations) > 0:
+                    yield create_sse_event("status", {"status": "transforming", "message": "Understanding conversation context..."})
+                    followup_query_transformation = setup_followup_query_transformation(llm)
+                    formatted_history = "\n".join(
+                        f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
+                        for conv in query_info.previousConversations
+                    )
+                    followup_query = await followup_query_transformation.ainvoke({
+                        "query": query_info.query,
+                        "previous_conversations": formatted_history
+                    })
+                    query_info.query = followup_query
+
+                # Query decomposition based on mode
+                decomposed_queries = []
+                if not query_info.quickMode and query_info.chatMode != "quick":
+                    yield create_sse_event("status", {"status": "analyzing", "message": "Analyzing your question..."})
+                    decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
+                    decomposition_result = await decomposition_service.transform_query(query_info.query)
+                    decomposed_queries = decomposition_result["queries"]
+
+                all_queries = [query_info.query] if not decomposed_queries else [query.get("query") for query in decomposed_queries]
+
+                # Execute search
+                org_id = request.state.user.get('orgId')
+                user_id = request.state.user.get('userId')
+
+                yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
+
+                result = await retrieval_service.search_with_filters(
+                    queries=all_queries,
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=query_info.limit,
+                    filter_groups=query_info.filters,
+                )
+
+                # Process search results
+                search_results = result.get("searchResults", [])
+                status_code = result.get("status_code", 500)
+
+                if status_code in [202, 500, 503]:
+                    raise HTTPException(status_code=status_code, detail=result)
+
+                yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
+
+                blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+
+                virtual_record_id_to_result = {}
+                flattened_results = await get_flattened_results(
+                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
+                )
+
+                # Re-rank results
+                if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
+                    yield create_sse_event("status", {"status": "ranking", "message": "Ranking relevant information..."})
+                    final_results = await reranker_service.rerank(
+                        query=query_info.query,
+                        documents=flattened_results,
+                        top_k=query_info.limit,
+                    )
+                else:
+                    final_results = flattened_results
+
+                final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+
+                # Prepare user context
+                send_user_info = request.query_params.get('sendUserInfo', True)
+                user_data = ""
+
+                if send_user_info:
+                    from app.utils.cache_helpers import get_cached_user_info
+                    user_info, org_info = await get_cached_user_info(arango_service, user_id, org_id)
+
+                    if (org_info is not None and (
+                        org_info.get("accountType") == AccountType.ENTERPRISE.value
+                        or org_info.get("accountType") == AccountType.BUSINESS.value
+                    )):
+                        user_data = (
+                            "I am the user of the organization. "
+                            f"My name is {user_info.get('fullName', 'a user')} "
+                            f"({user_info.get('designation', '')}) "
+                            f"from {org_info.get('name', 'the organization')}. "
+                            "Please provide accurate and relevant information based on the available context."
+                        )
+                    else:
+                        user_data = (
+                            "I am the user. "
+                            f"My name is {user_info.get('fullName', 'a user')} "
+                            f"({user_info.get('designation', '')}) "
+                            "Please provide accurate and relevant information based on the available context."
+                        )
+
+                # Prepare messages
+                mode_config = get_model_config_for_mode(query_info.chatMode)
+                messages = [{"role": "system", "content": mode_config["system_prompt"]}]
+
+                # Add conversation history
+                for conversation in query_info.previousConversations:
+                    if conversation.get("role") == "user_query":
+                        messages.append({"role": "user", "content": conversation.get("content")})
+                    elif conversation.get("role") == "bot_response":
+                        messages.append({"role": "assistant", "content": conversation.get("content")})
+
+                # Always add the current query with retrieved context as the final user message
+                content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
+                messages.append({"role": "user", "content": content})
+
+                # Prepare tools
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
+                tools = [fetch_tool]
+
+                tool_runtime_kwargs = {
+                    "blob_store": blob_store,
+                    "arango_service": arango_service,
+                    "org_id": org_id,
+                }
+
+                all_queries = all_queries
+
             except HTTPException as e:
                 result = e.detail
                 yield create_sse_event("error", {
@@ -383,11 +595,10 @@ async def askAIStream(
                 yield create_sse_event("error", {"error": str(e)})
                 return
 
-            yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
-
             # Stream response with enhanced tool support using your existing implementation
             org_id = request.state.user.get('orgId')
             user_id = request.state.user.get('userId')
+            print(f"messages: {messages}")
             async for stream_event in stream_llm_response_with_tools(
                 llm,
                 messages,
@@ -440,7 +651,7 @@ async def askAI(
         logger = container.logger()
 
         # Process query using shared logic
-        llm, messages, tools, tool_runtime_kwargs, final_results = await process_chat_query(
+        llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
             query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
         )
 
@@ -451,7 +662,7 @@ async def askAI(
         if not getattr(final_ai_msg, "content", None):
             raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")
 
-        return process_citations(final_ai_msg, final_results)
+        return process_citations(final_ai_msg, final_results, records=[], from_agent=False)
 
     except HTTPException as he:
         # Re-raise HTTP exceptions with their original status codes

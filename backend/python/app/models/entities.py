@@ -108,6 +108,17 @@ class Record(BaseModel):
 
     @staticmethod
     def from_arango_base_record(arango_base_record: Dict) -> "Record":
+        # Handle connectorName which might be missing for uploaded files
+        conn_name_value = arango_base_record.get("connectorName")
+        try:
+            connector_name = (
+                Connectors(conn_name_value)
+                if conn_name_value is not None
+                else Connectors.KNOWLEDGE_BASE
+            )
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
         return Record(
             id=arango_base_record["_key"],
             org_id=arango_base_record["orgId"],
@@ -120,7 +131,7 @@ class Record(BaseModel):
             parent_external_record_id=arango_base_record.get("externalParentId", None),
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
-            connector_name=Connectors(arango_base_record["connectorName"]),
+            connector_name=connector_name,
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),

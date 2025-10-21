@@ -352,7 +352,12 @@ async def stream_record_internal(
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
-        connector = container.connectors_map[connector_name]
+        connector = container.connectors_map.get(connector_name)
+        if not connector:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector '{connector_name}' not found"
+            )
         buffer = await connector.stream_record(record)
         return buffer
 
@@ -758,7 +763,12 @@ async def download_file(
             else:
                 connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_name]
+                connector: BaseConnector = container.connectors_map.get(connector_name)
+                if not connector:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=f"Connector '{connector_name}' not found"
+                    )
                 buffer = await connector.stream_record(record)
                 return buffer
 
@@ -1357,7 +1367,12 @@ async def stream_record(
             else:
                 connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_name]
+                connector: BaseConnector = container.connectors_map.get(connector_name)
+                if not connector:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=f"Connector '{connector_name}' not found"
+                    )
                 buffer = await connector.stream_record(record)
                 return buffer
         except Exception as e:

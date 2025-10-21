@@ -1,11 +1,11 @@
+import asyncio
 import json
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import aiohttp
 from fastapi import HTTPException
-from langchain.schema import HumanMessage
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
@@ -29,12 +29,13 @@ MAX_TOKENS_THRESHOLD = 80000
 logger = create_logger("streaming")
 
 
-def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
+def count_tokens_in_messages(messages: List[Any]) -> int:
     """
     Count the total number of tokens in a messages array.
+    Supports both dict messages and LangChain message objects.
 
     Args:
-        messages: List of message dictionaries with 'role' and 'content' keys
+        messages: List of message dictionaries or LangChain message objects
 
     Returns:
         Total number of tokens across all messages
@@ -65,11 +66,15 @@ def count_tokens_in_messages(messages: List[Dict[str, Any]]) -> int:
     total_tokens = 0
 
     for message in messages:
-        if not isinstance(message, dict):
+        # Handle LangChain message objects (AIMessage, HumanMessage, ToolMessage, etc.)
+        if hasattr(message, "content"):
+            content = getattr(message, "content", "")
+        # Handle dict messages
+        elif isinstance(message, dict):
+            content = message.get("content", "")
+        else:
+            # Skip unknown types
             continue
-
-        # Extract content from message
-        content = message.get("content", "")
 
         # Handle different content types
         if isinstance(content, str):
@@ -224,15 +229,97 @@ async def execute_tool_calls(
     previous_tokens = count_tokens_in_messages(messages)
     logger.debug("execute_tool_calls: initial_token_count=%d", previous_tokens)
     while hops < max_hops:
-        # Get response from LLM
-        ai: AIMessage = await llm_with_tools.ainvoke(messages)
+        # Get response from LLM with error handling for provider-level tool failures
+        try:
+            ai: AIMessage = await llm_with_tools.ainvoke(messages)
+        except Exception as e:
+            error_str = str(e).lower()
+            # Check if this is a tool-related error from the provider (400, tool_use_failed, etc.)
+            if any(keyword in error_str for keyword in ['tool_use_failed', 'tool use failed', 'failed to call a function', 'invalid tool', 'function call failed']):
+                logger.warning(
+                    "execute_tool_calls: provider-level tool failure detected: %s. Applying reflection.",
+                    str(e)
+                )
+
+                # Add reflection message to guide the LLM away from using tools incorrectly
+                valid_tool_names = [t.name for t in tools]
+                reflection_content = (
+                    f"Error: The AI provider rejected the function call. This usually means:\n"
+                    f"1. Invalid arguments were provided to the tool\n"
+                    f"2. A non-existent tool was called\n"
+                    f"3. The function call format was incorrect\n\n"
+                    f"Available tools: {', '.join(valid_tool_names)}\n\n"
+                    f"Please provide your final answer directly as a JSON object with this structure:\n"
+                    f'{{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
+                    f'"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}}.\n\n'
+                    f"Do NOT attempt to call any tools. Provide your answer based on the blocks already provided in the context."
+                )
+
+                # Add a human message with the reflection (treating it as system guidance)
+                messages.append(HumanMessage(content=reflection_content))
+
+                logger.info("execute_tool_calls: added reflection for provider tool failure, retrying without tools")
+
+                # Continue loop to get a direct answer
+                hops += 1
+                continue
+            else:
+                # Non-tool-related error, re-raise
+                logger.error("execute_tool_calls: non-tool error during LLM invocation: %s", str(e))
+                raise
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
-            # No more tool calls, add final AI message and break
-            logger.debug("execute_tool_calls: no tool_calls returned; appending final AI message and exiting tool loop")
-            messages.append(ai)
+            # No more tool calls - don't add the AI message, let the streaming function handle it
+            logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop without adding AI message (will be streamed)")
             break
+
+        # Check if LLM incorrectly made a tool call for unknown tools (e.g., tool name "json")
+        # This happens when the model wraps the final answer in a tool call instead of returning it directly
+        valid_tool_names = [t.name for t in tools]
+
+        # If there are any invalid tool calls, use reflection to guide the LLM
+        invalid_tool_calls = [call for call in ai.tool_calls if call.get("name") not in valid_tool_names]
+
+        if invalid_tool_calls:
+            logger.warning(
+                "execute_tool_calls: detected invalid tool calls: %s. Using reflection to guide LLM.",
+                [call.get("name") for call in invalid_tool_calls]
+            )
+
+            # Add the AI message with invalid tool calls
+            messages.append(ai)
+
+            # Create reflection messages for each invalid tool call
+            for call in invalid_tool_calls:
+                call_id = call.get("id")
+                tool_name = call.get("name")
+
+                reflection_message = (
+                    f"Error: Tool '{tool_name}' is not a valid tool. "
+                    f"Available tools are: {', '.join(valid_tool_names)}. "
+                    "Please provide your final answer directly as a JSON object with the following structure: "
+                    '{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
+                    '"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}. '
+                    "Do NOT wrap your response in any tool call."
+                )
+
+                messages.append(
+                    ToolMessage(
+                        content=reflection_message,
+                        tool_call_id=call_id
+                    )
+                )
+
+                logger.info(
+                    "execute_tool_calls: added reflection message for invalid tool '%s' with call_id=%s",
+                    tool_name,
+                    call_id
+                )
+
+            # Continue the loop to let the LLM try again with the reflection
+            hops += 1
+            continue
 
         tools_executed = True
         logger.debug(
@@ -242,7 +329,7 @@ async def execute_tool_calls(
 
         # Yield tool call events
         for call in ai.tool_calls:
-            logger.debug(
+            logger.info(
                 "execute_tool_calls: tool_call | name=%s call_id=%s args_keys=%s",
                 call.get("name"),
                 call.get("id"),
@@ -273,95 +360,105 @@ async def execute_tool_calls(
             tool = next((t for t in tools if t.name == name), None)
             tool_args.append((args,tool))
 
-        tool_results_inner= []
+        tool_results_inner = []
 
-        for args,tool in tool_args:
+        # Execute all tools in parallel using asyncio.gather
+        async def execute_single_tool(args, tool, tool_name, call_id) -> Dict[str, Any]:
+            """Execute a single tool and return result with metadata"""
             if tool is None:
-                logger.warning("execute_tool_calls: unknown tool requested name=%s", name)
-                tool_result = json.dumps({
+                logger.warning("execute_tool_calls: unknown tool requested name=%s", tool_name)
+                return {
                     "ok": False,
-                    "error": f"Unknown tool: {name}"
-                })
-                tool_results_inner.append(tool_result)
-                tool_results.append(tool_result)
+                    "error": f"Unknown tool: {tool_name}",
+                    "tool_name": tool_name,
+                    "call_id": call_id
+                }
+
+            try:
+                logger.debug(
+                    "execute_tool_calls: running tool name=%s call_id=%s args_keys=%s",
+                    tool.name,
+                    call_id,
+                    list(args.keys()),
+                )
+                tool_result = await tool.arun(args, **tool_runtime_kwargs)
+                tool_result["tool_name"] = tool_name
+                tool_result["call_id"] = call_id
+                return tool_result
+            except Exception as e:
+                logger.exception(
+                    "execute_tool_calls: exception while running tool name=%s call_id=%s",
+                    tool_name,
+                    call_id,
+                )
+                return {
+                    "ok": False,
+                    "error": str(e),
+                    "tool_name": tool_name,
+                    "call_id": call_id
+                }
+
+        # Create parallel tasks for all tools
+        tool_tasks = []
+        tool_names = []
+        for (args, tool), call in zip(tool_args, ai.tool_calls):
+            tool_name = call["name"]
+            call_id = call.get("id")
+            tool_names.append(tool_name)
+            tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id))
+
+        # Execute all tools in parallel
+        tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
+
+        # Process results and yield events
+        for tool_result in tool_results_inner:
+            tool_name = tool_result.get("tool_name", "unknown")
+            call_id = tool_result.get("call_id")
+            tool_results.append(tool_result)
+
+            if tool_result.get("ok", False):
+                logger.debug(
+                    "execute_tool_calls: tool success name=%s call_id=%s has_record=%s",
+                    tool_name,
+                    call_id,
+                    "record" in tool_result,
+                )
+                yield {
+                    "event": "tool_success",
+                    "data": {
+                        "tool_name": tool_name,
+                        "summary": f"Successfully executed {tool_name}",
+                        "call_id": call_id,
+                        "record_info": tool_result.get("record_info", {})
+                    }
+                }
+            else:
+                logger.warning(
+                    "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
+                    tool_name,
+                    call_id,
+                    tool_result.get("error", "Unknown error"),
+                )
                 yield {
                     "event": "tool_error",
                     "data": {
-                        "tool_name": name,
-                        "error": f"Unknown tool: {name}",
+                        "tool_name": tool_name,
+                        "error": tool_result.get("error", "Unknown error"),
                         "call_id": call_id
                     }
                 }
-                continue
 
-            try:
-                    logger.debug(
-                        "execute_tool_calls: running tool name=%s call_id=%s args_keys=%s",
-                        tool.name,
-                        call_id,
-                        list(args.keys()),
-                    )
-                    tool_result = await tool.arun(args, **tool_runtime_kwargs)
-                    tool_results_inner.append(tool_result)
-                    tool_results.append(tool_result)
-                    # Parse result for user feedback
-                    if tool_result.get("ok", False):
-                        logger.debug(
-                            "execute_tool_calls: tool success name=%s call_id=%s has_record=%s",
-                            tool.name,
-                            call_id,
-                            "record" in tool_result,
-                        )
+        # Handle both old single-record format and new multi-record format
+        records = []
+        for tool_result in tool_results_inner:
+            if tool_result.get("ok"):
+                # New format: multiple records
+                if "records" in tool_result:
+                    records.extend(tool_result.get("records", []))
+                # Old format: single record (backward compatibility)
+                elif "record" in tool_result:
+                    records.append(tool_result.get("record", {}))
 
-                        yield {
-                            "event": "tool_success",
-                            "data": {
-                                "tool_name": name,
-                                "summary": f"Successfully executed {name}",
-                                "call_id": call_id,
-                                "record_info": tool_result.get("record_info", {})
-                            }
-                        }
-                        # tool_message_content = record_to_message_content(tool_result, final_results)
-                        # tool_msgs.append(ToolMessage(content=tool_message_content, tool_call_id=call_id))
-                    else:
-                        logger.warning(
-                            "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
-                            tool.name,
-                            call_id,
-                            tool_result.get("error", "Unknown error"),
-                        )
-
-                        yield {
-                            "event": "tool_error",
-                            "data": {
-                                "tool_name": name,
-                                "error": tool_result.get("error", "Unknown error"),
-                                "call_id": call_id
-                            }
-                        }
-            except Exception as e:
-                    logger.exception(
-                        "execute_tool_calls: exception while running tool name=%s call_id=%s",
-                        name,
-                        call_id,
-                    )
-                    tool_result = {
-                        "ok": False,
-                        "error": str(e)
-                    }
-                    tool_results_inner.append(tool_result)
-                    tool_results.append(tool_result)
-                    yield {
-                        "event": "tool_error",
-                        "data": {
-                            "tool_name": name,
-                            "error": str(e),
-                            "call_id": call_id
-                        }
-                    }
-
-        records = [tool_result.get("record",{}) for tool_result in tool_results_inner if tool_result.get("ok")]
         new_tokens = count_tokens_in_records(records)
         logger.debug(
             "execute_tool_calls: token_count | previous=%d new=%d threshold=%d",
@@ -422,20 +519,40 @@ async def execute_tool_calls(
                 message_contents.append(message_content)
                 record_ids.append(record.get("id"))
 
-        msg_ind=0
-        for i,tool_result in enumerate(tool_results_inner):
-            if tool_result.get("ok") and msg_ind < len(message_contents):
-                message_content = message_contents[msg_ind]
-                tool_message = {
-                    "ok": True,
-                    "record": message_content
-                }
-                # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
-                tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=tool_call_ids[record_ids[msg_ind]]))
-                msg_ind += 1
+        # Build tool messages with the new multi-record format
+        for i, tool_result in enumerate(tool_results_inner):
+            # Ensure we have a valid call_id for this tool result
+            call_id = tool_call_ids_list[i] if i < len(tool_call_ids_list) else None
+            if call_id is None:
+                logger.warning("execute_tool_calls: missing call_id for tool result index %d", i)
+                continue
+
+            if tool_result.get("ok"):
+                # New multi-record format
+                if "records" in tool_result and len(message_contents) > 0:
+                    # Package all records for this tool call
+                    tool_message = {
+                        "ok": True,
+                        "records": message_contents,
+                        "record_count": len(message_contents)
+                    }
+                    if tool_result.get("not_found"):
+                        tool_message["not_found"] = tool_result.get("not_found")
+                    tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
+                    break  # All records handled in single message
+                # Old single-record format (backward compatibility)
+                elif "record" in tool_result:
+                    # Legacy path for single record
+                    if len(message_contents) > 0:
+                        message_content = message_contents[0]
+                        tool_message = {
+                            "ok": True,
+                            "record": message_content
+                        }
+                        tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
             else:
                 message_content = tool_result
-                tool_msgs.append(ToolMessage(content=json.dumps(message_content), tool_call_id=tool_call_ids_list[i]))
+                tool_msgs.append(ToolMessage(content=json.dumps(message_content), tool_call_id=call_id))
         # Add messages for next iteration
         logger.debug(
             "execute_tool_calls: appending ai + %d tool messages; next hop",
@@ -683,7 +800,7 @@ async def stream_llm_response_with_tools(
     is_multimodal_llm,
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
-    target_words_per_chunk: int = 3,
+    target_words_per_chunk: int = 2,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -701,29 +818,44 @@ async def stream_llm_response_with_tools(
 
     # Handle tool calls first if tools are provided
     if tools and tool_runtime_kwargs:
-        yield {
-            "event": "status",
-            "data": {"status": "checking_tools", "message": "Checking if tools are needed..."}
-        }
-
         # Execute tools and get updated messages
         final_messages = messages.copy()
+        tools_were_called = False
         try:
-            logger.debug("stream_llm_response_with_tools: executing tool calls")
+            logger.info(f"executing tool calls with tools={tools}")
             async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm):
+
                 if tool_event.get("event") == "tool_execution_complete":
                     # Extract the final messages and tools_executed status
                     final_messages = tool_event["data"]["messages"]
-                    # tool_args = tool_event["data"]["tool_args"]
+                    tools_were_called = tool_event["data"]["tools_executed"]
                     tool_results = tool_event["data"]["tool_results"]
                     if tool_results:
-                        records = [r.get("record") for r in tool_results]
+                        # Handle both old and new format
+                        records = []
+                        for r in tool_results:
+                            # New format with multiple records
+                            if "records" in r:
+                                records.extend(r.get("records", []))
+                            # Old format with single record
+                            elif "record" in r:
+                                records.append(r.get("record"))
                         logger.debug(
-                            "stream_llm_response_with_tools: tool_execution_complete | tool_results=%d records=%d",
+                            "stream_llm_response_with_tools: tool_execution_complete | tool_results=%d records=%d tools_were_called=%s",
                             len(tool_results),
                             len(records),
+                            tools_were_called,
                         )
-                    # tool_event["data"]["tools_executed"]
+                elif tool_event.get("event") in ["tool_call", "tool_success", "tool_error"]:
+                    # First time we see an actual tool event, show the status message
+                    if not tools_were_called:
+                        yield {
+                            "event": "status",
+                            "data": {"status": "checking_tools", "message": "Using tools to fetch additional information..."}
+                        }
+                        tools_were_called = True
+                    logger.debug("stream_llm_response_with_tools: forwarding tool event type=%s", tool_event.get("event"))
+                    yield tool_event
                 else:
                     logger.debug("stream_llm_response_with_tools: forwarding tool event type=%s", tool_event.get("event"))
                     yield tool_event
@@ -731,23 +863,47 @@ async def stream_llm_response_with_tools(
             messages = final_messages
         except Exception:
             logger.error("Error in execute_tool_calls",exc_info=True)
-            pass
+            # Don't silently pass - re-raise to let caller handle
+            raise
 
-        if len(messages) > 0 and isinstance(messages[-1], AIMessage):
-            final_ai_msg = messages[-1]
-            if not getattr(final_ai_msg, "content", None):
-                raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")
+        yield {
+            "event": "status",
+            "data": {"status": "generating_answer", "message": "Generating final answer..."}
+        }
 
-            # Stream chunks from the existing AI content instead of a single complete event
-            existing_content = final_ai_msg.content
-            logger.debug("stream_llm_response_with_tools: streaming existing AI content after tools")
+    # Original streaming logic for the final answer
+    full_json_buf: str = ""         # whole JSON as it trickles in
+    answer_buf: str = ""            # the running "answer" value (no quotes)
+    answer_done = False
+    ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
+    CITE_BLOCK_RE = re.compile(r'(?:\s*\[\d+])+')
+    INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*$')
+
+    WORD_ITER = re.compile(r'\S+').finditer
+    prev_norm_len = 0  # length of the previous normalised answer
+    emit_upto = 0
+    words_in_chunk = 0
+
+    # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
+    try:
+        last_msg = messages[-1] if messages else None
+        existing_ai_content: Optional[str] = None
+        if isinstance(last_msg, AIMessage):
+            existing_ai_content = getattr(last_msg, "content", None)
+        elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
+            existing_ai_content = getattr(last_msg, "content", None)
+        elif isinstance(last_msg, dict) and last_msg.get("role") == "assistant":
+            existing_ai_content = last_msg.get("content")
+
+        if existing_ai_content:
+            logger.info("stream_llm_response_with_tools: detected existing AI message, streaming directly without LLM call")
             try:
-                parsed =   extract_json_from_string(existing_content)
-                final_answer = parsed.get("answer", existing_content)
+                parsed = json.loads(existing_ai_content)
+                final_answer = parsed.get("answer", existing_ai_content)
                 reason = parsed.get("reason")
                 confidence = parsed.get("confidence")
             except Exception:
-                final_answer = existing_content
+                final_answer = existing_ai_content
                 reason = None
                 confidence = None
 
@@ -776,33 +932,10 @@ async def stream_llm_response_with_tools(
                     "confidence": confidence,
                 },
             }
-            logger.debug(
-                "stream_llm_response_with_tools: completed streaming existing content | total_words=%d",
-                len(words),
-            )
             return
-
-        # Re-bind tools for the final response | Commented out to avoid further tool calls
-        # if tools:
-        #     llm = llm.bind_tools(tools)
-
-        yield {
-            "event": "status",
-            "data": {"status": "generating_answer", "message": "Generating final answer..."}
-        }
-
-    # Original streaming logic for the final answer
-    full_json_buf: str = ""         # whole JSON as it trickles in
-    answer_buf: str = ""            # the running "answer" value (no quotes)
-    answer_done = False
-    ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
-    CITE_BLOCK_RE = re.compile(r'(?:\s*\[\d+])+')
-    INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*$')
-
-    WORD_ITER = re.compile(r'\S+').finditer
-    prev_norm_len = 0  # length of the previous normalised answer
-    emit_upto = 0
-    words_in_chunk = 0
+    except Exception as e:
+        # If fast-path detection fails, fall back to normal path
+        logger.debug("stream_llm_response_with_tools: fast-path failed, falling back to LLM call: %s", str(e))
 
     # Try to bind structured output
     try:
