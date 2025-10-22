@@ -52,6 +52,12 @@ from app.sources.client.zammad.zammad import (
 from app.sources.external.zammad.zammad import ZammadDataSource, ZammadResponse
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+THRESHOLD_PAGINATION_LIMIT: int = 100
+
+# Zammad default role IDs
+ZAMMAD_ADMIN_ROLE_ID: int = 1
+ZAMMAD_AGENT_ROLE_ID: int = 2
+ZAMMAD_CUSTOMER_ROLE_ID: int = 3
 
 @ConnectorBuilder("Zammad")\
     .in_group("Support & Helpdesk")\
@@ -448,9 +454,9 @@ class ZammadConnector(BaseConnector):
                         return "zammad_agent"
 
         # Fallback: assume first role determines the type
-        if 1 in role_ids:
+        if ZAMMAD_ADMIN_ROLE_ID in role_ids:
             return "zammad_admin"
-        elif 2 in role_ids:
+        elif ZAMMAD_AGENT_ROLE_ID in role_ids:
             return "zammad_agent"
         else:
             return "zammad_customer"
@@ -1070,7 +1076,7 @@ class ZammadConnector(BaseConnector):
                 page += 1
 
                 # Safety limit
-                if page > 100:
+                if page > THRESHOLD_PAGINATION_LIMIT:
                     self.logger.warning("Hit page limit for ticket search")
                     break
 
@@ -1149,106 +1155,12 @@ class ZammadConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error fetching supporting entities: {e}", exc_info=True)
 
-    # ============================================================================
-    # Webhook Helper Methods
-    # ============================================================================
-
-    async def _process_ticket_update(self, ticket_id: int) -> None:
-        """Process a single ticket update from webhook or delta sync"""
-        try:
-            # Fetch full ticket details
-            response: ZammadResponse = await self.zammad_datasource.get_ticket(ticket_id)
-            if not response.success or not response.data:
-                self.logger.warning(f"Could not fetch ticket #{ticket_id}")
-                return
-
-            ticket_dict: Dict[str, Any] = response.data if isinstance(response.data, dict) else {}
-            ticket: ZammadTicket = ZammadTicket(**ticket_dict)
-
-            # Add to tickets_data for processing
-            self.tickets_data = [ticket]
-
-            # Fetch supporting data
-            await self._fetch_supporting_entities()
-
-            # Process the ticket
-            await self.__build_nodes_and_edges()
-
-            self.logger.info(f"Successfully processed ticket #{ticket_id} update")
-
-        except Exception as e:
-            self.logger.error(f"Error processing ticket #{ticket_id}: {e}", exc_info=True)
-
-    async def _process_user_update(self, user_id: int) -> None:
-        """Process a single user update from webhook"""
-        try:
-            # Fetch full user details
-            response: ZammadResponse = await self.zammad_datasource.get_user(user_id)
-            if not response.success or not response.data:
-                self.logger.warning(f"Could not fetch user #{user_id}")
-                return
-
-            user_dict: Dict[str, Any] = response.data if isinstance(response.data, dict) else {}
-            user: ZammadUser = ZammadUser(**user_dict)
-
-            # Add to users_data for processing
-            self.users_data = [user]
-
-            # Fetch supporting data
-            await self._fetch_supporting_entities()
-
-            # Process the user
-            await self.__build_nodes_and_edges()
-
-            self.logger.info(f"Successfully processed user #{user_id} update")
-
-        except Exception as e:
-            self.logger.error(f"Error processing user #{user_id}: {e}", exc_info=True)
-
-    async def _update_webhook_checkpoint(self) -> None:
-        """Update timestamp of last webhook received"""
-        try:
-            current_time: str = datetime.utcnow().isoformat() + "Z"
-            await self.webhook_sync_point.update_sync_point("webhook_checkpoint", {
-                "last_webhook_time": current_time
-            })
-        except Exception as e:
-            self.logger.error(f"Error updating webhook checkpoint: {e}", exc_info=True)
-
-    async def _is_event_processed(self, event_id: str) -> bool:
-        """Check if webhook event was already processed (basic deduplication)"""
-        try:
-            sync_state: Dict[str, Any] = await self.webhook_sync_point.read_sync_point("processed_events")
-            processed_events: List[str] = sync_state.get("event_ids", [])
-            return event_id in processed_events
-        except Exception as e:
-            self.logger.error(f"Error checking event status: {e}", exc_info=True)
-            return False
-
-    async def _mark_event_processed(self, event_id: str) -> None:
-        """Mark webhook event as processed"""
-        try:
-            sync_state: Dict[str, Any] = await self.webhook_sync_point.read_sync_point("processed_events")
-            processed_events: List[str] = sync_state.get("event_ids", [])
-
-            # Add new event ID and keep only last 1000 events
-            processed_events.append(event_id)
-            if len(processed_events) > 1000:
-                processed_events = processed_events[-1000:]
-
-            await self.webhook_sync_point.update_sync_point("processed_events", {
-                "event_ids": processed_events
-            })
-        except Exception as e:
-            self.logger.error(f"Error marking event as processed: {e}", exc_info=True)
-
     @classmethod
     async def create_connector(
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        **kwargs: Any
     ) -> BaseConnector:
         """Create and initialize ZammadConnector instance"""
         data_entities_processor: DataSourceEntitiesProcessor = DataSourceEntitiesProcessor(
