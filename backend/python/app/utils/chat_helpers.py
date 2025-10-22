@@ -599,13 +599,13 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
 
 
 def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int) -> List[Dict[str, Any]]:
-    if parent_index is None or parent_index < 0 or parent_index >= len(block_groups):
+    if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
-   
+
     children = parent_block.get("children", [])
     if not children:
-        return None
+        return []
     result_blocks = []
     for child in children:
         block_index = child.get("block_index")
@@ -748,15 +748,16 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                 block_group = block_groups[parent_index]
                 group_blocks = build_group_blocks(block_groups, blocks, parent_index)
 
+
+                if not group_blocks:
+                    continue
+                seen_block_groups.add(block_group_id)
                 rendered_form = template.render(
                     block_group_index=parent_index,
                     label=block_group.get("type"),
                     blocks=group_blocks,
                     record_number=record_number,
                 )
-                if group_blocks is None or len(group_blocks) == 0:
-                    continue
-                seen_block_groups.add(block_group_id)
                 record_string += f"{rendered_form}\n\n"
             else:
                 content.append({
