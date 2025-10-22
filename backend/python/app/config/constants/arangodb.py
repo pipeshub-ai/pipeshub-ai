@@ -47,6 +47,7 @@ class Connectors(Enum):
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
     DROPBOX = "DROPBOX"
+    ZAMMAD = "ZAMMAD"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -54,7 +55,7 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
-
+    ZAMMAD = "Zammad"
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
