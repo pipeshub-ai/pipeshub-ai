@@ -156,12 +156,12 @@ table_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
 {% endfor %}
 """
 
-block_group_prompt = """* Block Group Type: {{block_group_type}}
-                  * Blocks in Block Group:
-                    {% for block in block_group_blocks %}
-                    - Block Number: R{{record_number}}-{{block.block_index}}
-                    - Block Content: {{block.content}}
-                    {% endfor %}
+block_group_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
+* Block Group Type: {{label}}
+* Block Group Content:{% for block in blocks %}
+  - Block Number: R{{record_number}}-{{block.index}}
+  - Block Content: {{block.data}}
+{% endfor %}
 """
 
 qna_prompt_instructions_1 = """

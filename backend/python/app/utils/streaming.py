@@ -235,7 +235,7 @@ async def execute_tool_calls(
     previous_tokens = count_tokens_in_messages(messages)
     logger.debug("execute_tool_calls: initial_token_count=%d", previous_tokens)
     while hops < max_hops:
-        # Get response from LLM with error handling for provider-level tool failures
+        # with error handling for provider-level tool failures
         try:
             ai: AIMessage = await llm_with_tools.ainvoke(messages)
         except Exception as e:
