@@ -50,6 +50,7 @@ class ChatState(TypedDict):
     error: Optional[Dict[str, Any]]
     org_id: str
     user_id: str
+    user_email: str
     send_user_info: bool
 
     # Enhanced features
@@ -75,7 +76,7 @@ class ChatState(TypedDict):
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: BaseArangoService,
-                        reranker_service: RerankerService) -> ChatState:
+                        reranker_service: RerankerService, org_info: Dict[str, Any] = None) -> ChatState:
     """Build the initial state from the chat query and user info"""
 
     # Get user-defined system prompt or use default
@@ -118,12 +119,13 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "final_results": [],
 
         # User and response data
-        "user_info": None,
-        "org_info": None,
+        "user_info": user_info,
+        "org_info": org_info or None,
         "response": None,
         "error": None,
         "org_id": user_info.get("orgId", ""),
         "user_id": user_info.get("userId", ""),
+        "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "llm": llm,
         "logger": logger,
