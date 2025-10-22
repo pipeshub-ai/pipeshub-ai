@@ -2,6 +2,7 @@ import io
 import json
 from datetime import datetime
 
+from app.models.blocks import BlockType
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -1147,7 +1148,7 @@ class Processor:
         return
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
+        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
     ) -> None:
         """Process HTML document by converting to markdown and using markdown processing"""
         self.logger.info(
@@ -1155,34 +1156,8 @@ class Processor:
         )
 
         try:
-            # Convert binary to string
-            html_content = (
-                html_content.decode("utf-8")
-                if isinstance(html_content, bytes)
-                else html_content
-            )
-            self.logger.debug(f"📄 Decoded HTML content length: {len(html_content)}")
-
-            # Convert HTML to markdown
-            self.logger.debug("📄 Converting HTML to markdown")
-            markdown = convert(html_content)
-            markdown = markdown.strip()
-
-            if markdown is None or markdown == "":
-                try:
-                    await self._mark_record_as_completed(recordId, virtual_record_id)
-                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
-                    return
-                except DocumentProcessingError:
-                    raise
-                except Exception as e:
-                    raise DocumentProcessingError(
-                        "Error updating record status: " + str(e),
-                        doc_id=recordId,
-                        details={"error": str(e)},
-                    )
-            # Convert markdown content to bytes for processing
-            md_binary = markdown.encode("utf-8")
+            if isinstance(html_binary, str):
+                html_binary = html_binary.encode("utf-8")
 
             # Use the existing markdown processing function
             await self.process_md_document(
@@ -1191,7 +1166,7 @@ class Processor:
                 version=version,
                 source=source,
                 orgId=orgId,
-                md_binary=md_binary,
+                md_binary=html_binary,
                 virtual_record_id=virtual_record_id
             )
 
@@ -1243,10 +1218,49 @@ class Processor:
             # Convert binary to string
             md_content = md_binary.decode("utf-8")
 
+            markdown = convert(md_content)
+            markdown = markdown.strip()
+
+            if markdown is None or markdown == "":
+                try:
+                    await self._mark_record_as_completed(recordId, virtual_record_id)
+                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    return
+                except DocumentProcessingError:
+                    raise
+                except Exception as e:
+                    raise DocumentProcessingError(
+                        "Error updating record status: " + str(e),
+                        doc_id=recordId,
+                        details={"error": str(e)},
+                    )
+
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
             parser = self.parsers[ExtensionTypes.MD.value]
-            md_bytes = parser.parse_string(md_content)
+            
+            modified_markdown, images = parser.extract_and_replace_images(markdown)
+            caption_map = {}
+            urls_to_convert = []
+            
+            # Collect all image URLs
+            for image in images:
+                urls_to_convert.append(image["url"])
+            
+            # Convert URLs to base64 if there are any images
+            if urls_to_convert:
+                image_parser = self.parsers[ExtensionTypes.PNG.value]
+                base64_urls = image_parser.urls_to_base64(urls_to_convert)
+                
+                # Create caption map with base64 URLs
+                for i, image in enumerate(images):
+                    if base64_urls[i] is not None:
+                        caption_map[image["new_alt_text"]] = base64_urls[i]
+                    else:
+                        self.logger.warning(f"⚠️ Failed to convert image URL to base64: {image['url']}")
+            
+            md_bytes = parser.parse_string(modified_markdown)
+
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
             block_containers = await processor.load_document(f"{recordName}.md", md_bytes)
             if block_containers is False:
@@ -1259,6 +1273,24 @@ class Processor:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 raise Exception(f"Record {recordId} not found in graph db")
             record = convert_record_dict_to_record(record)
+
+            blocks = block_containers.blocks
+            for block in blocks:
+                if block.type == BlockType.IMAGE.value:
+                    caption = block.image_metadata.captions
+                    if caption:
+                        caption = caption[0]
+                        if caption in caption_map:
+                            if block.data is None:
+                                block.data = {}
+                            if isinstance(block.data, dict):
+                                block.data["uri"] = caption_map[caption]
+                            else:
+                                # If data is not a dict, create a new dict with the uri
+                                block.data = {"uri": caption_map[caption]}
+            
+            block_containers.blocks = blocks
+            
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
             ctx = TransformContext(record=record)
