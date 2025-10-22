@@ -6,6 +6,9 @@ import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
+import threading
+
+from arango.database import TransactionDatabase
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -68,6 +71,8 @@ class BaseGmailSyncService(ABC):
         self._transition_lock = asyncio.Lock()
         self._worker_lock = asyncio.Lock()
         self._progress_lock = asyncio.Lock()
+        # Cross-thread batch lock to serialize executor runs
+        self._batch_lock = threading.Lock()
 
         # Configuration
         self._hierarchy_version = 0
@@ -246,16 +251,25 @@ class BaseGmailSyncService(ABC):
 
     async def process_batch(self, metadata_list, org_id) -> bool | None:
         """Process a single batch with atomic operations in a separate thread"""
+        # Respect stop signal before scheduling work
+        if await self._should_stop(org_id):
+            self.logger.info("⏹️ Stop requested, halting batch processing")
+            return False
         self.logger.info(
             "🚀 Starting batch processing with %d items", len(metadata_list)
         )
 
-        # Run the entire batch processing in a separate thread
+        # Run the entire batch processing in a separate thread under a cross-thread lock
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: asyncio.run(self._process_batch_sync(metadata_list, org_id))
+            lambda: self._run_batch_in_thread(metadata_list, org_id),
         )
+
+    def _run_batch_in_thread(self, metadata_list, org_id) -> bool | None:
+        # Serialize batch execution across threads
+        with self._batch_lock:
+            return asyncio.run(self._process_batch_sync(metadata_list, org_id))
 
     async def _process_batch_sync(self, metadata_list, org_id) -> bool | None:
         """Synchronous batch processing function that runs in a separate thread"""
@@ -883,7 +897,7 @@ class BaseGmailSyncService(ABC):
             lambda: self.arango_service.db.collection(collection_name).has(document_id)
         )
 
-    async def _begin_transaction_async(self, read_collections: list, write_collections: list):
+    async def _begin_transaction_async(self, read_collections: list, write_collections: list) -> TransactionDatabase:
         """Async wrapper for transaction begin"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
@@ -894,12 +908,12 @@ class BaseGmailSyncService(ABC):
             )
         )
 
-    async def _commit_transaction_async(self, transaction):
+    async def _commit_transaction_async(self, transaction) -> None:
         """Async wrapper for transaction commit"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, transaction.commit_transaction)
 
-    async def _abort_transaction_async(self, transaction):
+    async def _abort_transaction_async(self, transaction) -> None:
         """Async wrapper for transaction abort"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, transaction.abort_transaction)

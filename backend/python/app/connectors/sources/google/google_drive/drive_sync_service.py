@@ -5,6 +5,9 @@ import asyncio
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
+import threading
+
+from arango.database import TransactionDatabase
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -70,6 +73,8 @@ class BaseDriveSyncService(ABC):
         self._sync_lock = asyncio.Lock()
         self._transition_lock = asyncio.Lock()
         self._worker_lock = asyncio.Lock()
+        # Cross-thread batch lock to serialize executor runs
+        self._batch_lock = threading.Lock()
 
         # Configuration
         self._sync_task = None
@@ -399,16 +404,24 @@ class BaseDriveSyncService(ABC):
 
     async def process_batch(self, file_metadata_list, org_id) -> bool | None:
         """Process a single batch with atomic operations in a separate thread"""
+        # Respect stop signal before scheduling work
+        if await self._should_stop(org_id):
+            return False
         self.logger.info(
             "🚀 Starting batch processing with %d items", len(file_metadata_list)
         )
 
-        # Run the entire batch processing in a separate thread
+        # Run the entire batch processing in a separate thread under a cross-thread lock
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: asyncio.run(self._process_batch_sync(file_metadata_list, org_id))
+            lambda: self._run_batch_in_thread(file_metadata_list, org_id),
         )
+
+    def _run_batch_in_thread(self, file_metadata_list, org_id) -> bool | None:
+        # Serialize batch execution across threads
+        with self._batch_lock:
+            return asyncio.run(self._process_batch_sync(file_metadata_list, org_id))
 
     async def _process_batch_sync(self, file_metadata_list, org_id) -> bool | None:
         """Synchronous batch processing function that runs in a separate thread"""
@@ -672,7 +685,7 @@ class BaseDriveSyncService(ABC):
             lambda: self.arango_service.process_file_permissions(org_id, file_key, permissions, transaction)
         )
 
-    async def _begin_transaction_async(self, read: list, write: list):
+    async def _begin_transaction_async(self, read: list, write: list) -> TransactionDatabase:
         """Async wrapper for beginning transaction"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
@@ -680,7 +693,7 @@ class BaseDriveSyncService(ABC):
             lambda: self.arango_service.db.begin_transaction(read=read, write=write)
         )
 
-    async def _commit_transaction_async(self, transaction):
+    async def _commit_transaction_async(self, transaction) -> None:
         """Async wrapper for committing transaction"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
@@ -688,7 +701,7 @@ class BaseDriveSyncService(ABC):
             lambda: transaction.commit_transaction()
         )
 
-    async def _abort_transaction_async(self, transaction):
+    async def _abort_transaction_async(self, transaction) -> None:
         """Async wrapper for aborting transaction"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
