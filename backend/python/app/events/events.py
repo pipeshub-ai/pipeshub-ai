@@ -355,7 +355,7 @@ class EventProcessor:
                     version=record_version,
                     source=connector,
                     orgId=org_id,
-                    html_content=file_content,
+                    html_binary=file_content,
                     virtual_record_id = virtual_record_id,
                 )
                 return result

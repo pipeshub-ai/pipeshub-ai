@@ -84,7 +84,6 @@ class ContainerUtils:
         )
         return pipeline
 
-
     async def create_domain_extractor(
         self,
         logger: Logger,
@@ -241,3 +240,4 @@ class ContainerUtils:
         """Async factory for FeatureFlagService"""
         feature_flag_service = FeatureFlagService.get_service()
         return feature_flag_service
+    
