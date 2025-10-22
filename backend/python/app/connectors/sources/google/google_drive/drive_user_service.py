@@ -1060,3 +1060,24 @@ class DriveUserService:
                 "Unexpected error getting shared files: " + str(e),
                 details={"error": str(e)},
             )
+
+    # Async wrapper methods for blocking operations
+    async def list_files_in_folder_async(self, folder_id: str, include_subfolders: bool = True) -> List[Dict]:
+        """Async wrapper for list_files_in_folder to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.list_files_in_folder(folder_id, include_subfolders)))
+
+    async def batch_fetch_metadata_and_permissions_async(self, file_ids: List[str], files: Optional[List[Dict]] = None) -> List[Dict]:
+        """Async wrapper for batch_fetch_metadata_and_permissions to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.batch_fetch_metadata_and_permissions(file_ids, files)))
+
+    async def get_drive_info_async(self, drive_id: str, org_id: str) -> dict:
+        """Async wrapper for get_drive_info to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.get_drive_info(drive_id, org_id)))
+
+    async def get_shared_with_me_files_async(self, user_email: str) -> List[Dict]:
+        """Async wrapper for get_shared_with_me_files to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.get_shared_with_me_files(user_email)))

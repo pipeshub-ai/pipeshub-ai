@@ -1,5 +1,6 @@
 # pylint: disable=E1101, W0718
 
+import asyncio
 import base64
 import os
 import re
@@ -1003,3 +1004,29 @@ class GmailUserService:
             raise MailOperationError(
                 "Failed to fetch attachment ID", details={"error": str(e), "combined_id": combined_id}
             )
+
+    # Async wrapper methods for blocking operations
+    async def list_messages_async(self, query: str = "newer_than:30d") -> List[Dict]:
+        """Async wrapper for list_messages to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.list_messages(query)))
+
+    async def list_threads_async(self, query: str = "newer_than:30d") -> List[Dict]:
+        """Async wrapper for list_threads to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.list_threads(query)))
+
+    async def get_message_async(self, message_id: str) -> Dict:
+        """Async wrapper for get_message to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.get_message(message_id)))
+
+    async def list_attachments_async(self, message, org_id: str, user, account_type: str) -> List[Dict]:
+        """Async wrapper for list_attachments to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.list_attachments(message, org_id, user, account_type)))
+
+    async def fetch_gmail_changes_async(self, user_email: str, history_id: str) -> Dict:
+        """Async wrapper for fetch_gmail_changes to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.fetch_gmail_changes(user_email, history_id)))

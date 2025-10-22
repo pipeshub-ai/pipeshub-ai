@@ -245,33 +245,40 @@ class BaseGmailSyncService(ABC):
         return False
 
     async def process_batch(self, metadata_list, org_id) -> bool | None:
-        """Process a single batch with atomic operations"""
+        """Process a single batch with atomic operations in a separate thread"""
         self.logger.info(
             "🚀 Starting batch processing with %d items", len(metadata_list)
         )
+
+        # Run the entire batch processing in a separate thread
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: asyncio.run(self._process_batch_sync(metadata_list, org_id))
+        )
+
+    async def _process_batch_sync(self, metadata_list, org_id) -> bool | None:
+        """Synchronous batch processing function that runs in a separate thread"""
         batch_start_time = datetime.now(timezone.utc)
 
         try:
-            if await self._should_stop(org_id):
-                self.logger.info("⏹️ Stop requested, halting batch processing")
-                return False
+            # Note: _should_stop check is done in the async wrapper
+            # This function runs in a separate thread, so we can't use async/await here
 
-            async with self._sync_lock:
-                self.logger.debug("🔒 Acquired sync lock for batch processing")
-                # Prepare nodes and edges for batch processing
-                messages = []
-                attachments = []
-                is_of_type = []
-                records = []
-                permissions = []
-                recordRelations = []
-                existing_messages = []
-                existing_attachments = []
+            # Prepare nodes and edges for batch processing
+            messages = []
+            attachments = []
+            is_of_type = []
+            records = []
+            permissions = []
+            recordRelations = []
+            existing_messages = []
+            existing_attachments = []
 
-                self.logger.debug(
-                    "📊 Processing metadata list of size: %d", len(metadata_list)
-                )
-                for metadata in metadata_list:
+            self.logger.debug(
+                "📊 Processing metadata list of size: %d", len(metadata_list)
+            )
+            for metadata in metadata_list:
                     # self.logger.debug(
                     #     "📝 Starting metadata processing: %s", metadata)
                     thread_metadata = metadata["thread"]
@@ -700,164 +707,202 @@ class BaseGmailSyncService(ABC):
                                     attachment_id,
                                 )
 
-                # Batch process all collected data
-                self.logger.info("📊 Batch summary before processing:")
-                self.logger.info("- New messages to create: %d", len(messages))
-                self.logger.info("- New attachments to create: %d", len(attachments))
-                self.logger.info("- New relations to create: %d", len(recordRelations))
-                self.logger.info(
-                    "- Existing messages skipped: %d", len(existing_messages)
-                )
-                self.logger.info(
-                    "- Existing attachments skipped: %d", len(existing_attachments)
-                )
+            # Batch process all collected data
+            self.logger.info("📊 Batch summary before processing:")
+            self.logger.info("- New messages to create: %d", len(messages))
+            self.logger.info("- New attachments to create: %d", len(attachments))
+            self.logger.info("- New relations to create: %d", len(recordRelations))
+            self.logger.info(
+                "- Existing messages skipped: %d", len(existing_messages)
+            )
+            self.logger.info(
+                "- Existing attachments skipped: %d", len(existing_attachments)
+            )
 
-                if messages or attachments:
-                    try:
-                        self.logger.debug("🔄 Starting database transaction")
-                        txn = None
-                        txn = self.arango_service.db.begin_transaction(
-                            read=[
-                                CollectionNames.MAILS.value,
-                                CollectionNames.RECORDS.value,
-                                CollectionNames.FILES.value,
-                                CollectionNames.RECORD_RELATIONS.value,
-                                CollectionNames.PERMISSIONS.value,
-                                CollectionNames.IS_OF_TYPE.value,
-                            ],
-                            write=[
-                                CollectionNames.MAILS.value,
-                                CollectionNames.RECORDS.value,
-                                CollectionNames.FILES.value,
-                                CollectionNames.RECORD_RELATIONS.value,
-                                CollectionNames.PERMISSIONS.value,
-                                CollectionNames.IS_OF_TYPE.value,
-                            ],
+            if messages or attachments:
+                try:
+                    self.logger.debug("🔄 Starting database transaction")
+                    txn = None
+                    txn = self.arango_service.db.begin_transaction(
+                        read=[
+                            CollectionNames.MAILS.value,
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.PERMISSIONS.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                        ],
+                        write=[
+                            CollectionNames.MAILS.value,
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.PERMISSIONS.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                        ],
+                    )
+
+                    if messages:
+                        self.logger.debug("📥 Upserting %d messages", len(messages))
+                        if not await self.arango_service.batch_upsert_nodes(
+                            messages,
+                            collection=CollectionNames.MAILS.value,
+                            transaction=txn,
+                        ):
+                            raise Exception("Failed to batch upsert messages")
+                        self.logger.debug("✅ Messages upserted successfully")
+
+                    if attachments:
+                        # Create a copy of attachments without messageId
+                        attachment_docs = []
+                        for attachment in attachments:
+                            attachment_doc = attachment.copy()
+                            attachment_doc.pop(
+                                "messageId", None
+                            )  # Remove messageId if it exists
+                            attachment_docs.append(attachment_doc)
+
+                        self.logger.debug(
+                            "📥 Upserting %d attachments", len(attachment_docs)
+                        )
+                        if not await self.arango_service.batch_upsert_nodes(
+                            attachment_docs,
+                            collection=CollectionNames.FILES.value,
+                            transaction=txn,
+                        ):
+                            raise Exception("Failed to batch upsert attachments")
+                        self.logger.debug("✅ Attachments upserted successfully")
+
+                    if records:
+                        self.logger.debug("📥 Upserting %d records", len(records))
+                        if not await self.arango_service.batch_upsert_nodes(
+                            records,
+                            collection=CollectionNames.RECORDS.value,
+                            transaction=txn,
+                        ):
+                            raise Exception("Failed to batch upsert records")
+                        self.logger.debug("✅ Records upserted successfully")
+
+                    if recordRelations:
+                        self.logger.debug(
+                            "🔗 Creating %d record relations", len(recordRelations)
+                        )
+                        if not await self.arango_service.batch_create_edges(
+                            recordRelations,
+                            collection=CollectionNames.RECORD_RELATIONS.value,
+                            transaction=txn,
+                        ):
+                            raise Exception("Failed to batch create relations")
+                        self.logger.debug(
+                            "✅ Record relations created successfully"
                         )
 
-                        if messages:
-                            self.logger.debug("📥 Upserting %d messages", len(messages))
-                            if not await self.arango_service.batch_upsert_nodes(
-                                messages,
-                                collection=CollectionNames.MAILS.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch upsert messages")
-                            self.logger.debug("✅ Messages upserted successfully")
-
-                        if attachments:
-                            # Create a copy of attachments without messageId
-                            attachment_docs = []
-                            for attachment in attachments:
-                                attachment_doc = attachment.copy()
-                                attachment_doc.pop(
-                                    "messageId", None
-                                )  # Remove messageId if it exists
-                                attachment_docs.append(attachment_doc)
-
-                            self.logger.debug(
-                                "📥 Upserting %d attachments", len(attachment_docs)
+                    if is_of_type:
+                        self.logger.debug(
+                            "🔗 Creating %d is_of_type relations", len(is_of_type)
+                        )
+                        if not await self.arango_service.batch_create_edges(
+                            is_of_type,
+                            collection=CollectionNames.IS_OF_TYPE.value,
+                            transaction=txn,
+                        ):
+                            raise Exception(
+                                "Failed to batch create is_of_type relations"
                             )
-                            if not await self.arango_service.batch_upsert_nodes(
-                                attachment_docs,
-                                collection=CollectionNames.FILES.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch upsert attachments")
-                            self.logger.debug("✅ Attachments upserted successfully")
-
-                        if records:
-                            self.logger.debug("📥 Upserting %d records", len(records))
-                            if not await self.arango_service.batch_upsert_nodes(
-                                records,
-                                collection=CollectionNames.RECORDS.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch upsert records")
-                            self.logger.debug("✅ Records upserted successfully")
-
-                        if recordRelations:
-                            self.logger.debug(
-                                "🔗 Creating %d record relations", len(recordRelations)
-                            )
-                            if not await self.arango_service.batch_create_edges(
-                                recordRelations,
-                                collection=CollectionNames.RECORD_RELATIONS.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch create relations")
-                            self.logger.debug(
-                                "✅ Record relations created successfully"
-                            )
-
-                        if is_of_type:
-                            self.logger.debug(
-                                "🔗 Creating %d is_of_type relations", len(is_of_type)
-                            )
-                            if not await self.arango_service.batch_create_edges(
-                                is_of_type,
-                                collection=CollectionNames.IS_OF_TYPE.value,
-                                transaction=txn,
-                            ):
-                                raise Exception(
-                                    "Failed to batch create is_of_type relations"
-                                )
-                            self.logger.debug(
-                                "✅ is_of_type relations created successfully"
-                            )
-
-                        if permissions:
-                            self.logger.debug(
-                                "🔗 Creating %d permissions", len(permissions)
-                            )
-
-                            if not await self.arango_service.batch_create_edges(
-                                permissions,
-                                collection=CollectionNames.PERMISSIONS.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch create permissions")
-                            self.logger.debug("✅ Permissions created successfully")
-
-                        self.logger.debug("✅ Committing transaction")
-                        txn.commit_transaction()
-
-                        txn = None
-
-                        processing_time = datetime.now(timezone.utc) - batch_start_time
-                        self.logger.info(
-                            """
-                        ✅ Batch processed successfully:
-                        - Messages: %d
-                        - Attachments: %d
-                        - Relations: %d
-                        - Processing Time: %s
-                        """,
-                            len(messages),
-                            len(attachments),
-                            len(recordRelations),
-                            processing_time,
+                        self.logger.debug(
+                            "✅ is_of_type relations created successfully"
                         )
 
-                        return True
+                    if permissions:
+                        self.logger.debug(
+                            "🔗 Creating %d permissions", len(permissions)
+                        )
 
-                    except Exception as e:
-                        if txn:
-                            self.logger.error(
-                                "❌ Transaction failed, rolling back: %s", str(e)
-                            )
-                            txn.abort_transaction()
-                        self.logger.error("❌ Failed to process batch data: %s", str(e))
-                        return False
+                        if not await self.arango_service.batch_create_edges(
+                            permissions,
+                            collection=CollectionNames.PERMISSIONS.value,
+                            transaction=txn,
+                        ):
+                            raise Exception("Failed to batch create permissions")
+                        self.logger.debug("✅ Permissions created successfully")
 
-                self.logger.info(
-                    "✅ Batch processing completed with no new data to process"
-                )
-                return True
+                    self.logger.debug("✅ Committing transaction")
+                    txn.commit_transaction()
+
+                    txn = None
+
+                    processing_time = datetime.now(timezone.utc) - batch_start_time
+                    self.logger.info(
+                        """
+                    ✅ Batch processed successfully:
+                    - Messages: %d
+                    - Attachments: %d
+                    - Relations: %d
+                    - Processing Time: %s
+                    """,
+                        len(messages),
+                        len(attachments),
+                        len(recordRelations),
+                        processing_time,
+                    )
+
+                    return True
+
+                except Exception as e:
+                    if txn:
+                        self.logger.error(
+                            "❌ Transaction failed, rolling back: %s", str(e)
+                        )
+                        txn.abort_transaction()
+                    self.logger.error("❌ Failed to process batch data: %s", str(e))
+                    return False
+
+            self.logger.info(
+                "✅ Batch processing completed with no new data to process"
+            )
+            return True
 
         except Exception as e:
             self.logger.error("❌ Batch processing failed with error: %s", str(e))
             return False
+
+    # Async wrapper methods for blocking database operations
+    async def _execute_aql_query_async(self, query: str, bind_vars: dict = None) -> list:
+        """Async wrapper for AQL query execution"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: list(self.arango_service.db.aql.execute(query, bind_vars=bind_vars or {}))
+        )
+
+    async def _check_collection_has_document_async(self, collection_name: str, document_id: str) -> bool:
+        """Async wrapper for collection.has() operation"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.db.collection(collection_name).has(document_id)
+        )
+
+    async def _begin_transaction_async(self, read_collections: list, write_collections: list):
+        """Async wrapper for transaction begin"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.db.begin_transaction(
+                read=read_collections,
+                write=write_collections
+            )
+        )
+
+    async def _commit_transaction_async(self, transaction):
+        """Async wrapper for transaction commit"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, transaction.commit_transaction)
+
+    async def _abort_transaction_async(self, transaction):
+        """Async wrapper for transaction abort"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, transaction.abort_transaction)
 
 
 class GmailSyncEnterpriseService(BaseGmailSyncService):
@@ -1240,8 +1285,8 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     )
                     continue
 
-                # List all threads for the user
-                threads = await user_service.list_threads()
+                # List all threads for the user (using async wrapper)
+                threads = await user_service.list_threads_async()
                 for thread in threads:
                     if thread.get("historyId"):
                         self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
@@ -1254,16 +1299,16 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             )
                         break
 
-                messages_list = await user_service.list_messages()
+                messages_list = await user_service.list_messages_async()
                 messages_full = []
                 attachments = []
                 permissions = []
                 for message in messages_list:
-                    message_data = await user_service.get_message(message["id"])
+                    message_data = await user_service.get_message_async(message["id"])
                     messages_full.append(message_data)
 
                 for message in messages_full:
-                    attachments_for_message = await user_service.list_attachments(
+                    attachments_for_message = await user_service.list_attachments_async(
                         message, org_id, user, account_type
                     )
                     attachments.extend(attachments_for_message)
@@ -1598,8 +1643,8 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 )
                 return False
 
-            # List all threads and messages
-            threads = await user_service.list_threads()
+            # List all threads and messages (using async wrappers)
+            threads = await user_service.list_threads_async()
             for thread in threads:
                 if thread.get("historyId"):
                     self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
@@ -1612,7 +1657,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         )
                     break
 
-            messages_list = await user_service.list_messages()
+            messages_list = await user_service.list_messages_async()
 
             if not threads:
                 self.logger.info("No threads found for user %s", user_email)
@@ -1627,11 +1672,11 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             permissions = []
 
             for message in messages_list:
-                message_data = await user_service.get_message(message["id"])
+                message_data = await user_service.get_message_async(message["id"])
                 messages_full.append(message_data)
 
                 # Get attachments for message
-                attachments_for_message = await user_service.list_attachments(
+                attachments_for_message = await user_service.list_attachments_async(
                     message_data, org_id, user, account_type
                 )
                 attachments.extend(attachments_for_message)
@@ -1851,7 +1896,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
                 return True
 
-            changes = await user_service.fetch_gmail_changes(
+            changes = await user_service.fetch_gmail_changes_async(
                 user["email"], channel_history["historyId"]
             )
 
@@ -2239,8 +2284,8 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             # Initialize user service
             user_service = self.gmail_user_service
 
-            # List all threads and messages for the user
-            threads = await user_service.list_threads()
+            # List all threads and messages for the user (using async wrappers)
+            threads = await user_service.list_threads_async()
             for thread in threads:
                 if thread.get("historyId"):
                     self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
@@ -2253,7 +2298,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         )
                     break
 
-            messages_list = await user_service.list_messages()
+            messages_list = await user_service.list_messages_async()
             messages_full = []
             attachments = []
             permissions = []
@@ -2267,11 +2312,11 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Process messages
             for message in messages_list:
-                message_data = await user_service.get_message(message["id"])
+                message_data = await user_service.get_message_async(message["id"])
                 messages_full.append(message_data)
 
             for message in messages_full:
-                attachments_for_message = await user_service.list_attachments(
+                attachments_for_message = await user_service.list_attachments_async(
                     message, org_id, user, account_type
                 )
                 attachments.extend(attachments_for_message)
@@ -2481,7 +2526,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
                 return
 
-            changes = await user_service.fetch_gmail_changes(
+            changes = await user_service.fetch_gmail_changes_async(
                 user["email"], channel_history["historyId"]
             )
 
