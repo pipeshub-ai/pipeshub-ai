@@ -24,6 +24,8 @@ class RecordGroupType(str, Enum):
 
     MAILBOX = "MAILBOX"
     WEB = "WEB"
+    ZAMMAD_TICKET_GROUP = "ZAMMAD_TICKET_GROUP"
+    ZAMMAD_SUB_ORGANIZATION_GROUP = "ZAMMAD_SUB_ORGANIZATION_GROUP"
 
 class RecordType(str, Enum):
     FILE = "FILE"

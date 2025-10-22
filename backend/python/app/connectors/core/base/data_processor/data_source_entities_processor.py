@@ -111,6 +111,10 @@ class DataSourceEntitiesProcessor:
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
+        # Skip if record doesn't have an external_record_group_id
+        if not record.external_record_group_id:
+            return
+
         record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
                                                                       external_id=record.external_record_group_id)
 

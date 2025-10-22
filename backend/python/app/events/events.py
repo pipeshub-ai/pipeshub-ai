@@ -15,11 +15,15 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.services.base_arango_service import (
+    BaseArangoService as BaseArangoService,
+)
+from app.events.processor import Processor
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EventProcessor:
-    def __init__(self, logger, processor, arango_service) -> None:
+    def __init__(self, logger, processor: Processor, arango_service: BaseArangoService) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
