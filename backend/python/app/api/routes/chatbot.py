@@ -605,7 +605,7 @@ async def askAIStream(
             # Stream response with enhanced tool support using your existing implementation
             org_id = request.state.user.get('orgId')
             user_id = request.state.user.get('userId')
-            
+
             try:
                 async for stream_event in stream_llm_response_with_tools(
                     llm,

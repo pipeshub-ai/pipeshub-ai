@@ -321,7 +321,7 @@ qna_prompt_instructions_2 = """
 
 # Simple prompt for lightweight models (Ollama, small models)
 qna_prompt_simple = """
-Answer the user's query based on the context below. 
+Answer the user's query based on the context below.
 <task>
 You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources.
 Records could be from multiple connector apps like Slack messages, emails, Google Drive files, etc.

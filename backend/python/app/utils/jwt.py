@@ -1,10 +1,12 @@
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+
 from jose import jwt  # type: ignore
 
-from app.config.constants.service import config_node_constants
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import config_node_constants
+
 
 def is_jwt_expired(token: str) -> bool:
     """

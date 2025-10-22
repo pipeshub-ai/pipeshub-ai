@@ -758,7 +758,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
 def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
     content = []
-    
+
     # Use simple prompt for quick mode
     if mode == "simple":
         # Build simple context - just blocks with numbers
@@ -768,41 +768,41 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
             virtual_record_id = result.get("virtual_record_id")
             block_index = result.get("block_index")
             result_id = f"{virtual_record_id}_{block_index}"
-            
+
             if result_id not in seen_blocks:
                 seen_blocks.add(result_id)
                 block_type = result.get("block_type")
-                
+
                 # Skip images for simplicity
                 if block_type == BlockType.IMAGE.value:
                     continue
-                
+
                 # Get content text
                 if block_type == GroupType.TABLE.value:
                     table_summary, child_results = result.get("content")
                     content_text = f"Table: {table_summary}"
                 else:
                     content_text = result.get("content", "")
-                
+
                 chunks.append({
                     "metadata": {
                         "blockText": content_text,
                         "recordName": result.get("record_name")
                     }
                 })
-        
+
         # Render simple prompt
         template = Template(qna_prompt_simple)
         rendered_form = template.render(
             query=query,
             chunks=chunks
         )
-        
+
         content.append({
             "type": "text",
             "text": rendered_form
         })
-        
+
         return content
 
     else:

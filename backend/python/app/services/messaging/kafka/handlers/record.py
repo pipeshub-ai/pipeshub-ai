@@ -18,13 +18,15 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService
-from app.utils.jwt import generate_jwt
+
 # from app.connectors.sources.google.common.arango_service import ArangoService
 from app.services.scheduler.interface.scheduler import Scheduler
 from app.services.scheduler.scheduler_factory import SchedulerFactory
+from app.utils.api_call import make_api_call
+from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.redis_util import build_redis_url
-from app.utils.api_call import make_api_call
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_signed_url_api_call(signed_url: str) -> dict:

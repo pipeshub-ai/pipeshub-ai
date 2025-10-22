@@ -6,8 +6,9 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import aiohttp
 from fastapi import HTTPException
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain.chat_models.base import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -542,7 +543,7 @@ async def execute_tool_calls(
                     for record in tool_records:
                         message_content = record_to_message_content(record, final_results)
                         tool_message_contents.append(message_content)
-                    
+
                     tool_message = {
                         "ok": True,
                         "records": tool_message_contents,
@@ -996,7 +997,7 @@ async def handle_json_mode(
         logger.info("LLM bound with structured output successfully")
     except Exception as e:
         logger.warning(f"LLM provider or api does not support structured output: {e}")
-    
+
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
         async for token in aiter_llm_stream(llm, messages):
@@ -1311,7 +1312,7 @@ async def stream_llm_response_with_tools(
         else:
             async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk):
                 yield event
-        
+
         logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
     except Exception as e:
         logger.error("Error during final answer generation", exc_info=True)

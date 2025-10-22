@@ -41,7 +41,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import (
     HttpStatusCode,
 )
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
@@ -66,12 +66,12 @@ from app.containers.connector import ConnectorAppContainer
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
+from app.utils.api_call import make_api_call
+from app.utils.jwt import generate_jwt
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.config.constants.service import DefaultEndpoints
-from app.utils.jwt import generate_jwt
-from app.utils.api_call import make_api_call
+
 logger = create_logger("connector_service")
 
 router = APIRouter()
@@ -354,7 +354,7 @@ async def stream_record_internal(
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
-        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name == None:
+        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
             endpoints = await config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
