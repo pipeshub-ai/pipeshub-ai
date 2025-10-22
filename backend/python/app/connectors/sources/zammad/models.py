@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator  #type:ignore
+from pydantic import BaseModel, Field  #type:ignore
 
 
 class ZammadTicket(BaseModel):
@@ -93,12 +93,6 @@ class ZammadTicket(BaseModel):
     create_article_type: Optional[str] = Field(default=None, description="Article type name for creation")
     create_article_sender: Optional[str] = Field(default=None, description="Article sender name for creation")
 
-    @field_validator('number', 'title', mode='before')
-    @classmethod
-    def empty_str_from_none(cls, v: Any) -> str:
-        """Convert None to empty string for string fields"""
-        return v if v is not None else ""
-
     class Config:
         populate_by_name = True
         json_encoders = {
@@ -181,14 +175,6 @@ class ZammadUser(BaseModel):
     created_by: Optional[str] = Field(default=None, description="Created by user name")
     updated_by: Optional[str] = Field(default=None, description="Updated by user name")
 
-    @field_validator('firstname', 'lastname', 'email', 'web', 'phone', 'fax', 'mobile',
-                    'department', 'street', 'zip', 'city', 'country', 'address', 'note',
-                    'login', mode='before')
-    @classmethod
-    def empty_str_from_none(cls, v: Any) -> str:
-        """Convert None to empty string for string fields"""
-        return v if v is not None else ""
-
     class Config:
         populate_by_name = True
         json_encoders = {
@@ -227,12 +213,6 @@ class ZammadOrganization(BaseModel):
     members: List[str] = Field(default_factory=list, description="List of member emails/names")
     created_by: Optional[str] = Field(default=None, description="Created by user name")
     updated_by: Optional[str] = Field(default=None, description="Updated by user name")
-
-    @field_validator('name', 'domain', 'note', mode='before')
-    @classmethod
-    def empty_str_from_none(cls, v: Any) -> str:
-        """Convert None to empty string for string fields"""
-        return v if v is not None else ""
 
     class Config:
         populate_by_name = True
@@ -273,13 +253,6 @@ class ZammadRole(BaseModel):
     permissions: List[str] = Field(default_factory=list, description="List of permission names")
     knowledge_base_permissions: List[str] = Field(default_factory=list, description="List of knowledge base permission names")
     groups: Dict[str, Any] = Field(default_factory=dict, description="Dictionary of group objects")
-
-    @field_validator('name', 'note', mode='before')
-    @classmethod
-    def empty_str_from_none(cls, v: Any) -> str:
-        """Convert None to empty string for string fields"""
-        return v if v is not None else ""
-
     class Config:
         populate_by_name = True
         json_encoders = {
@@ -323,14 +296,6 @@ class ZammadKnowledgeBase(BaseModel):
     permissions_effective: List[Any] = Field(default_factory=list, description="List of effective permissions")
     answers: List[Any] = Field(default_factory=list, description="List of answer objects")
     permissions: List[Any] = Field(default_factory=list, description="List of permission objects")
-
-    @field_validator('iconset', 'color_highlight', 'color_header', 'color_header_link',
-                     'homepage_layout', 'category_layout', mode='before')
-    @classmethod
-    def empty_str_from_none(cls, v: Any) -> str:
-        """Convert None to empty string for string fields"""
-        return v if v is not None else ""
-
     class Config:
         populate_by_name = True
         json_encoders = {
@@ -375,12 +340,6 @@ class ZammadGroup(BaseModel):
     email_address: Optional[str] = Field(default=None, description="Email address")
     signature: Optional[str] = Field(default=None, description="Signature name")
     users: List[str] = Field(default_factory=list, description="List of user emails/names")
-
-    @field_validator('name', 'name_last', 'follow_up_possible', 'note', mode='before')
-    @classmethod
-    def empty_str_from_none(cls, v: Any) -> str:
-        """Convert None to empty string for string fields"""
-        return v if v is not None else ""
 
     class Config:
         populate_by_name = True

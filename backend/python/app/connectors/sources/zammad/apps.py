@@ -5,6 +5,6 @@ from app.connectors.core.interfaces.connector.apps import App
 
 class ZammadApp(App):
     """Zammad application definition"""
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(Connectors.ZAMMAD, AppGroups.ZAMMAD)
 
