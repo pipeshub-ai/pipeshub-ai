@@ -5,7 +5,7 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
@@ -39,6 +39,7 @@ class ChatQuery(BaseModel):
     modelKey: Optional[str] = None  # e.g., "uuid-of-the-model"
     modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
+    mode: Optional[str] = "json"  # "json" for full metadata, "simple" for answer only
 
 
 # Dependency injection functions
@@ -72,7 +73,7 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
         "quick": {
             "temperature": 0.1,
             "max_tokens": 4096,
-            "system_prompt": "You are an assistant. Provide answers in a professional, enterprise-appropriate format."
+            "system_prompt": "You are an assistant. Answer queries in a professional, enterprise-appropriate format."
         },
         "analysis": {
             "temperature": 0.3,
@@ -193,6 +194,10 @@ async def process_chat_query_with_status(
     if llm is None:
         raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
+    logger.info(f"LLM provider: {llm.provider.lower()}")
+    if config.get("provider").lower() == "ollama":
+        query_info.mode = "simple"
+
     # Handle conversation history and query transformation
     if len(query_info.previousConversations) > 0:
         if yield_status:
@@ -302,7 +307,7 @@ async def process_chat_query_with_status(
             messages.append({"role": "assistant", "content": conversation.get("content")})
 
     # Always add the current query with retrieved context as the final user message
-    content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
+    content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger, query_info.mode)
     messages.append({"role": "user", "content": content})
 
     # Prepare tools
@@ -336,7 +341,6 @@ async def process_chat_query(
 
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
     """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
-    from langchain_core.messages import HumanMessage
 
     llm_with_tools = llm.bind_tools(tools)
 
@@ -463,6 +467,9 @@ async def askAIStream(
                 if llm is None:
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
+                if config.get("provider").lower() == "ollama":
+                    query_info.mode = "simple"
+
                 # Handle conversation history and query transformation
                 if len(query_info.previousConversations) > 0:
                     yield create_sse_event("status", {"status": "transforming", "message": "Understanding conversation context..."})
@@ -569,7 +576,7 @@ async def askAIStream(
                         messages.append({"role": "assistant", "content": conversation.get("content")})
 
                 # Always add the current query with retrieved context as the final user message
-                content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger)
+                content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger, query_info.mode)
                 messages.append({"role": "user", "content": content})
 
                 # Prepare tools
@@ -598,26 +605,31 @@ async def askAIStream(
             # Stream response with enhanced tool support using your existing implementation
             org_id = request.state.user.get('orgId')
             user_id = request.state.user.get('userId')
-            print(f"messages: {messages}")
-            async for stream_event in stream_llm_response_with_tools(
-                llm,
-                messages,
-                final_results,
-                all_queries,
-                retrieval_service,
-                user_id,
-                org_id,
-                virtual_record_id_to_result,
-                blob_store,
-                is_multimodal_llm,
-                tools=tools,
-                tool_runtime_kwargs=tool_runtime_kwargs,
-                target_words_per_chunk=3,
+            
+            try:
+                async for stream_event in stream_llm_response_with_tools(
+                    llm,
+                    messages,
+                    final_results,
+                    all_queries,
+                    retrieval_service,
+                    user_id,
+                    org_id,
+                    virtual_record_id_to_result,
+                    blob_store,
+                    is_multimodal_llm,
+                    tools=tools,
+                    tool_runtime_kwargs=tool_runtime_kwargs,
+                    target_words_per_chunk=3,
+                    mode=query_info.mode,
 
-            ):
-                event_type = stream_event["event"]
-                event_data = stream_event["data"]
-                yield create_sse_event(event_type, event_data)
+                ):
+                    event_type = stream_event["event"]
+                    event_data = stream_event["data"]
+                    yield create_sse_event(event_type, event_data)
+            except Exception as stream_error:
+                logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
+                yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
 
         except Exception as e:
             logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)

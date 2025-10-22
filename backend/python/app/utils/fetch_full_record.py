@@ -18,7 +18,7 @@ class FetchFullRecordArgs(BaseModel):
         description="List of IDs (or virtualRecordIds) of the records to fetch. Pass all record IDs that need to be fetched in a single call. Prefer the IDs found in chunk metadata."
     )
     reason: str = Field(
-        ...,
+        default="Fetching full record content for comprehensive answer",
         description="Why the full records are needed (explain the gap in the provided blocks)."
     )
 
@@ -31,7 +31,7 @@ class FetchBlockGroupArgs(BaseModel):
         description="Number of the block group to fetch."
     )
     reason: str = Field(
-        ...,
+        default="Fetching block group for additional context",
         description="Why the block group is needed (explain the gap in the provided blocks)."
     )
 
@@ -127,7 +127,7 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     Factory function to create the tool with runtime dependencies injected.
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
-    async def fetch_full_record_tool(record_ids: List[str], reason: str) -> Dict[str, Any]:
+    async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
         """
         Retrieve the complete content of multiple records (all blocks/groups) for better answering.
         Pass all record IDs at once instead of making multiple separate calls.
@@ -154,7 +154,7 @@ def create_fetch_block_group_tool(blob_store: BlobStorage,final_results: List[Di
     Factory function to create the tool with runtime dependencies injected.
     """
     @tool("fetch_block_group", args_schema=FetchBlockGroupArgs)
-    async def fetch_block_group_tool(block_group_number: str, reason: str) -> str:
+    async def fetch_block_group_tool(block_group_number: str, reason: str = "Fetching block group for additional context") -> str:
         record_number = block_group_number.split("-")[0]
         number = int(re.findall(r'\d+', record_number)[0])
         count = 0

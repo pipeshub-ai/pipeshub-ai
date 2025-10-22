@@ -29,21 +29,19 @@ class DoclingProcessor():
              InputFormat.DOCX: WordFormatOption(),
                  InputFormat.MD: MarkdownFormatOption(),
         })
-        self._converter_lock = asyncio.Lock()
 
     async def load_document(self, doc_name: str, content: bytes) -> BlocksContainer|bool:
-        async with self._converter_lock:
-            stream = BytesIO(content)
-            source = DocumentStream(name=doc_name, stream=stream)
-            conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
-            if conv_res.status.value != SUCCESS_STATUS:
-                raise ValueError(f"Failed to parse PDF: {conv_res.status}")
+        stream = BytesIO(content)
+        source = DocumentStream(name=doc_name, stream=stream)
+        conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
+        if conv_res.status.value != SUCCESS_STATUS:
+            raise ValueError(f"Failed to parse PDF: {conv_res.status}")
 
-            doc = conv_res.document
-            doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger,config=self.config)
-            block_containers = await doc_to_blocks_converter.convert(doc)
+        doc = conv_res.document
+        doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger,config=self.config)
+        block_containers = await doc_to_blocks_converter.convert(doc)
 
-            return block_containers
+        return block_containers
 
     def process_document(self) -> None:
         pass

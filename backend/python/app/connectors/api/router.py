@@ -69,7 +69,9 @@ from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesPa
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
+from app.config.constants.service import DefaultEndpoints
+from app.utils.jwt import generate_jwt
+from app.utils.api_call import make_api_call
 logger = create_logger("connector_service")
 
 router = APIRouter()
@@ -352,6 +354,21 @@ async def stream_record_internal(
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
+        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name == None:
+            endpoints = await config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
+            jwt_payload  = {
+                "orgId": org_id,
+                "scopes": ["storage:token"],
+            }
+            token = await generate_jwt(config_service, jwt_payload)
+            response = await make_api_call(
+                route=buffer_url, token=token
+            )
+            return response["data"]
         connector = container.connectors_map.get(connector_name)
         if not connector:
             raise HTTPException(

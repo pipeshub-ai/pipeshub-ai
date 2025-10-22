@@ -2,14 +2,15 @@
 Caching utilities for performance optimization
 """
 import asyncio
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
 
-# In-memory cache for user/org info
-_user_info_cache: Dict[str, Dict[str, Any]] = {}
+# In-memory cache for user/org info (using OrderedDict for O(1) LRU eviction)
+_user_info_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
 _cache_lock = asyncio.Lock()
 
 # Cache configuration
@@ -43,6 +44,8 @@ async def get_cached_user_info(
             # Check if cache is still valid
             age = (datetime.now() - cached['timestamp']).total_seconds()
             if age < USER_INFO_CACHE_TTL:
+                # Move to end to mark as recently used (LRU)
+                _user_info_cache.move_to_end(cache_key)
                 return cached['user_info'], cached['org_info']
             else:
                 # Remove stale entry
@@ -65,14 +68,10 @@ async def get_cached_user_info(
 
         # Cache the result
         async with _cache_lock:
-            # Implement simple cache eviction if cache is full
+            # Implement LRU cache eviction if cache is full
             if len(_user_info_cache) >= MAX_CACHE_SIZE:
-                # Remove oldest entry
-                oldest_key = min(
-                    _user_info_cache.keys(),
-                    key=lambda k: _user_info_cache[k]['timestamp']
-                )
-                del _user_info_cache[oldest_key]
+                # Remove least recently used entry in O(1) time
+                _user_info_cache.popitem(last=False)
 
             _user_info_cache[cache_key] = {
                 'user_info': user_info,

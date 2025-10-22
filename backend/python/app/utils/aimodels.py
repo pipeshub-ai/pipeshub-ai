@@ -341,7 +341,8 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 model=model_name,
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
-                base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
+                base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434")),
+                reasoning=False
             )
 
     elif provider == LLMProvider.OPENAI.value:
