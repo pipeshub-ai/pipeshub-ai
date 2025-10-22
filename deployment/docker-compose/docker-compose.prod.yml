@@ -113,7 +113,7 @@ services:
       - redis_data:/data
 
   arango:
-    image: arangodb:3.11.14
+    image: arangodb:3.12.4
     restart: always
     ports:
       - "8529:8529"
