@@ -7,6 +7,7 @@ from jinja2 import Template
 
 from app.models.blocks import BlockType, GroupType
 from app.modules.qna.prompt_templates import (
+    block_group_prompt,
     qna_prompt_context,
     qna_prompt_context_for_tool,
     qna_prompt_instructions_1,
@@ -597,6 +598,20 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
     return label, first_child_block_index, content
 
 
+def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int) -> List[Dict[str, Any]]:
+    if parent_index < 0 or parent_index >= len(block_groups):
+        return None
+    parent_block = block_groups[parent_index]
+
+    children = parent_block.get("children", [])
+    if not children:
+        return []
+    result_blocks = []
+    for child in children:
+        block_index = child.get("block_index")
+        if block_index is not None and 0 <= block_index < len(blocks):
+            result_blocks.append(blocks[block_index])
+    return result_blocks
 
 
 def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str:
@@ -653,7 +668,6 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
         except Exception:
             return []
 
-
         # Group blocks with parent_index (like table rows) for processing as block groups
 
         # Process individual blocks
@@ -705,7 +719,6 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                     "block_index": row_index,
                                 })
 
-
                         if child_results:
                             template = Template(table_prompt)
                             rendered_form = template.render(
@@ -729,15 +742,23 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
                 if block_group_id in seen_block_groups:
                     continue
-                group_text_result = build_group_text(block_groups, blocks, parent_index)
-                if group_text_result is None:
+                template = Template(block_group_prompt)
+                if parent_index >= len(block_groups):
+                    continue
+                block_group = block_groups[parent_index]
+                group_blocks = build_group_blocks(block_groups, blocks, parent_index)
+
+
+                if not group_blocks:
                     continue
                 seen_block_groups.add(block_group_id)
-                label, first_child_block_index, text_content = group_text_result
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: R{record_number}-{first_child_block_index}\n* Block Type: {label}\n* Block Content: {text_content}\n\n"
-                })
+                rendered_form = template.render(
+                    block_group_index=parent_index,
+                    label=block_group.get("type"),
+                    blocks=group_blocks,
+                    record_number=record_number,
+                )
+                record_string += f"{rendered_form}\n\n"
             else:
                 content.append({
                     "type": "text",
