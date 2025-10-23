@@ -3,7 +3,6 @@ import type { User } from 'src/context/UserContext';
 import type { Icon as IconifyIcon } from '@iconify/react';
 
 import { Icon } from '@iconify/react';
-import dbIcon from '@iconify-icons/mdi/database';
 import robotIcon from '@iconify-icons/mdi/robot';
 import closeIcon from '@iconify-icons/mdi/close';
 import React, { useState, useEffect } from 'react';
@@ -15,20 +14,25 @@ import clockIcon from '@iconify-icons/mdi/clock-outline';
 import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useParams, useNavigate } from 'react-router-dom';
 import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
-import filePdfBoxIcon from '@iconify-icons/mdi/file-pdf-box';
-import fileWordBoxIcon from '@iconify-icons/mdi/file-word-box';
 import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
-import fileExcelBoxIcon from '@iconify-icons/mdi/file-excel-box';
-import fileImageBoxIcon from '@iconify-icons/mdi/file-image-box';
 import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
 import connectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
-import fileTextBoxIcon from '@iconify-icons/mdi/file-text-outline';
-import fileCodeBoxIcon from '@iconify-icons/mdi/file-code-outline';
-import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
 import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
-import filePowerpointBoxIcon from '@iconify-icons/mdi/file-powerpoint-box';
 import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
 import linkIcon from '@iconify-icons/mdi/open-in-new';
+import pdfIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
+import docIcon from '@iconify-icons/vscode-icons/file-type-word';
+import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
+import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
+import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
+import mdIcon from '@iconify-icons/vscode-icons/file-type-markdown';
+import htmlIcon from '@iconify-icons/vscode-icons/file-type-html';
+import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
+import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
+import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
+import databaseIcon from '@iconify-icons/mdi/database';
+
+
 
 import {
   Box,
@@ -428,7 +432,7 @@ export default function RecordDetails() {
                 <Icon
                   icon={fileIcon}
                   style={{
-                    fontSize: '24px',
+                    fontSize: '44px',
                     color: fileIconColor,
                     marginRight: '8px',
                   }}
@@ -1547,7 +1551,7 @@ export default function RecordDetails() {
                     }}
                   >
                     <Icon
-                      icon={record?.origin === 'CONNECTOR' ? connectorIcon : dbIcon}
+                      icon={record?.origin === 'CONNECTOR' ? connectorIcon : databaseIcon}
                       style={{ fontSize: '16px' }}
                     />
                     {knowledgeBase && `KB: ${knowledgeBase.name || 'Default'}`}
@@ -2833,33 +2837,41 @@ function getFileIcon(extension: string): React.ComponentProps<typeof IconifyIcon
 
   switch (ext) {
     case 'pdf':
-      return filePdfBoxIcon;
+      return pdfIcon;
     case 'doc':
     case 'docx':
-      return fileWordBoxIcon;
+      return docIcon;
     case 'xls':
     case 'xlsx':
-      return fileExcelBoxIcon;
+    case 'csv':
+      return xlsIcon;
     case 'ppt':
     case 'pptx':
-      return filePowerpointBoxIcon;
+      return pptIcon;
     case 'jpg':
     case 'jpeg':
     case 'png':
     case 'gif':
-      return fileImageBoxIcon;
+      return imageIcon;
     case 'zip':
     case 'rar':
     case '7z':
-      return fileArchiveBoxIcon;
+      return zipIcon;
     case 'txt':
-      return fileTextBoxIcon;
+      return txtIcon;
     case 'html':
     case 'css':
     case 'js':
-      return fileCodeBoxIcon;
+      return htmlIcon;
+    case 'md':
+    case 'mdx':
+      return mdIcon;
+    case 'json':
+      return jsonIcon;
+    case 'database':
+      return databaseIcon;
     default:
-      return fileDocumentBoxIcon;
+      return descriptionIcon;
   }
 }
 
