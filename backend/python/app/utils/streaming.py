@@ -351,7 +351,6 @@ async def execute_tool_calls(
             }
 
         # Execute tools
-        tool_msgs = []
         tool_args = []
         tool_call_ids = {}
         tool_call_ids_list = []
