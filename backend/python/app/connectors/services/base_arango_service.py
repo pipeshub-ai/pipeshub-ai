@@ -4753,6 +4753,17 @@ class BaseArangoService:
                 self.logger.info("✅ Got group ID: %s", group_id)
                 return group_id
 
+            query = """
+            FOR doc IN people
+                FILTER doc.email == @email
+                RETURN doc._key
+            """
+            result = db.aql.execute(query, bind_vars={"email": email})
+            people_id = next(result, None)
+            if people_id:
+                self.logger.info("✅ Got People ID: %s", people_id)
+                return people_id
+
             return None
 
         except Exception as e:
@@ -4760,6 +4771,115 @@ class BaseArangoService:
                 "❌ Failed to get entity ID for email %s: %s", email, str(e)
             )
             return None
+
+    async def bulk_get_entity_ids_by_email(
+        self,
+        emails: List[str],
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict[str, Tuple[str, str, str]]:
+        """
+        Bulk get entity IDs for multiple emails across users, groups, and people collections
+
+        Args:
+            emails (List[str]): List of email addresses to look up
+            transaction: Optional transaction database context
+        Returns:
+            Dict[email, (entity_id, collection_name, permission_type)]
+
+            Example:
+            {
+                "user@example.com": ("123abc", "users", "USER"),
+                "group@example.com": ("456def", "groups", "GROUP"),
+                "external@example.com": ("789ghi", "people", "USER")
+            }
+        """
+        if not emails:
+            return {}
+
+        try:
+            self.logger.info("🚀 Bulk getting Entity Keys for %d emails", len(emails))
+
+            result_map = {}
+            db = transaction if transaction else self.db
+
+            # Deduplicate emails to avoid redundant queries
+            unique_emails = list(set(emails))
+
+            # ===================================================
+            # QUERY 1: Check users collection
+            # ===================================================
+            user_query = """
+            FOR doc IN users
+                FILTER doc.email IN @emails
+                RETURN {email: doc.email, id: doc._key}
+            """
+            try:
+                users = list(db.aql.execute(user_query, bind_vars={"emails": unique_emails}))
+                for user in users:
+                    result_map[user["email"]] = (
+                        user["id"],
+                        CollectionNames.USERS.value,
+                        "USER"
+                    )
+                self.logger.info("✅ Found %d users", len(users))
+            except Exception as e:
+                self.logger.error("❌ Error querying users: %s", str(e))
+
+            # ===================================================
+            # QUERY 2: Check groups collection (only for remaining emails)
+            # ===================================================
+            remaining_emails = [e for e in unique_emails if e not in result_map]
+            if remaining_emails:
+                group_query = """
+                FOR doc IN groups
+                    FILTER doc.email IN @emails
+                    RETURN {email: doc.email, id: doc._key}
+                """
+                try:
+                    groups = list(db.aql.execute(group_query, bind_vars={"emails": remaining_emails}))
+                    for group in groups:
+                        result_map[group["email"]] = (
+                            group["id"],
+                            CollectionNames.GROUPS.value,
+                            "GROUP"
+                        )
+                    self.logger.info("✅ Found %d groups", len(groups))
+                except Exception as e:
+                    self.logger.error("❌ Error querying groups: %s", str(e))
+
+            # ===================================================
+            # QUERY 3: Check people collection (only for remaining emails)
+            # ===================================================
+            remaining_emails = [e for e in unique_emails if e not in result_map]
+            if remaining_emails:
+                people_query = """
+                FOR doc IN people
+                    FILTER doc.email IN @emails
+                    RETURN {email: doc.email, id: doc._key}
+                """
+                try:
+                    people = list(db.aql.execute(people_query, bind_vars={"emails": remaining_emails}))
+                    for person in people:
+                        result_map[person["email"]] = (
+                            person["id"],
+                            CollectionNames.PEOPLE.value,
+                            "USER"
+                        )
+                    self.logger.info("✅ Found %d people", len(people))
+                except Exception as e:
+                    self.logger.error("❌ Error querying people: %s", str(e))
+
+            self.logger.info(
+                "✅ Bulk lookup complete: found %d/%d entities",
+                len(result_map),
+                len(unique_emails)
+            )
+
+            return result_map
+
+        except Exception as e:
+            self.logger.error("❌ Failed to bulk get entity IDs: %s", str(e))
+            return {}
 
     async def organization_exists(self, organization_name: str) -> bool:
         """Check if the organization exists in the database"""
@@ -5316,7 +5436,7 @@ class BaseArangoService:
             return []
 
 
-    async def save_to_people_collection(self, entity_id: str, email: str) -> bool:
+    async def save_to_people_collection(self, entity_id: str, email: str) -> Optional[Dict]:
         """Save an entity to the people collection if it doesn't already exist"""
         try:
             self.logger.info(
@@ -5334,15 +5454,15 @@ class BaseArangoService:
                     {"_key": entity_id, "email": email}
                 )
                 self.logger.info("✅ Entity %s saved to people collection", entity_id)
-                return True
+                return {"_key": entity_id, "email": email}
             else:
                 self.logger.info(
                     "⏩ Entity %s already exists in people collection", entity_id
                 )
-                return False
+                return exists[0]
         except Exception as e:
             self.logger.error("❌ Error saving entity to people collection: %s", str(e))
-            return False
+            return None
 
     async def get_all_pageTokens(self) -> List[Dict]:
         """Get all page tokens from the pageTokens collection.

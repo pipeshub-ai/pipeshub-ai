@@ -2,9 +2,12 @@
 
 # pylint: disable=E1101, W0718, W0719
 import asyncio
+import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+
+from arango.database import TransactionDatabase
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -70,10 +73,13 @@ class BaseDriveSyncService(ABC):
         self._sync_lock = asyncio.Lock()
         self._transition_lock = asyncio.Lock()
         self._worker_lock = asyncio.Lock()
+        # Cross-thread batch lock to serialize executor runs
+        self._batch_lock = threading.Lock()
 
         # Configuration
         self._sync_task = None
         self.batch_size = 100
+        self.CHUNK_SIZE = 1000
 
     @abstractmethod
     async def connect_services(self, org_id: str) -> bool:
@@ -398,219 +404,489 @@ class BaseDriveSyncService(ABC):
 
 
     async def process_batch(self, file_metadata_list, org_id) -> bool | None:
-        """Process a single batch with atomic operations"""
+        """Process a single batch with atomic operations in a separate thread"""
+        # Respect stop signal before scheduling work
+        if await self._should_stop(org_id):
+            return False
+        self.logger.info(
+            "🚀 Starting batch processing with %d items", len(file_metadata_list)
+        )
+
+        # Run the entire batch processing in a separate thread under a cross-thread lock
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._run_batch_in_thread(file_metadata_list, org_id),
+        )
+
+    def _run_batch_in_thread(self, file_metadata_list, org_id) -> bool | None:
+        # Serialize batch execution across threads
+        with self._batch_lock:
+            return asyncio.run(self._process_batch_sync(file_metadata_list, org_id))
+
+    async def _process_batch_sync(self, file_metadata_list, org_id) -> bool | None:
+        """
+        Optimized batch processing with chunking for large datasets.
+        Can handle 50,000+ files without memory issues.
+        """
         batch_start_time = datetime.now(timezone.utc)
+        total_files = len(file_metadata_list)
 
         try:
-            if await self._should_stop(org_id):
-                return False
+            self.logger.info(
+                f"📦 Processing {total_files} files in chunks of {self.CHUNK_SIZE}"
+            )
 
-            async with self._sync_lock:
+            # Process in chunks to prevent memory issues
+            total_chunks = (total_files + self.CHUNK_SIZE - 1) // self.CHUNK_SIZE
 
-                # Prepare nodes and edges for batch processing
-                files = []
-                records = []
-                is_of_type_records = []
-                recordRelations = []
-                existing_files = []
+            for chunk_idx in range(0, total_files, self.CHUNK_SIZE):
+                chunk_end = min(chunk_idx + self.CHUNK_SIZE, total_files)
+                chunk = file_metadata_list[chunk_idx:chunk_end]
+                chunk_num = (chunk_idx // self.CHUNK_SIZE) + 1
 
-                for metadata in file_metadata_list:
-                    if not metadata:
-                        self.logger.warning("❌ No metadata found for file")
-                        continue
+                self.logger.info(
+                    f"📊 Processing chunk {chunk_num}/{total_chunks} "
+                    f"({len(chunk)} files)"
+                )
 
-                    file_id = metadata.get("id")
-                    if not file_id:
-                        self.logger.warning("❌ No file ID found for file")
-                        continue
-
-                    # Check if file already exists in ArangoDB
-                    existing_file = self.arango_service.db.aql.execute(
-                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc",
-                        bind_vars={"file_id": file_id},
+                success = await self._process_chunk(chunk, org_id)
+                if not success:
+                    self.logger.error(
+                        f"❌ Failed to process chunk {chunk_num}/{total_chunks}"
                     )
-                    existing = next(existing_file, None)
+                    return False
 
-                    if existing:
-                        self.logger.debug("File %s already exists in ArangoDB", file_id)
-                        existing_files.append(file_id)
-
-                    else:
-                        # Process file and create file record, record and is_of_type record
-                        self.logger.debug("Metadata: %s", metadata)
-
-                        file_record, record, is_of_type_record = await process_drive_file(metadata, org_id)
-                        files.append(file_record.to_dict())
-                        records.append(record.to_dict())
-                        is_of_type_records.append(is_of_type_record)
-                        self.logger.info("file_record: %s", file_record.to_dict())
-                        self.logger.info("record: %s", record.to_dict())
-
-                # Batch process all collected data
-                if records:
-                    try:
-                        txn = None
-                        txn = self.arango_service.db.begin_transaction(
-                            read=[
-                                CollectionNames.FILES.value,
-                                CollectionNames.RECORDS.value,
-                                CollectionNames.RECORD_RELATIONS.value,
-                                CollectionNames.IS_OF_TYPE.value,
-                                CollectionNames.USERS.value,
-                                CollectionNames.GROUPS.value,
-                                CollectionNames.ORGS.value,
-                                CollectionNames.ANYONE.value,
-                                CollectionNames.PERMISSIONS.value,
-                                CollectionNames.BELONGS_TO.value,
-                            ],
-                            write=[
-                                CollectionNames.FILES.value,
-                                CollectionNames.RECORDS.value,
-                                CollectionNames.RECORD_RELATIONS.value,
-                                CollectionNames.IS_OF_TYPE.value,
-                                CollectionNames.USERS.value,
-                                CollectionNames.GROUPS.value,
-                                CollectionNames.ORGS.value,
-                                CollectionNames.ANYONE.value,
-                                CollectionNames.PERMISSIONS.value,
-                                CollectionNames.BELONGS_TO.value,
-                            ],
-                        )
-                        # Process files with revision checking
-                        if files:
-                            if not await self.arango_service.batch_upsert_nodes(
-                                files,
-                                collection=CollectionNames.FILES.value,
-                                transaction=txn,
-                            ):
-                                raise Exception(
-                                    "Failed to batch upsert files with existing revision"
-                                )
-
-                        # Process records and relations
-                        if records:
-                            if not await self.arango_service.batch_upsert_nodes(
-                                records,
-                                collection=CollectionNames.RECORDS.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch upsert records")
-
-                        if is_of_type_records:
-                            if not await self.arango_service.batch_create_edges(
-                                is_of_type_records,
-                                collection=CollectionNames.IS_OF_TYPE.value,
-                                transaction=txn,
-                            ):
-                                raise Exception(
-                                    "Failed to batch create is_of_type relations"
-                                )
-
-                        db = txn if txn else self.arango_service.db
-                        # Prepare edge data if parent exists
-                        for metadata in file_metadata_list:
-                            file_id = metadata.get("id")
-                            if "parents" in metadata:
-                                self.logger.info(
-                                    "parents in metadata: %s", metadata["parents"]
-                                )
-                                for parent_id in metadata["parents"]:
-                                    self.logger.info("parent_id: %s", parent_id)
-                                    parent_cursor = db.aql.execute(
-                                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key",
-                                        bind_vars={"parent_id": parent_id},
-                                    )
-                                    file_cursor = db.aql.execute(
-                                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc._key",
-                                        bind_vars={"file_id": file_id},
-                                    )
-                                    parent_key = next(parent_cursor, None)
-                                    file_key = next(file_cursor, None)
-                                    self.logger.info("parent_key: %s", parent_key)
-                                    self.logger.info("file_key: %s", file_key)
-
-                                    if parent_key and file_key:
-                                        recordRelations.append(
-                                            {
-                                                "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
-                                                "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
-                                                "relationType": RecordRelations.PARENT_CHILD.value,
-                                            }
-                                        )
-
-                        if recordRelations:
-                            if not await self.arango_service.batch_create_edges(
-                                recordRelations,
-                                collection=CollectionNames.RECORD_RELATIONS.value,
-                                transaction=txn,
-                            ):
-                                raise Exception("Failed to batch create file relations")
-
-                        # Process permissions
-                        for metadata in file_metadata_list:
-                            file_id = metadata.get("id")
-                            if file_id in existing_files:
-                                continue
-                            permissions = metadata.pop("permissions", [])
-
-                            # Get file key from file_id
-                            query = f"""
-                            FOR record IN {CollectionNames.RECORDS.value}
-                            FILTER record.externalRecordId == @file_id
-                            RETURN record._key
-                            """
-
-                            db = txn if txn else self.arango_service.db
-
-                            cursor = db.aql.execute(
-                                query, bind_vars={"file_id": file_id}
-                            )
-                            file_key = next(cursor, None)
-
-                            if not file_key:
-                                self.logger.error(
-                                    "❌ File not found with ID: %s", file_id
-                                )
-                                return False
-                            if permissions:
-                                await self.arango_service.process_file_permissions(
-                                    org_id, file_key, permissions, transaction=txn
-                                )
-
-                        txn.commit_transaction()
-                        txn = None
-
-                        self.logger.info(
-                            "✅ Transaction for processing batch complete successfully."
-                        )
-
-                        self.logger.info(
-                            """
-                        ✅ Batch processed successfully:
-                        - Files: %d
-                        - Records: %d
-                        - Relations: %d
-                        - Processing Time: %s
-                        """,
-                            len(files),
-                            len(records),
-                            len(recordRelations),
-                            datetime.now(timezone.utc) - batch_start_time,
-                        )
-
-                        return True
-
-                    except Exception as e:
-                        if txn:
-                            txn.abort_transaction()
-                            txn = None
-                        self.logger.error(f"❌ Failed to process batch data: {str(e)}")
-                        return False
-                return True
+            processing_time = datetime.now(timezone.utc) - batch_start_time
+            self.logger.info(
+                f"✅ Successfully processed {total_files} files in {processing_time}"
+            )
+            return True
 
         except Exception as e:
             self.logger.error(f"❌ Batch processing failed: {str(e)}")
             return False
+
+    async def _process_chunk(self, file_metadata_list: List[dict], org_id: str) -> bool:
+        """Process a single chunk of files with optimized queries"""
+
+        try:
+            # Step 1: Extract valid file IDs
+            file_ids = [
+                metadata.get("id")
+                for metadata in file_metadata_list
+                if metadata and metadata.get("id")
+            ]
+
+            if not file_ids:
+                self.logger.warning("⚠️  No valid file IDs in chunk")
+                return True
+
+            # Step 2: Single bulk query to check ALL existing files at once
+            existing_files_map = await self._get_existing_files_bulk(file_ids)
+            self.logger.debug(
+                f"Found {len(existing_files_map)} existing files out of {len(file_ids)}"
+            )
+
+            # Step 3: Prepare data structures for new files only
+            files = []
+            records = []
+            is_of_type_records = []
+            file_id_to_key = {}  # In-memory mapping to avoid DB queries
+            new_file_metadata = []  # Track metadata for new files
+
+            for metadata in file_metadata_list:
+                if not metadata:
+                    self.logger.warning("⚠️  No metadata found for file")
+                    continue
+
+                file_id = metadata.get("id")
+                if not file_id:
+                    self.logger.warning("⚠️  No file ID found")
+                    continue
+
+                # Skip existing files
+                if file_id in existing_files_map:
+                    self.logger.debug(f"⏭️  File {file_id} already exists, skipping")
+                    continue
+
+                # Process new file
+                self.logger.debug(f"Processing metadata for new file: {file_id}")
+                file_record, record, is_of_type_record = await process_drive_file(
+                    metadata, org_id
+                )
+
+                files.append(file_record.to_dict())
+                records.append(record.to_dict())
+                is_of_type_records.append(is_of_type_record)
+
+                # Store mapping for later use (eliminates DB queries)
+                file_id_to_key[file_id] = record.key
+                new_file_metadata.append(metadata)
+
+                self.logger.debug(f"✓ Prepared file_record: {file_id}")
+
+            # Early return if no new files
+            if not records:
+                self.logger.info("ℹ️  No new files to process in this chunk")
+                return True
+
+            # Step 4: Execute single transaction for all operations
+            return await self._execute_chunk_transaction(
+                files=files,
+                records=records,
+                is_of_type_records=is_of_type_records,
+                file_id_to_key=file_id_to_key,
+                new_file_metadata=new_file_metadata,
+                existing_files_map=existing_files_map,
+                org_id=org_id
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Chunk processing failed: {str(e)}")
+            return False
+
+    async def _get_existing_files_bulk(self, file_ids: List[str]) -> Dict[str, dict]:
+        """
+        Single bulk query to check existence of multiple files.
+        Returns mapping of externalRecordId -> {_key, ...}
+        """
+        if not file_ids:
+            return {}
+
+        # Single optimized query for all files
+        query = f"""
+        FOR doc IN {CollectionNames.RECORDS.value}
+            FILTER doc.externalRecordId IN @file_ids
+            RETURN {{
+                externalRecordId: doc.externalRecordId,
+                _key: doc._key
+            }}
+        """
+
+        cursor = self.arango_service.db.aql.execute(
+            query,
+            bind_vars={"file_ids": file_ids}
+        )
+
+        # Convert to dictionary for O(1) lookups
+        return {doc["externalRecordId"]: doc for doc in cursor}
+
+    async def _execute_chunk_transaction(
+        self,
+        files: List[dict],
+        records: List[dict],
+        is_of_type_records: List[dict],
+        file_id_to_key: Dict[str, str],
+        new_file_metadata: List[dict],
+        existing_files_map: Dict[str, dict],
+        org_id: str
+    ) -> bool:
+        """Execute all database operations in a single transaction"""
+
+        txn = None
+        try:
+            txn = self.arango_service.db.begin_transaction(
+                read=[
+                    CollectionNames.FILES.value,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.USERS.value,
+                    CollectionNames.GROUPS.value,
+                    CollectionNames.ORGS.value,
+                    CollectionNames.ANYONE.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                write=[
+                    CollectionNames.FILES.value,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.USERS.value,
+                    CollectionNames.GROUPS.value,
+                    CollectionNames.ORGS.value,
+                    CollectionNames.ANYONE.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+            )
+
+            # Batch insert files
+            if files and not await self.arango_service.batch_upsert_nodes(
+                files,
+                collection=CollectionNames.FILES.value,
+                transaction=txn,
+            ):
+                raise Exception("Failed to batch upsert files")
+
+            # Batch insert records
+            if records and not await self.arango_service.batch_upsert_nodes(
+                records,
+                collection=CollectionNames.RECORDS.value,
+                transaction=txn,
+            ):
+                raise Exception("Failed to batch upsert records")
+
+            # Batch insert is_of_type edges
+            if is_of_type_records and not await self.arango_service.batch_create_edges(
+                is_of_type_records,
+                collection=CollectionNames.IS_OF_TYPE.value,
+                transaction=txn,
+            ):
+                raise Exception("Failed to batch create is_of_type relations")
+
+            # Prepare parent-child relationships with bulk query
+            record_relations = await self._prepare_parent_relations_bulk(
+                new_file_metadata,
+                file_id_to_key,
+                existing_files_map,
+                txn
+            )
+
+            # Batch insert parent-child relations
+            if record_relations and not await self.arango_service.batch_create_edges(
+                record_relations,
+                collection=CollectionNames.RECORD_RELATIONS.value,
+                transaction=txn,
+            ):
+                raise Exception("Failed to batch create record relations")
+
+            # Process permissions for new files only
+            await self._process_permissions_batch(
+                new_file_metadata,
+                file_id_to_key,
+                org_id,
+                txn
+            )
+
+            txn.commit_transaction()
+            txn = None
+
+            self.logger.info(
+                f"✅ Chunk transaction complete: "
+                f"Files: {len(files)}, Records: {len(records)}, "
+                f"Relations: {len(record_relations)}"
+            )
+
+            return True
+
+        except Exception as e:
+            if txn:
+                txn.abort_transaction()
+                txn = None
+            self.logger.error(f"❌ Transaction failed: {str(e)}")
+            return False
+
+    async def _prepare_parent_relations_bulk(
+        self,
+        file_metadata_list: List[dict],
+        file_id_to_key: Dict[str, str],
+        existing_files_map: Dict[str, dict],
+        txn
+    ) -> List[dict]:
+        """
+        Prepare parent-child relationships using a SINGLE bulk query.
+        No individual queries per file - all done in one go.
+        """
+
+        # Step 1: Collect all parent-child pairs and unique IDs
+        parent_child_pairs = []
+        parent_ids_needed = set()
+        child_ids_needed = set()
+
+        for metadata in file_metadata_list:
+            file_id = metadata.get("id")
+            if not file_id:
+                continue
+
+            parents = metadata.get("parents", [])
+            if not parents:
+                continue
+
+            for parent_id in parents:
+                parent_child_pairs.append((parent_id, file_id))
+
+                # Only query if not in our existing maps
+                if parent_id not in file_id_to_key:
+                    parent_ids_needed.add(parent_id)
+                if file_id not in file_id_to_key:
+                    child_ids_needed.add(file_id)
+
+        if not parent_child_pairs:
+            return []
+
+        # Step 2: Single bulk query for ALL parent and child keys we don't have
+        all_ids_to_query = list(parent_ids_needed.union(child_ids_needed))
+        id_to_key_map = {}
+
+        if all_ids_to_query:
+            query = f"""
+            FOR doc IN {CollectionNames.RECORDS.value}
+                FILTER doc.externalRecordId IN @file_ids
+                RETURN {{
+                    externalRecordId: doc.externalRecordId,
+                    _key: doc._key
+                }}
+            """
+
+            db = txn if txn else self.arango_service.db
+            cursor = db.aql.execute(query, bind_vars={"file_ids": all_ids_to_query})
+
+            id_to_key_map = {doc["externalRecordId"]: doc["_key"] for doc in cursor}
+
+        # Step 3: Merge with in-memory mappings (prioritize in-memory)
+        id_to_key_map.update(file_id_to_key)
+
+        # Also include existing files
+        for ext_id, data in existing_files_map.items():
+            if ext_id not in id_to_key_map:
+                id_to_key_map[ext_id] = data["_key"]
+
+        # Step 4: Build all relations using the complete mapping
+        record_relations = []
+        missing_parents = set()
+        missing_children = set()
+
+        for parent_id, child_id in parent_child_pairs:
+            parent_key = id_to_key_map.get(parent_id)
+            child_key = id_to_key_map.get(child_id)
+
+            if parent_key and child_key:
+                record_relations.append({
+                    "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                    "_to": f"{CollectionNames.RECORDS.value}/{child_key}",
+                    "relationType": RecordRelations.PARENT_CHILD.value,
+                })
+            else:
+                if not parent_key:
+                    missing_parents.add(parent_id)
+                if not child_key:
+                    missing_children.add(child_id)
+
+        # Log missing keys only once per chunk
+        if missing_parents:
+            self.logger.warning(
+                f"⚠️  Missing parent keys for {len(missing_parents)} parents"
+            )
+        if missing_children:
+            self.logger.warning(
+                f"⚠️  Missing child keys for {len(missing_children)} children"
+            )
+
+        self.logger.info(
+            f"Prepared {len(record_relations)} parent-child relations from "
+            f"{len(parent_child_pairs)} pairs"
+        )
+
+        return record_relations
+
+    async def _process_permissions_batch(
+        self,
+        file_metadata_list: List[dict],
+        file_id_to_key: Dict[str, str],
+        org_id: str,
+        txn
+    ) -> None:
+        """
+        Process permissions for new files using in-memory mappings.
+        No database queries needed - we already have all the keys.
+        """
+
+        for metadata in file_metadata_list:
+            file_id = metadata.get("id")
+            if not file_id:
+                continue
+
+            # Get file key from in-memory mapping (no DB query!)
+            file_key = file_id_to_key.get(file_id)
+            if not file_key:
+                self.logger.error(
+                    f"❌ File key not found in mapping for ID: {file_id}"
+                )
+                continue
+
+            # Extract permissions (use pop to remove from metadata if needed)
+            permissions = metadata.get("permissions", [])
+
+            if permissions:
+                await self.arango_service.process_file_permissions(
+                    org_id, file_key, permissions, transaction=txn
+                )
+
+    # Async wrapper methods for blocking database operations
+    async def _execute_aql_query_async(self, query: str, bind_vars: dict = None) -> list:
+        """Async wrapper for AQL query execution"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: list(self.arango_service.db.aql.execute(query, bind_vars=bind_vars or {}))
+        )
+
+    async def _check_collection_has_document_async(self, collection_name: str, document_id: str) -> bool:
+        """Async wrapper for checking if document exists in collection"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.check_collection_has_document(collection_name, document_id)
+        )
+
+    async def _get_document_async(self, document_id: str, collection_name: str) -> dict:
+        """Async wrapper for getting document from collection"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.get_document(document_id, collection_name)
+        )
+
+    async def _batch_upsert_nodes_async(self, nodes: list, collection: str, transaction=None) -> bool:
+        """Async wrapper for batch upserting nodes"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.batch_upsert_nodes(nodes, collection, transaction)
+        )
+
+    async def _batch_create_edges_async(self, edges: list, collection: str, transaction=None) -> bool:
+        """Async wrapper for batch creating edges"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.batch_create_edges(edges, collection, transaction)
+        )
+
+    async def _process_file_permissions_async(self, org_id: str, file_key: str, permissions: list, transaction=None) -> bool:
+        """Async wrapper for processing file permissions"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.process_file_permissions(org_id, file_key, permissions, transaction)
+        )
+
+    async def _begin_transaction_async(self, read: list, write: list) -> TransactionDatabase:
+        """Async wrapper for beginning transaction"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.arango_service.db.begin_transaction(read=read, write=write)
+        )
+
+    async def _commit_transaction_async(self, transaction) -> None:
+        """Async wrapper for committing transaction"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: transaction.commit_transaction()
+        )
+
+    async def _abort_transaction_async(self, transaction) -> None:
+        """Async wrapper for aborting transaction"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: transaction.abort_transaction()
+        )
 
 
 class DriveSyncEnterpriseService(BaseDriveSyncService):
@@ -1003,8 +1279,8 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 # Process each drive
                 for drive_id, worker in self.drive_workers.items():
 
-                    # Get drive details with complete metadata
-                    drive_info = await user_service.get_drive_info(drive_id, org_id)
+                    # Get drive details with complete metadata (using async wrapper)
+                    drive_info = await user_service.get_drive_info_async(drive_id, org_id)
                     if not drive_info:
                         self.logger.warning(
                             "❌ Failed to get drive info for drive %s", drive_id
@@ -1046,13 +1322,13 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             drive_id, ProgressStatus.IN_PROGRESS.value
                         )
 
-                        # Get file list
-                        files = await user_service.list_files_in_folder(drive_id)
+                        # Get file list (using async wrapper)
+                        files = await user_service.list_files_in_folder_async(drive_id)
                         if not files:
                             continue
 
-                        # Get shared files and add them to processing queue
-                        shared_files = await user_service.get_shared_with_me_files(user["email"])
+                        # Get shared files and add them to processing queue (using async wrapper)
+                        shared_files = await user_service.get_shared_with_me_files_async(user["email"])
                         if shared_files:
                             self.logger.info("Found %d shared files to process", len(shared_files))
                             files.extend(shared_files)
@@ -1084,7 +1360,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             # Get metadata for regular files
                             regular_batch_metadata = []
                             if regular_file_ids:
-                                regular_batch_metadata = await user_service.batch_fetch_metadata_and_permissions(
+                                regular_batch_metadata = await user_service.batch_fetch_metadata_and_permissions_async(
                                     regular_file_ids, files=[f for f in batch if not f.get("isSharedWithMe", False)]
                                 )
 
@@ -1275,8 +1551,8 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             # Process each drive
             for drive_id, worker in self.drive_workers.items():
 
-                # Get drive details
-                drive_info = await user_service.get_drive_info(drive_id, org_id)
+                # Get drive details (using async wrapper)
+                drive_info = await user_service.get_drive_info_async(drive_id, org_id)
                 if not drive_info:
                     self.logger.warning(
                         "❌ Failed to get drive info for drive %s", drive_id
@@ -1318,8 +1594,8 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         drive_id, ProgressStatus.IN_PROGRESS.value
                     )
 
-                    # Get file list
-                    files = await user_service.list_files_in_folder(drive_id)
+                    # Get file list (using async wrapper)
+                    files = await user_service.list_files_in_folder_async(drive_id)
                     if not files:
                         continue
 
@@ -1360,7 +1636,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         # Get metadata for regular files
                         regular_batch_metadata = []
                         if regular_file_ids:
-                            regular_batch_metadata = await user_service.batch_fetch_metadata_and_permissions(
+                            regular_batch_metadata = await user_service.batch_fetch_metadata_and_permissions_async(
                                 regular_file_ids, files=[f for f in batch if not f.get("isSharedWithMe", False)]
                             )
 
@@ -1901,8 +2177,8 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             # Process each drive
             for drive_id, worker in self.drive_workers.items():
 
-                # Get drive details
-                drive_info = await user_service.get_drive_info(drive_id, org_id)
+                # Get drive details (using async wrapper)
+                drive_info = await user_service.get_drive_info_async(drive_id, org_id)
                 if not drive_info:
                     self.logger.warning(
                         "❌ Failed to get drive info for drive %s", drive_id
@@ -1941,8 +2217,8 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                         drive_id, ProgressStatus.IN_PROGRESS.value
                     )
 
-                    # Get file list
-                    files = await user_service.list_files_in_folder(drive_id)
+                    # Get file list (using async wrapper)
+                    files = await user_service.list_files_in_folder_async(drive_id)
                     if not files:
                         continue
 
@@ -1978,7 +2254,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                         # Get metadata for regular files
                         regular_batch_metadata = []
                         if regular_file_ids:
-                            regular_batch_metadata = await user_service.batch_fetch_metadata_and_permissions(
+                            regular_batch_metadata = await user_service.batch_fetch_metadata_and_permissions_async(
                                 regular_file_ids, files=[f for f in batch if not f.get("isSharedWithMe", False)]
                             )
 
