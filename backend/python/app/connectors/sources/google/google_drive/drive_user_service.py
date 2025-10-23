@@ -1,9 +1,9 @@
 # pylint: disable=E1101, W0718
 import asyncio
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 from uuid import uuid4
 
 import google.oauth2.credentials
@@ -37,6 +37,8 @@ from app.connectors.sources.google.common.google_token_handler import Credential
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+T = TypeVar('T')
 
 
 class DriveUserService:
@@ -1085,6 +1087,6 @@ class DriveUserService:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.get_shared_with_me_files, user_email))
 
-    def _run_with_service_lock(self, func, *args, **kwargs):
+    def _run_with_service_lock(self, func: Callable[..., T], *args, **kwargs) -> T:
         with self._service_lock:
             return asyncio.run(func(*args, **kwargs))

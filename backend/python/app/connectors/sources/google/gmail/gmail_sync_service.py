@@ -2,11 +2,11 @@
 
 # pylint: disable=E1101, W0718, W0719
 import asyncio
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
-import threading
 
 from arango.database import TransactionDatabase
 
@@ -272,471 +272,487 @@ class BaseGmailSyncService(ABC):
             return asyncio.run(self._process_batch_sync(metadata_list, org_id))
 
     async def _process_batch_sync(self, metadata_list, org_id) -> bool | None:
-        """Synchronous batch processing function that runs in a separate thread"""
+        """
+        The function is divided into 4 phases:
+        Phase 1: Collect all IDs from metadata
+        Phase 2: Bulk database lookups (3-6 queries total)
+        Phase 3: Build records using cached lookups (NO queries)
+        Phase 4: Batch insert all data into database
+        """
         batch_start_time = datetime.now(timezone.utc)
 
         try:
-            # Note: _should_stop check is done in the async wrapper
-            # This function runs in a separate thread, so we can't use async/await here
-
-            # Prepare nodes and edges for batch processing
+            # Initialize arrays for batch processing
             messages = []
             attachments = []
             is_of_type = []
             records = []
             permissions = []
             recordRelations = []
-            existing_messages = []
-            existing_attachments = []
 
-            self.logger.debug(
-                "📊 Processing metadata list of size: %d", len(metadata_list)
-            )
+            # ============================================
+            # PHASE 1: COLLECT ALL IDs TO CHECK
+            # ============================================
+            self.logger.info("📊 Phase 1: Collecting IDs from batch")
+
+            all_message_ids = []
+            all_attachment_ids = []
+            all_emails = set()
+
             for metadata in metadata_list:
-                    # self.logger.debug(
-                    #     "📝 Starting metadata processing: %s", metadata)
-                    thread_metadata = metadata["thread"]
-                    messages_metadata = metadata["messages"]
-                    attachments_metadata = metadata["attachments"]
-                    permissions_metadata = metadata["permissions"]
+                messages_metadata = metadata.get("messages", [])
+                attachments_metadata = metadata.get("attachments", [])
+                permissions_metadata = metadata.get("permissions", [])
 
-                    self.logger.debug(
-                        "📨 Messages in current metadata: %d", len(messages_metadata)
-                    )
-                    self.logger.debug(
-                        "📎 Attachments in current metadata: %d",
-                        len(attachments_metadata),
-                    )
+                # Collect all message IDs
+                for msg_data in messages_metadata:
+                    message_id = msg_data.get("message", {}).get("id")
+                    if message_id:
+                        all_message_ids.append(message_id)
 
-                    if not thread_metadata:
-                        self.logger.warning("❌ No metadata found for thread, skipping")
+                # Collect all attachment IDs
+                for attachment in attachments_metadata:
+                    attachment_id = attachment.get("attachment_id")
+                    if attachment_id:
+                        all_attachment_ids.append(attachment_id)
+
+                # Collect all unique emails from permissions
+                for permission in permissions_metadata:
+                    emails_list = permission.get("users", [])
+                    all_emails.update(emails_list)
+
+            self.logger.info(
+                "✅ Collected: %d messages, %d attachments, %d unique emails",
+                len(all_message_ids),
+                len(all_attachment_ids),
+                len(all_emails)
+            )
+
+            # ============================================
+            # PHASE 2: BULK LOOKUPS (3-6 queries total)
+            # ============================================
+            self.logger.info("📊 Phase 2: Performing bulk lookups")
+
+            # BULK LOOKUP 1: Check existing messages (1 query for all messages)
+            existing_messages_map = {}
+            if all_message_ids:
+                query = f"""
+                FOR doc IN {CollectionNames.RECORDS.value}
+                    FILTER doc.externalRecordId IN @message_ids
+                    RETURN {{id: doc.externalRecordId, key: doc._key}}
+                """
+                try:
+                    results = self.arango_service.db.aql.execute(
+                        query,
+                        bind_vars={"message_ids": all_message_ids}
+                    )
+                    existing_messages_map = {r["id"]: r["key"] for r in results}
+                    self.logger.info(
+                        "✅ Found %d/%d existing messages",
+                        len(existing_messages_map),
+                        len(all_message_ids)
+                    )
+                except Exception as e:
+                    self.logger.error("❌ Error checking existing messages: %s", str(e))
+
+            # BULK LOOKUP 2: Check existing attachments (1 query for all attachments)
+            existing_attachments_map = {}
+            if all_attachment_ids:
+                query = f"""
+                FOR doc IN {CollectionNames.RECORDS.value}
+                    FILTER doc.externalRecordId IN @attachment_ids
+                    RETURN {{id: doc.externalRecordId, key: doc._key}}
+                """
+                try:
+                    results = self.arango_service.db.aql.execute(
+                        query,
+                        bind_vars={"attachment_ids": all_attachment_ids}
+                    )
+                    existing_attachments_map = {r["id"]: r["key"] for r in results}
+                    self.logger.info(
+                        "✅ Found %d/%d existing attachments",
+                        len(existing_attachments_map),
+                        len(all_attachment_ids)
+                    )
+                except Exception as e:
+                    self.logger.error("❌ Error checking existing attachments: %s", str(e))
+
+            # BULK LOOKUP 3: Entity lookup across all collections (3 queries total)
+            entity_lookup_map = {}
+            if all_emails:
+                entity_lookup_map = await self.arango_service.bulk_get_entity_ids_by_email(
+                    list(all_emails)
+                )
+                self.logger.info(
+                    "✅ Found %d/%d existing entities",
+                    len(entity_lookup_map),
+                    len(all_emails)
+                )
+
+            # BULK CREATE: Create missing people records (1 query)
+            emails_needing_people = all_emails - set(entity_lookup_map.keys())
+            if emails_needing_people:
+                self.logger.info(
+                    "➕ Creating %d new people records",
+                    len(emails_needing_people)
+                )
+
+                people_docs = [
+                    {"_key": str(uuid.uuid4()), "email": email}
+                    for email in emails_needing_people
+                ]
+
+                try:
+                    # Try bulk insert first
+                    self.arango_service.db.collection(
+                        CollectionNames.PEOPLE.value
+                    ).insert_many(people_docs, overwrite=False, silent=False)
+                    # Add to lookup map
+                    for doc in people_docs:
+                        entity_lookup_map[doc["email"]] = (
+                            doc["_key"],
+                            CollectionNames.PEOPLE.value,
+                            "USER"
+                        )
+                    self.logger.info("✅ Successfully created people records")
+
+                except Exception as e:
+                    self.logger.error("❌ Error creating people records: %s", str(e))
+
+                    # Fallback: Try individual inserts (handles duplicates)
+                    for doc in people_docs:
+                        try:
+                            self.arango_service.db.collection(
+                                CollectionNames.PEOPLE.value
+                            ).insert(doc, overwrite=False)
+                            entity_lookup_map[doc["email"]] = (
+                                doc["_key"],
+                                CollectionNames.PEOPLE.value,
+                                "USER"
+                            )
+                        except Exception as e:
+                            self.logger.error("❌ Error creating people records: %s", str(e))
+                            # Already exists, fetch it
+                            try:
+                                existing = self.arango_service.db.aql.execute(
+                                    "FOR doc IN people FILTER doc.email == @email RETURN doc._key",
+                                    bind_vars={"email": doc["email"]}
+                                )
+                                existing_key = next(existing, None)
+                                if existing_key:
+                                    entity_lookup_map[doc["email"]] = (
+                                        existing_key,
+                                        CollectionNames.PEOPLE.value,
+                                        "USER"
+                                    )
+                            except Exception as fetch_error:
+                                self.logger.error("❌ Failed to fetch existing person: %s", fetch_error)
+
+            # ============================================
+            # PHASE 3: BUILD RECORDS USING CACHED DATA
+            # ============================================
+            self.logger.info("📊 Phase 3: Building records using cached lookups (no DB queries)")
+
+            for metadata in metadata_list:
+                thread_metadata = metadata.get("thread")
+                messages_metadata = metadata.get("messages", [])
+                attachments_metadata = metadata.get("attachments", [])
+                permissions_metadata = metadata.get("permissions", [])
+
+                if not thread_metadata:
+                    self.logger.warning("❌ No metadata found for thread, skipping")
+                    continue
+
+                thread_id = thread_metadata.get("id")
+                if not thread_id:
+                    self.logger.warning("❌ No thread ID found for thread, skipping")
+                    continue
+
+                self.logger.debug("🧵 Processing thread ID: %s", thread_id)
+
+                # Sort messages by internalDate to identify parent
+                sorted_messages = sorted(
+                    messages_metadata,
+                    key=lambda x: int(x.get("message", {}).get("internalDate", 0)),
+                )
+
+                previous_message_key = None
+
+                # ============================================
+                # PROCESS MESSAGES (using cached lookups - NO DB QUERIES)
+                # ============================================
+                for i, message_data in enumerate(sorted_messages):
+                    message = message_data.get("message", {})
+                    message_id = message.get("id")
+
+                    if not message_id:
                         continue
 
-                    thread_id = thread_metadata["id"]
-                    self.logger.debug("🧵 Processing thread ID: %s", thread_id)
-                    if not thread_id:
+                    # Use cached lookup (NO DB QUERY!)
+                    if message_id in existing_messages_map:
+                        self.logger.debug("♻️ Message %s already exists", message_id)
+                        previous_message_key = existing_messages_map[message_id]
+                        continue
+
+                    # Create new message record
+                    headers = message.get("headers", {})
+                    subject = headers.get("Subject", "No Subject")
+
+                    message_record = {
+                        "_key": str(uuid.uuid4()),
+                        "threadId": thread_id,
+                        "isParent": i == 0,
+                        "internalDate": message.get("internalDate"),
+                        "subject": subject,
+                        "date": headers.get("Date", None),
+                        "from": headers.get("From", [""])[0],
+                        "to": headers.get("To", []),
+                        "cc": headers.get("Cc", []),
+                        "bcc": headers.get("Bcc", []),
+                        "messageIdHeader": headers.get("Message-ID", None),
+                        "historyId": thread_metadata.get("historyId"),
+                        "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                        "labelIds": message.get("labelIds", []),
+                    }
+
+                    record = {
+                        "_key": message_record["_key"],
+                        "orgId": org_id,
+                        "recordName": subject,
+                        "externalRecordId": message_id,
+                        "externalRevisionId": None,
+                        "recordType": RecordTypes.MAIL.value,
+                        "version": 0,
+                        "origin": OriginTypes.CONNECTOR.value,
+                        "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
+                        "sourceCreatedAtTimestamp": (
+                            int(message.get("internalDate"))
+                            if message.get("internalDate")
+                            else None
+                        ),
+                        "sourceLastModifiedTimestamp": (
+                            int(message.get("internalDate"))
+                            if message.get("internalDate")
+                            else None
+                        ),
+                        "isDeleted": False,
+                        "isArchived": False,
+                        "lastIndexTimestamp": None,
+                        "lastExtractionTimestamp": None,
+                        "indexingStatus": "NOT_STARTED",
+                        "extractionStatus": "NOT_STARTED",
+                        "virtualRecordId": None,
+                        "isLatestVersion": True,
+                        "isDirty": False,
+                        "reason": None,
+                        "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                        "mimeType": "text/html",
+                    }
+
+                    is_of_type_record = {
+                        "_from": f'{CollectionNames.RECORDS.value}/{message_record["_key"]}',
+                        "_to": f'{CollectionNames.MAILS.value}/{message_record["_key"]}',
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+
+                    messages.append(message_record)
+                    records.append(record)
+                    is_of_type.append(is_of_type_record)
+
+                    # Create SIBLING relationship if not first message
+                    if previous_message_key:
+                        recordRelations.append({
+                            "_from": f"{CollectionNames.RECORDS.value}/{previous_message_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
+                            "relationType": RecordRelations.SIBLING.value,
+                        })
+
+                    previous_message_key = message_record["_key"]
+
+                # ============================================
+                # PROCESS ATTACHMENTS (using cached lookups - NO DB QUERIES)
+                # ============================================
+                for attachment in attachments_metadata:
+                    attachment_id = attachment.get("attachment_id")
+                    message_id = attachment.get("message_id")
+
+                    if not attachment_id:
+                        continue
+
+                    # Use cached lookup (NO DB QUERY!)
+                    if attachment_id in existing_attachments_map:
+                        self.logger.debug("♻️ Attachment %s already exists", attachment_id)
+                        continue
+
+                    # Create new attachment record
+                    attachment_record = {
+                        "_key": str(uuid.uuid4()),
+                        "orgId": org_id,
+                        "name": attachment.get("filename"),
+                        "isFile": True,
+                        "messageId": message_id,
+                        "mimeType": attachment.get("mimeType"),
+                        "extension": attachment.get("extension"),
+                        "sizeInBytes": int(attachment.get("size", 0)),
+                        "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                    }
+
+                    record = {
+                        "_key": attachment_record["_key"],
+                        "orgId": org_id,
+                        "recordName": attachment.get("filename"),
+                        "recordType": RecordTypes.FILE.value,
+                        "version": 0,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "sourceCreatedAtTimestamp": (
+                            int(attachment.get("internalDate"))
+                            if attachment.get("internalDate")
+                            else None
+                        ),
+                        "sourceLastModifiedTimestamp": (
+                            int(attachment.get("internalDate"))
+                            if attachment.get("internalDate")
+                            else None
+                        ),
+                        "externalRecordId": attachment_id,
+                        "externalRevisionId": None,
+                        "origin": OriginTypes.CONNECTOR.value,
+                        "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
+                        "isDeleted": False,
+                        "isArchived": False,
+                        "virtualRecordId": None,
+                        "indexingStatus": "NOT_STARTED",
+                        "extractionStatus": "NOT_STARTED",
+                        "lastIndexTimestamp": None,
+                        "lastExtractionTimestamp": None,
+                        "isLatestVersion": True,
+                        "isDirty": False,
+                        "reason": None,
+                        "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                        "mimeType": attachment.get("mimeType"),
+                    }
+
+                    is_of_type_record = {
+                        "_from": f'{CollectionNames.RECORDS.value}/{attachment_record["_key"]}',
+                        "_to": f'{CollectionNames.FILES.value}/{attachment_record["_key"]}',
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+
+                    attachments.append(attachment_record)
+                    records.append(record)
+                    is_of_type.append(is_of_type_record)
+
+                    # Create attachment relation to message
+                    message_key = next(
+                        (m["_key"] for m in records if m.get("externalRecordId") == message_id),
+                        None,
+                    )
+                    if message_key:
+                        recordRelations.append({
+                            "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
+                            "relationType": RecordRelations.ATTACHMENT.value,
+                        })
+                    else:
                         self.logger.warning(
-                            "❌ No thread ID found for thread, skipping"
-                        )
-                        continue
-
-                    # Process messages
-                    self.logger.debug(
-                        "📨 Processing %d messages for thread %s",
-                        len(messages_metadata),
-                        thread_id,
-                    )
-
-                    # Sort messages by internalDate to identify the first message in thread
-                    sorted_messages = sorted(
-                        messages_metadata,
-                        key=lambda x: int(x["message"].get("internalDate", 0)),
-                    )
-
-                    previous_message_key = (
-                        None  # Track previous message to create chain
-                    )
-
-                    for i, message_data in enumerate(sorted_messages):
-                        message = message_data["message"]
-                        message_id = message["id"]
-                        self.logger.debug("📝 Processing message: %s", message_id)
-                        headers = message.get("headers", {})
-                        self.logger.debug("📝 Processing headers: %s", headers)
-
-                        subject = headers.get("Subject", "No Subject")
-                        date = headers.get("Date", None)
-                        from_email = headers.get("From", [""])[0]
-                        to_email = headers.get("To", [])
-                        cc_email = headers.get("Cc", [])
-                        bcc_email = headers.get("Bcc", [])
-                        message_id_header = headers.get("Message-ID", None)
-
-                        # Check if message exists
-                        self.logger.debug(
-                            "🔍 Checking if message %s exists in ArangoDB", message_id
-                        )
-                        existing_message = self.arango_service.db.aql.execute(
-                            f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @message_id RETURN doc",
-                            bind_vars={"message_id": message_id},
-                        )
-                        existing_message = next(existing_message, None)
-
-                        if existing_message:
-                            self.logger.debug(
-                                "♻️ Message %s already exists in ArangoDB", message_id
-                            )
-                            existing_messages.append(message_id)
-                            # Keep track of previous message key for chain
-                            previous_message_key = existing_message["_key"]
-                        else:
-                            self.logger.debug(
-                                "➕ Creating new message record for %s", message_id
-                            )
-                            message_record = {
-                                "_key": str(uuid.uuid4()),
-                                "threadId": thread_id,
-                                "isParent": i
-                                == 0,  # First message in sorted list is parent
-                                "internalDate": message.get("internalDate"),
-                                "subject": subject,
-                                "date": date,
-                                "from": from_email,
-                                "to": to_email,
-                                "cc": cc_email,
-                                "bcc": bcc_email,
-                                "messageIdHeader": message_id_header,
-                                # Move thread history to message
-                                "historyId": thread_metadata.get("historyId"),
-                                "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
-                                "labelIds": message.get("labelIds", []),
-                            }
-                            self.logger.debug("📝 Message record: %s", message_record)
-
-                            record = {
-                                "_key": message_record["_key"],
-                                "orgId": org_id,
-                                "recordName": subject,
-                                "externalRecordId": message_id,
-                                "externalRevisionId": None,
-                                "recordType": RecordTypes.MAIL.value,
-                                "version": 0,
-                                "origin": OriginTypes.CONNECTOR.value,
-                                "connectorName": Connectors.GOOGLE_MAIL.value,
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                                "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
-                                "sourceCreatedAtTimestamp": (
-                                    int(message.get("internalDate"))
-                                    if message.get("internalDate")
-                                    else None
-                                ),
-                                "sourceLastModifiedTimestamp": (
-                                    int(message.get("internalDate"))
-                                    if message.get("internalDate")
-                                    else None
-                                ),
-                                "isDeleted": False,
-                                "isArchived": False,
-                                "lastIndexTimestamp": None,
-                                "lastExtractionTimestamp": None,
-                                "indexingStatus": "NOT_STARTED",
-                                "extractionStatus": "NOT_STARTED",
-                                "virtualRecordId": None,
-                                "isLatestVersion": True,
-                                "isDirty": False,
-                                "reason": None,
-                                "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
-                                "mimeType": "text/html",
-                            }
-
-                            # Create is_of_type edge
-                            is_of_type_record = {
-                                "_from": f'{CollectionNames.RECORDS.value}/{message_record["_key"]}',
-                                "_to": f'{CollectionNames.MAILS.value}/{message_record["_key"]}',
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
-
-                            messages.append(message_record)
-                            records.append(record)
-                            is_of_type.append(is_of_type_record)
-                            self.logger.debug(
-                                "✅ Message record created: %s", message_record
-                            )
-
-                            # Create PARENT_CHILD relationship in thread if not first message
-                            if previous_message_key:
-                                self.logger.debug(
-                                    "🔗 Creating PARENT_CHILD relation between messages in thread"
-                                )
-                                recordRelations.append(
-                                    {
-                                        "_from": f"{CollectionNames.RECORDS.value}/{previous_message_key}",
-                                        "_to": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
-                                        "relationType": RecordRelations.SIBLING.value,
-                                    }
-                                )
-
-                            # Update previous message key for next iteration
-                            previous_message_key = message_record["_key"]
-
-                    # Process attachments
-                    self.logger.debug(
-                        "📎 Processing %d attachments", len(attachments_metadata)
-                    )
-                    for attachment in attachments_metadata:
-                        attachment_id = attachment["attachment_id"]
-                        message_id = attachment.get("message_id")
-                        self.logger.debug(
-                            "📎 Processing attachment %s for message %s",
-                            attachment_id,
+                            "⚠️ Could not find message key for attachment relation: %s -> %s",
                             message_id,
-                        )
-
-                        # Check if attachment exists
-                        self.logger.debug(
-                            "🔍 Checking if attachment %s exists in ArangoDB",
                             attachment_id,
                         )
-                        existing_attachment = self.arango_service.db.aql.execute(
-                            "FOR doc IN records FILTER doc.externalRecordId == @attachment_id RETURN doc",
-                            bind_vars={"attachment_id": attachment_id},
-                        )
-                        existing_attachment = next(existing_attachment, None)
 
-                        if existing_attachment:
-                            self.logger.debug(
-                                "♻️ Attachment %s already exists in ArangoDB",
-                                attachment_id,
-                            )
-                            existing_attachments.append(attachment_id)
-                        else:
-                            self.logger.debug(
-                                "➕ Creating new attachment record for %s",
-                                attachment_id,
-                            )
-                            attachment_record = {
-                                "_key": str(uuid.uuid4()),
-                                "orgId": org_id,
-                                "name": attachment.get("filename"),
-                                "isFile": True,
-                                "messageId": message_id,
-                                "mimeType": attachment.get("mimeType"),
-                                "extension": attachment.get("extension"),
-                                "sizeInBytes": int(attachment.get("size", 0)),
-                                "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
-                            }
-                            record = {
-                                "_key": attachment_record["_key"],
-                                "orgId": org_id,
-                                "recordName": attachment.get("filename"),
-                                "recordType": RecordTypes.FILE.value,
-                                "version": 0,
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                                "sourceCreatedAtTimestamp": (
-                                    int(attachment.get("internalDate"))
-                                    if attachment.get("internalDate")
-                                    else None
-                                ),
-                                "sourceLastModifiedTimestamp": (
-                                    int(attachment.get("internalDate"))
-                                    if attachment.get("internalDate")
-                                    else None
-                                ),
-                                "externalRecordId": attachment_id,
-                                "externalRevisionId": None,
-                                "origin": OriginTypes.CONNECTOR.value,
-                                "connectorName": Connectors.GOOGLE_MAIL.value,
-                                "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
-                                "isDeleted": False,
-                                "isArchived": False,
-                                "virtualRecordId": None,
-                                "indexingStatus": "NOT_STARTED",
-                                "extractionStatus": "NOT_STARTED",
-                                "lastIndexTimestamp": None,
-                                "lastExtractionTimestamp": None,
-                                "isLatestVersion": True,
-                                "isDirty": False,
-                                "reason": None,
-                                "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
-                                "mimeType": attachment.get("mimeType"),
-                            }
+                # ============================================
+                # PROCESS PERMISSIONS (using cached lookups - NO DB QUERIES)
+                # ============================================
+                self.logger.debug("🔒 Processing permissions")
 
-                            # Create is_of_type edge
-                            is_of_type_record = {
-                                "_from": f'{CollectionNames.RECORDS.value}/{attachment_record["_key"]}',
-                                "_to": f'{CollectionNames.FILES.value}/{attachment_record["_key"]}',
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
+                for permission in permissions_metadata:
+                    message_id = permission.get("messageId")
+                    attachment_ids = permission.get("attachmentIds", [])
+                    emails = permission.get("users", [])
+                    role = permission.get("role", "VIEWER").upper()
 
-                            attachments.append(attachment_record)
-                            records.append(record)
-                            is_of_type.append(is_of_type_record)
-                            self.logger.debug(
-                                "✅ Attachment record created: %s", attachment_record
-                            )
+                    # Process message permissions
+                    message_key = next(
+                        (m["_key"] for m in records if m.get("externalRecordId") == message_id),
+                        None,
+                    )
 
-                            # Create record relation
-                            message_key = next(
-                                (
-                                    m["_key"]
-                                    for m in records
-                                    if m["externalRecordId"] == message_id
-                                ),
-                                None,
-                            )
-                            if message_key:
-                                self.logger.debug(
-                                    "🔗 Creating relation between message %s and attachment %s",
-                                    message_id,
-                                    attachment_id,
-                                )
-                                recordRelations.append(
-                                    {
-                                        "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
-                                        "_to": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
-                                        "relationType": RecordRelations.ATTACHMENT.value,
-                                    }
-                                )
+                    if message_key:
+                        for email in emails:
+                            # Use cached entity lookup (NO DB QUERIES!)
+                            if email in entity_lookup_map:
+                                entity_id, entity_type, perm_type = entity_lookup_map[email]
+
+                                permissions.append({
+                                    "_to": f"{entity_type}/{entity_id}",
+                                    "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
+                                    "role": role,
+                                    "externalPermissionId": None,
+                                    "type": perm_type,
+                                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                                    "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
+                                })
                             else:
-                                self.logger.warning(
-                                    "⚠️ Could not find message key for attachment relation: %s -> %s",
-                                    message_id,
-                                    attachment_id,
-                                )
-
-                    self.logger.debug("🔒 Processing permissions")
-                    for permission in permissions_metadata:
-                        message_id = permission.get("messageId")
-                        attachment_ids = permission.get("attachmentIds", [])
-                        emails = permission.get("users", [])
-                        role = permission.get("role").upper()
-                        self.logger.debug(
-                            "Processing permission for message %s, users/groups %s",
+                                self.logger.warning("⚠️ Email %s not found in lookup map", email)
+                    else:
+                        self.logger.warning(
+                            "⚠️ Could not find message key for permission: %s",
                             message_id,
-                            emails,
                         )
 
-                        # Get the correct message_key from messages based on messageId
-                        message_key = next(
-                            (
-                                m["_key"]
-                                for m in records
-                                if m["externalRecordId"] == message_id
-                            ),
+                    # Process attachment permissions
+                    for attachment_id in attachment_ids:
+                        attachment_key = next(
+                            (a["_key"] for a in records if a.get("externalRecordId") == attachment_id),
                             None,
                         )
-                        if message_key:
-                            self.logger.debug(
-                                "🔗 Creating relation between users/groups and message %s",
-                                message_id,
-                            )
-                            for email in emails:
-                                entity_id = (
-                                    await self.arango_service.get_entity_id_by_email(
-                                        email
-                                    )
-                                )
-                                if entity_id:
-                                    # Check if entity exists in users or groups
-                                    if self.arango_service.db.collection(
-                                        CollectionNames.USERS.value
-                                    ).has(entity_id):
-                                        entityType = CollectionNames.USERS.value
-                                        permType = "USER"
-                                    elif self.arango_service.db.collection(
-                                        CollectionNames.GROUPS.value
-                                    ).has(entity_id):
-                                        entityType = CollectionNames.GROUPS.value
-                                        permType = "GROUP"
-                                else:
-                                    # Save entity in people collection
-                                    entityType = CollectionNames.PEOPLE.value
-                                    entity_id = str(uuid.uuid4())
-                                    permType = "USER"
-                                    await self.arango_service.save_to_people_collection(
-                                        entity_id, email
-                                    )
 
-                                permissions.append(
-                                    {
-                                        "_to": f"{entityType}/{entity_id}",
-                                        "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
+                        if attachment_key:
+                            for email in emails:
+                                # Use cached entity lookup (NO DB QUERIES!)
+                                if email in entity_lookup_map:
+                                    entity_id, entity_type, perm_type = entity_lookup_map[email]
+
+                                    permissions.append({
+                                        "_to": f"{entity_type}/{entity_id}",
+                                        "_from": f"{CollectionNames.RECORDS.value}/{attachment_key}",
                                         "role": role,
                                         "externalPermissionId": None,
-                                        "type": permType,
+                                        "type": perm_type,
                                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                                         "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
-                                    }
-                                )
+                                    })
+                                else:
+                                    self.logger.warning("⚠️ Email %s not found in lookup map", email)
                         else:
                             self.logger.warning(
-                                "⚠️ Could not find message key for permission relation: message %s",
-                                message_id,
-                            )
-
-                        # Process permissions for attachments
-                        for attachment_id in attachment_ids:
-                            self.logger.debug(
-                                "🔗 Processing permission for attachment %s",
+                                "⚠️ Could not find attachment key for permission: %s",
                                 attachment_id,
                             )
-                            attachment_key = next(
-                                (
-                                    a["_key"]
-                                    for a in records
-                                    if a["externalRecordId"] == attachment_id
-                                ),
-                                None,
-                            )
-                            if attachment_key:
-                                self.logger.debug(
-                                    "🔗 Creating relation between users/groups and attachment %s",
-                                    attachment_id,
-                                )
-                                for email in emails:
-                                    entity_id = await self.arango_service.get_entity_id_by_email(
-                                        email
-                                    )
-                                    if entity_id:
-                                        # Check if entity exists in users or groups
-                                        if self.arango_service.db.collection(
-                                            CollectionNames.USERS.value
-                                        ).has(entity_id):
-                                            entityType = CollectionNames.USERS.value
-                                            permType = "USER"
-                                        elif self.arango_service.db.collection(
-                                            CollectionNames.GROUPS.value
-                                        ).has(entity_id):
-                                            entityType = CollectionNames.GROUPS.value
-                                            permType = "GROUP"
-                                    else:
-                                        # Save entity in people collection
-                                        entityType = CollectionNames.PEOPLE.value
-                                        entity_id = str(uuid.uuid4())
-                                        permType = "USER"
-                                        await self.arango_service.save_to_people_collection(
-                                            entity_id, email
-                                        )
 
-                                    permissions.append(
-                                        {
-                                            "_to": f"{entityType}/{entity_id}",
-                                            "_from": f"{CollectionNames.RECORDS.value}/{attachment_key}",
-                                            "role": role,
-                                            "externalPermissionId": None,
-                                            "type": permType,
-                                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                                            "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
-                                        }
-                                    )
-                            else:
-                                self.logger.warning(
-                                    "⚠️ Could not find attachment key for permission relation: attachment %s",
-                                    attachment_id,
-                                )
-
-            # Batch process all collected data
+            # ============================================
+            # PHASE 4: BATCH INSERT ALL DATA
+            # ============================================
             self.logger.info("📊 Batch summary before processing:")
-            self.logger.info("- New messages to create: %d", len(messages))
-            self.logger.info("- New attachments to create: %d", len(attachments))
-            self.logger.info("- New relations to create: %d", len(recordRelations))
-            self.logger.info(
-                "- Existing messages skipped: %d", len(existing_messages)
-            )
-            self.logger.info(
-                "- Existing attachments skipped: %d", len(existing_attachments)
-            )
+            self.logger.info("- New messages: %d", len(messages))
+            self.logger.info("- New attachments: %d", len(attachments))
+            self.logger.info("- New permissions: %d", len(permissions))
+            self.logger.info("- New relations: %d", len(recordRelations))
+            self.logger.info("- New is_of_type edges: %d", len(is_of_type))
 
             if messages or attachments:
+                txn = None
                 try:
                     self.logger.debug("🔄 Starting database transaction")
-                    txn = None
                     txn = self.arango_service.db.begin_transaction(
                         read=[
                             CollectionNames.MAILS.value,
@@ -767,18 +783,12 @@ class BaseGmailSyncService(ABC):
                         self.logger.debug("✅ Messages upserted successfully")
 
                     if attachments:
-                        # Create a copy of attachments without messageId
-                        attachment_docs = []
-                        for attachment in attachments:
-                            attachment_doc = attachment.copy()
-                            attachment_doc.pop(
-                                "messageId", None
-                            )  # Remove messageId if it exists
-                            attachment_docs.append(attachment_doc)
-
-                        self.logger.debug(
-                            "📥 Upserting %d attachments", len(attachment_docs)
-                        )
+                        # Remove messageId field before inserting
+                        attachment_docs = [
+                            {k: v for k, v in a.items() if k != "messageId"}
+                            for a in attachments
+                        ]
+                        self.logger.debug("📥 Upserting %d attachments", len(attachment_docs))
                         if not await self.arango_service.batch_upsert_nodes(
                             attachment_docs,
                             collection=CollectionNames.FILES.value,
@@ -798,40 +808,27 @@ class BaseGmailSyncService(ABC):
                         self.logger.debug("✅ Records upserted successfully")
 
                     if recordRelations:
-                        self.logger.debug(
-                            "🔗 Creating %d record relations", len(recordRelations)
-                        )
+                        self.logger.debug("🔗 Creating %d record relations", len(recordRelations))
                         if not await self.arango_service.batch_create_edges(
                             recordRelations,
                             collection=CollectionNames.RECORD_RELATIONS.value,
                             transaction=txn,
                         ):
                             raise Exception("Failed to batch create relations")
-                        self.logger.debug(
-                            "✅ Record relations created successfully"
-                        )
+                        self.logger.debug("✅ Record relations created successfully")
 
                     if is_of_type:
-                        self.logger.debug(
-                            "🔗 Creating %d is_of_type relations", len(is_of_type)
-                        )
+                        self.logger.debug("🔗 Creating %d is_of_type relations", len(is_of_type))
                         if not await self.arango_service.batch_create_edges(
                             is_of_type,
                             collection=CollectionNames.IS_OF_TYPE.value,
                             transaction=txn,
                         ):
-                            raise Exception(
-                                "Failed to batch create is_of_type relations"
-                            )
-                        self.logger.debug(
-                            "✅ is_of_type relations created successfully"
-                        )
+                            raise Exception("Failed to batch create is_of_type relations")
+                        self.logger.debug("✅ is_of_type relations created successfully")
 
                     if permissions:
-                        self.logger.debug(
-                            "🔗 Creating %d permissions", len(permissions)
-                        )
-
+                        self.logger.debug("🔗 Creating %d permissions", len(permissions))
                         if not await self.arango_service.batch_create_edges(
                             permissions,
                             collection=CollectionNames.PERMISSIONS.value,
@@ -842,7 +839,6 @@ class BaseGmailSyncService(ABC):
 
                     self.logger.debug("✅ Committing transaction")
                     txn.commit_transaction()
-
                     txn = None
 
                     processing_time = datetime.now(timezone.utc) - batch_start_time
@@ -851,11 +847,13 @@ class BaseGmailSyncService(ABC):
                     ✅ Batch processed successfully:
                     - Messages: %d
                     - Attachments: %d
+                    - Permissions: %d
                     - Relations: %d
                     - Processing Time: %s
                     """,
                         len(messages),
                         len(attachments),
+                        len(permissions),
                         len(recordRelations),
                         processing_time,
                     )
@@ -864,21 +862,24 @@ class BaseGmailSyncService(ABC):
 
                 except Exception as e:
                     if txn:
-                        self.logger.error(
-                            "❌ Transaction failed, rolling back: %s", str(e)
-                        )
-                        txn.abort_transaction()
+                        self.logger.error("❌ Transaction failed, rolling back: %s", str(e))
+                        try:
+                            txn.abort_transaction()
+                        except Exception as e:
+                            self.logger.error("❌ Error aborting transaction: %s", str(e))
+                            pass
                     self.logger.error("❌ Failed to process batch data: %s", str(e))
                     return False
 
-            self.logger.info(
-                "✅ Batch processing completed with no new data to process"
-            )
+            self.logger.info("✅ Batch processing completed with no new data to process")
             return True
 
         except Exception as e:
             self.logger.error("❌ Batch processing failed with error: %s", str(e))
+            import traceback
+            self.logger.error("Stack trace: %s", traceback.format_exc())
             return False
+
 
     # Async wrapper methods for blocking database operations
     async def _execute_aql_query_async(self, query: str, bind_vars: dict = None) -> list:

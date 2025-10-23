@@ -1,12 +1,12 @@
 # pylint: disable=E1101, W0718
 
 import asyncio
-import threading
 import base64
 import os
 import re
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, TypeVar
 from uuid import uuid4
 
 import google.oauth2.credentials
@@ -31,6 +31,8 @@ from app.connectors.sources.google.gmail.gmail_drive_interface import (
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+T = TypeVar('T')
 
 
 class GmailUserService:
@@ -1034,6 +1036,6 @@ class GmailUserService:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.fetch_gmail_changes, user_email, history_id))
 
-    def _run_with_service_lock(self, func, *args, **kwargs):
+    def _run_with_service_lock(self, func: Callable[..., T], *args, **kwargs) -> T:
         with self._service_lock:
             return asyncio.run(func(*args, **kwargs))
