@@ -134,7 +134,7 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
     };
 
     // Use citationId as the primary ID, fallback to metadata._id, then generate new ID
-    const highlightId = (citation as any).citationId || citation.metadata?._id || getNextId();
+    const highlightId = citation.citationId || citation.metadata?._id || getNextId();
 
     return {
       content: {
@@ -430,25 +430,14 @@ const PdfHighlighterComp = ({
       !loading
     ) {
       // Try multiple ID matching strategies
-      const citationId = (highlightCitation as any).citationId || highlightCitation.metadata?._id || (highlightCitation as any).id;
+      const citationId = highlightCitation.citationId || highlightCitation.metadata?._id || highlightCitation.id;
       
       if (!citationId) {
-        console.warn('No citation ID found for highlighting');
         return undefined;
       }
 
-      // Find the highlight that corresponds to the highlightCitation using multiple strategies
-      let targetHighlight = highlights.find((h) => h.id === citationId);
-      
-      // Fallback: try matching by citationId if available
-      if (!targetHighlight && (highlightCitation as any).citationId) {
-        targetHighlight = highlights.find((h) => h.id === (highlightCitation as any).citationId);
-      }
-      
-      // Fallback: try matching by metadata._id
-      if (!targetHighlight && highlightCitation.metadata?._id) {
-        targetHighlight = highlights.find((h) => h.id === highlightCitation.metadata._id);
-      }
+      // Find the highlight that corresponds to the highlightCitation
+      const targetHighlight = highlights.find((h) => h.id === citationId);
 
       // Use a slightly longer delay to ensure PDF is fully rendered
       const delay = 1000;
@@ -503,7 +492,6 @@ const PdfHighlighterComp = ({
       // Replace the function with an enhanced version
       scrollViewerTo.current = (highlight: HighlightType) => {
         if (!highlight) {
-          console.error('Cannot scroll to undefined highlight');
           return;
         }
 
@@ -516,8 +504,6 @@ const PdfHighlighterComp = ({
           // Call the original function
           originalScrollFn(highlight);
         } catch (err) {
-          console.error('Error in scrollViewerTo:', err);
-          
           // Fallback: try to scroll to the page if highlight fails
           if (highlight.position?.pageNumber) {
             try {
@@ -527,7 +513,7 @@ const PdfHighlighterComp = ({
                 pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }
             } catch (fallbackErr) {
-              console.error('Fallback scroll also failed:', fallbackErr);
+              // Silently ignore fallback error
             }
           }
         }
@@ -899,7 +885,7 @@ const PdfHighlighterComp = ({
                   isScrolledTo
                 ) => {
                   // Enhanced highlighting logic with multiple ID matching strategies
-                  const citationId = (highlightCitation as any)?.citationId || highlightCitation?.metadata?._id || (highlightCitation as any)?.id;
+                  const citationId = highlightCitation?.citationId || highlightCitation?.metadata?._id || highlightCitation?.id;
                   const isHighlighted: boolean =
                     Boolean(isScrolledTo) ||
                     Boolean(highlightCitation && citationId === highlight.id);
@@ -959,8 +945,6 @@ const PdfHighlighterComp = ({
           scrollViewerTo={(highlight) => {
             if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
               scrollViewerTo.current(highlight);
-            } else {
-              console.error('scrollViewerTo.current is not a function');
             }
           }}
           highlightedCitationId={highlightCitation?.metadata._id || null}
