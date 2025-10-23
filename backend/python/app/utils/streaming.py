@@ -232,8 +232,6 @@ async def execute_tool_calls(
     tools_executed = False
     tool_args = []
     tool_results = []
-    previous_tokens = count_tokens_in_messages(messages)
-    logger.debug("execute_tool_calls: initial_token_count=%d", previous_tokens)
     while hops < max_hops:
         # with error handling for provider-level tool failures
         try:
@@ -351,7 +349,6 @@ async def execute_tool_calls(
             }
 
         # Execute tools
-        tool_msgs = []
         tool_args = []
         tool_call_ids = {}
         tool_call_ids_list = []
@@ -420,9 +417,9 @@ async def execute_tool_calls(
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name", "unknown")
             call_id = tool_result.get("call_id")
-            tool_results.append(tool_result)
 
             if tool_result.get("ok", False):
+                tool_results.append(tool_result)
                 logger.debug(
                     "execute_tool_calls: tool success name=%s call_id=%s has_record=%s",
                     tool_name,
@@ -461,9 +458,6 @@ async def execute_tool_calls(
                 # New format: multiple records
                 if "records" in tool_result:
                     records.extend(tool_result.get("records", []))
-                # Old format: single record (backward compatibility)
-                elif "record" in tool_result:
-                    records.append(tool_result.get("record", {}))
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
@@ -478,37 +472,36 @@ async def execute_tool_calls(
         # Also estimate tokens for the tool message overhead (JSON structure, field names, etc.)
         # Each ToolMessage has overhead: {"ok": true, "records": [...], "record_count": N}
         # Rough estimate: ~50 tokens per tool message for JSON overhead
-        tool_message_overhead = len(tool_results_inner) * 50
+        # tool_message_overhead = len(tool_results_inner) * 50
 
         # Calculate total tokens including current messages, new records, and tool message overhead
-        estimated_total_tokens = current_message_tokens + new_tokens + tool_message_overhead
+        # estimated_total_tokens = current_message_tokens + new_tokens + tool_message_overhead
 
         logger.debug(
-            "execute_tool_calls: token_count | current_messages=%d new_records=%d tool_overhead=%d estimated_total=%d threshold=%d",
+            "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
             current_message_tokens,
             new_tokens,
-            tool_message_overhead,
-            estimated_total_tokens,
+            # tool_message_overhead,
+            # estimated_total_tokens,
             MAX_TOKENS_THRESHOLD,
         )
 
         message_contents = []
         record_ids = []
-        # Check if estimated total exceeds threshold
-        if estimated_total_tokens > MAX_TOKENS_THRESHOLD:
+        if new_tokens+current_message_tokens > MAX_TOKENS_THRESHOLD:
             logger.info(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
 
-            virtual_record_ids = [tool_result.get("record",{}).get("virtual_record_id") for tool_result in tool_results_inner if tool_result.get("ok")]
+            virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
 
             result = await retrieval_service.search_with_filters(
-            queries=[all_queries[0]],
-            org_id=org_id,
-            user_id=user_id,
-            limit=500,
-            filter_groups=None,
-            virtual_record_ids_from_tool=virtual_record_ids,
+                queries=[all_queries[0]],
+                org_id=org_id,
+                user_id=user_id,
+                limit=500,
+                filter_groups=None,
+                virtual_record_ids_from_tool=virtual_record_ids,
             )
 
             search_results = result.get("searchResults", [])
@@ -547,71 +540,31 @@ async def execute_tool_calls(
 
         # Build tool messages with actual content
         tool_msgs = []
-        for i, tool_result in enumerate(tool_results_inner):
-            # Ensure we have a valid call_id for this tool result
-            call_id = tool_call_ids_list[i] if i < len(tool_call_ids_list) else None
-            if call_id is None:
-                logger.warning("execute_tool_calls: missing call_id for tool result index %d", i)
-                continue
 
+        for tool_result in tool_results_inner:
             if tool_result.get("ok"):
-                # New multi-record format
-                if "records" in tool_result:
-                    # Get records specific to this tool call
-                    tool_records = tool_result.get("records", [])
-                    # Convert records to message content format
-                    tool_message_contents = []
-                    for record in tool_records:
-                        message_content = record_to_message_content(record, final_results)
-                        tool_message_contents.append(message_content)
+                tool_msg = {
+                    "ok": True,
+                    "records": message_contents,
+                    "record_count": tool_result.get("record_count", None),
+                    "not_found": tool_result.get("not_found", None),
+                }
 
-                    tool_message = {
-                        "ok": True,
-                        "records": tool_message_contents,
-                        "record_count": len(tool_message_contents)
-                    }
-                    if tool_result.get("not_found"):
-                        tool_message["not_found"] = tool_result.get("not_found")
-                    tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
-                # Old single-record format (backward compatibility)
-                elif "record" in tool_result:
-                    # Legacy path for single record
-                    record = tool_result.get("record")
-                    message_content = record_to_message_content(record, final_results)
-                    tool_message = {
-                        "ok": True,
-                        "record": message_content
-                    }
-                    tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
+                # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
+                tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
             else:
-                # Error case - still need to respond to the tool call
-                message_content = tool_result
-                tool_msgs.append(ToolMessage(content=json.dumps(message_content), tool_call_id=call_id))
+                tool_msg = {
+                    "ok": False,
+                    "error": tool_result.get("error", "Unknown error"),
+                }
+                tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
 
-        # Add the tool messages for next iteration
+        # Add messages for next iteration
         logger.debug(
             "execute_tool_calls: appending %d tool messages; next hop",
             len(tool_msgs),
         )
         messages.extend(tool_msgs)
-
-        # Final safety check: verify total token count after adding tool messages
-        final_token_count = count_tokens_in_messages(messages)
-        logger.debug(
-            "execute_tool_calls: final token count after adding tool messages=%d threshold=%d",
-            final_token_count,
-            MAX_TOKENS_THRESHOLD,
-        )
-
-        # If we still exceed threshold after all optimizations, log a warning
-        # The LLM call might still fail, but at least we've tried to reduce context
-        if final_token_count > MAX_TOKENS_THRESHOLD:
-            logger.warning(
-                "execute_tool_calls: final token count (%d) still exceeds threshold (%d) after optimizations. "
-                "LLM call may fail due to context length limits.",
-                final_token_count,
-                MAX_TOKENS_THRESHOLD,
-            )
 
         hops += 1
 
@@ -1304,9 +1257,6 @@ async def stream_llm_response_with_tools(
                             # New format with multiple records
                             if "records" in r:
                                 records.extend(r.get("records", []))
-                            # Old format with single record
-                            elif "record" in r:
-                                records.append(r.get("record"))
                         logger.debug(
                             "stream_llm_response_with_tools: tool_execution_complete | tool_results=%d records=%d tools_were_called=%s",
                             len(tool_results),
