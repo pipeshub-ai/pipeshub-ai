@@ -174,15 +174,19 @@ const CitationSidebar = ({
     if (highlightedCitationId) {
       setSelectedCitation(highlightedCitationId);
 
-      // Find the citation that matches the highlighted ID
+      // Find the citation that matches the highlighted ID using multiple strategies
       const citationToHighlight = citations.find(
-        (citation) => citation.highlight?.id === highlightedCitationId
+        (citation) =>
+          citation.highlight?.id === highlightedCitationId ||
+          citation.citationId === highlightedCitationId ||
+          citation.metadata?._id === highlightedCitationId
       );
 
       // If we found it, scroll to it in the sidebar
       if (citationToHighlight?.highlight) {
         // Find the list item element for this citation
-        const listItem = document.getElementById(`citation-item-${highlightedCitationId}`);
+        const listItemId = `citation-item-${citationToHighlight.highlight.id || citationToHighlight.metadata?._id}`;
+        const listItem = document.getElementById(listItemId);
         if (listItem) {
           // Scroll the list item into view
           listItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -203,23 +207,19 @@ const CitationSidebar = ({
           rects: [],
           pageNumber: citation.metadata?.pageNum?.[0] || 1,
         },
-        // Make sure id is defined
-        id: citation.highlight.id || citation.metadata?._id || String(Math.random()).slice(2),
+        // Make sure id is defined with multiple fallback strategies
+        id: citation.highlight.id || citation.citationId || citation.metadata?._id || String(Math.random()).slice(2),
       };
-
       // Try using the highlight we constructed rather than citation.highlight directly
       try {
         scrollViewerTo(highlight);
       } catch (err) {
-        console.error('Error scrolling to highlight:', err);
-
-        // Fallback: try again after small delay (but without the original citation.highlight which could be null)
-        // Fix TypeScript error: citation.highlight might be null
+        // Fallback: try again after small delay
         setTimeout(() => {
           try {
             scrollViewerTo(highlight);
           } catch (fallbackErr) {
-            console.error('Fallback scroll also failed:', fallbackErr);
+            // Silent fallback failure
           }
         }, 200);
       }
@@ -227,6 +227,8 @@ const CitationSidebar = ({
       // Also set the hash
       document.location.hash = `highlight-${highlight.id}`;
       setSelectedCitation(highlight.id);
+    } else {
+      // No highlight found for citation
     }
   };
 

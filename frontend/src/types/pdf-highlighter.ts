@@ -56,6 +56,7 @@ export interface HighlightPopupProps {
 
 export interface ProcessedCitation extends DocumentContent {
   highlight: HighlightType | null;
+  citationId?: string;
 }
 
 export interface BoundingBox {

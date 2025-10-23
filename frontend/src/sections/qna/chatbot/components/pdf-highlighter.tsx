@@ -133,6 +133,9 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
       pageNumber: citation.metadata?.pageNum[0] || 1,
     };
 
+    // Use citationId as the primary ID, fallback to metadata._id, then generate new ID
+    const highlightId = citation.citationId || citation.metadata?._id || getNextId();
+
     return {
       content: {
         text: citation.content || '',
@@ -146,7 +149,7 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
         text: '',
         emoji: '',
       },
-      id: citation.metadata._id || citation.metadata._id || getNextId(),
+      id: highlightId,
     };
   } catch (error) {
     console.error('Error processing highlight:', error);
@@ -388,8 +391,26 @@ const PdfHighlighterComp = ({
           })
           .filter((citation) => citation.highlight);
 
+        // Validate highlights before setting them
+        const validHighlights = processed
+          .map((c) => c.highlight)
+          .filter((highlight): highlight is HighlightType => {
+            if (!highlight) return false;
+            
+            // Validate required properties
+            const isValid = !!(
+              highlight.id &&
+              highlight.position &&
+              highlight.position.boundingRect &&
+              highlight.position.pageNumber &&
+              highlight.position.pageNumber > 0
+            );
+
+            return isValid;
+          });
+        
         setProcessedCitations(processed);
-        setHighlights(processed.map((c) => c.highlight).filter(Boolean) as HighlightType[]);
+        setHighlights(validHighlights);
       } else {
         setProcessedCitations([]);
         setHighlights([]);
@@ -404,13 +425,19 @@ const PdfHighlighterComp = ({
     if (
       highlights.length > 0 &&
       highlightCitation &&
-      highlightCitation.metadata._id &&
       scrollViewerTo.current &&
       typeof scrollViewerTo.current === 'function' &&
       !loading
     ) {
+      // Try multiple ID matching strategies
+      const citationId = highlightCitation.citationId || highlightCitation.metadata?._id || highlightCitation.id;
+      
+      if (!citationId) {
+        return undefined;
+      }
+
       // Find the highlight that corresponds to the highlightCitation
-      const targetHighlight = highlights.find((h) => h.id === highlightCitation.metadata._id);
+      const targetHighlight = highlights.find((h) => h.id === citationId);
 
       // Use a slightly longer delay to ensure PDF is fully rendered
       const delay = 1000;
@@ -422,9 +449,8 @@ const PdfHighlighterComp = ({
           return true;
         }
 
-        // Fix the ESLint unnecessary else error by removing the else
-        if (highlightCitation.metadata.pageNum && highlightCitation.metadata.pageNum.length > 0) {
-          // Fallback: Find any highlight on the specified page
+        // Fallback: Find any highlight on the specified page
+        if (highlightCitation.metadata?.pageNum && highlightCitation.metadata.pageNum.length > 0) {
           const pageNumber = highlightCitation.metadata.pageNum[0];
           const highlightOnPage = highlights.find((h) => h.position.pageNumber === pageNumber);
 
@@ -433,6 +459,7 @@ const PdfHighlighterComp = ({
             return true;
           }
         }
+        
         return false;
       };
 
@@ -442,7 +469,9 @@ const PdfHighlighterComp = ({
 
         // If scrolling failed on first attempt, try once more after a bit
         if (!scrolled) {
-          setTimeout(attemptScroll, 500);
+          setTimeout(() => {
+            attemptScroll();
+          }, 1000);
         }
       }, delay);
 
@@ -463,7 +492,11 @@ const PdfHighlighterComp = ({
       // Replace the function with an enhanced version
       scrollViewerTo.current = (highlight: HighlightType) => {
         if (!highlight) {
-          console.error('Cannot scroll to undefined highlight');
+          return;
+        }
+
+        // Validate highlight structure before scrolling
+        if (!highlight.position || !highlight.position.pageNumber || highlight.position.pageNumber <= 0) {
           return;
         }
 
@@ -471,8 +504,18 @@ const PdfHighlighterComp = ({
           // Call the original function
           originalScrollFn(highlight);
         } catch (err) {
-          // Rename error to err to avoid shadowing
-          console.error('Error in scrollViewerTo:', err);
+          // Fallback: try to scroll to the page if highlight fails
+          if (highlight.position?.pageNumber) {
+            try {
+              // This is a basic fallback - scroll to the page
+              const pageElement = document.querySelector(`[data-page-number="${highlight.position.pageNumber}"]`);
+              if (pageElement) {
+                pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            } catch (fallbackErr) {
+              // Silently ignore fallback error
+            }
+          }
         }
       };
     }
@@ -841,9 +884,11 @@ const PdfHighlighterComp = ({
                   screenshot,
                   isScrolledTo
                 ) => {
+                  // Enhanced highlighting logic with multiple ID matching strategies
+                  const citationId = highlightCitation?.citationId || highlightCitation?.metadata?._id || highlightCitation?.id;
                   const isHighlighted: boolean =
                     Boolean(isScrolledTo) ||
-                    Boolean(highlightCitation && highlightCitation.metadata._id === highlight.id);
+                    Boolean(highlightCitation && citationId === highlight.id);
 
                   const isTextHighlight = !highlight.content?.image;
                   const component = isTextHighlight ? (
@@ -900,8 +945,6 @@ const PdfHighlighterComp = ({
           scrollViewerTo={(highlight) => {
             if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
               scrollViewerTo.current(highlight);
-            } else {
-              console.error('scrollViewerTo.current is not a function');
             }
           }}
           highlightedCitationId={highlightCitation?.metadata._id || null}
