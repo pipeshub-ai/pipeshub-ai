@@ -494,11 +494,12 @@ async def execute_tool_calls(
 
         message_contents = []
         record_ids = []
-        # Check if estimated total exceeds threshold
-        if estimated_total_tokens > MAX_TOKENS_THRESHOLD:
+        tokens_exceeded = False
+        if new_tokens+previous_tokens > MAX_TOKENS_THRESHOLD:
             logger.info(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
+            tokens_exceeded = True
 
             virtual_record_ids = [tool_result.get("record",{}).get("virtual_record_id") for tool_result in tool_results_inner if tool_result.get("ok")]
 
@@ -547,48 +548,87 @@ async def execute_tool_calls(
 
         # Build tool messages with actual content
         tool_msgs = []
-        for i, tool_result in enumerate(tool_results_inner):
-            # Ensure we have a valid call_id for this tool result
-            call_id = tool_call_ids_list[i] if i < len(tool_call_ids_list) else None
-            if call_id is None:
-                logger.warning("execute_tool_calls: missing call_id for tool result index %d", i)
-                continue
+        # When tokens exceeded threshold, use reduced message_contents instead of original records
+        if tokens_exceeded and message_contents:
+            # Use reduced content from retrieval service
+            logger.info(
+                "execute_tool_calls: using reduced content for tool messages to stay within token limits"
+            )
+            for i, tool_result in enumerate(tool_results_inner):
+                call_id = tool_call_ids_list[i] if i < len(tool_call_ids_list) else None
+                if call_id is None:
+                    logger.warning("execute_tool_calls: missing call_id for tool result index %d", i)
+                    continue
 
-            if tool_result.get("ok"):
-                # New multi-record format
-                if "records" in tool_result:
-                    # Get records specific to this tool call
-                    tool_records = tool_result.get("records", [])
-                    # Convert records to message content format
-                    tool_message_contents = []
-                    for record in tool_records:
+                if tool_result.get("ok"):
+                    # Use the reduced content string instead of re-processing records
+                    # message_contents contains the truncated version
+                    if i < len(message_contents):
+                        tool_message = {
+                            "ok": True,
+                            "content": message_contents[i],
+                            "truncated": True
+                        }
+                        if tool_result.get("not_found"):
+                            tool_message["not_found"] = tool_result.get("not_found")
+                        tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
+                    else:
+                        logger.warning(
+                            "execute_tool_calls: message_contents index %d out of range (length=%d)",
+                            i,
+                            len(message_contents)
+                        )
+                        # Fallback to error message
+                        tool_msgs.append(ToolMessage(
+                            content=json.dumps({"ok": False, "error": "Content truncated due to token limits"}),
+                            tool_call_id=call_id
+                        ))
+                else:
+                    # Error case
+                    tool_msgs.append(ToolMessage(content=json.dumps(tool_result), tool_call_id=call_id))
+        else:
+            # Normal case: tokens within limits, use original records
+            for i, tool_result in enumerate(tool_results_inner):
+                # Ensure we have a valid call_id for this tool result
+                call_id = tool_call_ids_list[i] if i < len(tool_call_ids_list) else None
+                if call_id is None:
+                    logger.warning("execute_tool_calls: missing call_id for tool result index %d", i)
+                    continue
+
+                if tool_result.get("ok"):
+                    # New multi-record format
+                    if "records" in tool_result:
+                        # Get records specific to this tool call
+                        tool_records = tool_result.get("records", [])
+                        # Convert records to message content format
+                        tool_message_contents = []
+                        for record in tool_records:
+                            message_content = record_to_message_content(record, final_results)
+                            tool_message_contents.append(message_content)
+
+                        tool_message = {
+                            "ok": True,
+                            "records": tool_message_contents,
+                            "record_count": len(tool_message_contents)
+                        }
+                        if tool_result.get("not_found"):
+                            tool_message["not_found"] = tool_result.get("not_found")
+                        tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
+                    # Old single-record format (backward compatibility)
+                    elif "record" in tool_result:
+                        # Legacy path for single record
+                        record = tool_result.get("record")
                         message_content = record_to_message_content(record, final_results)
-                        tool_message_contents.append(message_content)
-
-                    tool_message = {
-                        "ok": True,
-                        "records": tool_message_contents,
-                        "record_count": len(tool_message_contents)
-                    }
-                    if tool_result.get("not_found"):
-                        tool_message["not_found"] = tool_result.get("not_found")
-                    tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
-                # Old single-record format (backward compatibility)
-                elif "record" in tool_result:
-                    # Legacy path for single record
-                    record = tool_result.get("record")
-                    message_content = record_to_message_content(record, final_results)
-                    tool_message = {
-                        "ok": True,
-                        "record": message_content
-                    }
-                    tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
-            else:
-                # Error case - still need to respond to the tool call
-                message_content = tool_result
-                tool_msgs.append(ToolMessage(content=json.dumps(message_content), tool_call_id=call_id))
-
-        # Add the tool messages for next iteration
+                        tool_message = {
+                            "ok": True,
+                            "record": message_content
+                        }
+                        tool_msgs.append(ToolMessage(content=json.dumps(tool_message), tool_call_id=call_id))
+                else:
+                    # Error case - still need to respond to the tool call
+                    message_content = tool_result
+                    tool_msgs.append(ToolMessage(content=json.dumps(message_content), tool_call_id=call_id))
+        # Add messages for next iteration
         logger.debug(
             "execute_tool_calls: appending %d tool messages; next hop",
             len(tool_msgs),
