@@ -75,8 +75,9 @@ def _print_response(title: str, response: PagerDutyResponse, max_items: int = 3)
                 print(f"    • Created: {item.get('created_at')}")
                 print(f"    • ID: {item.get('id')}")
                 if item.get("assignments"):
-                    assignee = item["assignments"][0].get("assignee", {})
-                    print(f"    • Assigned to: {assignee.get('summary')}")
+                    assignee = item["assignments"][0].get("assignee")
+                    if assignee:
+                        print(f"    • Assigned to: {assignee.get('summary')}")
             elif key == "service":
                 print(f"    • Name: {item.get('name')}")
                 print(f"    • Status: {item.get('status')}")

@@ -19,6 +19,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.config.configuration_service import ConfigurationService
+from app.sources.client.iclient import IClient
+
 try:
     from pagerduty import RestApiV2Client  # Official PagerDuty SDK
 except ImportError:
@@ -26,8 +29,7 @@ except ImportError:
         "pagerduty is not installed. Please install it with `pip install pagerduty>=5.0.0`",
     )
 
-from app.config.configuration_service import ConfigurationService
-from app.sources.client.iclient import IClient
+logger = logging.getLogger(__name__)
 
 
 class PagerDutyResponse(BaseModel):
@@ -98,25 +100,26 @@ class PagerDutyRESTClientViaToken:
             ValueError: If API token is invalid
 
         """
-        # Validate token format
+        # Validate token is not empty
+        # Note: PagerDuty supports multiple token types:
+        # - User tokens (start with 'u+')
+        # - Account-level API keys (may start with 'v2_')
+        # - OAuth access tokens (various formats)
+        # The SDK will validate the token during API calls, so we only check for emptiness
         if not self.api_token:
             raise ValueError("PagerDuty API token cannot be empty")
-
-        if not self.api_token.startswith("u+"):
-            raise ValueError(
-                f"Invalid PagerDuty token format. Token should start with 'u+', "
-                f"got: {self.api_token[:10]}...",
-            )
 
         # Initialize official SDK client
         # Note: RestApiV2Client uses 'api_key' parameter
         self._client = RestApiV2Client(api_key=self.api_token)
 
         # Note: SDK doesn't support custom base_url in __init__
-        # Store base_url for potential future use
+        # Warn if a custom base_url was provided but cannot be used
         if self.base_url:
-            # Could potentially set via client.url if SDK supports it
-            pass
+            logger.warning(
+                "A custom base_url was provided, but the PagerDuty SDK does not support it. "
+                "Using the default URL (https://api.pagerduty.com).",
+            )
 
         return self._client
 
@@ -264,26 +267,23 @@ class PagerDutyClient(IClient):
             # Extract configuration values
             auth_type = auth_config.get("authType", "API_TOKEN")
 
+            # Get token based on auth type
+            token: str
             if auth_type == "API_TOKEN":
-                api_token = auth_config.get("apiToken", "")
-                if not api_token:
+                token = auth_config.get("apiToken", "")
+                if not token:
                     raise ValueError("API token required for API_TOKEN auth type")
-
-                base_url = auth_config.get("baseUrl")
-                client = PagerDutyRESTClientViaToken(api_token, base_url)
-                await client.create_client()  # Initialize the SDK client
-
             elif auth_type == "OAUTH":
-                access_token = credentials_config.get("access_token", "")
-                if not access_token:
+                token = credentials_config.get("access_token", "")
+                if not token:
                     raise ValueError("Access token required for OAuth auth type")
-
-                base_url = auth_config.get("baseUrl")
-                client = PagerDutyRESTClientViaToken(access_token, base_url)
-                await client.create_client()  # Initialize the SDK client
-
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")
+
+            # Create and initialize client with token
+            base_url = auth_config.get("baseUrl")
+            client = PagerDutyRESTClientViaToken(token, base_url)
+            await client.create_client()  # Initialize the SDK client
 
             return cls(client)
 
@@ -309,7 +309,10 @@ class PagerDutyClient(IClient):
         try:
             config = await config_service.get_config("/services/connectors/pagerduty/config")
             return config or {}
-        except Exception:
-            logger.exception("Failed to get PagerDuty connector config")
+        except (KeyError, ConnectionError, TimeoutError) as e:
+            logger.exception(f"Failed to get PagerDuty connector config: {e}")
+            return {}
+        except Exception as e:
+            logger.error(f"Unexpected error getting PagerDuty connector config: {e}")
             return {}
 

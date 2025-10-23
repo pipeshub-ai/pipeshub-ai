@@ -138,7 +138,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/incidents/{incident_id}")
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting incident {incident_id}")
+            logger.exception(f"Error getting incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def create_incident(
@@ -247,7 +247,7 @@ class PagerDutyDataSource:
             response = self.sdk.put(f"/incidents/{incident_id}", json=incident_data)
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error updating incident {incident_id}")
+            logger.exception(f"Error updating incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def acknowledge_incident(self, incident_id: str, from_email: str) -> PagerDutyResponse:
@@ -277,7 +277,7 @@ class PagerDutyDataSource:
             )
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error acknowledging incident {incident_id}")
+            logger.exception(f"Error acknowledging incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def resolve_incident(
@@ -316,7 +316,7 @@ class PagerDutyDataSource:
             )
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error resolving incident {incident_id}")
+            logger.exception(f"Error resolving incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def reassign_incident(
@@ -352,7 +352,7 @@ class PagerDutyDataSource:
             )
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error reassigning incident {incident_id}")
+            logger.exception(f"Error reassigning incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def snooze_incident(
@@ -385,7 +385,7 @@ class PagerDutyDataSource:
             )
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error snoozing incident {incident_id}")
+            logger.exception(f"Error snoozing incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def merge_incidents(
@@ -421,7 +421,7 @@ class PagerDutyDataSource:
             )
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error merging incidents into {incident_id}")
+            logger.exception(f"Error merging incidents into {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def get_incident_notes(self, incident_id: str) -> PagerDutyResponse:
@@ -438,7 +438,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/incidents/{incident_id}/notes")
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting notes for incident {incident_id}")
+            logger.exception(f"Error getting notes for incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     # ==================== SERVICES APIS ====================
@@ -499,7 +499,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/services/{service_id}", params=params)
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting service {service_id}")
+            logger.exception(f"Error getting service {service_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def create_service(
@@ -591,7 +591,7 @@ class PagerDutyDataSource:
             response = self.sdk.put(f"/services/{service_id}", json=service_data)
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error updating service {service_id}")
+            logger.exception(f"Error updating service {service_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def delete_service(self, service_id: str) -> PagerDutyResponse:
@@ -610,7 +610,7 @@ class PagerDutyDataSource:
             success = getattr(response, "status_code", None) == HTTP_NO_CONTENT
             return PagerDutyResponse(success=success, data={"deleted": success})
         except Exception as e:
-            logger.exception("Error deleting service {service_id}")
+            logger.exception(f"Error deleting service {service_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     # ==================== USERS APIS ====================
@@ -671,7 +671,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/users/{user_id}", params=params)
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting user {user_id}")
+            logger.exception(f"Error getting user {user_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def get_current_user(self, include: list[str] | None = None) -> PagerDutyResponse:
@@ -709,7 +709,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/users/{user_id}/contact_methods")
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting contact methods for user {user_id}")
+            logger.exception(f"Error getting contact methods for user {user_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     # ==================== SCHEDULES APIS ====================
@@ -770,7 +770,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/schedules/{schedule_id}", params=params)
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting schedule {schedule_id}")
+            logger.exception(f"Error getting schedule {schedule_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def get_schedule_users(self, schedule_id: str) -> PagerDutyResponse:
@@ -787,7 +787,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/schedules/{schedule_id}/users")
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting users for schedule {schedule_id}")
+            logger.exception(f"Error getting users for schedule {schedule_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     # ==================== ON-CALL APIS ====================
@@ -943,7 +943,7 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/escalation_policies/{policy_id}", params=params)
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting escalation policy {policy_id}")
+            logger.exception(f"Error getting escalation policy {policy_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
     def create_escalation_policy(
@@ -1043,5 +1043,5 @@ class PagerDutyDataSource:
             response = self.sdk.get(f"/teams/{team_id}")
             return PagerDutyResponse(success=True, data=response.json())
         except Exception as e:
-            logger.exception("Error getting team {team_id}")
+            logger.exception(f"Error getting team {team_id}")
             return PagerDutyResponse(success=False, error=str(e))
