@@ -488,12 +488,10 @@ async def execute_tool_calls(
 
         message_contents = []
         record_ids = []
-        tokens_exceeded = False
         if new_tokens+current_message_tokens > MAX_TOKENS_THRESHOLD:
             logger.info(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
-            tokens_exceeded = True
             
             virtual_record_ids = []
             for record in records:
@@ -547,12 +545,21 @@ async def execute_tool_calls(
         
         for tool_result in tool_results_inner:
             if tool_result.get("ok"):
-                tool_msg = tool_result
-                tool_msg["records"] = message_contents
+                tool_msg = {
+                    "ok": True,
+                    "records": message_contents,
+                    "record_count": tool_result["record_count"],
+                    "not_found": tool_result.get("not_found", []),
+                }
+                
                 # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
                 tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
             else:
-                tool_msgs.append(ToolMessage(content=json.dumps(tool_result), tool_call_id=tool_result["call_id"]))
+                tool_msg = {
+                    "ok": False,
+                    "error": tool_result.get("error", "Unknown error"),
+                }
+                tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
 
         # Add messages for next iteration
         logger.debug(
