@@ -25,6 +25,8 @@ qna_prompt = """
 <tools>
   You have access to a tool called "fetch_full_record" that allows you to retrieve the complete content of multiple records when the provided chunks are insufficient to answer the query comprehensively.
 
+  **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
+
   Use this tool when:
   - The provided blocks contain partial information that leaves gaps in your understanding
   - You need more context from specific records to provide a complete answer
@@ -175,6 +177,8 @@ qna_prompt_instructions_1 = """
 
 <tools>
   You have access to a tool called "fetch_full_record" that retrieves the complete content of multiple records when provided blocks are insufficient.
+
+  **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
 
   **When to use:**
   - Provided blocks contain partial information with gaps in understanding

@@ -465,17 +465,37 @@ async def execute_tool_calls(
                 elif "record" in tool_result:
                     records.append(tool_result.get("record", {}))
 
+        # First, add the AI message with tool calls to messages
+        messages.append(ai)
+
+        # Count tokens in current messages (including the AI message with tool calls)
+        # This gives us the baseline before adding tool response content
+        current_message_tokens = count_tokens_in_messages(messages)
+
+        # Count tokens in the new records that will be added
         new_tokens = count_tokens_in_records(records)
+
+        # Also estimate tokens for the tool message overhead (JSON structure, field names, etc.)
+        # Each ToolMessage has overhead: {"ok": true, "records": [...], "record_count": N}
+        # Rough estimate: ~50 tokens per tool message for JSON overhead
+        tool_message_overhead = len(tool_results_inner) * 50
+
+        # Calculate total tokens including current messages, new records, and tool message overhead
+        estimated_total_tokens = current_message_tokens + new_tokens + tool_message_overhead
+
         logger.debug(
-            "execute_tool_calls: token_count | previous=%d new=%d threshold=%d",
-            previous_tokens,
+            "execute_tool_calls: token_count | current_messages=%d new_records=%d tool_overhead=%d estimated_total=%d threshold=%d",
+            current_message_tokens,
             new_tokens,
+            tool_message_overhead,
+            estimated_total_tokens,
             MAX_TOKENS_THRESHOLD,
         )
 
         message_contents = []
         record_ids = []
-        if new_tokens+previous_tokens > MAX_TOKENS_THRESHOLD:
+        # Check if estimated total exceeds threshold
+        if estimated_total_tokens > MAX_TOKENS_THRESHOLD:
             logger.info(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
@@ -525,7 +545,8 @@ async def execute_tool_calls(
                 message_contents.append(message_content)
                 record_ids.append(record.get("id"))
 
-        # Build tool messages - each tool call must have its own ToolMessage
+        # Build tool messages with actual content
+        tool_msgs = []
         for i, tool_result in enumerate(tool_results_inner):
             # Ensure we have a valid call_id for this tool result
             call_id = tool_call_ids_list[i] if i < len(tool_call_ids_list) else None
@@ -566,13 +587,31 @@ async def execute_tool_calls(
                 # Error case - still need to respond to the tool call
                 message_content = tool_result
                 tool_msgs.append(ToolMessage(content=json.dumps(message_content), tool_call_id=call_id))
-        # Add messages for next iteration
+
+        # Add the tool messages for next iteration
         logger.debug(
-            "execute_tool_calls: appending ai + %d tool messages; next hop",
+            "execute_tool_calls: appending %d tool messages; next hop",
             len(tool_msgs),
         )
-        messages.append(ai)
         messages.extend(tool_msgs)
+
+        # Final safety check: verify total token count after adding tool messages
+        final_token_count = count_tokens_in_messages(messages)
+        logger.debug(
+            "execute_tool_calls: final token count after adding tool messages=%d threshold=%d",
+            final_token_count,
+            MAX_TOKENS_THRESHOLD,
+        )
+
+        # If we still exceed threshold after all optimizations, log a warning
+        # The LLM call might still fail, but at least we've tried to reduce context
+        if final_token_count > MAX_TOKENS_THRESHOLD:
+            logger.warning(
+                "execute_tool_calls: final token count (%d) still exceeds threshold (%d) after optimizations. "
+                "LLM call may fail due to context length limits.",
+                final_token_count,
+                MAX_TOKENS_THRESHOLD,
+            )
 
         hops += 1
 
