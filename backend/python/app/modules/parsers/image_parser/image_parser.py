@@ -73,7 +73,7 @@ class ImageParser:
             self.logger.error(f"Failed to convert URL to base64: {url}, error: {str(e)}")
             return None
 
-    async def urls_to_base64(self, urls: list[str]) -> list[str]:
+    async def urls_to_base64(self, urls: list[str]) -> list[str|None]:
         """
         Convert a list of image URLs to base64 encoded strings asynchronously.
         If a URL is already a base64 data URL, it's returned as-is.

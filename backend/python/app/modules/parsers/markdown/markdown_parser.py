@@ -75,13 +75,15 @@ class MarkdownParser:
         image_counter = [1]  # Use list to allow modification in nested function
 
         # Pattern for markdown inline images: ![alt text](url "optional title")
-        markdown_img_pattern = r'!\[([^\]]*)\]\(([^\)]+)\)'
+        # Captures URL only (non-whitespace chars), optional title is matched but not captured
+        markdown_img_pattern = r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)'
 
         # Pattern for reference-style image usage: ![alt text][reference]
         reference_usage_pattern = r'!\[([^\]]*)\]\[([^\]]+)\]'
 
         # Pattern for reference definitions: [reference]: url "optional title"
-        reference_def_pattern = r'^\[([^\]]+)\]:\s*(.+?)(?:\s+"[^"]*")?\s*$'
+        # Captures URL only (non-whitespace chars), optional title is matched but not captured
+        reference_def_pattern = r'^\[([^\]]+)\]:\s+([^\s]+)(?:\s+"[^"]*")?\s*$'
 
         # First, collect all reference definitions
         reference_map = {}

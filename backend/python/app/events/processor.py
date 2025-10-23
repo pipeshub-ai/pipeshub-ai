@@ -1280,7 +1280,7 @@ class Processor:
 
             blocks = block_containers.blocks
             for block in blocks:
-                if block.type == BlockType.IMAGE.value:
+                if block.type == BlockType.IMAGE.value and block.image_metadata:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
