@@ -2,7 +2,6 @@ import io
 import json
 from datetime import datetime
 
-from app.models.blocks import BlockType
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -18,6 +17,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.models.blocks import BlockType
 from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -1160,7 +1160,7 @@ class Processor:
                 html_content = html_binary.decode("utf-8")
             else:
                 html_content = html_binary
-            
+
             markdown = convert(html_content)
             md_binary = markdown.encode("utf-8")
 
@@ -1242,27 +1242,27 @@ class Processor:
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
             parser = self.parsers[ExtensionTypes.MD.value]
-            
+
             modified_markdown, images = parser.extract_and_replace_images(markdown)
             caption_map = {}
             urls_to_convert = []
-            
+
             # Collect all image URLs
             for image in images:
                 urls_to_convert.append(image["url"])
-            
+
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
                 base64_urls = await image_parser.urls_to_base64(urls_to_convert)
-                
+
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
                     if base64_urls[i] is not None:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
                     else:
                         self.logger.warning(f"⚠️ Failed to convert image URL to base64: {image['url']}")
-            
+
             md_bytes = parser.parse_string(modified_markdown)
 
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
@@ -1292,9 +1292,9 @@ class Processor:
                             else:
                                 # If data is not a dict, create a new dict with the uri
                                 block.data = {"uri": caption_map[caption]}
-            
+
             block_containers.blocks = blocks
-            
+
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
             ctx = TransformContext(record=record)

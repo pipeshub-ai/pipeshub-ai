@@ -240,4 +240,3 @@ class ContainerUtils:
         """Async factory for FeatureFlagService"""
         feature_flag_service = FeatureFlagService.get_service()
         return feature_flag_service
-    

@@ -123,8 +123,8 @@ class DocumentExtraction(Transformer):
 
                         # Validate that the image URL is either a valid HTTP/HTTPS URL or a base64 data URL
                         if image_data and (
-                            image_data.startswith("http://") or 
-                            image_data.startswith("https://") or 
+                            image_data.startswith("http://") or
+                            image_data.startswith("https://") or
                             image_data.startswith("data:image/")
                         ):
                             candidate = {

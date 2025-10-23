@@ -26,11 +26,11 @@ class ImageParser:
     async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
         """
         Fetch a single URL and convert it to base64.
-        
+
         Args:
             session: aiohttp ClientSession
             url: Image URL or base64 data URL
-            
+
         Returns:
             Base64 encoded image string or None if failed/skipped
         """
@@ -38,37 +38,37 @@ class ImageParser:
         if url.startswith('data:image/'):
             # Skip SVG images
             if 'svg' in url.lower():
-                self.logger.debug(f"Skipping SVG image (already base64)")
+                self.logger.debug("Skipping SVG image (already base64)")
                 return None
-            self.logger.debug(f"URL is already base64 encoded")
+            self.logger.debug("URL is already base64 encoded")
             return url
-            
+
         try:
             # Fetch the image from URL
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 response.raise_for_status()
-                
+
                 # Get the content type to determine image format
                 content_type = response.headers.get('content-type', '')
-                
+
                 # Extract extension from content type (e.g., 'image/png' -> 'png')
                 extension = 'png'  # default
                 if 'image/' in content_type:
                     extension = content_type.split('/')[-1].split(';')[0]
-                
+
                 # Skip SVG images
                 if 'svg' in extension.lower():
                     self.logger.debug(f"Skipping SVG image from URL: {url[:100]}...")
                     return None
-                
+
                 # Read content and encode to base64
                 content = await response.read()
                 base64_encoded = base64.b64encode(content).decode('utf-8')
                 base64_image = f"data:image/{extension};base64,{base64_encoded}"
-                
+
                 self.logger.debug(f"Converted URL to base64: {url[:100]}...")
                 return base64_image
-                
+
         except Exception as e:
             self.logger.error(f"Failed to convert URL to base64: {url}, error: {str(e)}")
             return None
@@ -78,10 +78,10 @@ class ImageParser:
         Convert a list of image URLs to base64 encoded strings asynchronously.
         If a URL is already a base64 data URL, it's returned as-is.
         SVG images are skipped and None is appended instead.
-        
+
         Args:
             urls: List of image URLs or base64 data URLs
-            
+
         Returns:
             List of base64 encoded image strings (None for SVG images or failed conversions)
         """
