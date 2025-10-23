@@ -616,7 +616,7 @@ class Processor:
                 version=version,
                 source=source,
                 orgId=orgId,
-                html_content=html_content,
+                html_binary=html_content,
                 virtual_record_id=virtual_record_id
             )
 
@@ -1156,8 +1156,13 @@ class Processor:
         )
 
         try:
-            if isinstance(html_binary, str):
-                html_binary = html_binary.encode("utf-8")
+            if isinstance(html_binary, bytes):
+                html_content = html_binary.decode("utf-8")
+            else:
+                html_content = html_binary
+            
+            markdown = convert(html_content)
+            md_binary = markdown.encode("utf-8")
 
             # Use the existing markdown processing function
             await self.process_md_document(
@@ -1166,7 +1171,7 @@ class Processor:
                 version=version,
                 source=source,
                 orgId=orgId,
-                md_binary=html_binary,
+                md_binary=md_binary,
                 virtual_record_id=virtual_record_id
             )
 
@@ -1218,8 +1223,7 @@ class Processor:
             # Convert binary to string
             md_content = md_binary.decode("utf-8")
 
-            markdown = convert(md_content)
-            markdown = markdown.strip()
+            markdown = md_content.strip()
 
             if markdown is None or markdown == "":
                 try:
@@ -1250,7 +1254,7 @@ class Processor:
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
-                base64_urls = image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
                 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):

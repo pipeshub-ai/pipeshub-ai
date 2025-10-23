@@ -4,6 +4,7 @@ from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 import re
 from typing import List, Dict, Tuple
+from bs4 import BeautifulSoup
 
 
 class MarkdownParser:
@@ -70,8 +71,7 @@ class MarkdownParser:
                     }
         """
         images: List[Dict[str, str]] = []
-        modified_content = md_content
-        image_counter = 1
+        image_counter = [1]  # Use list to allow modification in nested function
         
         # Pattern for markdown inline images: ![alt text](url "optional title")
         markdown_img_pattern = r'!\[([^\]]*)\]\(([^\)]+)\)'
@@ -82,9 +82,6 @@ class MarkdownParser:
         # Pattern for reference definitions: [reference]: url "optional title"
         reference_def_pattern = r'^\[([^\]]+)\]:\s*(.+?)(?:\s+"[^"]*")?\s*$'
         
-        # Pattern for HTML img tags with various formats
-        html_img_pattern = r'<img[^>]*?(?:src\s*=\s*["\']([^"\']+)["\'][^>]*?alt\s*=\s*["\']([^"\']*)["\']|alt\s*=\s*["\']([^"\']*)["\'][^>]*?src\s*=\s*["\']([^"\']+)["\'])[^>]*?>'
-        
         # First, collect all reference definitions
         reference_map = {}
         for match in re.finditer(reference_def_pattern, md_content, re.MULTILINE):
@@ -92,11 +89,13 @@ class MarkdownParser:
             ref_url = match.group(2).strip()
             reference_map[ref_id] = ref_url
         
-        # Track reference-style images to avoid duplicates with inline
+        # Track reference-style image positions to avoid processing as inline
         reference_positions = set()
-        
-        # Find all reference-style images first (to avoid conflicts with inline images)
         for match in re.finditer(reference_usage_pattern, md_content):
+            reference_positions.add(match.start())
+        
+        # Replacer function for reference-style images
+        def replace_reference_image(match):
             original_alt = match.group(1)
             ref_id = match.group(2)
             original_text = match.group(0)
@@ -104,10 +103,7 @@ class MarkdownParser:
             # Get URL from reference map
             url = reference_map.get(ref_id, f"[unknown reference: {ref_id}]")
             
-            new_alt = f"Image_{image_counter}"
-            
-            # Create new reference-style image syntax
-            new_text = f"![{new_alt}][{ref_id}]"
+            new_alt = f"Image_{image_counter[0]}"
             
             # Store image info
             images.append({
@@ -118,26 +114,19 @@ class MarkdownParser:
                 'image_type': 'reference'
             })
             
-            # Track position to avoid processing as inline
-            reference_positions.add(match.start())
-            
-            # Replace in content
-            modified_content = modified_content.replace(original_text, new_text, 1)
-            image_counter += 1
+            image_counter[0] += 1
+            return f"![{new_alt}][{ref_id}]"
         
-        # Find all markdown inline images
-        for match in re.finditer(markdown_img_pattern, md_content):
+        # Replacer function for markdown inline images
+        def replace_markdown_image(match):
             # Skip if this position was already processed as reference-style
             if match.start() in reference_positions:
-                continue
+                return match.group(0)
                 
             original_alt = match.group(1)
             url = match.group(2)
             original_text = match.group(0)
-            new_alt = f"Image_{image_counter}"
-            
-            # Create new markdown image syntax
-            new_text = f"![{new_alt}]({url})"
+            new_alt = f"Image_{image_counter[0]}"
             
             # Store image info
             images.append({
@@ -148,43 +137,50 @@ class MarkdownParser:
                 'image_type': 'markdown'
             })
             
-            # Replace in content
-            modified_content = modified_content.replace(original_text, new_text, 1)
-            image_counter += 1
+            image_counter[0] += 1
+            return f"![{new_alt}]({url})"
         
-        # Find all HTML images
-        for match in re.finditer(html_img_pattern, md_content):
-            original_text = match.group(0)
+        # Process HTML images using BeautifulSoup
+        def process_html_images(content: str) -> str:
+            """
+            Use BeautifulSoup to properly parse and replace HTML img tags.
+            This is more robust than regex for handling various HTML formats.
+            """
+            # Parse with html.parser to handle fragments
+            soup = BeautifulSoup(content, 'html.parser')
             
-            # Determine which groups captured the src and alt
-            if match.group(1):  # src came first
-                url = match.group(1)
-                original_alt = match.group(2)
-            else:  # alt came first
-                original_alt = match.group(3)
-                url = match.group(4)
+            # Find all img tags
+            for img_tag in soup.find_all('img'):
+                # Get src and alt attributes
+                src = img_tag.get('src', '')
+                original_alt = img_tag.get('alt', '')
+                
+                # Store original HTML
+                original_text = str(img_tag)
+                
+                # Create new alt text
+                new_alt = f"Image_{image_counter[0]}"
+                
+                # Update the alt attribute
+                img_tag['alt'] = new_alt
+                
+                # Store image info
+                images.append({
+                    'original_text': original_text,
+                    'url': src,
+                    'alt_text': original_alt,
+                    'new_alt_text': new_alt,
+                    'image_type': 'html'
+                })
+                
+                image_counter[0] += 1
             
-            new_alt = f"Image_{image_counter}"
-            
-            # Create new HTML img tag with updated alt text
-            new_text = re.sub(
-                r'alt\s*=\s*["\'][^"\']*["\']',
-                f'alt="{new_alt}"',
-                original_text
-            )
-            
-            # Store image info
-            images.append({
-                'original_text': original_text,
-                'url': url,
-                'alt_text': original_alt,
-                'new_alt_text': new_alt,
-                'image_type': 'html'
-            })
-            
-            # Replace in content
-            modified_content = modified_content.replace(original_text, new_text, 1)
-            image_counter += 1
+            return str(soup)
+        
+        # Apply replacements in sequence: reference-style, then inline, then HTML
+        modified_content = re.sub(reference_usage_pattern, replace_reference_image, md_content)
+        modified_content = re.sub(markdown_img_pattern, replace_markdown_image, modified_content)
+        modified_content = process_html_images(modified_content)
         
         return modified_content, images
 
