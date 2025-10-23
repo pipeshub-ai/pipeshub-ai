@@ -492,10 +492,8 @@ async def execute_tool_calls(
             logger.info(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
-            
-            virtual_record_ids = []
-            for record in records:
-                virtual_record_ids.append(record.get("virtual_record_id"))
+
+            virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
 
             result = await retrieval_service.search_with_filters(
                 queries=[all_queries[0]],
@@ -542,16 +540,16 @@ async def execute_tool_calls(
 
         # Build tool messages with actual content
         tool_msgs = []
-        
+
         for tool_result in tool_results_inner:
             if tool_result.get("ok"):
                 tool_msg = {
                     "ok": True,
                     "records": message_contents,
-                    "record_count": tool_result["record_count"],
-                    "not_found": tool_result.get("not_found", []),
+                    "record_count": tool_result.get("record_count", None),
+                    "not_found": tool_result.get("not_found", None),
                 }
-                
+
                 # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
                 tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
             else:
@@ -567,7 +565,6 @@ async def execute_tool_calls(
             len(tool_msgs),
         )
         messages.extend(tool_msgs)
-
 
         hops += 1
 
