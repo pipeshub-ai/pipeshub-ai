@@ -2834,7 +2834,6 @@ const formatFileSize = (bytes: number): string => {
 // Get file icon based on extension
 function getFileIcon(extension: string): React.ComponentProps<typeof IconifyIcon>['icon'] {
   const ext = extension?.toLowerCase() || '';
-  console.log('ext', ext);
 
   switch (ext) {
     case 'pdf':
