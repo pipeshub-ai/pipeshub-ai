@@ -174,19 +174,39 @@ const CitationSidebar = ({
     if (highlightedCitationId) {
       setSelectedCitation(highlightedCitationId);
 
-      // Find the citation that matches the highlighted ID
-      const citationToHighlight = citations.find(
+      // Find the citation that matches the highlighted ID using multiple strategies
+      let citationToHighlight = citations.find(
         (citation) => citation.highlight?.id === highlightedCitationId
       );
+
+      // Fallback: try matching by citationId
+      if (!citationToHighlight) {
+        citationToHighlight = citations.find(
+          (citation) => (citation as any).citationId === highlightedCitationId
+        );
+      }
+
+      // Fallback: try matching by metadata._id
+      if (!citationToHighlight) {
+        citationToHighlight = citations.find(
+          (citation) => citation.metadata?._id === highlightedCitationId
+        );
+      }
 
       // If we found it, scroll to it in the sidebar
       if (citationToHighlight?.highlight) {
         // Find the list item element for this citation
-        const listItem = document.getElementById(`citation-item-${highlightedCitationId}`);
+        const listItemId = `citation-item-${citationToHighlight.highlight.id || citationToHighlight.metadata?._id}`;
+        const listItem = document.getElementById(listItemId);
         if (listItem) {
           // Scroll the list item into view
           listItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          console.log('Scrolled to citation in sidebar:', listItemId);
+        } else {
+          console.warn('Could not find list item for citation:', listItemId);
         }
+      } else {
+        console.warn('No citation found for highlighted ID:', highlightedCitationId);
       }
     }
   }, [highlightedCitationId, citations]);
@@ -203,21 +223,20 @@ const CitationSidebar = ({
           rects: [],
           pageNumber: citation.metadata?.pageNum?.[0] || 1,
         },
-        // Make sure id is defined
-        id: citation.highlight.id || citation.metadata?._id || String(Math.random()).slice(2),
+        // Make sure id is defined with multiple fallback strategies
+        id: citation.highlight.id || (citation as any).citationId || citation.metadata?._id || String(Math.random()).slice(2),
       };
-
       // Try using the highlight we constructed rather than citation.highlight directly
       try {
         scrollViewerTo(highlight);
       } catch (err) {
         console.error('Error scrolling to highlight:', err);
 
-        // Fallback: try again after small delay (but without the original citation.highlight which could be null)
-        // Fix TypeScript error: citation.highlight might be null
+        // Fallback: try again after small delay
         setTimeout(() => {
           try {
             scrollViewerTo(highlight);
+            console.log('Fallback scroll attempt successful');
           } catch (fallbackErr) {
             console.error('Fallback scroll also failed:', fallbackErr);
           }
@@ -227,6 +246,8 @@ const CitationSidebar = ({
       // Also set the hash
       document.location.hash = `highlight-${highlight.id}`;
       setSelectedCitation(highlight.id);
+    } else {
+      console.warn('No highlight found for citation:', citation.metadata?._id);
     }
   };
 
