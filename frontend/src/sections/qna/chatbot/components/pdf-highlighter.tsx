@@ -183,7 +183,7 @@ const PdfHighlighterComp = ({
   const [originalDimensions, setOriginalDimensions] = useState<{ width: number; scale: number }>({ width: 80, scale: 1 });
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
-
+  console.log(highlightCitation)
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -947,7 +947,7 @@ const PdfHighlighterComp = ({
               scrollViewerTo.current(highlight);
             }
           }}
-          highlightedCitationId={highlightCitation?.metadata._id || null}
+          highlightedCitationId={highlightCitation?.citationId || highlightCitation?.metadata?._id || highlightCitation?.id || null}
           toggleFullScreen={toggleFullScreen}
           onClosePdf={onClosePdf}
         />
