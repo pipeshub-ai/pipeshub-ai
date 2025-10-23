@@ -121,15 +121,24 @@ class DocumentExtraction(Transformer):
                         image_data = block.data
                         image_data = image_data.get("uri")
 
-                        candidate = {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_data
+                        # Validate that the image URL is either a valid HTTP/HTTPS URL or a base64 data URL
+                        if image_data and (
+                            image_data.startswith("http://") or
+                            image_data.startswith("https://") or
+                            image_data.startswith("data:image/")
+                        ):
+                            candidate = {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_data
+                                }
                             }
-                        }
-                        # Images are provider-specific for token accounting; treat as zero-text here
-                        content.append(candidate)
-                        image_count += 1
+                            # Images are provider-specific for token accounting; treat as zero-text here
+                            content.append(candidate)
+                            image_count += 1
+                        else:
+                            self.logger.warning(f"⚠️ Skipping invalid image URL format: {image_data[:100] if image_data else 'None'}")
+                            continue
                     else:
                         continue
                 else:
