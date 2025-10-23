@@ -5,17 +5,21 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import downloadIcon from '@iconify-icons/mdi/download';
 import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import pdfIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
-import wordIcon from '@iconify-icons/vscode-icons/file-type-word2';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
-import excelIcon from '@iconify-icons/vscode-icons/file-type-excel2';
 import defaultFileIcon from '@iconify-icons/mdi/file-document-outline';
-import powerpointIcon from '@iconify-icons/vscode-icons/file-type-powerpoint2';
 import emailIcon from '@iconify-icons/mdi/email-outline'; // Add email icon
 import eyeIcon from '@iconify-icons/mdi/eye';
 import closeIcon from '@iconify-icons/mdi/close';
 import fullscreenIcon from '@iconify-icons/mdi/fullscreen';
 import fullscreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
-import openInNewIcon from '@iconify-icons/mdi/open-in-new';
+import mdIcon from '@iconify-icons/vscode-icons/file-type-markdown';
+import htmlIcon from '@iconify-icons/vscode-icons/file-type-html';
+import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
+import databaseIcon from '@iconify-icons/mdi/database';
+import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
+import docIcon from '@iconify-icons/vscode-icons/file-type-word';
+import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
+import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
 
 import {
   Box,
@@ -67,20 +71,36 @@ const getFileIcon = (extension: string, recordType?: string) => {
       return pdfIcon;
     case 'doc':
     case 'docx':
-      return wordIcon;
+      return docIcon;
     case 'xls':
     case 'xlsx':
-      return excelIcon;
+    case 'csv':
+      return xlsIcon;
     case 'ppt':
     case 'pptx':
-      return powerpointIcon;
+      return pptIcon;
     case 'jpg':
     case 'jpeg':
     case 'png':
+    case 'gif':
       return imageIcon;
     case 'zip':
     case 'rar':
+    case '7z':
       return zipIcon;
+    case 'txt':
+      return txtIcon;
+    case 'html':
+    case 'css':
+    case 'js':
+      return htmlIcon;
+    case 'md':
+    case 'mdx':
+      return mdIcon;
+    case 'json':
+      return jsonIcon;
+    case 'database':
+      return databaseIcon;
     default:
       return defaultFileIcon;
   }
