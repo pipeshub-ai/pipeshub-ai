@@ -51,6 +51,12 @@ class DocuSignRESTClientViaPAT:
         self.access_token = access_token
         self.base_path = base_path
         self.api_client: Optional[ApiClient] = None
+        # Headers for HTTP requests
+        self.headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
         # Specialized SDK API instances
         self.accounts_api: Optional[AccountsApi] = None
         self.envelopes_api: Optional[EnvelopesApi] = None
@@ -89,6 +95,39 @@ class DocuSignRESTClientViaPAT:
 
     def get_base_path(self) -> str:
         return self.base_path
+
+    async def execute(self, request: HTTPRequest) -> Dict[str, Any]:
+        """Execute HTTP request using aiohttp."""
+        import json as json_lib
+
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            kwargs = {
+                "headers": request.headers,
+            }
+
+            if request.body:
+                kwargs["data"] = request.body
+
+            async with session.request(
+                method=request.method,
+                url=request.url,
+                **kwargs
+            ) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "")
+
+                if "application/json" in content_type:
+                    return await response.json()
+                elif "application/pdf" in content_type:
+                    return {"content": await response.read()}
+                else:
+                    text = await response.text()
+                    try:
+                        return json_lib.loads(text)
+                    except json_lib.JSONDecodeError:
+                        return {"content": text}
 
 # ============================================================
 # JWT Client
@@ -155,9 +194,23 @@ class DocuSignRESTClientViaJWT:
                     user_id=self.user_id,
                     expires_in=self.expires_in
                 )
+            self._initialize_api_instances()
             return self.api_client
         except Exception as e:
             raise RuntimeError("Failed to create DocuSign JWT client") from e
+
+    def _initialize_api_instances(self) -> None:
+        """Initialize all specialized DocuSign SDK API instances."""
+        if self.api_client is None:
+            raise RuntimeError("API client must be created first")
+
+        self.accounts_api = AccountsApi(self.api_client)
+        self.envelopes_api = EnvelopesApi(self.api_client)
+        self.templates_api = TemplatesApi(self.api_client)
+        self.users_api = UsersApi(self.api_client)
+        self.groups_api = GroupsApi(self.api_client)
+        self.bulk_envelopes_api = BulkEnvelopesApi(self.api_client)
+        self.workspaces_api = WorkspacesApi(self.api_client)
 
     def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
         if self.api_client is None:
@@ -218,9 +271,23 @@ class DocuSignRESTClientViaOAuth:
             self.api_client = ApiClient()
             self.api_client.set_base_path(self.base_path)
             self.api_client.set_oauth_token(self.access_token)
+            self._initialize_api_instances()
             return self.api_client
         except Exception as e:
             raise RuntimeError("Failed to create DocuSign OAuth client") from e
+
+    def _initialize_api_instances(self) -> None:
+        """Initialize all specialized DocuSign SDK API instances."""
+        if self.api_client is None:
+            raise RuntimeError("API client must be created first")
+
+        self.accounts_api = AccountsApi(self.api_client)
+        self.envelopes_api = EnvelopesApi(self.api_client)
+        self.templates_api = TemplatesApi(self.api_client)
+        self.users_api = UsersApi(self.api_client)
+        self.groups_api = GroupsApi(self.api_client)
+        self.bulk_envelopes_api = BulkEnvelopesApi(self.api_client)
+        self.workspaces_api = WorkspacesApi(self.api_client)
 
     def get_api_client(self) -> ApiClient:  # type: ignore[valid-type]
         if self.api_client is None:
@@ -288,7 +355,6 @@ class DocuSignJWTConfig(BaseModel):
     expires_in: int = 3600
     private_key_data: Optional[str] = None
     private_key_file: Optional[str] = None
-    ssl: bool = True  # unused
 
     def model_post_init(self, __context) -> None:
         if not self.private_key_data and not self.private_key_file:
@@ -316,7 +382,6 @@ class DocuSignOAuthConfig(BaseModel):
     base_path: str = "https://demo.docusign.net/restapi"
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
-    ssl: bool = True  # unused
 
     def create_client(self) -> DocuSignRESTClientViaOAuth:
         client = DocuSignRESTClientViaOAuth(
@@ -335,7 +400,6 @@ class DocuSignOAuthConfig(BaseModel):
 class DocuSignPATConfig(BaseModel):
     access_token: str
     base_path: str = "https://demo.docusign.net/restapi"
-    ssl: bool = True  # unused
 
     def create_client(self) -> DocuSignRESTClientViaPAT:
         client = DocuSignRESTClientViaPAT(

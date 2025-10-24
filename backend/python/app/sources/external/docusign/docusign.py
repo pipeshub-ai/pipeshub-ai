@@ -1,19 +1,3 @@
-"""
-DocuSign Data Source - SDK-Based Implementation
-
-This module provides a comprehensive wrapper around DocuSign's official SDK,
-exposing all specialized API classes with proper error handling and response formatting.
-
-All methods use the official DocuSign SDK APIs:
-- AccountsApi
-- EnvelopesApi
-- TemplatesApi
-- UsersApi
-- GroupsApi
-- BulkEnvelopesApi
-- WorkspacesApi
-"""
-
 import json
 from typing import Any, Dict, List, Optional
 
@@ -22,66 +6,59 @@ from app.sources.client.http.http_request import HTTPRequest
 
 
 class DocuSignDataSource:
-    """DocuSign Data Source using official SDK APIs."""
+    """Comprehensive DocuSign API client wrapper.
+    Provides async methods for ALL DocuSign API endpoints across:
+    - eSignature API v2.1 (Accounts, Envelopes, Templates, Users, Groups)
+    - Admin API v2.1 (Organizations, Users, Identity Providers)
+    - Rooms API v2 (Real estate transactions, Users, Documents)
+    - Click API v1 (Clickwrap agreements, Versions)
+    - Maestro API v1 (Workflow orchestration)
+    - WebForms API v1.1 (Form management)
+    - Navigator API (Agreement analytics)
+    - Monitor API v2 (Security events)
+    All methods return DocuSignResponse objects with standardized format.
+    Every parameter matches DocuSign's official API documentation exactly.
+    """
 
     def __init__(self, client: DocuSignClient) -> None:
-        """Initialize DocuSign Data Source with SDK API instances."""
         self._client = client
-        self._rest_client = client.get_client()
-
-        # Get all specialized API instances from the SDK
-        self.accounts_api = self._rest_client.accounts_api
-        self.envelopes_api = self._rest_client.envelopes_api
-        self.templates_api = self._rest_client.templates_api
-        self.users_api = self._rest_client.users_api
-        self.groups_api = self._rest_client.groups_api
-        self.bulk_envelopes_api = self._rest_client.bulk_envelopes_api
-        self.workspaces_api = self._rest_client.workspaces_api
-
-        # Debug: Print which APIs are None
-        api_status = {
-            "accounts_api": self.accounts_api is not None,
-            "envelopes_api": self.envelopes_api is not None,
-            "templates_api": self.templates_api is not None,
-            "users_api": self.users_api is not None,
-            "groups_api": self.groups_api is not None,
-            "bulk_envelopes_api": self.bulk_envelopes_api is not None,
-            "workspaces_api": self.workspaces_api is not None,
-        }
-
-        missing_apis = [name for name, status in api_status.items() if not status]
-        if missing_apis:
-            raise ValueError(f"These SDK API instances are not initialized: {missing_apis}")
+        self.http = client.get_client()
+        if self.http is None:
+            raise ValueError('HTTP client is not initialized')
+        try:
+            self.base_url = self.http.get_base_path().rstrip('/')
+        except AttributeError as exc:
+            raise ValueError('HTTP client does not have get_base_path method') from exc
 
     def get_data_source(self) -> 'DocuSignDataSource':
         return self
-
-    # ============================================================
-    # ACCOUNTS API - Using SDK AccountsApi
-    # ============================================================
 
     async def accounts_get_account(
         self,
         accountId: str,
         include_account_settings: Optional[bool] = None
     ) -> DocuSignResponse:
-        """Retrieves the account information using SDK AccountsApi."""
+        """Retrieves the account information for a single account."""
+        url = self.base_url + "/v2.1/accounts/{accountId}"
+        url = url.replace("{accountId}", str(accountId))
+        params = {}
+        if include_account_settings is not None:
+            params["include_account_settings"] = include_account_settings
+        if params:
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+            url = f"{url}?{query_string}"
+        headers = self.http.headers.copy()
+        headers["Accept"] = "application/json"
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
         try:
-            # Use the SDK AccountsApi
-            result = self.accounts_api.get_account_information(
-                account_id=accountId,
-                include_account_settings=str(include_account_settings).lower() if include_account_settings is not None else None
-            )
-            return DocuSignResponse(
-                success=True,
-                data=result.to_dict() if hasattr(result, 'to_dict') else result
-            )
+            response = await self.http.execute(request)
+            return DocuSignResponse(success=True, data=response)
         except Exception as e:
-            return DocuSignResponse(
-                success=False,
-                error=str(e),
-                message=f"Failed to get account information: {str(e)}"
-            )
+            return DocuSignResponse(success=False, error=str(e))
 
     async def accounts_create_account(
         self,
