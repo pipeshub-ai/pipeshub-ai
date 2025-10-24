@@ -9,6 +9,7 @@ from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
+import jwt
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
 from fastapi import HTTPException
@@ -51,6 +52,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
 )
 from app.models.entities import (
     AppUser,
+    AppUserGroup,
     FileRecord,
     Record,
     RecordGroup,
@@ -232,6 +234,25 @@ class SharePointConnector(BaseConnector):
         client_id = credentials_config.get("clientId")
         client_secret = credentials_config.get("clientSecret")
         sharepoint_domain = credentials_config.get("sharepointDomain")
+        # Normalize SharePoint domain to scheme+host (no path), since tokens must target the tenant host
+        try:
+            parsed_domain = urllib.parse.urlparse(sharepoint_domain or "")
+            host = parsed_domain.hostname
+            scheme = parsed_domain.scheme or "https"
+            if not host:
+                # Handle cases where a bare host or host with path is provided without scheme
+                candidate = sharepoint_domain or ""
+                if "://" not in candidate:
+                    candidate = f"https://{candidate.lstrip('/')}"
+                parsed_candidate = urllib.parse.urlparse(candidate)
+                host = parsed_candidate.hostname
+                scheme = parsed_candidate.scheme or scheme
+            if host:
+                normalized_sharepoint_domain = f"{scheme}://{host}"
+            else:
+                normalized_sharepoint_domain = sharepoint_domain
+        except Exception:
+            normalized_sharepoint_domain = sharepoint_domain
 
         if not all((tenant_id, client_id, client_secret, sharepoint_domain)):
             self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and clientSecret are configured.")
@@ -241,7 +262,7 @@ class SharePointConnector(BaseConnector):
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
-            sharepoint_domain=sharepoint_domain,
+            sharepoint_domain=normalized_sharepoint_domain,
             has_admin_consent=has_admin_consent,
         )
         credential = ClientSecretCredential(
@@ -250,6 +271,9 @@ class SharePointConnector(BaseConnector):
                 client_secret=credentials.client_secret,
             )
         self.sharepoint_domain = credentials.sharepoint_domain
+        self.tenant_id = credentials.tenant_id
+        self.client_id = credentials.client_id
+        self.client_secret = credentials.client_secret
         self.client = GraphServiceClient(
             credential,
             scopes=["https://graph.microsoft.com/.default"]
@@ -1351,6 +1375,169 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"❌ Error creating document library record group: {e}")
             return None
 
+    async def diagnose_sharepoint_access(
+        self,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+        sharepoint_domain: str,
+        site_url: str
+    ) -> None:
+        """
+        Comprehensive diagnostic for SharePoint access issues
+
+        Args:
+            tenant_id: Azure AD tenant ID
+            client_id: App registration client ID
+            client_secret: App registration client secret
+            sharepoint_domain: Root SharePoint domain (e.g., https://company.sharepoint.com)
+            site_url: Full site URL to test (e.g., https://company.sharepoint.com/sites/sitename)
+        """
+
+        print("\n" + "="*70)
+        print("SHAREPOINT ACCESS DIAGNOSTIC TOOL")
+        print("="*70 + "\n")
+
+        credential = None
+
+        try:
+            # Step 1: Test Graph API Token
+            print("Step 1: Testing Microsoft Graph Token")
+            print("-" * 70)
+            credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+
+            try:
+                graph_token = await credential.get_token("https://graph.microsoft.com/.default")
+                print("✅ Microsoft Graph token obtained")
+
+                # Decode and show token details
+                decoded = jwt.decode(graph_token.token, options={"verify_signature": False})
+                print(f"   Audience: {decoded.get('aud')}")
+                print(f"   App ID: {decoded.get('appid')}")
+                print(f"   Roles: {', '.join(decoded.get('roles', []))}")
+            except Exception as e:
+                print(f"❌ Failed to get Graph token: {e}")
+                return
+
+            await credential.close()
+
+            # Step 2: Test SharePoint Token
+            print("\n\nStep 2: Testing SharePoint Token")
+            print("-" * 70)
+
+            credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+
+            # Clean up domain
+            sp_domain = sharepoint_domain.rstrip('/')
+            if not sp_domain.startswith('http'):
+                sp_domain = f"https://{sp_domain}"
+
+            try:
+                # Request token for SharePoint
+                sp_token = await credential.get_token(f"{sp_domain}/.default")
+                print(f"✅ SharePoint token obtained for {sp_domain}")
+
+                # Decode and show token details
+                decoded_sp = jwt.decode(sp_token.token, options={"verify_signature": False})
+                print(f"   Audience: {decoded_sp.get('aud')}")
+                print(f"   App ID: {decoded_sp.get('appid')}")
+
+                # Check for SharePoint roles
+                roles = decoded_sp.get('roles', [])
+                if roles:
+                    print(f"   Roles: {', '.join(roles)}")
+                else:
+                    print("   ⚠️  WARNING: No roles found in token!")
+                    print("   This means your app doesn't have SharePoint API permissions")
+                    print("   You need to add SharePoint (not Graph) permissions in Azure AD")
+
+            except Exception as e:
+                print(f"❌ Failed to get SharePoint token: {e}")
+                print("\nPossible causes:")
+                print("   1. App doesn't have SharePoint API permissions")
+                print("   2. Permissions not granted admin consent")
+                print("   3. Wrong SharePoint domain")
+                await credential.close()
+                return
+
+            # Step 3: Test API Access
+            print("\n\nStep 3: Testing SharePoint REST API Access")
+            print("-" * 70)
+
+            test_url = f"{site_url.rstrip('/')}/_api/web/sitegroups"
+            print(f"Testing URL: {test_url}")
+
+            headers = {
+                'Authorization': f'Bearer {sp_token.token}',
+                'Accept': 'application/json;odata=verbose'
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    response = await client.get(test_url, headers=headers)
+
+                    if response.status_code == HttpStatusCode.SUCCESS.value:
+                        data = response.json()
+                        groups = data.get('d', {}).get('results', [])
+                        print(f"✅ SUCCESS! API call returned {len(groups)} site groups")
+                        MAX_GROUPS_TO_DISPLAY = 5
+                        if groups:
+                            print("\nFound site groups:")
+                            for group in groups[:5]:
+                                print(f"   - {group.get('Title')} (ID: {group.get('Id')})")
+                            if len(groups) > MAX_GROUPS_TO_DISPLAY:
+                                print(f"   ... and {len(groups) - 5} more")
+
+                    elif response.status_code == HttpStatusCode.UNAUTHORIZED.value:
+                        print("❌ 401 Unauthorized")
+                        print("\nDIAGNOSIS:")
+                        print("   Your app is missing SharePoint API permissions!")
+                        print("\nTO FIX:")
+                        print("   1. Go to Azure Portal → App Registrations → Your App")
+                        print("   2. Click 'API Permissions'")
+                        print("   3. Click '+ Add a permission'")
+                        print("   4. Select 'SharePoint' (NOT Microsoft Graph)")
+                        print("   5. Choose 'Application permissions'")
+                        print("   6. Select 'Sites.Read.All' or 'Sites.FullControl.All'")
+                        print("   7. Click 'Add permissions'")
+                        print("   8. Click 'Grant admin consent for [tenant]'")
+                        print("   9. Wait 5-10 minutes for permissions to propagate")
+
+                    elif response.status_code == HttpStatusCode.FORBIDDEN.value:
+                        print("❌ 403 Forbidden")
+                        print("   App has a token but doesn't have permission to this site")
+                        print("   Check if Sites.FullControl.All is granted")
+
+                    elif response.status_code == HttpStatusCode.NOT_FOUND.value:
+                        print("❌ 404 Not Found")
+                        print(f"   Site URL may be incorrect: {site_url}")
+
+                    else:
+                        print(f"❌ HTTP {response.status_code}")
+                        print(f"   Response: {response.text[:200]}")
+
+                except Exception as req_error:
+                    print(f"❌ Request failed: {req_error}")
+
+            # Step 4: Summary
+            print("\n\n" + "="*70)
+            print("SUMMARY")
+            print("="*70)
+
+            if 'roles' in decoded_sp and decoded_sp['roles']:
+                print("✅ Token has SharePoint roles - permissions are configured")
+            else:
+                print("❌ Token missing SharePoint roles - ADD SHAREPOINT PERMISSIONS!")
+                print("\nYour current Graph permissions won't work for REST API")
+                print("You need separate SharePoint API permissions")
+
+        finally:
+            if credential:
+                await credential.close()
+
+
+
+
     # Permission methods
     async def _get_site_permissions(self, site_id: str) -> List[Permission]:
         """Get permissions for a SharePoint site using both Graph API and SharePoint REST API."""
@@ -1396,6 +1583,48 @@ class SharePointConnector(BaseConnector):
             self.logger.error(f"❌ Failed to get site permissions for {site_id}: {e}")
             return []
 
+    async def _get_sharepoint_access_token(self) -> Optional[str]:
+        """Get access token for SharePoint REST API."""
+        credential = None
+        try:
+            # Create a new credential instance for SharePoint-specific token
+            credential = ClientSecretCredential(
+                tenant_id=self.tenant_id,
+                client_id=self.client_id,
+                client_secret=self.client_secret
+            )
+
+            # Parse domain to ensure correct format
+            # SharePoint domain should be like: https://company.sharepoint.com
+            parsed = urllib.parse.urlparse(self.sharepoint_domain)
+            if parsed.hostname:
+                resource_host = parsed.hostname
+            else:
+                # Handle case where domain is just "company.sharepoint.com"
+                resource_host = self.sharepoint_domain.replace('https://', '').replace('http://', '').strip('/')
+
+            # Construct SharePoint resource URL (no trailing slash, no path)
+            resource = f"https://{resource_host}"
+
+            self.logger.debug(f"Requesting SharePoint token for resource: {resource}/.default")
+
+            # Request token specifically for SharePoint (NOT Graph API)
+            token = await credential.get_token(f"{resource}/.default")
+
+            self.logger.info("✅ Successfully obtained SharePoint access token")
+
+            return token.token
+
+        except Exception as e:
+            self.logger.error(f"❌ Error getting SharePoint token: {e}")
+            self.logger.error("   Make sure your app has SharePoint permissions (Sites.Read.All)")
+            self.logger.error(f"   Resource URL: {resource if 'resource' in locals() else 'N/A'}")
+            return None
+        finally:
+            # Close the credential to avoid "Unclosed client session" warnings
+            if credential:
+                await credential.close()
+
     async def _get_sharepoint_site_groups_permissions(self, site_id: str) -> List[Permission]:
         """Get SharePoint site groups and their members using SharePoint REST API."""
         try:
@@ -1417,6 +1646,10 @@ class SharePointConnector(BaseConnector):
             if not access_token:
                 self.logger.warning("Could not get access token for SharePoint REST API")
                 return []
+
+            self.logger.info(f"Access token: {access_token}")
+
+            await self.diagnose_sharepoint_access(self.tenant_id, self.client_id, self.client_secret, self.sharepoint_domain, site_url)
 
             # Get site groups using REST API
             site_groups = await self._get_sharepoint_site_groups(site_url, access_token)
@@ -1545,6 +1778,15 @@ class SharePointConnector(BaseConnector):
                 self.logger.warning(f"Access denied when getting site groups from {site_url}: {e}")
             elif e.response.status_code == HttpStatusCode.NOT_FOUND.value:
                 self.logger.warning(f"Site groups endpoint not found for {site_url}: {e}")
+            elif e.response.status_code == HttpStatusCode.UNAUTHORIZED.value:
+                self.logger.error(
+                    (
+                        f"❌ Unauthorized when getting site groups from {site_url}: {e}. "
+                        f"This usually indicates the token is for the wrong audience/resource or missing SharePoint app permissions. "
+                        f"Ensure your Azure AD app has SharePoint application permissions (e.g., Sites.Read.All or Sites.FullControl.All) "
+                        f"with admin consent, and that the token is requested for 'https://<tenant>.sharepoint.com/.default' (not Microsoft Graph)."
+                    )
+                )
             else:
                 self.logger.error(f"❌ HTTP error getting SharePoint site groups from {site_url}: {e}")
             return []
@@ -1566,7 +1808,9 @@ class SharePointConnector(BaseConnector):
 
             if not site_url or not access_token:
                 return []
-
+            self.logger.info(f"Site URL: {site_url}")
+            # Do not log raw access tokens; just confirm retrieval
+            self.logger.debug("Obtained SharePoint access token for role assignments")
             # Get role assignments
             rest_url = f"{site_url.rstrip('/')}/_api/web/roleassignments?$expand=Member,RoleDefinitionBindings"
 
@@ -1626,24 +1870,40 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"❌ Error getting role assignments for site {site_id}: {e}")
             return []
 
-    async def _get_sharepoint_access_token(self) -> Optional[str]:
-        """Get access token for SharePoint REST API calls."""
+    async def _get_sharepoint_site_groups(self, site_url: str, access_token: str) -> List[Dict]:
+        """Get site groups via SharePoint REST API."""
         try:
-            # Use the same credential as Graph API but request SharePoint-specific scope
-            credential = ClientSecretCredential(
-                tenant_id=self.credentials.tenant_id,
-                client_id=self.credentials.client_id,
-                client_secret=self.credentials.client_secret,
-            )
+            self.logger.info(f"Site URL: {site_url}")
+            rest_url = f"{site_url.rstrip('/')}/_api/web/sitegroups"
 
-            # For SharePoint REST API, we need the Graph API token
-            # The same token works for both Graph API and SharePoint REST API
-            token = await credential.get_token(f"{self.sharepoint_domain}/.default")
-            return token.token
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json;odata=verbose'
+            }
 
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(rest_url, headers=headers)
+
+                if response.status_code == HttpStatusCode.UNAUTHORIZED.value:
+                    self.logger.error(f"❌ 401 Unauthorized for {rest_url}")
+                    self.logger.error("   This usually means the token audience is wrong.")
+                    self.logger.error(f"   Token must be requested for '{site_url.split('/')[2]}/.default'")
+                    self.logger.error("   NOT for 'https://graph.microsoft.com/.default'")
+                    return []
+
+                response.raise_for_status()
+
+                data = response.json()
+                groups = data.get('d', {}).get('results', [])
+
+                return groups
+
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"❌ HTTP {e.response.status_code} error getting site groups: {e}")
+            return []
         except Exception as e:
-            self.logger.error(f"❌ Error getting SharePoint access token: {e}")
-            return None
+            self.logger.error(f"❌ Error getting site groups: {e}")
+            return []
 
     async def _get_sharepoint_group_members(self, site_url: str, group_id: int, access_token: str) -> List[Dict]:
         """Get members of a SharePoint group using REST API."""
@@ -1843,6 +2103,19 @@ class SharePointConnector(BaseConnector):
 
         return permissions
 
+    def _parse_datetime(self, dt_obj) -> Optional[int]:
+        """Parse datetime object or string to epoch timestamp in milliseconds."""
+        if not dt_obj:
+            return None
+        try:
+            if isinstance(dt_obj, str):
+                dt = datetime.fromisoformat(dt_obj.replace('Z', '+00:00'))
+            else:
+                dt = dt_obj
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return None
+
     # User and group sync methods
     async def _sync_user_groups(self) -> None:
         """Sync SharePoint groups and their members."""
@@ -1852,113 +2125,100 @@ class SharePointConnector(BaseConnector):
             # Get Microsoft 365 Groups instead of trying to access site groups directly
             # Microsoft Graph API doesn't expose site groups directly through sites.groups
             total_groups = 0
+            group_with_members = []
 
             try:
-                # Get all Microsoft 365 Groups
-                async with self.rate_limiter:
-                    groups_response = await self._safe_api_call(
-                        self.client.groups.get()
+                groups = await self.msgraph_client.get_all_user_groups()
+                self.logger.info(f"Groups type: {type(groups)}")
+                self.logger.info(f"Groups: {groups}")
+                for group in groups:
+                        # Get group members
+                        user_group = AppUserGroup(
+                            id=str(uuid.uuid4()),
+                            source_user_group_id=group.id,
+                            app_name=self.connector_name,
+                            name=group.display_name,
+                            mail=group.mail,
+                            description=group.description,
+                            created_at_timestamp=self._parse_datetime(group.created_date_time),
+                        )
+                        self.logger.info(f"User group: {user_group}")
+
+                        app_users = []
+                        try:
+                            members = await self.msgraph_client.get_group_members(group.id)
+                            self.logger.info(f"Members: {members}")
+                            for member in members:
+                                app_users.append(AppUser(
+                                    source_user_id=member.id,
+                                    email=member.mail or member.user_principal_name,
+                                    full_name=member.display_name,
+                                    created_at_timestamp=self._parse_datetime(member.created_date_time),
+                                    app_name=self.connector_name,
+                                ))
+                        except Exception as member_error:
+                            self.logger.info(f"❌ Error getting members for group {group.display_name}: {member_error}")
+                            # Continue with empty permissions
+                        self.logger.info(f"Member permissions: {app_users}")
+                        group_with_members.append((user_group, app_users))
+                        total_groups += 1
+
+                # Process all collected groups
+                if group_with_members:
+                    await self.data_entities_processor.on_new_user_groups(
+                        group_with_members
                     )
 
-                if groups_response and groups_response.value:
-                    for group in groups_response.value:
-                        try:
-                            # Only process groups that have SharePoint sites
-                            if hasattr(group, 'resource_provisioning_options') and 'SharePoint' in getattr(group, 'resource_provisioning_options', []):
-                                user_group = {
-                                    "id": str(uuid.uuid4()),
-                                    "name": group.display_name,
-                                    "source_user_group_id": group.id,
-                                    "email": getattr(group, 'mail', None),
-                                    "description": getattr(group, 'description', None),
-                                    "metadata": {
-                                        "group_type": "MICROSOFT_365_GROUP",
-                                        "visibility": getattr(group, 'visibility', 'Unknown'),
-                                        "mail_enabled": getattr(group, 'mail_enabled', False),
-                                        "security_enabled": getattr(group, 'security_enabled', False)
-                                    }
-                                }
-
-                                # Get group members
-                                member_permissions = []
-                                try:
-                                    async with self.rate_limiter:
-                                        members_response = await self._safe_api_call(
-                                            self.client.groups.by_group_id(group.id).members.get()
-                                        )
-
-                                    if members_response and members_response.value:
-                                        for member in members_response.value:
-                                            member_permissions.append(Permission(
-                                                external_id=member.id,
-                                                email=getattr(member, 'mail', None) or getattr(member, 'user_principal_name', None),
-                                                type=self._map_group_to_permission_type(group.display_name),
-                                                entity_type=EntityType.USER
-                                            ))
-                                except Exception as member_error:
-                                    self.logger.debug(f"❌ Error getting members for group {group.display_name}: {member_error}")
-                                    # Continue with empty permissions
-
-                                await self.data_entities_processor.on_new_user_groups(
-                                    [user_group],
-                                    member_permissions
-                                )
-                                total_groups += 1
-
-                        except Exception as group_error:
-                            self.logger.debug(f"❌ Error processing group {getattr(group, 'display_name', 'unknown')}: {group_error}")
-                            continue
-
             except Exception as groups_error:
-                self.logger.debug(f"❌ Error getting Microsoft 365 Groups: {groups_error}")
+                self.logger.error(f"❌ Error getting Microsoft 365 Groups: {groups_error}")
 
             # Also try to get site permissions which might include group information
-            try:
-                sites = await self._get_all_sites()
-                for site in sites:
-                    try:
-                        encoded_site_id = self._construct_site_url(site.id)
+            # try:
+            #     sites = await self._get_all_sites()
+            #     for site in sites:
+            #         try:
+            #             encoded_site_id = self._construct_site_url(site.id)
 
-                        # Get site permissions which might include group information
-                        async with self.rate_limiter:
-                            permissions_response = await self._safe_api_call(
-                                self.client.sites.by_site_id(encoded_site_id).permissions.get()
-                            )
+            #             # Get site permissions which might include group information
+            #             async with self.rate_limiter:
+            #                 permissions_response = await self._safe_api_call(
+            #                     self.client.sites.by_site_id(encoded_site_id).permissions.get()
+            #                 )
 
-                        if permissions_response and permissions_response.value:
-                            for permission in permissions_response.value:
-                                # Check if this permission is for a group
-                                if hasattr(permission, 'granted_to_identities') and permission.granted_to_identities:
-                                    for identity in permission.granted_to_identities:
-                                        if hasattr(identity, 'application') and identity.application:
-                                            # This is a group permission
-                                            group_name = getattr(identity.application, 'display_name', 'Unknown Group')
-                                            user_group = {
-                                                "id": str(uuid.uuid4()),
-                                                "name": group_name,
-                                                "source_user_group_id": getattr(identity.application, 'id', str(uuid.uuid4())),
-                                                "email": None,
-                                                "description": f"Site permission group for {site.display_name or site.name}",
-                                                "metadata": {
-                                                    "site_id": site.id,
-                                                    "site_name": site.display_name or site.name,
-                                                    "group_type": "SITE_PERMISSION_GROUP",
-                                                    "permission_level": getattr(permission, 'roles', ['Read'])
-                                                }
-                                            }
+            #             if permissions_response and permissions_response.value:
+            #                 for permission in permissions_response.value:
+            #                     # Check if this permission is for a group
+            #                     if hasattr(permission, 'granted_to_identities') and permission.granted_to_identities:
+            #                         for identity in permission.granted_to_identities:
+            #                             if hasattr(identity, 'application') and identity.application:
+            #                                 # This is a group permission
+            #                                 group_name = getattr(identity.application, 'display_name', 'Unknown Group')
+            #                                 user_group = {
+            #                                     "id": str(uuid.uuid4()),
+            #                                     "name": group_name,
+            #                                     "source_user_group_id": getattr(identity.application, 'id', str(uuid.uuid4())),
+            #                                     "email": None,
+            #                                     "description": f"Site permission group for {site.display_name or site.name}",
+            #                                     "metadata": {
+            #                                         "site_id": site.id,
+            #                                         "site_name": site.display_name or site.name,
+            #                                         "group_type": "SITE_PERMISSION_GROUP",
+            #                                         "permission_level": getattr(permission, 'roles', ['Read'])
+            #                                     }
+            #                                 }
 
-                                            await self.data_entities_processor.on_new_user_groups(
-                                                [user_group],
-                                                []  # No member permissions for site permission groups
-                                            )
-                                            total_groups += 1
+            #                                 await self.data_entities_processor.on_new_user_groups(
+            #                                     [user_group],
+            #                                     []  # No member permissions for site permission groups
+            #                                 )
+            #                                 total_groups += 1
 
-                    except Exception as site_error:
-                        self.logger.debug(f"❌ Error processing permissions for site {site.display_name or site.name}: {site_error}")
-                        continue
+                    # except Exception as site_error:
+                    #     self.logger.debug(f"❌ Error processing permissions for site {site.display_name or site.name}: {site_error}")
+                    #     continue
 
             except Exception as sites_error:
-                self.logger.debug(f"❌ Error processing sites for permissions: {sites_error}")
+                self.logger.error(f"❌ Error processing sites for permissions: {sites_error}")
 
             self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
@@ -2008,7 +2268,7 @@ class SharePointConnector(BaseConnector):
             self.logger.info("🚀 Starting SharePoint connector sync")
 
             # Step 1: Sync users
-            self.logger.info("👥 Syncing users...")
+            self.logger.info("Syncing users...")
             try:
                 users = await self.msgraph_client.get_all_users()
                 await self.data_entities_processor.on_new_app_users(users)
@@ -2016,13 +2276,13 @@ class SharePointConnector(BaseConnector):
             except Exception as user_error:
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
-            # # Step 2: Sync user groups
-            # self.logger.info("👥 Syncing SharePoint groups...")
-            # try:
-            #     # await self._sync_user_groups()
-            #     # self.logger.info("✅ Successfully synced SharePoint groups")
-            # except Exception as group_error:
-            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
+            # Step 2: Sync user groups
+            self.logger.info("Syncing SharePoint groups...")
+            try:
+                await self._sync_user_groups()
+                self.logger.info("✅ Successfully synced SharePoint groups")
+            except Exception as group_error:
+                self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
@@ -2032,7 +2292,6 @@ class SharePointConnector(BaseConnector):
                 return
 
             self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
-
             # Create site record groups
             site_record_groups_with_permissions = []
             for site in sites:
@@ -2060,13 +2319,13 @@ class SharePointConnector(BaseConnector):
                     source_updated_at=source_updated_at
                 )
                 site_record_groups_with_permissions.append((site_record_group, []))
-                # # Get site permissions
-                # site_permissions = await self._get_site_permissions(site_id)
-                # print(f"Site permissions: '{site_permissions}'")
-                # # Process site record group
+                # Get site permissions
+                site_permissions = await self._get_site_permissions(site_id)
+                print(f"Site permissions: '{site_permissions}'")
+                # Process site record group
 
             await self.data_entities_processor.on_new_record_groups(site_record_groups_with_permissions)
-
+            return
             # Step 4: Process sites in batches
             for i in range(0, len(site_record_groups_with_permissions), self.max_concurrent_batches):
                 batch = site_record_groups_with_permissions[i:i + self.max_concurrent_batches]
