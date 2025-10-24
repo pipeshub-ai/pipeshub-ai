@@ -336,9 +336,8 @@ class DocuSignRESTClientViaOAuth:
         data = {"grant_type": "refresh_token", "refresh_token": self.refresh_token}
         return await self._exchange_token(data)
 
-    async def ensure_valid_token(self) -> None:
-        """Ensure the client has a valid token, refresh if needed."""
-        # NOTE: This requires token expiry tracking; here we assume caller refreshes proactively
+    async def check_for_access_token(self) -> None:
+        """Checks if an access token is present."""
         if not self.access_token:
             raise RuntimeError("No access token available; call exchange_code_for_token first.")
 

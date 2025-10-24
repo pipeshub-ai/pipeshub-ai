@@ -13,6 +13,17 @@ To generate a token:
 
 For JWT setup instructions, see:
     backend/python/HOW_TO_GET_RSA_KEY.py
+
+IMPORTANT NOTE - Personal Access Token (PAT) Limitations:
+    PAT tokens have limited permissions compared to JWT tokens. When using PAT authentication:
+
+    - Account information fields may show as 'N/A' due to scope limitations
+    - Some administrative operations may be restricted
+    - For full access to all account details, use JWT authentication instead
+
+    The PAT token is primarily intended for testing and basic operations. For production
+    use cases requiring comprehensive account access, implement JWT authentication as
+    documented in HOW_TO_GET_RSA_KEY.py.
 """
 
 import asyncio
