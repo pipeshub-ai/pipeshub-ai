@@ -20,12 +20,24 @@ import { Tip, Popup, Highlight, AreaHighlight, PdfHighlighter } from 'react-pdf-
 
 import { Box, Slider, CircularProgress } from '@mui/material';
 
+import minusIcon from '@iconify-icons/mdi/minus';
+import plusIcon from '@iconify-icons/mdi/plus';
+import magnifyMinusIcon from '@iconify-icons/mdi/magnify-minus';
+import magnifyPlusIcon from '@iconify-icons/mdi/magnify-plus';
+import refreshIcon from '@iconify-icons/mdi/refresh';
+import resizeIcon from '@iconify-icons/mdi/resize';
+import magnifyIcon from '@iconify-icons/mdi/magnify';
 import CitationSidebar from './highlighter-sidebar';
 
 // Initialize PDF worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 const getNextId = () => String(Math.random()).slice(2);
+
+// Constants for timing and polling
+const SCROLL_TO_HIGHLIGHT_DELAY_MS = 1500;
+const HIGHLIGHT_POLLING_INTERVAL_MS = 100;
+const HIGHLIGHT_POLLING_MAX_ATTEMPTS = 50; // 5 seconds max
 
 // Custom PDF Loader that can work with either URL or buffer
 interface EnhancedPdfLoaderProps {
@@ -47,7 +59,7 @@ const EnhancedPdfLoader = ({
 }: EnhancedPdfLoaderProps) => {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy>();
   const [error, setError] = useState(null);
-  
+
   useEffect(() => {
     const loadPdf = async () => {
       try {
@@ -133,8 +145,8 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
       pageNumber: citation.metadata?.pageNum[0] || 1,
     };
 
-    // Use citationId as the primary ID, fallback to metadata._id, then generate new ID
-    const highlightId = citation.citationId || citation.metadata?._id || getNextId();
+    // Use citationId as the primary ID, fallback to metadata._id, then citation.id, then generate new ID
+    const highlightId = citation.citationId || citation.metadata?._id || citation.id || getNextId();
 
     return {
       content: {
@@ -180,10 +192,12 @@ const PdfHighlighterComp = ({
   const [showWidthControls, setShowWidthControls] = useState<boolean>(false);
   const [showZoomControls, setShowZoomControls] = useState<boolean>(false);
   const [showResetControls, setShowResetControls] = useState<boolean>(false);
-  const [originalDimensions, setOriginalDimensions] = useState<{ width: number; scale: number }>({ width: 80, scale: 1 });
+  const [originalDimensions, setOriginalDimensions] = useState<{ width: number; scale: number }>({
+    width: 80,
+    scale: 1,
+  });
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
-  console.log(highlightCitation)
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -396,7 +410,7 @@ const PdfHighlighterComp = ({
           .map((c) => c.highlight)
           .filter((highlight): highlight is HighlightType => {
             if (!highlight) return false;
-            
+
             // Validate required properties
             const isValid = !!(
               highlight.id &&
@@ -408,7 +422,7 @@ const PdfHighlighterComp = ({
 
             return isValid;
           });
-        
+
         setProcessedCitations(processed);
         setHighlights(validHighlights);
       } else {
@@ -430,8 +444,9 @@ const PdfHighlighterComp = ({
       !loading
     ) {
       // Try multiple ID matching strategies
-      const citationId = highlightCitation.citationId || highlightCitation.metadata?._id || highlightCitation.id;
-      
+      const citationId =
+        highlightCitation.citationId || highlightCitation.metadata?._id || highlightCitation.id;
+
       if (!citationId) {
         return undefined;
       }
@@ -439,14 +454,44 @@ const PdfHighlighterComp = ({
       // Find the highlight that corresponds to the highlightCitation
       const targetHighlight = highlights.find((h) => h.id === citationId);
 
-      // Use a slightly longer delay to ensure PDF is fully rendered
-      const delay = 1000;
+      // Create a function to check if highlight element exists in DOM
+      const waitForHighlightElement = (highlight: HighlightType): Promise<boolean> =>
+        new Promise((resolve) => {
+          let attempts = 0;
+
+          const pollForElement = () => {
+            // Look for highlight elements with the specific ID
+            const highlightElement =
+              document.querySelector(`[data-highlight-id="${highlight.id}"]`) ||
+              document.querySelector(`.Highlight[data-highlight-id="${highlight.id}"]`) ||
+              document.querySelector(`[id*="${highlight.id}"]`);
+
+            if (highlightElement) {
+              resolve(true);
+              return;
+            }
+
+            attempts += 1;
+            if (attempts >= HIGHLIGHT_POLLING_MAX_ATTEMPTS) {
+              resolve(false);
+              return;
+            }
+
+            setTimeout(pollForElement, HIGHLIGHT_POLLING_INTERVAL_MS);
+          };
+
+          pollForElement();
+        });
 
       // Create a function to attempt scrolling
-      const attemptScroll = () => {
+      const attemptScroll = async () => {
         if (targetHighlight) {
-          scrollViewerTo.current(targetHighlight);
-          return true;
+          // Wait for the highlight element to exist in DOM
+          const elementExists = await waitForHighlightElement(targetHighlight);
+          if (elementExists) {
+            scrollViewerTo.current(targetHighlight);
+            return true;
+          }
         }
 
         // Fallback: Find any highlight on the specified page
@@ -455,25 +500,28 @@ const PdfHighlighterComp = ({
           const highlightOnPage = highlights.find((h) => h.position.pageNumber === pageNumber);
 
           if (highlightOnPage) {
-            scrollViewerTo.current(highlightOnPage);
-            return true;
+            const elementExists = await waitForHighlightElement(highlightOnPage);
+            if (elementExists) {
+              scrollViewerTo.current(highlightOnPage);
+              return true;
+            }
           }
         }
-        
+
         return false;
       };
 
-      // Set up a timer to try scrolling after a delay
-      const timer = setTimeout(() => {
-        const scrolled = attemptScroll();
+      // Set up a timer to try scrolling after initial delay
+      const timer = setTimeout(async () => {
+        const scrolled = await attemptScroll();
 
         // If scrolling failed on first attempt, try once more after a bit
         if (!scrolled) {
-          setTimeout(() => {
-            attemptScroll();
-          }, 1000);
+          setTimeout(async () => {
+            await attemptScroll();
+          }, SCROLL_TO_HIGHLIGHT_DELAY_MS);
         }
-      }, delay);
+      }, SCROLL_TO_HIGHLIGHT_DELAY_MS);
 
       // Clean up timer on unmount
       return () => clearTimeout(timer);
@@ -496,7 +544,11 @@ const PdfHighlighterComp = ({
         }
 
         // Validate highlight structure before scrolling
-        if (!highlight.position || !highlight.position.pageNumber || highlight.position.pageNumber <= 0) {
+        if (
+          !highlight.position ||
+          !highlight.position.pageNumber ||
+          highlight.position.pageNumber <= 0
+        ) {
           return;
         }
 
@@ -508,7 +560,9 @@ const PdfHighlighterComp = ({
           if (highlight.position?.pageNumber) {
             try {
               // This is a basic fallback - scroll to the page
-              const pageElement = document.querySelector(`[data-page-number="${highlight.position.pageNumber}"]`);
+              const pageElement = document.querySelector(
+                `[data-page-number="${highlight.position.pageNumber}"]`
+              );
               if (pageElement) {
                 pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }
@@ -578,11 +632,11 @@ const PdfHighlighterComp = ({
   }, []);
 
   const increaseScale = useCallback(() => {
-    setPdfScale(prev => Math.min(prev + 0.1, 3));
+    setPdfScale((prev) => Math.min(prev + 0.1, 3));
   }, []);
 
   const decreaseScale = useCallback(() => {
-    setPdfScale(prev => Math.max(prev - 0.1, 0.5));
+    setPdfScale((prev) => Math.max(prev - 0.1, 0.5));
   }, []);
 
   const resetToDefaults = useCallback(() => {
@@ -642,11 +696,11 @@ const PdfHighlighterComp = ({
   }
 
   return (
-    <Box 
-      ref={containerRef} 
-      sx={{ 
-        display: 'flex', 
-        height: '100%', 
+    <Box
+      ref={containerRef}
+      sx={{
+        display: 'flex',
+        height: '100%',
         width: '100%',
       }}
     >
@@ -655,39 +709,19 @@ const PdfHighlighterComp = ({
         {/* Reset Control Bar */}
         {showResetControls && (
           <div className="control-bar reset-bar">
-            <button 
-              className="reset-button primary"
-              onClick={resetToDefaults}
-              type="button"
-            >
+            <button className="reset-button primary" onClick={resetToDefaults} type="button">
               Reset All
             </button>
-            <button 
-              className="reset-button"
-              onClick={resetToOriginal}
-              type="button"
-            >
+            <button className="reset-button" onClick={resetToOriginal} type="button">
               Original
             </button>
-            <button 
-              className="reset-button"
-              onClick={autoFitWidth}
-              type="button"
-            >
+            <button className="reset-button" onClick={autoFitWidth} type="button">
               Full Width
             </button>
-            <button 
-              className="reset-button"
-              onClick={autoFitZoom}
-              type="button"
-            >
+            <button className="reset-button" onClick={autoFitZoom} type="button">
               100% Zoom
             </button>
-            <button 
-              className="reset-button"
-              onClick={fitToScreen}
-              type="button"
-            >
+            <button className="reset-button" onClick={fitToScreen} type="button">
               Fit Screen
             </button>
           </div>
@@ -696,13 +730,13 @@ const PdfHighlighterComp = ({
         {/* Width Control Bar */}
         {showWidthControls && (
           <div className="control-bar">
-            <button 
+            <button
               className="control-bar-button"
-              onClick={() => setPdfWidth(prev => Math.max(prev - 5, 30))}
+              onClick={() => setPdfWidth((prev) => Math.max(prev - 5, 30))}
               type="button"
               aria-label="Decrease width"
             >
-              <Icon icon="mdi:minus" style={{ fontSize: '16px' }} />
+              <Icon icon={minusIcon} style={{ fontSize: '16px' }} />
             </button>
             <div className="control-label">Width: {pdfWidth}%</div>
             <Slider
@@ -714,27 +748,27 @@ const PdfHighlighterComp = ({
               size="small"
               className="control-slider"
             />
-            <button 
+            <button
               className="control-bar-button"
-              onClick={() => setPdfWidth(prev => Math.min(prev + 5, 100))}
+              onClick={() => setPdfWidth((prev) => Math.min(prev + 5, 100))}
               type="button"
               aria-label="Increase width"
             >
-              <Icon icon="mdi:plus" style={{ fontSize: '16px' }} />
+              <Icon icon={plusIcon} style={{ fontSize: '16px' }} />
             </button>
           </div>
         )}
-        
+
         {/* Zoom Control Bar */}
         {showZoomControls && (
           <div className="control-bar">
-            <button 
+            <button
               className="control-bar-button"
               onClick={decreaseScale}
               type="button"
               aria-label="Decrease zoom"
             >
-              <Icon icon="mdi:magnify-minus" style={{ fontSize: '16px' }} />
+              <Icon icon={magnifyMinusIcon} style={{ fontSize: '16px' }} />
             </button>
             <div className="control-label">Zoom: {Math.round(pdfScale * 100)}%</div>
             <Slider
@@ -746,19 +780,19 @@ const PdfHighlighterComp = ({
               size="small"
               className="control-slider"
             />
-            <button 
+            <button
               className="control-bar-button"
               onClick={increaseScale}
               type="button"
               aria-label="Increase zoom"
             >
-              <Icon icon="mdi:magnify-plus" style={{ fontSize: '16px' }} />
+              <Icon icon={magnifyPlusIcon} style={{ fontSize: '16px' }} />
             </button>
           </div>
         )}
 
         {/* Control Buttons */}
-        <button 
+        <button
           className={`control-button ${showResetControls ? 'active' : ''}`}
           onClick={() => {
             setShowResetControls(!showResetControls);
@@ -768,10 +802,10 @@ const PdfHighlighterComp = ({
           type="button"
           aria-label="Reset controls"
         >
-          <Icon icon="mdi:refresh" style={{ fontSize: '20px' }} />
+          <Icon icon={refreshIcon} style={{ fontSize: '20px' }} />
         </button>
 
-        <button 
+        <button
           className={`control-button ${showWidthControls ? 'active' : ''}`}
           onClick={() => {
             setShowWidthControls(!showWidthControls);
@@ -781,10 +815,10 @@ const PdfHighlighterComp = ({
           type="button"
           aria-label="Width controls"
         >
-          <Icon icon="mdi:resize" style={{ fontSize: '20px' }} />
+          <Icon icon={resizeIcon} style={{ fontSize: '20px' }} />
         </button>
-        
-        <button 
+
+        <button
           className={`control-button ${showZoomControls ? 'active' : ''}`}
           onClick={() => {
             setShowZoomControls(!showZoomControls);
@@ -794,14 +828,14 @@ const PdfHighlighterComp = ({
           type="button"
           aria-label="Zoom controls"
         >
-          <Icon icon="mdi:magnify" style={{ fontSize: '20px' }} />
+          <Icon icon={magnifyIcon} style={{ fontSize: '20px' }} />
         </button>
       </div>
 
-      <Box 
-        sx={{ 
-          flex: 1, 
-          position: 'relative', 
+      <Box
+        sx={{
+          flex: 1,
+          position: 'relative',
           overflow: 'hidden',
           width: '100%',
           height: '100%',
@@ -825,118 +859,121 @@ const PdfHighlighterComp = ({
             flexDirection: 'column',
           }}
         >
-        <EnhancedPdfLoader
-          url={actualPdfUrl}
-          pdfBuffer={actualPdfBuffer || pdfBuffer}
-          setLoading={setLoading}
-          beforeLoad={
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                height: '100%',
-              }}
-            >
-              <CircularProgress />
-            </Box>
-          }
-        >
-          {(pdfDocument: any) => (
-            <div
-              style={
-                {
-                  width: '100%',
+          <EnhancedPdfLoader
+            url={actualPdfUrl}
+            pdfBuffer={actualPdfBuffer || pdfBuffer}
+            setLoading={setLoading}
+            beforeLoad={
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
                   height: '100%',
-                  minHeight: '100%',
-                  overflow: 'auto',
-                  flex: 1,
-                } as CSSProperties
-              }
-            >
-              <PdfHighlighter<HighlightType>
-                pdfDocument={pdfDocument}
-                enableAreaSelection={(event: MouseEvent) => event.altKey}
-                onScrollChange={() => {}}
-                scrollRef={(scrollTo: (highlight: HighlightType) => void) => {
-                  scrollViewerTo.current = scrollTo;
                 }}
-                onSelectionFinished={(
-                  position: ScaledPosition,
-                  content: Content,
-                  hideTipAndSelection,
-                  transformSelection
-                ) => (
-                  <Tip
-                    onOpen={transformSelection}
-                    onConfirm={(comment: Comment) => {
-                      addHighlight({ content, position, comment });
-                      hideTipAndSelection();
-                    }}
-                  />
-                )}
-                highlightTransform={(
-                  highlight,
-                  index,
-                  setTip,
-                  hideTip,
-                  viewportToScaled,
-                  screenshot,
-                  isScrolledTo
-                ) => {
-                  // Enhanced highlighting logic with multiple ID matching strategies
-                  const citationId = highlightCitation?.citationId || highlightCitation?.metadata?._id || highlightCitation?.id;
-                  const isHighlighted: boolean =
-                    Boolean(isScrolledTo) ||
-                    Boolean(highlightCitation && citationId === highlight.id);
-
-                  const isTextHighlight = !highlight.content?.image;
-                  const component = isTextHighlight ? (
-                    <div
-                      className="highlight-wrapper"
-                      style={
-                        {
-                          '--highlight-color': isHighlighted ? '#4caf50' : '#e6f4f1',
-                          '--highlight-opacity': isHighlighted ? '0.6' : '0.4',
-                        } as CSSProperties
-                      }
-                    >
-                      <Highlight
-                        isScrolledTo={isHighlighted}
-                        position={highlight.position}
-                        comment={highlight.comment}
-                      />
-                    </div>
-                  ) : (
-                    <AreaHighlight
-                      isScrolledTo={isHighlighted}
-                      highlight={highlight}
-                      onChange={(boundingRect) => {
-                        updateHighlight(
-                          highlight.id,
-                          { boundingRect: viewportToScaled(boundingRect) },
-                          { image: screenshot(boundingRect) }
-                        );
+              >
+                <CircularProgress />
+              </Box>
+            }
+          >
+            {(pdfDocument: any) => (
+              <div
+                style={
+                  {
+                    width: '100%',
+                    height: '100%',
+                    minHeight: '100%',
+                    overflow: 'auto',
+                    flex: 1,
+                  } as CSSProperties
+                }
+              >
+                <PdfHighlighter<HighlightType>
+                  pdfDocument={pdfDocument}
+                  enableAreaSelection={(event: MouseEvent) => event.altKey}
+                  onScrollChange={() => {}}
+                  scrollRef={(scrollTo: (highlight: HighlightType) => void) => {
+                    scrollViewerTo.current = scrollTo;
+                  }}
+                  onSelectionFinished={(
+                    position: ScaledPosition,
+                    content: Content,
+                    hideTipAndSelection,
+                    transformSelection
+                  ) => (
+                    <Tip
+                      onOpen={transformSelection}
+                      onConfirm={(comment: Comment) => {
+                        addHighlight({ content, position, comment });
+                        hideTipAndSelection();
                       }}
                     />
-                  );
+                  )}
+                  highlightTransform={(
+                    highlight,
+                    index,
+                    setTip,
+                    hideTip,
+                    viewportToScaled,
+                    screenshot,
+                    isScrolledTo
+                  ) => {
+                    // Enhanced highlighting logic with multiple ID matching strategies
+                    const citationId =
+                      highlightCitation?.citationId ||
+                      highlightCitation?.metadata?._id ||
+                      highlightCitation?.id;
+                    const isHighlighted: boolean =
+                      Boolean(isScrolledTo) ||
+                      Boolean(highlightCitation && citationId === highlight.id);
 
-                  return (
-                    <Popup
-                      popupContent={<HighlightPopup {...highlight} />}
-                      onMouseOver={(popupContent) => setTip(highlight, () => popupContent)}
-                      onMouseOut={hideTip}
-                      key={index}
-                    >
-                      {component}
-                    </Popup>
-                  );
-                }}
-                highlights={highlights}
-              />
-            </div>
-          )}
-        </EnhancedPdfLoader>
+                    const isTextHighlight = !highlight.content?.image;
+                    const component = isTextHighlight ? (
+                      <div
+                        className="highlight-wrapper"
+                        style={
+                          {
+                            '--highlight-color': isHighlighted ? '#4caf50' : '#e6f4f1',
+                            '--highlight-opacity': isHighlighted ? '0.6' : '0.4',
+                          } as CSSProperties
+                        }
+                      >
+                        <Highlight
+                          isScrolledTo={isHighlighted}
+                          position={highlight.position}
+                          comment={highlight.comment}
+                        />
+                      </div>
+                    ) : (
+                      <AreaHighlight
+                        isScrolledTo={isHighlighted}
+                        highlight={highlight}
+                        onChange={(boundingRect) => {
+                          updateHighlight(
+                            highlight.id,
+                            { boundingRect: viewportToScaled(boundingRect) },
+                            { image: screenshot(boundingRect) }
+                          );
+                        }}
+                      />
+                    );
+
+                    return (
+                      <Popup
+                        popupContent={<HighlightPopup {...highlight} />}
+                        onMouseOver={(popupContent) => setTip(highlight, () => popupContent)}
+                        onMouseOut={hideTip}
+                        key={index}
+                      >
+                        {component}
+                      </Popup>
+                    );
+                  }}
+                  highlights={highlights}
+                />
+              </div>
+            )}
+          </EnhancedPdfLoader>
         </Box>
       </Box>
       {processedCitations.length > 0 && (
@@ -947,7 +984,12 @@ const PdfHighlighterComp = ({
               scrollViewerTo.current(highlight);
             }
           }}
-          highlightedCitationId={highlightCitation?.citationId || highlightCitation?.metadata?._id || highlightCitation?.id || null}
+          highlightedCitationId={
+            highlightCitation?.citationId ||
+            highlightCitation?.metadata?._id ||
+            highlightCitation?.id ||
+            null
+          }
           toggleFullScreen={toggleFullScreen}
           onClosePdf={onClosePdf}
         />
