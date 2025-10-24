@@ -12,7 +12,6 @@ from app.modules.agents.qna.nodes import (
     check_for_error,
     conditional_retrieve_node,
     final_response_node,
-    get_user_info_node,
     prepare_agent_prompt_node,
     tool_execution_node,
 )
@@ -20,7 +19,7 @@ from app.modules.agents.qna.nodes import (
 # Constants
 LAST_N_TOOLS = 5
 MAX_TOOL_ITERATIONS = 30
-PING_PONG_PATTERN_THRESHOLD = 2
+PING_PONG_PATTERN_THRESHOLD = 5
 
 
 def should_continue_with_planning(state: ChatState) -> str:
@@ -33,42 +32,51 @@ def should_continue_with_planning(state: ChatState) -> str:
 
     has_pending_calls = state.get("pending_tool_calls", False)
     is_complex = state.get("requires_planning", False)
+    force_final_response = state.get("force_final_response", False)
 
     logger = state.get("logger")
+
+    # Log basic routing info
     if logger:
         status = "complex workflow" if is_complex else "simple query"
-        logger.debug(f"Routing decision ({status}): pending={has_pending_calls}, iteration={tool_call_count}/{max_iterations}")
+        logger.debug(f"Routing decision ({status}): pending={has_pending_calls}, iteration={tool_call_count}/{max_iterations}, force_final={force_final_response}")
 
         # Enhanced tracking for planning workflows
         if all_tool_results and len(all_tool_results) > 0:
             recent_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
             logger.debug(f"Workflow chain: {' → '.join(recent_tools)}")
 
-            # Detect stuck loops
-            if len(all_tool_results) >= LAST_N_TOOLS:
-                last_n_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
-                unique_tools = set(last_n_tools)
-
-                if len(unique_tools) == 1:
-                    logger.warning(f"⚠️ Loop detected: {last_n_tools[0]} called {LAST_N_TOOLS} times in a row")
-                    logger.warning("Forcing termination to prevent infinite loop")
-                    return "final"
-
-                elif len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
-                    # Check for A→B→A→B pattern
-                    pattern = "→".join(last_n_tools)
-                    logger.warning(f"⚠️ Potential ping-pong detected: {pattern}")
-                    logger.warning("Forcing termination after 2 more iterations")
-
-                    # Allow 2 more iterations then force stop
-                    if tool_call_count >= LAST_N_TOOLS + 2:
-                        return "final"
-
             # Log workflow progress for complex queries
             if is_complex and tool_call_count > 0:
                 logger.info(f"📊 Workflow progress: {tool_call_count} steps completed")
 
-    # Make routing decision
+    # PRIORITY 1: Check for comprehensive data first (before loop detection)
+    if force_final_response:
+        if logger:
+            logger.info("🔄 Comprehensive data available - routing to final response")
+        return "final"
+
+    # PRIORITY 2: Check for loops only if we don't have comprehensive data
+    if logger and all_tool_results and len(all_tool_results) >= LAST_N_TOOLS:
+        last_n_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
+        unique_tools = set(last_n_tools)
+
+        if len(unique_tools) == 1:
+            logger.warning(f"⚠️ Loop detected: {last_n_tools[0]} called {LAST_N_TOOLS} times in a row")
+            logger.warning("Forcing termination to prevent infinite loop")
+            return "final"
+
+        elif len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
+            # Check for A→B→A→B pattern
+            pattern = "→".join(last_n_tools)
+            logger.warning(f"⚠️ Potential ping-pong detected: {pattern}")
+            logger.warning("Forcing termination after 2 more iterations")
+
+            # Allow 2 more iterations then force stop
+            if tool_call_count >= LAST_N_TOOLS + 2:
+                return "final"
+
+    # PRIORITY 3: Normal routing logic
     if has_pending_calls and tool_call_count < max_iterations:
         return "execute_tools"
     else:
@@ -105,23 +113,19 @@ def create_agent_graph() -> StateGraph:
     workflow.add_node("retrieve", conditional_retrieve_node)
     # Smart retrieval with complexity-based limit adjustment
 
-    # Phase 3: Context Building
-    workflow.add_node("get_user", get_user_info_node)
-    # Fetches user/org context for personalization
-
-    # Phase 4: Planning Preparation
+    # Phase 3: Planning Preparation
     workflow.add_node("prepare", prepare_agent_prompt_node)
     # Builds agent-enhanced prompt with workflow guidance
 
-    # Phase 5: Agent Planning & Reasoning
+    # Phase 4: Agent Planning & Reasoning
     workflow.add_node("agent", agent_node)
     # Core planning agent that creates execution plans and adapts
 
-    # Phase 6: Tool Execution
+    # Phase 5: Tool Execution
     workflow.add_node("execute_tools", tool_execution_node)
     # Executes tools with planning context and iteration tracking
 
-    # Phase 7: Final Response
+    # Phase 6: Final Response
     workflow.add_node("final", final_response_node)
     # Generates final response with workflow summary
 
@@ -142,18 +146,15 @@ def create_agent_graph() -> StateGraph:
         }
     )
 
-    # Retrieval → User Context (with error handling)
+    # Retrieval → Planning Preparation (with error handling)
     workflow.add_conditional_edges(
         "retrieve",
         check_for_error,
         {
-            "continue": "get_user",
+            "continue": "prepare",
             "error": END
         }
     )
-
-    # User Context → Planning Preparation
-    workflow.add_edge("get_user", "prepare")
 
     # Preparation → Agent (with error handling)
     workflow.add_conditional_edges(

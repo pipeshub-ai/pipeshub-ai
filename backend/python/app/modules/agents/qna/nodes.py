@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Literal, Optional
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import StreamWriter
 
-from app.config.constants.arangodb import CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.agent_prompt import (
     create_agent_messages,
@@ -27,6 +26,298 @@ MARKDOWN_MIN_LENGTH = 100
 HEADER_LENGTH_THRESHOLD = 50
 STREAMING_CHUNK_DELAY = 0.01  # Delay for streaming effect
 STREAMING_FALLBACK_DELAY = 0.02  # Delay for fallback streaming
+
+# Context Management Constants
+LOOP_DETECTION_MIN_CALLS = 5
+LOOP_DETECTION_MAX_UNIQUE_TOOLS = 2
+MAX_ITERATION_COUNT = 15
+MAX_CONTEXT_CHARS = 100000  # Rough estimate: 100k chars ≈ 25k tokens
+MAX_MESSAGES_HISTORY = 20
+MAX_TOOL_RESULT_LENGTH = 2000
+MAX_TOOLS_PER_ITERATION = 5
+
+# ============================================================================
+# GENERIC TOOL RESULT ANALYSIS FUNCTIONS
+# ============================================================================
+
+def analyze_tool_results_generic(all_tool_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Generic analysis of tool results to provide intelligent context to the LLM.
+    This replaces hardcoded tool-specific logic with dynamic analysis.
+    """
+    if not all_tool_results:
+        return {
+            "summary": "No tools have been executed yet.",
+            "data_available": {},
+            "repetition_warnings": [],
+            "successful_tools": [],
+            "failed_tools": []
+        }
+
+    # Analyze tool execution patterns
+    tool_counts = {}
+    successful_tools = []
+    failed_tools = []
+    data_available = {}
+    repetition_warnings = []
+
+    for result in all_tool_results:
+        tool_name = result.get("tool_name", "unknown")
+        status = result.get("status", "unknown")
+        tool_result = result.get("result", "")
+
+        # Count tool usage
+        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+
+        # Categorize by success/failure
+        if status == "success":
+            successful_tools.append(tool_name)
+            # Analyze what data is available from successful tools
+            data_available[tool_name] = analyze_tool_data_content(tool_name, tool_result)
+        else:
+            failed_tools.append(tool_name)
+
+    # Detect repetition patterns
+    for tool_name, count in tool_counts.items():
+        if count >= 2:
+            recent_calls = [r for r in all_tool_results[-5:] if r.get("tool_name") == tool_name]
+            if len(recent_calls) >= 2:
+                repetition_warnings.append(f"{tool_name} has been called {count} times recently")
+
+    # Generate intelligent summary
+    summary_parts = []
+    if successful_tools:
+        unique_successful = list(set(successful_tools))
+        summary_parts.append(f"Successfully executed: {', '.join(unique_successful)}")
+
+    if failed_tools:
+        unique_failed = list(set(failed_tools))
+        summary_parts.append(f"Failed executions: {', '.join(unique_failed)}")
+
+    if repetition_warnings:
+        summary_parts.append(f"Repetition warnings: {len(repetition_warnings)}")
+
+    return {
+        "summary": "; ".join(summary_parts) if summary_parts else "Tool execution completed",
+        "data_available": data_available,
+        "repetition_warnings": repetition_warnings,
+        "successful_tools": list(set(successful_tools)),
+        "failed_tools": list(set(failed_tools)),
+        "tool_counts": tool_counts,
+        "total_executions": len(all_tool_results)
+    }
+
+
+def analyze_tool_data_content(tool_name: str, tool_result: str) -> Dict[str, Any]:
+    """
+    Analyze tool result content to determine what data is available.
+    This is generic and works for any tool by analyzing the result content.
+    """
+    result_str = str(tool_result).lower()
+
+    # Generic data type detection
+    data_types = []
+    if "success" in result_str and "true" in result_str:
+        data_types.append("successful_execution")
+
+    # Common data patterns
+    if "channels" in result_str:
+        data_types.append("channel_data")
+    if "messages" in result_str:
+        data_types.append("message_data")
+    if "users" in result_str:
+        data_types.append("user_data")
+    if "events" in result_str:
+        data_types.append("event_data")
+    if "files" in result_str:
+        data_types.append("file_data")
+    if "meeting" in result_str:
+        data_types.append("meeting_data")
+    if "calendar" in result_str:
+        data_types.append("calendar_data")
+    if "email" in result_str:
+        data_types.append("email_data")
+    if "search" in result_str:
+        data_types.append("search_results")
+    if "list" in result_str or "array" in result_str:
+        data_types.append("list_data")
+    if "json" in result_str or "{" in result_str:
+        data_types.append("structured_data")
+
+    # Determine next possible actions based on tool name patterns
+    next_actions = []
+    if "fetch" in tool_name or "get" in tool_name:
+        next_actions.append("use_retrieved_data")
+        next_actions.append("provide_response")
+    if "send" in tool_name or "create" in tool_name:
+        next_actions.append("verify_action_completed")
+        next_actions.append("provide_confirmation")
+    if "search" in tool_name:
+        next_actions.append("process_search_results")
+        next_actions.append("provide_findings")
+
+    return {
+        "data_types": data_types,
+        "next_actions": next_actions,
+        "has_data": len(data_types) > 0,
+        "result_preview": str(tool_result)[:200] + "..." if len(str(tool_result)) > 200 else str(tool_result)
+    }
+
+
+def get_tool_results_summary(tool_results: List[Dict[str, Any]]) -> str:
+    """
+    Simple summary of tool results for LLM context.
+    No complex analysis - just show what happened.
+    """
+    if not tool_results:
+        return "No tools have been executed yet."
+
+    summary_parts = [f"**Tool Execution Summary** ({len(tool_results)} tools executed):"]
+
+    for i, result in enumerate(tool_results[-5:], 1):  # Last 5 results
+        tool_name = result.get("tool_name", "unknown")
+        tool_result = result.get("result", "")
+        result_str = str(tool_result)
+
+        # Determine status from actual result content
+        if "success" in result_str.lower() and "true" in result_str.lower():
+            status = "✅ Success"
+        else:
+            status = "❌ Failed"
+
+        summary_parts.append(f"\n**Tool {i}: {tool_name}** - {status}")
+
+        # Show actual result data (truncated)
+        if len(result_str) > 1000:
+            summary_parts.append(f"**Result**: {result_str[:1000]}...")
+        else:
+            summary_parts.append(f"**Result**: {result_str}")
+
+    return "\n".join(summary_parts)
+
+
+def _determine_query_intent(query_lower: str) -> str:
+    """Determine the user's intent from their query."""
+    if any(word in query_lower for word in ["list", "show", "get", "fetch", "find"]):
+        return "data_retrieval"
+    elif any(word in query_lower for word in ["send", "create", "add", "post"]):
+        return "action_request"
+    elif any(word in query_lower for word in ["who", "what", "when", "where", "how"]):
+        return "information_query"
+    else:
+        return "general_query"
+
+
+def build_simple_tool_context(state: ChatState) -> str:
+    """
+    Build explicit tool context that clearly shows what data the LLM has.
+    Make it crystal clear what information is available.
+    """
+    all_tool_results = state.get("all_tool_results", [])
+
+    if not all_tool_results:
+        return ""
+
+    # Analyze what data we actually have
+    successful_tools = []
+    failed_tools = []
+    data_summary = {}
+
+    for result in all_tool_results:
+        tool_name = result.get("tool_name", "unknown")
+        tool_result = result.get("result", "")
+        result_str = str(tool_result)
+
+        # Determine actual status from result content
+        if "success" in result_str.lower() and "true" in result_str.lower():
+            successful_tools.append(tool_name)
+
+            # Extract key data from successful results
+            if "channels" in result_str and "members" in result_str:
+                data_summary["channels_and_members"] = "Available"
+            elif "members" in result_str:
+                data_summary["channel_members"] = "Available"
+            elif "user" in result_str and "name" in result_str:
+                data_summary["user_info"] = "Available"
+            elif "channels" in result_str:
+                data_summary["channels"] = "Available"
+        else:
+            failed_tools.append(tool_name)
+
+    # Build explicit context
+    context_parts = [
+        "\n\n## 📊 TOOL EXECUTION SUMMARY",
+        f"**Total Tools Executed**: {len(all_tool_results)}",
+        f"**Successful Tools**: {len(successful_tools)}",
+        f"**Failed Tools**: {len(failed_tools)}"
+    ]
+
+    # Show what data is available
+    if data_summary:
+        context_parts.append("\n### ✅ DATA AVAILABLE:")
+        for data_type, status in data_summary.items():
+            context_parts.append(f"- **{data_type.replace('_', ' ').title()}**: {status}")
+
+    # Show recent tool results with clear status
+    context_parts.append("\n### 🔍 RECENT TOOL RESULTS:")
+    for i, result in enumerate(all_tool_results[-5:], 1):
+        tool_name = result.get("tool_name", "unknown")
+        tool_result = result.get("result", "")
+        result_str = str(tool_result)
+
+        # Determine actual status from result content
+        if "success" in result_str.lower() and "true" in result_str.lower():
+            status = "✅ SUCCESS"
+        else:
+            status = "❌ FAILED"
+
+        context_parts.append(f"\n**Tool {i}: {tool_name}** - {status}")
+
+        # Show key information from the result
+        if "success" in result_str.lower() and "true" in result_str.lower():
+            if "channels" in result_str:
+                context_parts.append("  📋 **Channels Retrieved**: Yes")
+            if "members" in result_str:
+                context_parts.append("  👥 **Members Retrieved**: Yes")
+            if "user" in result_str and "name" in result_str:
+                context_parts.append("  👤 **User Info Retrieved**: Yes")
+
+        # Show truncated result
+        if len(result_str) > 500:
+            context_parts.append(f"  📄 **Result**: {result_str[:500]}...")
+        else:
+            context_parts.append(f"  📄 **Result**: {result_str}")
+
+    # Add explicit guidance
+    context_parts.append("\n### 🎯 DECISION GUIDANCE:")
+
+    if len(successful_tools) > 0:
+        context_parts.append(f"✅ **You have successfully executed {len(successful_tools)} tool(s)**")
+
+        # Check if we have comprehensive data
+        has_channels = any("channels" in str(r.get("result", "")) for r in all_tool_results)
+        has_members = any("members" in str(r.get("result", "")) for r in all_tool_results)
+        has_user_info = any("user" in str(r.get("result", "")) and "name" in str(r.get("result", "")) for r in all_tool_results)
+
+        if has_channels and has_members and has_user_info:
+            context_parts.append("🎯 **COMPREHENSIVE DATA AVAILABLE**: You have channels, members, and user information")
+            context_parts.append("🚨 **STOP**: You have all the data needed to answer the user's question")
+            context_parts.append("📝 **ACTION**: Provide your final response using the available data")
+            context_parts.append("⚠️ **DO NOT**: Call any more tools - you will create unnecessary loops")
+        elif has_channels and has_members:
+            context_parts.append("📊 **PARTIAL DATA**: You have channels and members")
+            context_parts.append("🤔 **DECISION**: You can either get user details or provide response with available data")
+        else:
+            context_parts.append("📊 **SOME DATA**: You have some information")
+            context_parts.append("🤔 **DECISION**: Consider if you need more data or can provide response")
+    else:
+        context_parts.append("❌ **NO SUCCESSFUL TOOLS**: All tool executions failed")
+        context_parts.append("🔄 **ACTION**: Try different approach or provide error response")
+
+    context_parts.append("\n**REMEMBER**: Review the data above carefully before deciding your next action.")
+
+    return "\n".join(context_parts)
+
 
 # ============================================================================
 # PHASE 1: ENHANCED QUERY ANALYSIS
@@ -207,24 +498,17 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
 # ============================================================================
 
 async def get_user_info_node(state: ChatState) -> ChatState:
-    """Fetch user info if needed"""
+    """User info is now populated at router level - this is a no-op"""
     try:
         logger = state["logger"]
-        arango_service = state["arango_service"]
 
-        if state.get("error") or not state["send_user_info"]:
-            return state
+        # User and org info are already populated in the initial state
+        # This node is kept for compatibility but doesn't need to do anything
+        logger.debug("User and org info already populated at router level")
 
-        user_task = arango_service.get_user_by_user_id(state["user_id"])
-        org_task = arango_service.get_document(state["org_id"], CollectionNames.ORGS.value)
-
-        user_info, org_info = await asyncio.gather(user_task, org_task)
-
-        state["user_info"] = user_info
-        state["org_info"] = org_info
         return state
     except Exception as e:
-        logger.error(f"Error fetching user info: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_user_info_node: {str(e)}", exc_info=True)
         return state
 
 
@@ -233,13 +517,13 @@ async def get_user_info_node(state: ChatState) -> ChatState:
 # ============================================================================
 
 def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatState:
-    """Prepare enhanced agent prompt with dual-mode formatting instructions"""
+    """Prepare enhanced agent prompt with dual-mode formatting instructions and user context"""
     try:
         logger = state["logger"]
         if state.get("error"):
             return state
 
-        logger.debug("🎯 Preparing agent prompt with dual-mode support")
+        logger.debug("🎯 Preparing agent prompt with dual-mode support and user context")
 
         is_complex = state.get("query_analysis", {}).get("is_complex", False)
         complexity_types = state.get("query_analysis", {}).get("complexity_types", [])
@@ -261,6 +545,14 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
         state["expected_response_mode"] = expected_mode
         state["requires_planning"] = is_complex
         state["has_internal_knowledge"] = has_internal_knowledge
+
+        # Log user context availability
+        user_info = state.get("user_info")
+        org_info = state.get("org_info")
+        if user_info and org_info:
+            logger.info(f"👤 User context available: {user_info.get('userEmail', 'N/A')} ({org_info.get('accountType', 'N/A')})")
+        else:
+            logger.warning("⚠️ No user context available")
 
         # Create messages with planning context
         messages = create_agent_messages(state)
@@ -306,11 +598,67 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         is_complex = state.get("requires_planning", False)
         has_internal_knowledge = state.get("has_internal_knowledge", False)
 
+        # Check if we have comprehensive data and should stop
+        if state.get("all_tool_results"):
+            all_tool_results = state["all_tool_results"]
+
+            # Check for comprehensive data patterns
+            has_channels = any("channels" in str(r.get("result", "")) for r in all_tool_results)
+            has_members = any("members" in str(r.get("result", "")) for r in all_tool_results)
+            has_user_info = any("user" in str(r.get("result", "")) and "name" in str(r.get("result", "")) for r in all_tool_results)
+
+            # If we have channels, members, and user info, we likely have comprehensive data
+            if has_channels and has_members and has_user_info:
+                logger.info("🎯 COMPREHENSIVE DATA DETECTED: Agent has channels, members, and user information")
+                logger.info("🛑 Preventing further tool calls to avoid loops")
+                state["force_final_response"] = True
+                state["loop_detected"] = False
+                state["loop_reason"] = "Comprehensive data available - channels, members, and user info"
+                return state
+
+        # **ENHANCED LOOP DETECTION**: Generic and robust loop prevention
+        recent_tool_calls = state.get("all_tool_results", [])[-5:]  # Last 5 tool calls
+        if len(recent_tool_calls) >= 3:  # Check after just 3 calls
+            tool_names = [result.get("tool_name", "") for result in recent_tool_calls]
+            # unique_tools = set(tool_names)
+
+            # If same tool called 3 times in a row, force final response
+            # if len(unique_tools) == 1:
+            #     logger.warning(f"⚠️ LOOP DETECTED: {tool_names[0]} called 3 times consecutively")
+            #     logger.warning("🛑 Forcing final response to prevent infinite loop")
+            #     state["force_final_response"] = True
+            #     state["loop_detected"] = True
+            #     state["loop_reason"] = f"Loop detected - {tool_names[0]} called 3 times consecutively"
+            #     return state
+
+        # Check for longer patterns and tool repetition
+        # if len(recent_tool_calls) >= LOOP_DETECTION_MIN_CALLS:
+        #     tool_names = [result.get("tool_name", "") for result in recent_tool_calls]
+        #     if len(set(tool_names)) <= LOOP_DETECTION_MAX_UNIQUE_TOOLS and len(tool_names) >= LOOP_DETECTION_MIN_CALLS:
+        #         logger.warning(f"⚠️ Loop detected: {tool_names[-LOOP_DETECTION_MIN_CALLS:]} - forcing final response")
+        #         state["force_final_response"] = True
+        #         state["loop_detected"] = True
+        #         state["loop_reason"] = "Loop detected - too many repeated tool calls"
+        #         return state
+
+        # Context length check
+        if iteration_count > MAX_ITERATION_COUNT:
+            logger.warning(f"⚠️ High iteration count ({iteration_count}) - forcing termination")
+            state["error"] = {"status_code": 400, "detail": "Too many iterations - context may be too large"}
+            return state
+
         # Status messages
         if iteration_count == 0 and is_complex:
             writer({"event": "status", "data": {"status": "planning", "message": "Creating execution plan..."}})
         elif iteration_count > 0:
-            writer({"event": "status", "data": {"status": "adapting", "message": f"Adapting plan (step {iteration_count + 1})..."}})
+            # Enhanced status with progress tracking
+            recent_tools = [result.get("tool_name", "unknown") for result in state.get("all_tool_results", [])[-3:]]
+            unique_recent = set(recent_tools)
+
+            if len(unique_recent) == 1 and len(recent_tools) >= 3:
+                writer({"event": "status", "data": {"status": "adapting", "message": f"⚠️ Avoiding repetition - adapting plan (step {iteration_count + 1})..."}})
+            else:
+                writer({"event": "status", "data": {"status": "adapting", "message": f"Adapting plan (step {iteration_count + 1})..."}})
         else:
             writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
 
@@ -329,15 +677,11 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         else:
             llm_with_tools = llm
 
-        # Add tool results context with planning insights
+        # Add simple tool context so LLM can see what tools have been executed
         if state.get("all_tool_results"):
-            from app.modules.agents.qna.tool_registry import get_tool_results_summary
-            tool_summary = get_tool_results_summary(state)
+            tool_context = build_simple_tool_context(state)
 
-            tool_context = f"\n\n## Execution Progress\n{tool_summary}"
-            tool_context += "\n\n **Adaptation Point**: Review results. Adjust plan or provide final answer."
-
-            # Remind about output format
+            # Add output format reminder
             if has_internal_knowledge:
                 tool_context += "\n\n **Remember**: You have internal knowledge sources available. If you used them, respond in Structured JSON with citations."
             else:
@@ -348,6 +692,34 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
 
         # Clean messages
         cleaned_messages = _clean_message_history(state["messages"])
+
+        # Check context length before LLM call
+        total_chars = sum(len(str(msg.content)) for msg in cleaned_messages if hasattr(msg, 'content'))
+        if total_chars > MAX_CONTEXT_CHARS:  # Rough estimate: 100k chars ≈ 25k tokens
+            logger.warning(f"⚠️ Context too large ({total_chars} chars) - truncating further")
+            # Keep only the most recent messages
+            cleaned_messages = cleaned_messages[:10]  # Keep only last 10 messages
+            logger.info(f"Truncated to {len(cleaned_messages)} messages")
+
+        # Simple debug logging
+        if state.get("all_tool_results"):
+            logger.debug(f"🔍 Agent context includes {len(state['all_tool_results'])} tool results")
+
+            # Log recent tool results
+            recent_results = state.get("all_tool_results", [])[-3:]
+            for i, result in enumerate(recent_results, 1):
+                tool_name = result.get("tool_name", "unknown")
+                tool_result = result.get("result", "")
+                result_str = str(tool_result)
+
+                # Determine actual status from result content
+                if "success" in result_str.lower() and "true" in result_str.lower():
+                    actual_status = "success"
+                else:
+                    actual_status = "error"
+
+                result_preview = result_str[:100]
+                logger.info(f"🔍 Tool {i}: {tool_name} ({actual_status}) - Preview: {result_preview}...")
 
         # Call LLM
         logger.debug(f" Invoking LLM (iteration {iteration_count})")
@@ -422,6 +794,11 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
 
         tool_calls = last_ai_message.tool_calls
 
+        # Limit tool calls per iteration
+        if len(tool_calls) > MAX_TOOLS_PER_ITERATION:
+            logger.warning(f"⚠️ Too many tool calls ({len(tool_calls)}) - limiting to {MAX_TOOLS_PER_ITERATION}")
+            tool_calls = tool_calls[:MAX_TOOLS_PER_ITERATION]
+
         # Get available tools
         from app.modules.agents.qna.tool_registry import get_agent_tools
         tools = get_agent_tools(state)
@@ -486,6 +863,13 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                 tool_messages.append(tool_message)
 
                 logger.info(f"✅ {tool_name} executed successfully")
+
+                # **GENERIC FEEDBACK**: Provide intelligent guidance based on tool result analysis
+                data_analysis = analyze_tool_data_content(tool_name, str(result))
+                if data_analysis["has_data"]:
+                    logger.info(f"📊 {tool_name} retrieved data: {', '.join(data_analysis['data_types'])}")
+                    if data_analysis["next_actions"]:
+                        logger.info(f"🎯 Suggested next actions: {', '.join(data_analysis['next_actions'])}")
 
             except Exception as e:
                 error_result = f"Error executing {tool_name}: {str(e)}"
@@ -619,16 +1003,30 @@ async def final_response_node(
                 validated_messages.append({"role": "assistant", "content": msg.content})
 
         # Add tool summary if available
+        tool_context = ""
         if state.get("all_tool_results"):
-            from app.modules.agents.qna.tool_registry import get_tool_results_summary
-            tool_summary = get_tool_results_summary(state)
+            tool_context = build_simple_tool_context(state)
+
+        # Add comprehensive data context if applicable
+        comprehensive_context = ""
+        if state.get("force_final_response", False) and not state.get("loop_detected", False):
+            loop_reason = state.get("loop_reason", "")
+            if "Comprehensive data available" in loop_reason:
+                comprehensive_context = "\n\n🎯 **Comprehensive Data Available**: You have successfully gathered channels, members, and user information. Please provide a detailed response using all the available data to answer the user's question completely."
+
+            # Combine tool context and comprehensive context
+            full_context = f"{tool_context}{comprehensive_context}"
+
+            # Debug logging
+            logger.info(f"🎯 Final response context length: {len(full_context)} characters")
+            logger.info(f"🎯 Comprehensive context: {comprehensive_context[:100]}...")
 
             if validated_messages and validated_messages[-1]["role"] == "user":
-                validated_messages[-1]["content"] += f"\n\nTool Execution Results:\n{tool_summary}"
+                validated_messages[-1]["content"] += full_context
             else:
                 validated_messages.append({
                     "role": "user",
-                    "content": f"Based on the tool execution results:\n{tool_summary}\n\nPlease provide a comprehensive response."
+                    "content": f"Based on the tool execution results:{full_context}\n\nPlease provide a comprehensive response using all the available data."
                 })
 
         # Get final results for citations
@@ -1123,39 +1521,95 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
 
 
 def _clean_message_history(messages) -> List[Any]:
-    """Clean message history"""
+    """Clean message history with context length management"""
     validated_messages = _validate_and_fix_message_sequence(messages)
     cleaned = []
 
-    for i, msg in enumerate(validated_messages):
+    # Keep system message (first message)
+    if validated_messages and isinstance(validated_messages[0], SystemMessage):
+        cleaned.append(validated_messages[0])
+
+    # Keep last N messages to manage context length
+    recent_messages = validated_messages[1:] if validated_messages else []
+
+    if len(recent_messages) > MAX_MESSAGES_HISTORY:
+        # Keep the most recent messages
+        recent_messages = recent_messages[-MAX_MESSAGES_HISTORY:]
+
+    # Process recent messages and summarize tool results
+    for i, msg in enumerate(recent_messages):
         if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
-
         elif hasattr(msg, 'tool_call_id'):
-            found_matching_ai = False
-            for j in range(i-1, -1, -1):
-                prev_msg = validated_messages[j]
-                if isinstance(prev_msg, AIMessage):
-                    if hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
-                        tool_call_ids = [
-                            tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
-                            for tc in prev_msg.tool_calls
-                        ]
-
-                        if msg.tool_call_id in tool_call_ids:
-                            found_matching_ai = True
-                            break
-                    else:
-                        break
-                elif hasattr(prev_msg, 'tool_call_id'):
-                    continue
-                else:
-                    break
-
-            if found_matching_ai:
+            # **CRITICAL**: Don't summarize recent tool results - agent needs to see them
+            # Only summarize if we have too many messages
+            if len(recent_messages) > MAX_MESSAGES_HISTORY:
+                summarized_msg = _summarize_tool_result(msg)
+                if summarized_msg:
+                    cleaned.append(summarized_msg)
+            else:
+                # Keep full tool results for recent messages
                 cleaned.append(msg)
 
     return cleaned
+
+
+def _summarize_tool_result(tool_result_msg) -> Optional[object]:
+    """Summarize tool results to reduce context length"""
+    try:
+        from langchain_core.messages import ToolMessage
+
+        # Extract tool result content
+        if hasattr(tool_result_msg, 'content'):
+            content = tool_result_msg.content
+        else:
+            content = str(tool_result_msg)
+
+        # If content is too long, summarize it
+        if len(content) > MAX_TOOL_RESULT_LENGTH:
+            # Try to extract key information
+            if isinstance(content, str):
+                # For JSON responses, try to extract key fields
+                try:
+                    import json
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        # Create summary with key fields
+                        summary_fields = {}
+                        for key in ['id', 'subject', 'snippet', 'from', 'to', 'date', 'status', 'result']:
+                            if key in data:
+                                summary_fields[key] = data[key]
+
+                        # Add truncated content if still too long
+                        summary_content = json.dumps(summary_fields, indent=2)
+                        if len(summary_content) > MAX_TOOL_RESULT_LENGTH:
+                            summary_content = summary_content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+
+                        content = summary_content
+                    else:
+                        content = content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+                except (json.JSONDecodeError, TypeError):
+                    content = content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+            else:
+                content = str(content)[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+
+        # Create summarized tool message
+        return ToolMessage(
+            content=content,
+            tool_call_id=tool_result_msg.tool_call_id
+        )
+
+    except Exception:
+        # If summarization fails, return truncated original
+        try:
+            from langchain_core.messages import ToolMessage
+            content = str(tool_result_msg.content)[:1000] + "... [TRUNCATED]"
+            return ToolMessage(
+                content=content,
+                tool_call_id=tool_result_msg.tool_call_id
+            )
+        except Exception:
+            return None
 
 
 # ============================================================================
