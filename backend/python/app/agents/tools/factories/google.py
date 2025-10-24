@@ -57,5 +57,6 @@ class GoogleClientFactory(ClientFactory):
             version=self.version,
             user_email=user_email,
         )
+        logger.info(f"Created Google client for service {self.service_name} with user email {user_email}")
 
         return client.get_client()

@@ -423,14 +423,7 @@ def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolW
 
 
 def get_tool_results_summary(state: ChatState) -> str:
-    """Get a summary of all tool results.
-
-    Args:
-        state: Chat state object
-
-    Returns:
-        Formatted summary string
-    """
+    """Get a summary of all tool results with enhanced progress tracking."""
     all_results = state.get("all_tool_results", [])
     if not all_results:
         return "No tools have been executed yet."
@@ -438,8 +431,39 @@ def get_tool_results_summary(state: ChatState) -> str:
     summary = f"Tool Execution Summary (Total: {len(all_results)}):\n"
     tool_summary = _build_tool_summary(all_results)
 
+    # Group tools by category for better understanding
+    tool_categories = {
+        "slack": [],
+        "meet": [],
+        "calendar": [],
+        "email": [],
+        "other": []
+    }
+
     for tool_name, stats in tool_summary.items():
-        summary += _format_tool_stats(tool_name, stats)
+        if "slack" in tool_name.lower():
+            tool_categories["slack"].append((tool_name, stats))
+        elif "meet" in tool_name.lower():
+            tool_categories["meet"].append((tool_name, stats))
+        elif "calendar" in tool_name.lower():
+            tool_categories["calendar"].append((tool_name, stats))
+        elif "email" in tool_name.lower():
+            tool_categories["email"].append((tool_name, stats))
+        else:
+            tool_categories["other"].append((tool_name, stats))
+
+    # Add progress insights
+    for category, tools in tool_categories.items():
+        if tools:
+            summary += f"\n## {category.title()} Tools:\n"
+            for tool_name, stats in tools:
+                summary += _format_tool_stats(tool_name, stats)
+
+                # Add specific guidance based on tool usage
+                if tool_name == "slack.fetch_channels" and stats["success"] > 0:
+                    summary += "  - ✅ Channel list retrieved - consider using slack.send_message or other Slack tools\n"
+                elif tool_name == "meet.create_meeting_space" and stats["success"] > 0:
+                    summary += "  - ✅ Meeting created - consider sharing link or creating calendar event\n"
 
     return summary
 

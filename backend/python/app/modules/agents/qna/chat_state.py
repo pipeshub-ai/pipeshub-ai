@@ -65,6 +65,17 @@ class ChatState(TypedDict):
     tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
     all_tool_results: Optional[List[Dict[str, Any]]]  # All tool results for the session
 
+    # Enhanced tool result tracking for better LLM context
+    tool_execution_summary: Optional[Dict[str, Any]]  # Summary of what tools have been executed
+    tool_data_available: Optional[Dict[str, Any]]  # What data is available from tool executions
+    tool_repetition_warnings: Optional[List[str]]  # Warnings about repeated tool calls
+    data_sufficiency: Optional[Dict[str, Any]]  # Analysis of whether we have sufficient data to answer the query
+
+    # Loop detection and graceful handling
+    force_final_response: Optional[bool]  # Flag to force final response instead of tool execution
+    loop_detected: Optional[bool]  # Whether a loop was detected
+    loop_reason: Optional[str]  # Reason for loop detection
+
     # Web search specific fields
     web_search_results: Optional[List[Dict[str, Any]]]  # Stored web search results
     web_search_template_context: Optional[Dict[str, Any]]  # Template context for web search formatting
@@ -144,6 +155,17 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "pending_tool_calls": False,
         "tool_results": None,
         "all_tool_results": [],
+
+        # Enhanced tool result tracking
+        "tool_execution_summary": {},
+        "tool_data_available": {},
+        "tool_repetition_warnings": [],
+        "data_sufficiency": {},
+
+        # Loop detection and graceful handling
+        "force_final_response": False,
+        "loop_detected": False,
+        "loop_reason": None,
 
         # Web search specific fields
         "web_search_results": None,
