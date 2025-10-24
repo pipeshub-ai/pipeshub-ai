@@ -20,6 +20,13 @@ import { Tip, Popup, Highlight, AreaHighlight, PdfHighlighter } from 'react-pdf-
 
 import { Box, Slider, CircularProgress } from '@mui/material';
 
+import minusIcon from '@iconify-icons/mdi/minus';
+import plusIcon from '@iconify-icons/mdi/plus';
+import magnifyMinusIcon from '@iconify-icons/mdi/magnify-minus';
+import magnifyPlusIcon from '@iconify-icons/mdi/magnify-plus';
+import refreshIcon from '@iconify-icons/mdi/refresh';
+import resizeIcon from '@iconify-icons/mdi/resize';
+import magnifyIcon from '@iconify-icons/mdi/magnify';
 import CitationSidebar from './highlighter-sidebar';
 
 // Initialize PDF worker
@@ -701,7 +708,7 @@ const PdfHighlighterComp = ({
               type="button"
               aria-label="Decrease width"
             >
-              <Icon icon="mdi:minus" style={{ fontSize: '16px' }} />
+              <Icon icon={minusIcon} style={{ fontSize: '16px' }} />
             </button>
             <div className="control-label">Width: {pdfWidth}%</div>
             <Slider
@@ -719,7 +726,7 @@ const PdfHighlighterComp = ({
               type="button"
               aria-label="Increase width"
             >
-              <Icon icon="mdi:plus" style={{ fontSize: '16px' }} />
+              <Icon icon={plusIcon} style={{ fontSize: '16px' }} />
             </button>
           </div>
         )}
@@ -733,7 +740,7 @@ const PdfHighlighterComp = ({
               type="button"
               aria-label="Decrease zoom"
             >
-              <Icon icon="mdi:magnify-minus" style={{ fontSize: '16px' }} />
+              <Icon icon={magnifyMinusIcon} style={{ fontSize: '16px' }} />
             </button>
             <div className="control-label">Zoom: {Math.round(pdfScale * 100)}%</div>
             <Slider
@@ -751,7 +758,7 @@ const PdfHighlighterComp = ({
               type="button"
               aria-label="Increase zoom"
             >
-              <Icon icon="mdi:magnify-plus" style={{ fontSize: '16px' }} />
+              <Icon icon={magnifyPlusIcon} style={{ fontSize: '16px' }} />
             </button>
           </div>
         )}
@@ -767,7 +774,7 @@ const PdfHighlighterComp = ({
           type="button"
           aria-label="Reset controls"
         >
-          <Icon icon="mdi:refresh" style={{ fontSize: '20px' }} />
+          <Icon icon={refreshIcon} style={{ fontSize: '20px' }} />
         </button>
 
         <button 
@@ -780,7 +787,7 @@ const PdfHighlighterComp = ({
           type="button"
           aria-label="Width controls"
         >
-          <Icon icon="mdi:resize" style={{ fontSize: '20px' }} />
+          <Icon icon={resizeIcon} style={{ fontSize: '20px' }} />
         </button>
         
         <button 
@@ -793,7 +800,7 @@ const PdfHighlighterComp = ({
           type="button"
           aria-label="Zoom controls"
         >
-          <Icon icon="mdi:magnify" style={{ fontSize: '20px' }} />
+          <Icon icon={magnifyIcon} style={{ fontSize: '20px' }} />
         </button>
       </div>
 
