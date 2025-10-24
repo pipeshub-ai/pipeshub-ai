@@ -133,8 +133,8 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
       pageNumber: citation.metadata?.pageNum[0] || 1,
     };
 
-    // Use citationId as the primary ID, fallback to metadata._id, then generate new ID
-    const highlightId = citation.citationId || citation.metadata?._id || getNextId();
+    // Use citationId as the primary ID, fallback to metadata._id, then citation.id, then generate new ID
+    const highlightId = citation.citationId || citation.metadata?._id || citation.id || getNextId();
 
     return {
       content: {
@@ -183,7 +183,6 @@ const PdfHighlighterComp = ({
   const [originalDimensions, setOriginalDimensions] = useState<{ width: number; scale: number }>({ width: 80, scale: 1 });
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
-  console.log(highlightCitation)
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -440,7 +439,7 @@ const PdfHighlighterComp = ({
       const targetHighlight = highlights.find((h) => h.id === citationId);
 
       // Use a slightly longer delay to ensure PDF is fully rendered
-      const delay = 1000;
+      const delay = 1500;
 
       // Create a function to attempt scrolling
       const attemptScroll = () => {
