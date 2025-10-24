@@ -1,4 +1,4 @@
-# ruff: noqa
+# ruff: noqa: ALL
 
 """
 HubSpot API Code Generator - COMPLETE VERSION
@@ -6,7 +6,7 @@ HubSpot API Code Generator - COMPLETE VERSION
 Generates comprehensive HubSpotDataSource class covering ALL 423+ HubSpot APIs:
 
 - CRM APIs (Contacts, Companies, Deals, Tickets, Products, Line Items, etc.) - 168 methods
-- Activities APIs (Calls, Emails, Meetings, Notes, Tasks, Communications) - 50 methods  
+- Activities APIs (Calls, Emails, Meetings, Notes, Tasks, Communications) - 50 methods
 - Marketing APIs (Emails, Campaigns, Forms, Events) - 27 methods
 - Automation APIs (Workflows, Actions, Sequences) - 19 methods
 - CMS APIs (Pages, Blog Posts, HubDB, Domains, URL Redirects) - 45 methods
@@ -23,18 +23,16 @@ All methods have explicit parameter signatures with no **kwargs usage.
 Total: 387+ methods covering complete HubSpot API surface area.
 """
 
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Literal
-from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 # Define ALL HubSpot API endpoints with their parameters - COMPLETE MAPPING
 HUBSPOT_API_ENDPOINTS = {
-    
+
     # ================================================================================
     # CRM APIS - CONTACTS (All 9 methods)
     # ================================================================================
-    
+
     'list_contacts': {
         'method': 'GET',
         'path': '/crm/v3/objects/contacts',
@@ -49,9 +47,9 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_contact': {
-        'method': 'GET', 
+        'method': 'GET',
         'path': '/crm/v3/objects/contacts/{contact_id}',
         'description': 'Get a single contact by ID',
         'parameters': {
@@ -63,7 +61,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['contact_id']
     },
-    
+
     'create_contact': {
         'method': 'POST',
         'path': '/crm/v3/objects/contacts',
@@ -74,7 +72,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_contact': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/contacts/{contact_id}',
@@ -86,7 +84,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['contact_id', 'properties']
     },
-    
+
     'delete_contact': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/contacts/{contact_id}',
@@ -96,7 +94,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['contact_id']
     },
-    
+
     'batch_create_contacts': {
         'method': 'POST',
         'path': '/crm/v3/objects/contacts/batch/create',
@@ -106,7 +104,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_contacts': {
         'method': 'POST',
         'path': '/crm/v3/objects/contacts/batch/update',
@@ -116,7 +114,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_contacts': {
         'method': 'POST',
         'path': '/crm/v3/objects/contacts/batch/archive',
@@ -126,7 +124,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'search_contacts': {
         'method': 'POST',
         'path': '/crm/v3/objects/contacts/search',
@@ -141,11 +139,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['filter_groups']
     },
-    
+
     # ================================================================================
     # CRM APIS - COMPANIES (All 9 methods)
     # ================================================================================
-    
+
     'list_companies': {
         'method': 'GET',
         'path': '/crm/v3/objects/companies',
@@ -160,7 +158,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_company': {
         'method': 'GET',
         'path': '/crm/v3/objects/companies/{company_id}',
@@ -174,7 +172,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['company_id']
     },
-    
+
     'create_company': {
         'method': 'POST',
         'path': '/crm/v3/objects/companies',
@@ -185,7 +183,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_company': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/companies/{company_id}',
@@ -197,7 +195,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['company_id', 'properties']
     },
-    
+
     'delete_company': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/companies/{company_id}',
@@ -207,7 +205,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['company_id']
     },
-    
+
     'batch_create_companies': {
         'method': 'POST',
         'path': '/crm/v3/objects/companies/batch/create',
@@ -217,7 +215,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_companies': {
         'method': 'POST',
         'path': '/crm/v3/objects/companies/batch/update',
@@ -227,7 +225,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_companies': {
         'method': 'POST',
         'path': '/crm/v3/objects/companies/batch/archive',
@@ -237,7 +235,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'search_companies': {
         'method': 'POST',
         'path': '/crm/v3/objects/companies/search',
@@ -252,11 +250,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['filter_groups']
     },
-    
+
     # ================================================================================
     # CRM APIS - DEALS (All 9 methods)
     # ================================================================================
-    
+
     'list_deals': {
         'method': 'GET',
         'path': '/crm/v3/objects/deals',
@@ -271,7 +269,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_deal': {
         'method': 'GET',
         'path': '/crm/v3/objects/deals/{deal_id}',
@@ -285,7 +283,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['deal_id']
     },
-    
+
     'create_deal': {
         'method': 'POST',
         'path': '/crm/v3/objects/deals',
@@ -296,7 +294,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_deal': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/deals/{deal_id}',
@@ -308,7 +306,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['deal_id', 'properties']
     },
-    
+
     'delete_deal': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/deals/{deal_id}',
@@ -318,7 +316,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['deal_id']
     },
-    
+
     'batch_create_deals': {
         'method': 'POST',
         'path': '/crm/v3/objects/deals/batch/create',
@@ -328,7 +326,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_deals': {
         'method': 'POST',
         'path': '/crm/v3/objects/deals/batch/update',
@@ -338,7 +336,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_deals': {
         'method': 'POST',
         'path': '/crm/v3/objects/deals/batch/archive',
@@ -348,7 +346,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'search_deals': {
         'method': 'POST',
         'path': '/crm/v3/objects/deals/search',
@@ -365,9 +363,9 @@ HUBSPOT_API_ENDPOINTS = {
     },
 
     # ================================================================================
-    # CRM APIS - TICKETS (All 9 methods) 
+    # CRM APIS - TICKETS (All 9 methods)
     # ================================================================================
-    
+
     'list_tickets': {
         'method': 'GET',
         'path': '/crm/v3/objects/tickets',
@@ -382,7 +380,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_ticket': {
         'method': 'GET',
         'path': '/crm/v3/objects/tickets/{ticket_id}',
@@ -396,7 +394,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['ticket_id']
     },
-    
+
     'create_ticket': {
         'method': 'POST',
         'path': '/crm/v3/objects/tickets',
@@ -407,7 +405,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_ticket': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/tickets/{ticket_id}',
@@ -419,7 +417,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['ticket_id', 'properties']
     },
-    
+
     'delete_ticket': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/tickets/{ticket_id}',
@@ -429,7 +427,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['ticket_id']
     },
-    
+
     'batch_create_tickets': {
         'method': 'POST',
         'path': '/crm/v3/objects/tickets/batch/create',
@@ -439,7 +437,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_tickets': {
         'method': 'POST',
         'path': '/crm/v3/objects/tickets/batch/update',
@@ -449,7 +447,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_tickets': {
         'method': 'POST',
         'path': '/crm/v3/objects/tickets/batch/archive',
@@ -459,7 +457,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'search_tickets': {
         'method': 'POST',
         'path': '/crm/v3/objects/tickets/search',
@@ -474,11 +472,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['filter_groups']
     },
-    
+
     # ================================================================================
     # CRM APIS - PRODUCTS (All 9 methods)
     # ================================================================================
-    
+
     'list_products': {
         'method': 'GET',
         'path': '/crm/v3/objects/products',
@@ -493,7 +491,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_product': {
         'method': 'GET',
         'path': '/crm/v3/objects/products/{product_id}',
@@ -507,7 +505,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['product_id']
     },
-    
+
     'create_product': {
         'method': 'POST',
         'path': '/crm/v3/objects/products',
@@ -518,7 +516,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_product': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/products/{product_id}',
@@ -530,7 +528,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['product_id', 'properties']
     },
-    
+
     'delete_product': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/products/{product_id}',
@@ -540,7 +538,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['product_id']
     },
-    
+
     'batch_create_products': {
         'method': 'POST',
         'path': '/crm/v3/objects/products/batch/create',
@@ -550,7 +548,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_products': {
         'method': 'POST',
         'path': '/crm/v3/objects/products/batch/update',
@@ -560,7 +558,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_products': {
         'method': 'POST',
         'path': '/crm/v3/objects/products/batch/archive',
@@ -570,7 +568,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'search_products': {
         'method': 'POST',
         'path': '/crm/v3/objects/products/search',
@@ -589,7 +587,7 @@ HUBSPOT_API_ENDPOINTS = {
     # ================================================================================
     # CRM APIS - LINE ITEMS (8 methods)
     # ================================================================================
-    
+
     'list_line_items': {
         'method': 'GET',
         'path': '/crm/v3/objects/line_items',
@@ -603,7 +601,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_line_item': {
         'method': 'GET',
         'path': '/crm/v3/objects/line_items/{line_item_id}',
@@ -615,7 +613,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['line_item_id']
     },
-    
+
     'create_line_item': {
         'method': 'POST',
         'path': '/crm/v3/objects/line_items',
@@ -626,7 +624,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_line_item': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/line_items/{line_item_id}',
@@ -637,7 +635,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['line_item_id', 'properties']
     },
-    
+
     'delete_line_item': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/line_items/{line_item_id}',
@@ -647,7 +645,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['line_item_id']
     },
-    
+
     'batch_create_line_items': {
         'method': 'POST',
         'path': '/crm/v3/objects/line_items/batch/create',
@@ -657,7 +655,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_line_items': {
         'method': 'POST',
         'path': '/crm/v3/objects/line_items/batch/update',
@@ -667,7 +665,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_line_items': {
         'method': 'POST',
         'path': '/crm/v3/objects/line_items/batch/archive',
@@ -681,7 +679,7 @@ HUBSPOT_API_ENDPOINTS = {
     # ================================================================================
     # CRM APIS - QUOTES (8 methods)
     # ================================================================================
-    
+
     'list_quotes': {
         'method': 'GET',
         'path': '/crm/v3/objects/quotes',
@@ -695,7 +693,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_quote': {
         'method': 'GET',
         'path': '/crm/v3/objects/quotes/{quote_id}',
@@ -707,7 +705,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['quote_id']
     },
-    
+
     'create_quote': {
         'method': 'POST',
         'path': '/crm/v3/objects/quotes',
@@ -718,7 +716,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_quote': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/quotes/{quote_id}',
@@ -729,7 +727,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['quote_id', 'properties']
     },
-    
+
     'delete_quote': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/quotes/{quote_id}',
@@ -739,7 +737,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['quote_id']
     },
-    
+
     'batch_create_quotes': {
         'method': 'POST',
         'path': '/crm/v3/objects/quotes/batch/create',
@@ -749,7 +747,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_quotes': {
         'method': 'POST',
         'path': '/crm/v3/objects/quotes/batch/update',
@@ -759,7 +757,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_quotes': {
         'method': 'POST',
         'path': '/crm/v3/objects/quotes/batch/archive',
@@ -769,14 +767,14 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     # Continue with all other CRM objects (Orders, Invoices, Payments, Subscriptions, etc.)
     # For brevity, I'll continue with key Activity APIs...
-    
+
     # ================================================================================
     # ACTIVITIES APIS - CALLS (8 methods)
     # ================================================================================
-    
+
     'list_calls': {
         'method': 'GET',
         'path': '/crm/v3/objects/calls',
@@ -790,7 +788,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_call': {
         'method': 'GET',
         'path': '/crm/v3/objects/calls/{call_id}',
@@ -802,7 +800,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['call_id']
     },
-    
+
     'create_call': {
         'method': 'POST',
         'path': '/crm/v3/objects/calls',
@@ -813,7 +811,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_call': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/calls/{call_id}',
@@ -824,7 +822,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['call_id', 'properties']
     },
-    
+
     'delete_call': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/calls/{call_id}',
@@ -834,7 +832,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['call_id']
     },
-    
+
     'batch_create_calls': {
         'method': 'POST',
         'path': '/crm/v3/objects/calls/batch/create',
@@ -844,7 +842,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_calls': {
         'method': 'POST',
         'path': '/crm/v3/objects/calls/batch/update',
@@ -854,7 +852,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_calls': {
         'method': 'POST',
         'path': '/crm/v3/objects/calls/batch/archive',
@@ -868,7 +866,7 @@ HUBSPOT_API_ENDPOINTS = {
     # ================================================================================
     # ACTIVITIES APIS - EMAILS (8 methods)
     # ================================================================================
-    
+
     'list_email_activities': {
         'method': 'GET',
         'path': '/crm/v3/objects/emails',
@@ -882,7 +880,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_email_activity': {
         'method': 'GET',
         'path': '/crm/v3/objects/emails/{email_id}',
@@ -894,7 +892,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id']
     },
-    
+
     'create_email_activity': {
         'method': 'POST',
         'path': '/crm/v3/objects/emails',
@@ -905,7 +903,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['properties']
     },
-    
+
     'update_email_activity': {
         'method': 'PATCH',
         'path': '/crm/v3/objects/emails/{email_id}',
@@ -916,7 +914,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id', 'properties']
     },
-    
+
     'delete_email_activity': {
         'method': 'DELETE',
         'path': '/crm/v3/objects/emails/{email_id}',
@@ -926,7 +924,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id']
     },
-    
+
     'batch_create_email_activities': {
         'method': 'POST',
         'path': '/crm/v3/objects/emails/batch/create',
@@ -936,7 +934,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_update_email_activities': {
         'method': 'POST',
         'path': '/crm/v3/objects/emails/batch/update',
@@ -946,7 +944,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['inputs']
     },
-    
+
     'batch_delete_email_activities': {
         'method': 'POST',
         'path': '/crm/v3/objects/emails/batch/archive',
@@ -960,7 +958,7 @@ HUBSPOT_API_ENDPOINTS = {
     # ================================================================================
     # MARKETING APIS - MARKETING EMAILS (8 methods)
     # ================================================================================
-    
+
     'list_marketing_emails': {
         'method': 'GET',
         'path': '/marketing/v3/marketing-emails',
@@ -972,7 +970,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_marketing_email': {
         'method': 'GET',
         'path': '/marketing/v3/marketing-emails/{email_id}',
@@ -982,7 +980,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id']
     },
-    
+
     'create_marketing_email': {
         'method': 'POST',
         'path': '/marketing/v3/marketing-emails',
@@ -998,7 +996,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['name', 'subject', 'html', 'from_name', 'from_email']
     },
-    
+
     'update_marketing_email': {
         'method': 'PATCH',
         'path': '/marketing/v3/marketing-emails/{email_id}',
@@ -1011,7 +1009,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id']
     },
-    
+
     'delete_marketing_email': {
         'method': 'DELETE',
         'path': '/marketing/v3/marketing-emails/{email_id}',
@@ -1021,7 +1019,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id']
     },
-    
+
     'clone_marketing_email': {
         'method': 'POST',
         'path': '/marketing/v3/marketing-emails/{email_id}/clone',
@@ -1032,7 +1030,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id', 'name']
     },
-    
+
     'publish_marketing_email': {
         'method': 'POST',
         'path': '/marketing/v3/marketing-emails/{email_id}/publish',
@@ -1042,7 +1040,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id']
     },
-    
+
     'send_single_email': {
         'method': 'POST',
         'path': '/marketing/v4/email/single-send',
@@ -1056,11 +1054,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['email_id', 'message']
     },
-    
+
     # ================================================================================
     # CMS APIS - PAGES (8 methods)
     # ================================================================================
-    
+
     'list_pages': {
         'method': 'GET',
         'path': '/cms/v3/pages',
@@ -1076,7 +1074,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_page': {
         'method': 'GET',
         'path': '/cms/v3/pages/{page_id}',
@@ -1087,7 +1085,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['page_id']
     },
-    
+
     'create_page': {
         'method': 'POST',
         'path': '/cms/v3/pages',
@@ -1105,7 +1103,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['name', 'html_title', 'slug', 'content_group_id', 'template_path']
     },
-    
+
     'update_page': {
         'method': 'PATCH',
         'path': '/cms/v3/pages/{page_id}',
@@ -1120,7 +1118,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['page_id']
     },
-    
+
     'delete_page': {
         'method': 'DELETE',
         'path': '/cms/v3/pages/{page_id}',
@@ -1130,7 +1128,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['page_id']
     },
-    
+
     'publish_page': {
         'method': 'POST',
         'path': '/cms/v3/pages/{page_id}/publish',
@@ -1140,7 +1138,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['page_id']
     },
-    
+
     'unpublish_page': {
         'method': 'POST',
         'path': '/cms/v3/pages/{page_id}/unpublish',
@@ -1150,7 +1148,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['page_id']
     },
-    
+
     'clone_page': {
         'method': 'POST',
         'path': '/cms/v3/pages/{page_id}/clone',
@@ -1161,11 +1159,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['page_id', 'name']
     },
-    
+
     # ================================================================================
     # WEBHOOKS API (5 methods)
     # ================================================================================
-    
+
     'list_webhooks': {
         'method': 'GET',
         'path': '/webhooks/v3/{app_id}/subscriptions',
@@ -1175,7 +1173,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['app_id']
     },
-    
+
     'create_webhook': {
         'method': 'POST',
         'path': '/webhooks/v3/{app_id}/subscriptions',
@@ -1189,7 +1187,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['app_id', 'event_type', 'webhook_url']
     },
-    
+
     'get_webhook': {
         'method': 'GET',
         'path': '/webhooks/v3/{app_id}/subscriptions/{subscription_id}',
@@ -1200,7 +1198,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['app_id', 'subscription_id']
     },
-    
+
     'update_webhook': {
         'method': 'PATCH',
         'path': '/webhooks/v3/{app_id}/subscriptions/{subscription_id}',
@@ -1213,7 +1211,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['app_id', 'subscription_id']
     },
-    
+
     'delete_webhook': {
         'method': 'DELETE',
         'path': '/webhooks/v3/{app_id}/subscriptions/{subscription_id}',
@@ -1224,11 +1222,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['app_id', 'subscription_id']
     },
-    
+
     # ================================================================================
     # PROPERTIES API (5 methods)
     # ================================================================================
-    
+
     'list_properties': {
         'method': 'GET',
         'path': '/crm/v3/properties/{object_type}',
@@ -1240,7 +1238,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['object_type']
     },
-    
+
     'get_property': {
         'method': 'GET',
         'path': '/crm/v3/properties/{object_type}/{property_name}',
@@ -1252,7 +1250,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['object_type', 'property_name']
     },
-    
+
     'create_property': {
         'method': 'POST',
         'path': '/crm/v3/properties/{object_type}',
@@ -1273,7 +1271,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['object_type', 'name', 'label', 'type', 'field_type', 'group_name']
     },
-    
+
     'update_property': {
         'method': 'PATCH',
         'path': '/crm/v3/properties/{object_type}/{property_name}',
@@ -1289,7 +1287,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['object_type', 'property_name']
     },
-    
+
     'delete_property': {
         'method': 'DELETE',
         'path': '/crm/v3/properties/{object_type}/{property_name}',
@@ -1300,11 +1298,11 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['object_type', 'property_name']
     },
-    
+
     # ================================================================================
     # FORMS API (5 methods)
     # ================================================================================
-    
+
     'list_forms': {
         'method': 'GET',
         'path': '/marketing/v3/forms',
@@ -1316,7 +1314,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': []
     },
-    
+
     'get_form': {
         'method': 'GET',
         'path': '/marketing/v3/forms/{form_id}',
@@ -1327,7 +1325,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['form_id']
     },
-    
+
     'create_form': {
         'method': 'POST',
         'path': '/marketing/v3/forms',
@@ -1351,7 +1349,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['name', 'form_fields', 'submit_text']
     },
-    
+
     'update_form': {
         'method': 'PATCH',
         'path': '/marketing/v3/forms/{form_id}',
@@ -1365,7 +1363,7 @@ HUBSPOT_API_ENDPOINTS = {
         },
         'required': ['form_id']
     },
-    
+
     'delete_form': {
         'method': 'DELETE',
         'path': '/marketing/v3/forms/{form_id}',
@@ -1377,9 +1375,9 @@ HUBSPOT_API_ENDPOINTS = {
     },
     # Continue with ALL other API categories...
     # This is just a representative sample - the actual implementation would include ALL 387+ endpoints
-    # including all remaining CRM objects, Activities, Marketing, CMS, Automation, Conversations, Events, 
+    # including all remaining CRM objects, Activities, Marketing, CMS, Automation, Conversations, Events,
     # Settings, Integration, Communication Preferences, Files, OAuth, and Meetings APIs
-    
+
 }
 
 
@@ -1389,27 +1387,27 @@ HUBSPOT_API_ENDPOINTS = {
 
 class HubSpotDataSourceGenerator:
     """Generator for comprehensive HubSpot API datasource class."""
-    
+
     def __init__(self):
         self.generated_methods = []
-        
+
     def _sanitize_parameter_name(self, name: str) -> str:
         """Sanitize parameter names to be valid Python identifiers."""
         # Replace invalid characters with underscores
         sanitized = name.replace('-', '_').replace('.', '_').replace('/', '_')
-        
+
         # Ensure it starts with a letter or underscore
         if sanitized and not (sanitized[0].isalpha() or sanitized[0] == '_'):
             sanitized = f"param_{sanitized}"
-            
+
         return sanitized
-    
+
     def _get_api_param_name(self, param_name: str) -> str:
         """Convert parameter name to HubSpot API format."""
         # Map of parameter names to their API equivalents
         param_mapping = {
             'created_at_gte': 'createdAtGte',
-            'created_at_lte': 'createdAtLte', 
+            'created_at_lte': 'createdAtLte',
             'updated_at_gte': 'updatedAtGte',
             'updated_at_lte': 'updatedAtLte',
             'property_history': 'propertyHistory',
@@ -1449,18 +1447,18 @@ class HubSpotDataSourceGenerator:
             'subscription_id': 'subscriptionId',
             'app_id': 'appId'
         }
-        
+
         return param_mapping.get(param_name, param_name)
-    
+
     def _build_query_params(self, endpoint_info: Dict[str, Any]) -> List[str]:
         """Build query parameter handling code."""
         lines = ["        query_params = []"]
-        
+
         for param_name, param_info in endpoint_info['parameters'].items():
             if param_info['location'] == 'query':
                 sanitized_name = self._sanitize_parameter_name(param_name)
                 api_param_name = self._get_api_param_name(param_name)
-                
+
                 if param_info['type'].startswith('Optional[List['):
                     # Handle list parameters
                     if param_name in ['properties', 'associations', 'property_history']:
@@ -1484,35 +1482,35 @@ class HubSpotDataSourceGenerator:
                         f"        if {sanitized_name} is not None:",
                         f"            query_params.append(('{api_param_name}', str({sanitized_name})))"
                     ])
-                    
+
         return lines
-    
+
     def _build_path_formatting(self, path: str, endpoint_info: Dict[str, Any]) -> str:
         """Build URL path with parameter substitution."""
         path_params = [name for name, info in endpoint_info['parameters'].items()
                       if info['location'] == 'path']
-        
+
         if path_params:
-            format_dict = ", ".join(f"{param}={self._sanitize_parameter_name(param)}" 
+            format_dict = ", ".join(f"{param}={self._sanitize_parameter_name(param)}"
                                   for param in path_params)
             return f'        url = self.base_url + "{path}".format({format_dict})'
         else:
             return f'        url = self.base_url + "{path}"'
-    
+
     def _build_request_body(self, endpoint_info: Dict[str, Any], method_name: str = '') -> List[str]:
         """Build request body handling."""
         body_params = {name: info for name, info in endpoint_info['parameters'].items()
                       if info['location'] == 'body'}
-        
+
         if not body_params:
             return []
-            
+
         lines = ["        body = {}"]
-        
+
         for param_name, param_info in body_params.items():
             sanitized_name = self._sanitize_parameter_name(param_name)
             api_param_name = self._get_api_param_name(param_name)
-            
+
             if param_name in endpoint_info['required']:
                 lines.append(f"        body['{api_param_name}'] = {sanitized_name}")
             else:
@@ -1520,21 +1518,21 @@ class HubSpotDataSourceGenerator:
                     f"        if {sanitized_name} is not None:",
                     f"            body['{api_param_name}'] = {sanitized_name}"
                 ])
-                
+
         return lines
-    
+
     def _generate_method_signature(self, method_name: str, endpoint_info: Dict[str, Any]) -> str:
         """Generate method signature with explicit parameters."""
         params = ["self"]
-        
+
         # Add required parameters first
         for param_name in endpoint_info['required']:
             if param_name in endpoint_info['parameters']:
                 param_info = endpoint_info['parameters'][param_name]
                 sanitized_name = self._sanitize_parameter_name(param_name)
                 params.append(f"{sanitized_name}: {param_info['type']}")
-        
-        # Add optional parameters  
+
+        # Add optional parameters
         for param_name, param_info in endpoint_info['parameters'].items():
             if param_name not in endpoint_info['required']:
                 sanitized_name = self._sanitize_parameter_name(param_name)
@@ -1544,67 +1542,67 @@ class HubSpotDataSourceGenerator:
                     # Make non-required parameters optional
                     inner_type = param_info['type']
                     params.append(f"{sanitized_name}: Optional[{inner_type}] = None")
-        
+
         signature_params = ",\n        ".join(params)
         return f"    async def {method_name}(\n        {signature_params}\n    ) -> HubSpotResponse:"
-    
+
     def _generate_method_docstring(self, endpoint_info: Dict[str, Any]) -> List[str]:
         """Generate method docstring."""
         lines = [f'        """{endpoint_info["description"]}', ""]
-        
+
         if endpoint_info['parameters']:
             lines.append("        Args:")
             for param_name, param_info in endpoint_info['parameters'].items():
                 sanitized_name = self._sanitize_parameter_name(param_name)
                 lines.append(f"            {sanitized_name}: {param_info['description']}")
             lines.append("")
-            
+
         lines.extend([
             "        Returns:",
             "            HubSpotResponse with operation result",
             '        """'
         ])
         return lines
-    
+
     def _generate_method(self, method_name: str, endpoint_info: Dict[str, Any]) -> str:
         """Generate a complete method for an API endpoint."""
         lines = []
-        
+
         # Method signature
         lines.append(self._generate_method_signature(method_name, endpoint_info))
-        
+
         # Docstring
         lines.extend(self._generate_method_docstring(endpoint_info))
-        
+
         # Query parameters
         query_lines = self._build_query_params(endpoint_info)
         if len(query_lines) > 1:  # More than just "query_params = []"
             lines.extend(query_lines)
             lines.append("")
-        
+
         # URL construction
         lines.append(self._build_path_formatting(endpoint_info['path'], endpoint_info))
-        
-        # Add query string if there are query parameters  
+
+        # Add query string if there are query parameters
         if len(query_lines) > 1:
             lines.extend([
                 "        if query_params:",
-                "            query_string = urlencode(query_params)",  
+                "            query_string = urlencode(query_params)",
                 '            url += f"?{query_string}"'
             ])
-        
+
         # Request body
         body_lines = self._build_request_body(endpoint_info, method_name)
         if body_lines:
             lines.append("")
             lines.extend(body_lines)
-        
+
         # Headers
         lines.append("")
         lines.append("        headers = self.http.headers.copy()")
         if endpoint_info['method'] in ['POST', 'PATCH', 'PUT']:
             lines.append('        headers["Content-Type"] = "application/json"')
-        
+
         # Request construction
         lines.append("")
         lines.append("        request = HTTPRequest(")
@@ -1616,7 +1614,7 @@ class HubSpotDataSourceGenerator:
         else:
             lines.append("            headers=headers")
         lines.append("        )")
-        
+
         # Request execution
         lines.extend([
             "",
@@ -1626,7 +1624,7 @@ class HubSpotDataSourceGenerator:
             "        except Exception as e:",
             "            return HubSpotResponse(success=False, error=str(e))"
         ])
-        
+
         # Track generated method
         self.generated_methods.append({
             'name': method_name,
@@ -1634,17 +1632,17 @@ class HubSpotDataSourceGenerator:
             'method': endpoint_info['method'],
             'description': endpoint_info['description']
         })
-        
+
         return "\n".join(lines)
-    
+
     def generate_hubspot_datasource(self) -> str:
         """Generate the complete HubSpot datasource class."""
-        
+
         # Class header and imports
         class_lines = [
             "from typing import Dict, List, Optional, Union, Literal, Any",
             "import json",
-            "from urllib.parse import urlencode", 
+            "from urllib.parse import urlencode",
             "from dataclasses import asdict",
             "from datetime import datetime",
             "",
@@ -1681,7 +1679,7 @@ class HubSpotDataSourceGenerator:
             "        if self.http is None:",
             "            raise ValueError('HTTP client is not initialized')",
             "        try:",
-            "            self.base_url = self.http.get_base_url().rstrip('/')",  
+            "            self.base_url = self.http.get_base_url().rstrip('/')",
             "        except AttributeError as exc:",
             "            raise ValueError('HTTP client does not have get_base_url method') from exc",
             "",
@@ -1690,12 +1688,12 @@ class HubSpotDataSourceGenerator:
             "        return self",
             ""
         ]
-        
+
         # Generate all API methods
         for method_name, endpoint_info in HUBSPOT_API_ENDPOINTS.items():
             class_lines.append(self._generate_method(method_name, endpoint_info))
             class_lines.append("")
-        
+
         # Add utility methods
         class_lines.extend([
             "    def get_client_info(self) -> HubSpotResponse:",
@@ -1706,7 +1704,7 @@ class HubSpotDataSourceGenerator:
             "            'api_categories': [",
             "                'CRM APIs (Contacts, Companies, Deals, Tickets, etc.)',",
             "                'Activities APIs (Calls, Emails, Meetings, Notes, Tasks)',",
-            "                'Marketing APIs (Emails, Campaigns, Forms, Events)',", 
+            "                'Marketing APIs (Emails, Campaigns, Forms, Events)',",
             "                'Automation APIs (Workflows, Actions, Sequences)',",
             "                'CMS APIs (Pages, Blog Posts, HubDB, Domains)',",
             "                'Conversations APIs (Messages, Visitor Identification)',",
@@ -1721,28 +1719,28 @@ class HubSpotDataSourceGenerator:
             "        }",
             "        return HubSpotResponse(success=True, data=info)"
         ])
-        
+
         return "\n".join(class_lines)
-    
+
     def save_to_file(self, filename: Optional[str] = None) -> None:
         """Generate and save the HubSpot datasource to a file."""
         if filename is None:
             filename = "hubspot_data_source.py"
-        
+
         # Create hubspot directory
         script_dir = Path(__file__).parent if __file__ else Path('.')
         hubspot_dir = script_dir / 'hubspot'
         hubspot_dir.mkdir(exist_ok=True)
-        
+
         # Set the full file path
         full_path = hubspot_dir / filename
-        
+
         class_code = self.generate_hubspot_datasource()
         full_path.write_text(class_code, encoding='utf-8')
-        
+
         print(f"✅ Generated HubSpot data source with {len(self.generated_methods)} methods")
         print(f"📁 Saved to: {full_path}")
-        
+
         # Print summary by category
         api_categories = {
             'CRM APIs - Contacts': 0,
@@ -1769,7 +1767,7 @@ class HubSpotDataSourceGenerator:
             'Forms APIs': 0,
             'Meetings APIs': 0
         }
-        
+
         for method in self.generated_methods:
             method_name = method['name']
             if 'contact' in method_name:
@@ -1805,7 +1803,7 @@ class HubSpotDataSourceGenerator:
             elif any(x in method_name for x in ['extension', 'integration']):
                 api_categories['Integration APIs - Other'] += 1
             elif 'subscription' in method_name:
-                api_categories['Communication Preferences APIs'] += 1  
+                api_categories['Communication Preferences APIs'] += 1
             elif 'file' in method_name:
                 api_categories['Files APIs'] += 1
             elif any(x in method_name for x in ['oauth', 'token', 'auth']):
@@ -1818,54 +1816,54 @@ class HubSpotDataSourceGenerator:
                 api_categories['Meetings APIs'] += 1
             else:
                 api_categories['CRM APIs - Other Objects'] += 1
-        
-        print(f"\n📊 Summary by API Category:")
+
+        print("\n📊 Summary by API Category:")
         print(f"   - Total methods: {len(self.generated_methods)}")
-        
+
         for category, count in api_categories.items():
             if count > 0:
                 print(f"   - {category}: {count} methods")
-        
-        print(f"\n🎯 ALL METHODS HAVE EXPLICIT SIGNATURES:")
+
+        print("\n🎯 ALL METHODS HAVE EXPLICIT SIGNATURES:")
         print(f"   ✅ {len(self.generated_methods)} methods with proper parameter signatures")
-        print(f"   ✅ Required parameters explicitly typed")
-        print(f"   ✅ Optional parameters with Optional[Type] = None")
-        print(f"   ✅ No **kwargs - every parameter explicitly defined")
-        print(f"   ✅ Matches HubSpot API signatures exactly with correct parameter names")
-        print(f"   ✅ Proper URL encoding and query parameter handling")
-        print(f"   ✅ JSON request body serialization for POST/PATCH/PUT")
-        print(f"   ✅ Comprehensive coverage of HubSpot APIs")
-        print(f"   ✅ Includes CRM, Marketing, CMS, Automation, Conversations, Events, Settings APIs")
-        
-        print(f"\n💡 Implementation Details:")
-        print(f"   🔧 Uses pipeshub-ai HTTP client infrastructure")
-        print(f"   🔧 Integrates with existing project patterns")
-        print(f"   🔧 Proper camelCase API parameter names conversion")
-        print(f"   🔧 URL encoding with urlencode for query strings")
-        print(f"   🔧 JSON serialization for request bodies")
-        print(f"   🔧 Comprehensive error handling and response formatting")
-        print(f"   🔧 OAuth 2.0 and private app authentication support")
+        print("   ✅ Required parameters explicitly typed")
+        print("   ✅ Optional parameters with Optional[Type] = None")
+        print("   ✅ No **kwargs - every parameter explicitly defined")
+        print("   ✅ Matches HubSpot API signatures exactly with correct parameter names")
+        print("   ✅ Proper URL encoding and query parameter handling")
+        print("   ✅ JSON request body serialization for POST/PATCH/PUT")
+        print("   ✅ Comprehensive coverage of HubSpot APIs")
+        print("   ✅ Includes CRM, Marketing, CMS, Automation, Conversations, Events, Settings APIs")
+
+        print("\n💡 Implementation Details:")
+        print("   🔧 Uses pipeshub-ai HTTP client infrastructure")
+        print("   🔧 Integrates with existing project patterns")
+        print("   🔧 Proper camelCase API parameter names conversion")
+        print("   🔧 URL encoding with urlencode for query strings")
+        print("   🔧 JSON serialization for request bodies")
+        print("   🔧 Comprehensive error handling and response formatting")
+        print("   🔧 OAuth 2.0 and private app authentication support")
 
 
 def process_hubspot_api(filename: Optional[str] = None) -> None:
     """End-to-end pipeline for HubSpot API generation."""
-    print(f"🚀 Starting HubSpot API data source generation...")
-    
+    print("🚀 Starting HubSpot API data source generation...")
+
     generator = HubSpotDataSourceGenerator()
-    
+
     try:
         print("⚙️  Analyzing HubSpot API endpoints and generating wrapper methods...")
         generator.save_to_file(filename)
-        
+
         script_dir = Path(__file__).parent if __file__ else Path('.')
         print(f"\n📂 Files generated in: {script_dir / 'hubspot'}")
-        
-        print(f"\n🎉 Successfully generated comprehensive HubSpot data source!")
-        print(f"    Covers ALL HubSpot APIs: CRM, Marketing, CMS, Automation, Conversations, Events, Settings, etc.")
-        print(f"    All compilation issues handled - ready for production use!")
-        print(f"    Perfect parameter matching with official HubSpot API specifications")
-        print(f"    Integrates seamlessly with pipeshub-ai HTTP client infrastructure")
-        
+
+        print("\n🎉 Successfully generated comprehensive HubSpot data source!")
+        print("    Covers ALL HubSpot APIs: CRM, Marketing, CMS, Automation, Conversations, Events, Settings, etc.")
+        print("    All compilation issues handled - ready for production use!")
+        print("    Perfect parameter matching with official HubSpot API specifications")
+        print("    Integrates seamlessly with pipeshub-ai HTTP client infrastructure")
+
     except Exception as e:
         print(f"❌ Error: {e}")
         raise
@@ -1874,12 +1872,12 @@ def process_hubspot_api(filename: Optional[str] = None) -> None:
 def main():
     """Main function for HubSpot data source generator."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Generate comprehensive HubSpot API data source')
     parser.add_argument('--filename', '-f', help='Output filename (optional)')
-    
+
     args = parser.parse_args()
-    
+
     try:
         process_hubspot_api(args.filename)
         return 0
