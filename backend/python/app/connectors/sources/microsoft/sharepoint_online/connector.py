@@ -1961,8 +1961,8 @@ class SharePointConnector(BaseConnector):
 
             try:
                 groups = await self.msgraph_client.get_all_user_groups()
-                self.logger.info(f"Groups type: {type(groups)}")
-                self.logger.info(f"Groups: {groups}")
+                self.logger.debug(f"Groups type: {type(groups)}")
+                self.logger.debug(f"Groups: {groups}")
                 for group in groups:
                         # Get group members
                         user_group = AppUserGroup(
