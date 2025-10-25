@@ -13,7 +13,7 @@ from app.sources.client.confluence.confluence import ConfluenceClient
 class ConfluenceClientFactory(ClientFactory):
     """Factory for creating Confluence clients"""
 
-    async def create_client(self, config_service, logger) -> ConfluenceClient:
+    async def create_client(self, config_service, logger, state=None) -> ConfluenceClient:
         """Create Confluence client instance"""
 
         return await ConfluenceClient.build_from_services(

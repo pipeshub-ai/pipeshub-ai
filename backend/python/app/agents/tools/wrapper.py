@@ -81,7 +81,8 @@ class ToolInstanceCreator:
         try:
             client = factory.create_client_sync(
                 self.config_service,
-                self.logger
+                self.logger,
+                self.state,
             )
             return action_class(client)
         except Exception as e:

@@ -13,7 +13,7 @@ from app.sources.client.linear.linear import LinearClient
 class LinearClientFactory(ClientFactory):
     """Factory for creating Linear clients"""
 
-    async def create_client(self, config_service, logger) -> LinearClient:
+    async def create_client(self, config_service, logger, state=None) -> LinearClient:
         """Create Linear client instance"""
 
         return await LinearClient.build_from_services(
