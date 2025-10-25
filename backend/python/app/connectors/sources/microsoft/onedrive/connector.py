@@ -475,7 +475,8 @@ class OneDriveConnector(BaseConnector):
                     self.logger.error(f"❌ Error processing group {group.name}: {e}", exc_info=True)
                     continue
 
-                # Send group with permissions to processor
+            # Process all collected groups
+            if group_with_permissions:
                 await self.data_entities_processor.on_new_user_groups(
                     group_with_permissions
                 )

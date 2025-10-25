@@ -1644,10 +1644,6 @@ class DropboxConnector(BaseConnector):
         """
         # Permission mapping (from _sync_user_groups)
 
-        dropbox_group_to_permission_type = {
-            'owner': PermissionType.OWNER,
-            'member': PermissionType.WRITE,
-        }
 
         # Create the AppUserGroup object (from _sync_user_groups section 3b)
         processor_group = AppUserGroup(
@@ -1660,11 +1656,6 @@ class DropboxConnector(BaseConnector):
         # Create permissions list (from _sync_user_groups section 3c)
         member_permissions = []
         for member in all_members:
-            access_level_tag = member.access_type._tag
-
-            # Map the tag to our PermissionType enum
-            dropbox_group_to_permission_type.get(access_level_tag, PermissionType.READ)
-
             user_permission = AppUser(
                 source_user_id=member.profile.team_member_id,
                 email=member.profile.email,
