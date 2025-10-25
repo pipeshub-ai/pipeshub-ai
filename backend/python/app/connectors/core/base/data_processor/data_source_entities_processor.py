@@ -496,6 +496,7 @@ class DataSourceEntitiesProcessor:
 
                     for member in members:
                         from_collection = None
+                        user = None
                         if member.email:
                             # Find the user's internal DB ID
                             user = await tx_store.get_user_by_email(member.email)
