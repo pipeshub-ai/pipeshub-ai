@@ -2,12 +2,33 @@ services:
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     restart: always
+    networks:
+      - default
+      - traefik-net
+    expose:
+      - "3000"
+      - "8088"
     ports:
       - "8091:8091"
-      - "8088:8088"
-      - "3000:3000"
       - "8001:8000"
       - "8081:8081"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+
+      # Frontend service (port 3000)
+      - "traefik.http.routers.pipeshub-frontend.rule=Host(`pipeshub.benjaminsanders.com`)"
+      - "traefik.http.routers.pipeshub-frontend.entrypoints=websecure"
+      - "traefik.http.routers.pipeshub-frontend.tls.certresolver=myresolver"
+      - "traefik.http.routers.pipeshub-frontend.service=pipeshub-frontend"
+      - "traefik.http.services.pipeshub-frontend.loadbalancer.server.port=3000"
+
+      # Connector Backend service (port 8088) - for webhooks and real-time sync
+      - "traefik.http.routers.pipeshub-connector.rule=Host(`pipeshub-connector.benjaminsanders.com`)"
+      - "traefik.http.routers.pipeshub-connector.entrypoints=websecure"
+      - "traefik.http.routers.pipeshub-connector.tls.certresolver=myresolver"
+      - "traefik.http.routers.pipeshub-connector.service=pipeshub-connector"
+      - "traefik.http.services.pipeshub-connector.loadbalancer.server.port=8088"
     deploy:
       resources:
         limits:
@@ -215,3 +236,7 @@ volumes:
     driver: local
   pipeshub_root_local:
     driver: local
+
+networks:
+  traefik-net:
+    external: true
