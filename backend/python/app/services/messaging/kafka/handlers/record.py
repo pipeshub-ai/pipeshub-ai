@@ -259,7 +259,7 @@ class RecordEventHandler(BaseEventService):
 
             elif payload and payload.get("signedUrl"):
                 try:
-                    response = await make_signed_url_api_call(route=payload["signedUrl"])
+                    response = await make_signed_url_api_call(signed_url=payload["signedUrl"])
                     if response:
                         payload["buffer"] = response
                     event_data_for_processor = {
