@@ -2152,8 +2152,8 @@ class SharePointConnector(BaseConnector):
                 )
                 site_record_groups_with_permissions.append((site_record_group, []))
                 # Get site permissions
-                site_permissions = await self._get_site_permissions(site_id)
-                self.logger.debug(f"Site permissions: '{site_permissions}'")
+                # site_permissions = await self._get_site_permissions(site_id)
+                # self.logger.debug(f"Site permissions: '{site_permissions}'")
                 # Process site record group
 
             await self.data_entities_processor.on_new_record_groups(site_record_groups_with_permissions)
