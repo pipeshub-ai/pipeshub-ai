@@ -171,6 +171,7 @@ class ArangoTransactionStore(TransactionStore):
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
 
+                print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! record inherit perms: ", record.inherit_permissions)
                 # Upsert base record
                 await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
                 # Upsert specific record type if it has a specific method
@@ -295,7 +296,16 @@ class ArangoTransactionStore(TransactionStore):
         await self.arango_service.batch_create_edges(
             [record_edge], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
         )
-
+    async def create_inherit_permissions_relation(self, record_id: str, record_group_id: str) -> None:
+        record_edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+        await self.arango_service.batch_create_edges(
+            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+        )
     async def get_sync_point(self, sync_point_key: str) -> Optional[Dict]:
         return await self.arango_service.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 

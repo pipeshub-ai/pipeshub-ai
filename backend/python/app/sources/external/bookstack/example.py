@@ -66,9 +66,9 @@ async def main() -> None:
     print(user1)
     # print(user2)
 
-    # print("\nList roles:")
-    # roles = await data_source.list_roles()
-    # print(roles)
+    print("\nList roles:")
+    roles = await data_source.list_roles()
+    print(roles)
 
     # print("\nGet role details")
     # role = await data_source.get_role(role_id=7)
@@ -99,31 +99,31 @@ async def main() -> None:
     # print(book)
 
     
-    # print("\nList all chapters")
-    # chapters = await data_source.list_chapters()
-    # print(chapters)
+    print("\nList all chapters")
+    chapters = await data_source.list_chapters()
+    print(chapters)
 
     # print("\n get chapter")
     # chapter = await data_source.get_chapter(chapter_id=1)
     # print(chapter)
 
-    # print("\nList Pages")
-    # pages = await data_source.list_pages(filter={"id": "1"})
-    # print(pages)
+    print("\nList Pages")
+    pages = await data_source.list_pages()
+    print(pages)
 
     # print("\nGet page")
     # page = await data_source.get_page(page_id=1)
     # print(page)
 
-    # print("\nList Permissions")
-    # permissions = await data_source.get_content_permissions(content_type="chapter", content_id=3)
-    # print(permissions)
+    print("\nList Permissions")
+    permissions = await data_source.get_content_permissions(content_type="page", content_id=12)
+    print(permissions)
 
     print("\nAudit log")
     audit_log = await data_source.list_audit_log(
         filter={
-            'type': 'role_delete',
-            'created_at:gte': '2025-10-18T06:30:00Z'
+            'type': 'permissions_update',
+            'created_at:gte': '2025-10-22T14:00:00Z'
         }
     )
     print(audit_log)
@@ -149,8 +149,8 @@ async def main() -> None:
         except (IndexError, ValueError):
             print(f"Could not parse the user name and ID from detail: '{detail_string}'")
 
-    # else:
-    #     print("No 'user_create' logs found in the response or the request failed.")
+    else:
+        print("No 'user_create' logs found in the response or the request failed.")
 
     # print("\nExport Page Markdown")
     # markdown = await data_source.export_page_markdown(1)

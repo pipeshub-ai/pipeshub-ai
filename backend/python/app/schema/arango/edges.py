@@ -75,6 +75,22 @@ belongs_to_schema = {
     "message": "Document does not match the belongsTo schema.",
 }
 
+# This is when records/record groups inherit permissions from parent record groups
+inherit_permissions_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the inheritPermissions schema.",
+}
+
 permissions_schema = {
     "rule": {
         "type": "object",

@@ -1114,7 +1114,8 @@ class BookStackConnector(BaseConnector):
                 description=item.get("description", ""),
                 connector_name=self.connector_name,
                 group_type=RecordGroupType.KB,
-                parent_external_group_id=parent_external_id
+                parent_external_group_id=parent_external_id,
+                inherit_permissions=parent_external_id is not None,
             )
 
             # 2. Fetch its permissions
@@ -1125,6 +1126,12 @@ class BookStackConnector(BaseConnector):
             permissions_list = []
             if permissions_response.success and permissions_response.data:
                 permissions_list = await self._parse_bookstack_permissions(permissions_response.data, roles_details, content_type_name)
+
+                fallback_permissions = permissions_response.data.get("fallback_permissions")
+                if fallback_permissions and parent_external_id:
+                    # Set inherit_permissions based on the 'inheriting' flag
+                    record_group.inherit_permissions = fallback_permissions.get("inheriting", False)
+                    print("\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! inherit_permissions: ", record_group.inherit_permissions)
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for {content_type_name} '{item_name}' (ID: {item_id}): "
@@ -1192,8 +1199,15 @@ class BookStackConnector(BaseConnector):
                         entity_type=EntityType.GROUP
                     )
                 )
-        # CASE B: No explicit permissions; fall back to default role permissions
-        else:
+        #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group 
+        #So either we can replicate the permissions of it's parent or not create the permission's edge at all (it will fetch the records from inherited permissions)
+        #Need to check if view/Create/Delete/Update permissions are set and how to handle it
+        #Maybe if inherit permissions are set true and its a book then we can create edges otherwise skip it
+        # CASE B: fall back to default role permissions
+        fallback_permissions = permissions_data.get("fallback_permissions", {})
+        inheriting_bool = fallback_permissions.get("inheriting", False)
+        if content_type_name == "book" and inheriting_bool:
+            print("\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Fallback Permissions")
             for role_id, role_details in roles_details.items():
                 role_system_permissions = set(role_details.get("permissions", []))
 
@@ -1254,7 +1268,8 @@ class BookStackConnector(BaseConnector):
         tasks = {
             "create": self.data_source.list_audit_log(filter={'type': f'{content_type}_create', 'created_at:gte': last_sync_timestamp}),
             "update": self.data_source.list_audit_log(filter={'type': f'{content_type}_update', 'created_at:gte': last_sync_timestamp}),
-            "delete": self.data_source.list_audit_log(filter={'type': f'{content_type}_delete', 'created_at:gte': last_sync_timestamp})
+            "delete": self.data_source.list_audit_log(filter={'type': f'{content_type}_delete', 'created_at:gte': last_sync_timestamp}),
+            "permissions_update": self.data_source.list_audit_log(filter={'type': f'permissions_update', 'created_at:gte': last_sync_timestamp}),
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         event_responses = dict(zip(tasks.keys(), results))
@@ -1279,6 +1294,13 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Found {len(delete_response.data['data'])} deleted {content_type}(s) to delete.")
             for event in delete_response.data['data']:
                 await self._handle_record_group_delete_event(event, content_type)
+        
+        permissions_update_response = event_responses.get("permissions_update")
+        if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
+            self.logger.info(f"Found {len(permissions_update_response.data['data'])} updated {content_type}(s) to update.")
+            for event in permissions_update_response.data['data']:
+                if event.get("loggable_type") == content_type:
+                    await self._handle_record_group_create_event(event, content_type, roles_details)
 
 
     async def _handle_record_group_create_event(self, event: Dict, content_type: str, roles_details: Dict[int, Dict]) -> None:
@@ -1497,6 +1519,7 @@ class BookStackConnector(BaseConnector):
                 extension="md",
                 is_file=True,
                 size_in_bytes=0,
+                inherit_permissions=True,
             )
 
             # 4. Fetch and parse permissions
@@ -1508,6 +1531,13 @@ class BookStackConnector(BaseConnector):
                 new_permissions = await self._parse_bookstack_permissions(
                     permissions_response.data, roles_details, "page"
                 )
+
+                fallback_permissions = permissions_response.data.get("fallback_permissions")
+
+                if fallback_permissions:
+                    # Set inherit_permissions based on the 'inheriting' flag
+                    file_record.inherit_permissions = fallback_permissions.get("inheriting", True)
+                    print("\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! inherit_permissions: ", file_record.inherit_permissions)
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "
@@ -1579,6 +1609,7 @@ class BookStackConnector(BaseConnector):
         tasks = {
             "create": self.data_source.list_audit_log(filter={'type': 'page_create', 'created_at:gte': last_sync_timestamp}),
             "update": self.data_source.list_audit_log(filter={'type': 'page_update', 'created_at:gte': last_sync_timestamp}),
+            "permissions_update": self.data_source.list_audit_log(filter={'type': 'permissions_update', 'created_at:gte': last_sync_timestamp}),
             "delete": self.data_source.list_audit_log(filter={'type': 'page_delete', 'created_at:gte': last_sync_timestamp}),
             "move": self.data_source.list_audit_log(filter={'type': 'page_move', 'created_at:gte': last_sync_timestamp})
         }
@@ -1598,6 +1629,14 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Found {len(update_response.data['data'])} page(s) to update.")
             for event in update_response.data['data']:
                 await self._handle_page_upsert_event(event, roles_details)
+        
+        permissions_update_response = event_responses.get("permissions_update")
+        if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
+            self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) to update.")
+            for event in permissions_update_response.data['data']:
+                if event.get('loggable_type') == 'page':
+                    print("\n\n\n\n Permissions Update event !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                    await self._handle_page_upsert_event(event, roles_details)
 
         # 4. Process Delete Events
         delete_response = event_responses.get("delete")
@@ -1642,15 +1681,12 @@ class BookStackConnector(BaseConnector):
         try:
             # 1. Parse the JSON string into a Python dictionary
             pages_data = json.loads(json_content_str)
-
             # 2. Extract the list of pages from the 'data' key
             pages_list = pages_data.get("data", [])
-
             # 3. Check if we actually got a page back
             if not pages_list:
                 self.logger.warning(f"No page data found in the response for ID {page_id}. Skipping.")
                 return
-
             # 4. Get the first (and only) page object from the list
             page_details = pages_list[0]
 

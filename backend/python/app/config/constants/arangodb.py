@@ -82,6 +82,7 @@ class CollectionNames(Enum):
     RECORD_RELATIONS = "recordRelations"
     RECORD_GROUPS = "recordGroups"
     SYNC_POINTS = "syncPoints"
+    INHERIT_PERMISSIONS = "inheritPermissions"
 
     # Knowledge base
     IS_OF_TYPE = "isOfType"
