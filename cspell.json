@@ -50,6 +50,7 @@
         "roleassignments",
         "scim",
         "smime",
+        "suborg",
         "sysparm",
         "teamdrives",
         "undelete",
@@ -59,6 +60,7 @@
         "userstore",
         "vectordb",
         "webresource",
+        "weburl",
         "Zammad"
     ],
     "ignoreWords": [],
