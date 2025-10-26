@@ -1199,7 +1199,7 @@ class BookStackConnector(BaseConnector):
                         entity_type=EntityType.GROUP
                     )
                 )
-        #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group 
+        #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group
         #So either we can replicate the permissions of it's parent or not create the permission's edge at all (it will fetch the records from inherited permissions)
         #Need to check if view/Create/Delete/Update permissions are set and how to handle it
         #Maybe if inherit permissions are set true and its a book then we can create edges otherwise skip it
@@ -1269,7 +1269,7 @@ class BookStackConnector(BaseConnector):
             "create": self.data_source.list_audit_log(filter={'type': f'{content_type}_create', 'created_at:gte': last_sync_timestamp}),
             "update": self.data_source.list_audit_log(filter={'type': f'{content_type}_update', 'created_at:gte': last_sync_timestamp}),
             "delete": self.data_source.list_audit_log(filter={'type': f'{content_type}_delete', 'created_at:gte': last_sync_timestamp}),
-            "permissions_update": self.data_source.list_audit_log(filter={'type': f'permissions_update', 'created_at:gte': last_sync_timestamp}),
+            "permissions_update": self.data_source.list_audit_log(filter={'type': 'permissions_update', 'created_at:gte': last_sync_timestamp}),
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         event_responses = dict(zip(tasks.keys(), results))
@@ -1294,7 +1294,7 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Found {len(delete_response.data['data'])} deleted {content_type}(s) to delete.")
             for event in delete_response.data['data']:
                 await self._handle_record_group_delete_event(event, content_type)
-        
+
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
             self.logger.info(f"Found {len(permissions_update_response.data['data'])} updated {content_type}(s) to update.")
@@ -1629,7 +1629,7 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Found {len(update_response.data['data'])} page(s) to update.")
             for event in update_response.data['data']:
                 await self._handle_page_upsert_event(event, roles_details)
-        
+
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
             self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) to update.")

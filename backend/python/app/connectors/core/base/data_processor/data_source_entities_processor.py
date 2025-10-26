@@ -122,8 +122,8 @@ class DataSourceEntitiesProcessor:
         if record_group:
             # Create a edge between the record and the record group if it doesn't exist
             await tx_store.create_record_group_relation(record.id, record_group.id)
-        
-            if record.inherit_permissions==True:
+
+            if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation(record.id, record_group.id)
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
@@ -236,14 +236,14 @@ class DataSourceEntitiesProcessor:
                     self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
                     await self._handle_record_permissions(record, permissions, tx_store)
                 # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
-                if record.inherit_permissions==True:
+                if record.inherit_permissions:
                     record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
                                                                       external_id=record.external_record_group_id)
 
                     if record_group:
                         await tx_store.create_inherit_permissions_relation(record.id, record_group.id)
 
-                if record.inherit_permissions==False:
+                if not record.inherit_permissions:
                     record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
                                                                       external_id=record.external_record_group_id)
                     if record_group:
