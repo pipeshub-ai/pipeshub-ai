@@ -162,7 +162,7 @@ class WebConnector(BaseConnector):
 
             if not config:
                 self.logger.error("❌ WebPage config not found")
-                raise ValueError("SharePoint Online credentials not found")
+                raise ValueError("Web connector configuration not found")
             print(config, "config")
 
             sync_config = config.get("sync", {})
