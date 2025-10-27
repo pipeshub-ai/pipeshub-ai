@@ -402,7 +402,7 @@ class DataSourceEntitiesProcessor:
                                 await tx_store.batch_create_edges(
                                     [inherit_relation], collection=CollectionNames.INHERIT_PERMISSIONS.value
                                 )
-                            #if inherit records is false we need to remove the edge aswell 
+                            #if inherit records is false we need to remove the edge aswell
                         else:
                             self.logger.warning(
                                 f"Could not find parent record group with external_id "

@@ -709,7 +709,7 @@ class BookStackConnector(BaseConnector):
 
         # 2. Fetch all user details to get complete user information
         all_users_with_details = await self._fetch_all_users_with_details()
-        
+
         # Create a map for quick user lookup by ID
         user_details_map = {
             user.get("id"): user for user in all_users_with_details
@@ -731,11 +731,11 @@ class BookStackConnector(BaseConnector):
             for user in role.get("users", []):
                 user_id = user.get("id")
                 user_details = user_details_map.get(user_id)
-                
+
                 if not user_details:
                     self.logger.warning(f"No details found for user ID {user_id} in role {role.get('display_name')}")
                     continue
-                
+
                 # Create AppUser object from the user details
                 app_user = AppUser(
                     app_name=self.connector_name,
@@ -977,23 +977,23 @@ class BookStackConnector(BaseConnector):
         # Build the list of AppUser objects for members of this group
         app_users = []
         role_users = role_details.get("users", [])
-        
+
         if role_users:
             # Fetch detailed user information for each user in the role
             user_ids = [user.get("id") for user in role_users if user.get("id")]
-            
+
             # Fetch user details in parallel
             tasks = [self.data_source.get_user(user_id) for user_id in user_ids]
             user_responses = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             for i, res in enumerate(user_responses):
                 if isinstance(res, Exception) or not res.success or not res.data:
                     self.logger.warning(f"Failed to get details for user ID {user_ids[i]}: {res}")
                     continue
-                    
+
                 user_details = res.data
                 user_id = user_details.get("id")
-                
+
                 # Create AppUser object from the fetched details
                 app_user = AppUser(
                     app_name=self.connector_name,

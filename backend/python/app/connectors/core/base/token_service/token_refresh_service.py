@@ -169,7 +169,7 @@ class TokenRefreshService:
             self._refresh_tasks[connector_name] = asyncio.create_task(
                 self._delayed_refresh(connector_name, delay)
             )
-        
+
         self.logger.info("Scheduled token refresh for connector %s", connector_name)
 
     async def _delayed_refresh(self, connector_name: str, delay: float) -> None:

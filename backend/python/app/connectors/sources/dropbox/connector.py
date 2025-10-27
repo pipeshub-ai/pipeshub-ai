@@ -617,15 +617,15 @@ class DropboxConnector(BaseConnector):
                     permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
 
                     user_info = user_membership.user
-                    
+
                     # Get email and check validity
                     email = user_info.email if hasattr(user_info, 'email') else None
-                    
+
                     # Skip users without email or with email ending in '#'
                     if not email or email.endswith('#'):
                         self.logger.debug(f"Skipping user {user_info.account_id} with invalid email: {email}")
                         continue
-                    
+
                     permissions.append(Permission(
                         external_id=user_info.account_id,
                         email=email,

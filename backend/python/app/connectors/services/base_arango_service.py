@@ -701,14 +701,14 @@ class BaseArangoService:
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 FILTER userToGroupEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("groups", group)
-                
+
                 // Hop 2: Group -> RecordGroup
                 FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 FILTER groupToRecordGroupEdge.type == 'GROUP'
 
                 // Hop 3: RecordGroup -> Record
                 FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER record._key == @recordId 
+                FILTER record._key == @recordId
 
                 RETURN {{
                     type: 'RECORD_GROUP',
@@ -721,17 +721,17 @@ class BaseArangoService:
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                     FILTER userToGroupEdge.type == 'USER'
                     FILTER IS_SAME_COLLECTION("groups", group)
-                
+
                 // Hop 2: Group -> Parent RecordGroup (permission)
                 FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                     FILTER groupToRgEdge.type == 'GROUP'
 
                 // Hop 3: Parent RecordGroup -> Child RecordGroup (belongs_to)
                 FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                
+
                 // Hop 4: Child RecordGroup -> Record (belongs_to)
                 FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                    FILTER record._key == @recordId 
+                    FILTER record._key == @recordId
 
                 RETURN {{
                     type: 'NESTED_RECORD_GROUP',
@@ -1171,28 +1171,28 @@ class BaseArangoService:
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
                         FILTER IS_SAME_COLLECTION("groups", group)
-                        
+
                         // Second hop: group -> recordgroup
                         FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
                             FILTER groupToRecordGroupEdge.type == "GROUP"
-                            
+
                             // Third hop: recordgroup -> record
                             FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                                 // Assuming the edge from recordgroup to record should also be filtered
                                 {permission_filter}
-                                
+
                                 FILTER record != null
                                 FILTER record.recordType != @drive_record_type
                                 FILTER record.isDeleted != true
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
                                 {record_filter}
-                                
+
                                 RETURN {{
                                     record: record,
-                                    permission: {{ 
-                                        role: recordGroupToRecordEdge.role, 
-                                        type: recordGroupToRecordEdge.type 
+                                    permission: {{
+                                        role: recordGroupToRecordEdge.role,
+                                        type: recordGroupToRecordEdge.type
                                     }}
                                 }}
                 )''' if include_connector_records else '[]'
@@ -1434,22 +1434,22 @@ class BaseArangoService:
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
                         FILTER IS_SAME_COLLECTION("groups", group)
-                        
+
                         // Second hop: group -> recordgroup
                         FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
                             FILTER groupToRecordGroupEdge.type == "GROUP"
-                            
+
                             // Third hop: recordgroup -> record
                             FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                                 {permission_filter}
-                                
+
                                 FILTER record != null
                                 FILTER record.recordType != @drive_record_type
                                 FILTER record.isDeleted != true
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
                                 {record_filter}
-                                
+
                                 RETURN record._key
                 )''' if include_connector_records else '[]'
             }
@@ -1597,35 +1597,35 @@ class BaseArangoService:
             }
 
             LET recordGroupConnectorRecordsFilter = {
-                f'''(
+                '''(
                     // First hop: user -> group
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
                         FILTER IS_SAME_COLLECTION("groups", group)
-                        
+
                         // Second hop: group -> recordgroup
                         FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
                             FILTER groupToRecordGroupEdge.type == "GROUP"
-                            
+
                             // Third hop: recordgroup -> record (via belongs_to)
                             FOR belongsEdge IN @@inherit_permissions
                                 FILTER belongsEdge._to == recordGroup._id
                                 LET record = DOCUMENT(belongsEdge._from)
-                                
+
                                 FILTER record != null
                                 FILTER record.recordType != @drive_record_type
                                 FILTER record.isDeleted != true
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
                                 // Note: No record_filter here as this is for getting all available filter values
-                                
-                                RETURN {{
+
+                                RETURN {
                                     record: record,
-                                    permission: {{ 
+                                    permission: {
                                         role: groupToRecordGroupEdge.role,
                                         type: groupToRecordGroupEdge.type
-                                    }}
-                                }}
+                                    }
+                                }
                 )''' if include_connector_records else '[]'
             }
 
@@ -1856,7 +1856,7 @@ class BaseArangoService:
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
 
-            
+
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
                 if connector_name == Connectors.GOOGLE_DRIVE.value:
@@ -3060,23 +3060,23 @@ class BaseArangoService:
             )
 
             LET group_permission = group_permission_old_permission ? group_permission_old_permission : group_permission_new_permission
-            
+
             // 2.5 Check inherited group->record_group permissions
             LET record_group_permission = FIRST(
                 // First hop: user -> group
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                     FILTER userToGroupEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("groups", group)
-                    
+
                     // Second hop: group -> recordgroup
                     FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
                         FILTER groupToRecordGroupEdge.type == "GROUP"
-                        
+
                         // Third hop: recordgroup -> record
                         FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                             FILTER rec._id == record_from
                             // The role is on the final edge from the record group to the record
-                            RETURN recordGroupToRecordEdge.role 
+                            RETURN recordGroupToRecordEdge.role
             )
 
             LET nested_record_group_permission = FIRST(
@@ -3084,20 +3084,20 @@ class BaseArangoService:
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                     FILTER userToGroupEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("groups", group)
-                    
+
                 // Second hop: group -> recordgroup1
                 FOR recordGroup1, groupToRg1Edge IN 1..1 ANY group._id @@permission
                     FILTER groupToRg1Edge.type == "GROUP"
-                
+
                 // Third hop: recordgroup1 -> recordgroup2
                 FOR recordGroup2, rg1ToRg2Edge IN 1..1 INBOUND recordGroup1._id @@inherit_permissions
                     FILTER rg1ToRg2Edge.type == "GROUP"
-                    
+
                 // Fourth hop: recordgroup2 -> record
                 FOR rec, rg2ToRecordEdge IN 1..1 INBOUND recordGroup2._id @@inherit_permissions
                     FILTER rec._id == record_from
                     // The role is on the final edge from the record group (rg2) to the record
-                    RETURN rg2ToRecordEdge.role 
+                    RETURN rg2ToRecordEdge.role
             )
 
             // 3. Check domain/organization permissions
