@@ -10911,7 +10911,6 @@ class BaseArangoService:
                     "✅ Found %d duplicate record(s) matching criteria",
                     len(duplicate_records)
                 )
-                self.logger.info(f"Duplicate records: {[record['_key'] for record in duplicate_records]}")
             else:
                 self.logger.info("✅ No duplicate records found")
 
