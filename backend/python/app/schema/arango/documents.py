@@ -186,6 +186,7 @@ record_schema = {
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
+            "previewRenderable": {"type": ["boolean", "null"], "default": True},
         },
         "required": [
             "recordName",

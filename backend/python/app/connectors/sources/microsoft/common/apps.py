@@ -2,6 +2,10 @@ from app.config.constants.arangodb import AppGroups, Connectors
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 
 
+class WebApp(App):
+    def __init__(self) -> None:
+        super().__init__(Connectors.WEB, AppGroups.WEB)
+
 class OneDriveApp(App):
     def __init__(self) -> None:
         super().__init__(Connectors.ONEDRIVE, AppGroups.MICROSOFT)

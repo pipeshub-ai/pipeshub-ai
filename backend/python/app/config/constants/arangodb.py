@@ -47,6 +47,7 @@ class Connectors(Enum):
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
     DROPBOX = "DROPBOX"
+    WEB = "WEB"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -54,6 +55,7 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    WEB = "Web"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -206,9 +208,9 @@ class MimeTypes(Enum):
     SVG = "image/svg+xml"
     HEIC = "image/heic"
     HEIF = "image/heif"
-
-
-
+    TEXT = "text/plain"
+    ZIP = "application/zip"
+    GIF = "image/gif"
 
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"
