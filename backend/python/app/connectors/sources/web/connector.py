@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import uuid
+from io import BytesIO
 from logging import Logger
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -10,18 +11,19 @@ from bs4 import BeautifulSoup
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     CustomField,
     DocumentationLink,
 )
-from app.connectors.sources.microsoft.common.apps import WebApp
 from app.models.entities import (
     FileRecord,
     Record,
@@ -54,6 +56,9 @@ FILE_MIME_TYPES = {
     '.htm': MimeTypes.HTML,
 }
 
+class WebApp(App):
+    def __init__(self) -> None:
+        super().__init__(Connectors.WEB, AppGroups.WEB)
 
 @ConnectorBuilder("Web")\
     .in_group("Web")\
@@ -163,7 +168,6 @@ class WebConnector(BaseConnector):
             if not config:
                 self.logger.error("❌ WebPage config not found")
                 raise ValueError("Web connector configuration not found")
-            print(config, "config")
 
             sync_config = config.get("sync", {})
             if not sync_config:
@@ -177,7 +181,7 @@ class WebConnector(BaseConnector):
 
             self.crawl_type = sync_config.get("type", "single")
             self.max_depth = int(sync_config.get("depth", 3))
-            self.max_pages = int(sync_config.get("max_pages", 100000))
+            self.max_pages = int(sync_config.get("max_pages", 1000))
             self.follow_external = sync_config.get("follow_external", False)
 
 
@@ -233,7 +237,7 @@ class WebConnector(BaseConnector):
 
         try:
             async with self.session.head(self.url, allow_redirects=True) as response:
-                if response.status < 400:
+                if response.status < HttpStatusCode.BAD_REQUEST.value:
                     self.logger.info(f"✅ Website accessible: {self.url} (status: {response.status})")
                     return True
                 else:
@@ -359,12 +363,11 @@ class WebConnector(BaseConnector):
                 headers["Referer"] = referer
 
             async with self.session.get(url, headers=headers, allow_redirects=True) as response:
-                if response.status >= 400:
+                if response.status >= HttpStatusCode.BAD_REQUEST.value:
                     self.logger.warning(f"⚠️ HTTP {response.status} for {url}")
                     return None
 
                 content_type = response.headers.get("Content-Type", "").lower()
-                int(response.headers.get("Content-Length", 0))
                 final_url = str(response.url)
 
                 # Read content
@@ -402,6 +405,9 @@ class WebConnector(BaseConnector):
                     except Exception as e:
                         self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
 
+                # Calculate MD5 hash once
+                content_md5_hash = hashlib.md5(content_bytes).hexdigest()
+
                 # Create FileRecord
                 file_record = FileRecord(
                     id=record_id,
@@ -409,7 +415,7 @@ class WebConnector(BaseConnector):
                     record_type=RecordType.FILE,
                     record_group_type=RecordGroupType.WEB,
                     external_record_id=external_id,
-                    external_revision_id=hashlib.md5(content_bytes).hexdigest(),
+                    external_revision_id=content_md5_hash,
                     external_record_group_id=self.url,
                     version=0,
                     origin=OriginTypes.CONNECTOR.value,
@@ -424,7 +430,7 @@ class WebConnector(BaseConnector):
                     extension=extension,
                     path=urlparse(final_url).path,
                     mime_type=mime_type.value,
-                    md5_hash=hashlib.md5(content_bytes).hexdigest(),
+                    md5_hash=content_md5_hash,
                     preview_renderable=False,
                 )
 
@@ -465,7 +471,7 @@ class WebConnector(BaseConnector):
 
             # Re-fetch and parse the page to extract links
             async with self.session.get(file_record.weburl, headers=headers) as response:
-                if response.status >= 400:
+                if response.status >= HttpStatusCode.BAD_REQUEST.value:
                     return links
 
                 html_content = await response.text()
@@ -637,7 +643,7 @@ class WebConnector(BaseConnector):
             # Use appropriate headers for streaming
             headers = {"Referer": self.url} if self.url else {}
             async with self.session.get(record.weburl, headers=headers) as response:
-                if response.status >= 400:
+                if response.status >= HttpStatusCode.BAD_REQUEST.value:
                     return None
 
                 content_bytes = await response.read()
@@ -669,7 +675,6 @@ class WebConnector(BaseConnector):
                 # For PDF and other binary formats, return as-is
                 # For other text formats (JSON, XML, TXT), return as-is
 
-                from io import BytesIO
                 return StreamingResponse(
                     BytesIO(content_bytes),
                     media_type=mime_type,
