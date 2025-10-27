@@ -20,11 +20,11 @@ declare module '@mui/material/styles' {
 
 // ----------------------------------------------------------------------
 
-export const defaultFont = 'Public Sans Variable';
+export const defaultFont = 'Host Grotesk Variable';
 
 export const primaryFont = setFont(defaultFont);
 
-export const secondaryFont = setFont('Barlow');
+export const secondaryFont = primaryFont;
 
 // ----------------------------------------------------------------------
 
