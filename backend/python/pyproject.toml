@@ -5,6 +5,9 @@ select = ["E", "F", "W", "I", "F401", "PLW0603"]
 ignore = [
     "E501",  # Line too long
 ]
+exclude = [
+    "../tests",
+]
 src = ["."]
 
 
