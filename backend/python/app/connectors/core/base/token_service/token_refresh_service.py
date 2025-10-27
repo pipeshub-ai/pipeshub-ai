@@ -67,6 +67,7 @@ class TokenRefreshService:
 
     async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
+
         try:
             filtered_app_name = connector_name.replace(" ", "").lower()
             config_key = f"/services/connectors/{filtered_app_name}/config"
@@ -99,7 +100,8 @@ class TokenRefreshService:
             oauth_provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,
-                credentials_path=f"/services/connectors/{filtered_app_name}/config"
+                credentials_path=f"/services/connectors/{filtered_app_name}/config",
+                connector_name=filtered_app_name
             )
 
             # Create token from stored credentials
@@ -148,12 +150,14 @@ class TokenRefreshService:
 
     async def schedule_token_refresh(self, connector_name: str, token: OAuthToken) -> None:
         """Schedule token refresh for a specific connector"""
+
+        self.logger.info("Scheduling token refresh for connector %s", connector_name)
         if not token.expires_in:
             return
 
         # Calculate refresh time (refresh 5 minutes before expiry)
         # Refresh 10 minutes before expiry for safety
-        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 600))
+        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 60))
         delay = (refresh_time - datetime.now()).total_seconds()
 
         if delay > 0:
@@ -165,6 +169,8 @@ class TokenRefreshService:
             self._refresh_tasks[connector_name] = asyncio.create_task(
                 self._delayed_refresh(connector_name, delay)
             )
+        
+        self.logger.info("Scheduled token refresh for connector %s", connector_name)
 
     async def _delayed_refresh(self, connector_name: str, delay: float) -> None:
         """Delayed token refresh"""

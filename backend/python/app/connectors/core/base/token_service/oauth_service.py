@@ -103,12 +103,13 @@ class OAuthToken:
 class OAuthProvider:
     """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str) -> None:
+    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str, connector_name: Optional[str] = None) -> None:
         self.config = config
         self.key_value_store = key_value_store
         self._session: Optional[ClientSession] = None
         self.credentials_path = credentials_path
         self.token = None
+        self.connector_name = connector_name
 
     @property
     async def session(self) -> ClientSession:
@@ -144,6 +145,9 @@ class OAuthProvider:
 
         params.update(self.config.additional_params)
         params.update(kwargs)
+
+        if(self.connector_name.lower()=="dropbox"):
+            params["token_access_type"] = "offline"
 
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
@@ -188,7 +192,6 @@ class OAuthProvider:
             token_data = await response.json()
 
         # Create new token with current timestamp
-
         token = OAuthToken(**token_data)
 
         # Handle different OAuth providers:

@@ -235,9 +235,11 @@ class DropboxConnector(BaseConnector):
 
         credentials_config = config.get("credentials")
         access_token = credentials_config.get("access_token")
+        refresh_token = credentials_config.get("refresh_token")
         is_team = credentials_config.get("isTeam", True)
+
         try:
-            config = DropboxTokenConfig(token=access_token)
+            config = DropboxTokenConfig(token=access_token, refresh_token=refresh_token)
             client = await DropboxClient.build_with_config(config, is_team=is_team)
             self.data_source = DropboxDataSource(client)
             self.logger.info("Dropbox client initialized successfully.")
@@ -609,16 +611,24 @@ class DropboxConnector(BaseConnector):
                 'viewer': PermissionType.READ,
             }
 
-            # Process user permissions
             if hasattr(members_result.data, 'users') and members_result.data.users:
                 for user_membership in members_result.data.users:
                     access_type_tag = user_membership.access_type._tag
                     permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
 
                     user_info = user_membership.user
+                    
+                    # Get email and check validity
+                    email = user_info.email if hasattr(user_info, 'email') else None
+                    
+                    # Skip users without email or with email ending in '#'
+                    if not email or email.endswith('#'):
+                        self.logger.debug(f"Skipping user {user_info.account_id} with invalid email: {email}")
+                        continue
+                    
                     permissions.append(Permission(
                         external_id=user_info.account_id,
-                        email=user_info.email if hasattr(user_info, 'email') else None,
+                        email=email,
                         type=permission_type,
                         entity_type=EntityType.USER
                     ))

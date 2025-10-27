@@ -446,6 +446,7 @@ class BookStackConnector(BaseConnector):
 
         users = await self.get_all_users()
 
+
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_user_sync_point.get('timestamp'):
             await self.user_sync_point.update_sync_point(
@@ -695,7 +696,7 @@ class BookStackConnector(BaseConnector):
     async def _sync_user_groups_full(self) -> None:
         """
         Fetches all roles with their detailed user assignments to build and
-        upsert user groups with their member permissions.
+        upsert user groups with their member users (AppUser objects).
         """
         self.logger.info("Starting BookStack user group and permissions sync...")
 
@@ -706,19 +707,15 @@ class BookStackConnector(BaseConnector):
             return
         self.logger.info(f"Found {len(all_roles_with_details)} total roles with details.")
 
-        # 2. To get user emails (not present in the role's user list), we still
-        # need to fetch all user profiles. This is done efficiently in parallel.
+        # 2. Fetch all user details to get complete user information
         all_users_with_details = await self._fetch_all_users_with_details()
-        user_email_map = {
-            user.get("id"): user.get("email") for user in all_users_with_details
+        
+        # Create a map for quick user lookup by ID
+        user_details_map = {
+            user.get("id"): user for user in all_users_with_details
         }
 
-        # 3. Create a map of {role_id: [List of Permissions]} using the detailed role data.
-        role_to_permissions_map = self._build_role_permissions_map(
-            all_roles_with_details, user_email_map
-        )
-
-        # 4. Build the final batch for the data processor.
+        # 3. Build the final batch for the data processor.
         user_groups_batch = []
         for role in all_roles_with_details:
             # Create the AppUserGroup object for the role.
@@ -729,18 +726,52 @@ class BookStackConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id
             )
 
-            # Get the list of user permissions for this role from our map.
-            permissions = role_to_permissions_map.get(role.get("id"), [])
+            # Build list of AppUser objects for users in this role
+            app_users = []
+            for user in role.get("users", []):
+                user_id = user.get("id")
+                user_details = user_details_map.get(user_id)
+                
+                if not user_details:
+                    self.logger.warning(f"No details found for user ID {user_id} in role {role.get('display_name')}")
+                    continue
+                
+                # Create AppUser object from the user details
+                app_user = AppUser(
+                    app_name=self.connector_name,
+                    source_user_id=str(user_id),
+                    email=user_details.get("email", ""),
+                    full_name=user_details.get("name", ""),
+                    org_id=self.data_entities_processor.org_id,
+                    is_active=True,  # Assuming users in roles are active
+                    title=user_details.get("title") if user_details.get("title") else None,
+                    source_created_at=self._parse_timestamp(user_details.get("created_at")) if user_details.get("created_at") else None,
+                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None
+                )
+                app_users.append(app_user)
 
-            user_groups_batch.append((app_user_group, permissions))
+            user_groups_batch.append((app_user_group, app_users))
 
-        # 5. Send the complete batch to the processor.
+        # 4. Send the complete batch to the processor.
         if user_groups_batch:
-            self.logger.info(f"Submitting {len(user_groups_batch)} groups with permissions...")
+            self.logger.info(f"Submitting {len(user_groups_batch)} groups with their users...")
             await self.data_entities_processor.on_new_user_groups(user_groups_batch)
             self.logger.info("✅ Successfully processed user groups and permissions.")
         else:
             self.logger.info("No user groups were processed.")
+
+
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[int]:
+        """Helper to parse timestamp string to epoch milliseconds."""
+        if not timestamp_str:
+            return None
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            return int(dt.timestamp() * 1000)
+        except Exception as e:
+            self.logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
+            return None
 
     async def _fetch_all_roles_with_details(self) -> List[Dict]:
         """
@@ -943,23 +974,43 @@ class BookStackConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id
         )
 
-        # Build the list of permissions (members) for this group
-        permissions = []
-        for user in role_details.get("users", []):
-            user_id = user.get("id")
-            email = user_email_map.get(user_id) # Look up email from the pre-fetched map
+        # Build the list of AppUser objects for members of this group
+        app_users = []
+        role_users = role_details.get("users", [])
+        
+        if role_users:
+            # Fetch detailed user information for each user in the role
+            user_ids = [user.get("id") for user in role_users if user.get("id")]
+            
+            # Fetch user details in parallel
+            tasks = [self.data_source.get_user(user_id) for user_id in user_ids]
+            user_responses = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for i, res in enumerate(user_responses):
+                if isinstance(res, Exception) or not res.success or not res.data:
+                    self.logger.warning(f"Failed to get details for user ID {user_ids[i]}: {res}")
+                    continue
+                    
+                user_details = res.data
+                user_id = user_details.get("id")
+                
+                # Create AppUser object from the fetched details
+                app_user = AppUser(
+                    app_name=self.connector_name,
+                    source_user_id=str(user_id),
+                    email=user_details.get("email", ""),
+                    full_name=user_details.get("name", ""),
+                    org_id=self.data_entities_processor.org_id,
+                    is_active=True,  # Users in roles are assumed to be active
+                    title=user_details.get("title") if user_details.get("title") else None,
+                    source_created_at=self._parse_timestamp(user_details.get("created_at")) if user_details.get("created_at") else None,
+                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None
+                )
+                app_users.append(app_user)
 
-            if user_id and email:
-                permissions.append(Permission(
-                    external_id=str(user_id),
-                    email=email,
-                    type=PermissionType.WRITE,
-                    entity_type=EntityType.GROUP
-                ))
-
-        # Process the new group and its permissions
-        self.logger.info(f"Processing newly created user group '{app_user_group.name}'...")
-        await self.data_entities_processor.on_new_user_groups([(app_user_group, permissions)])
+        # Process the new group and its members
+        self.logger.info(f"Processing newly created user group '{app_user_group.name}' with {len(app_users)} members...")
+        await self.data_entities_processor.on_new_user_groups([(app_user_group, app_users)])
 
     async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
         await self._handle_role_delete_event(role_id)
@@ -1131,7 +1182,6 @@ class BookStackConnector(BaseConnector):
                 if fallback_permissions and parent_external_id:
                     # Set inherit_permissions based on the 'inheriting' flag
                     record_group.inherit_permissions = fallback_permissions.get("inheriting", False)
-                    print("\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! inherit_permissions: ", record_group.inherit_permissions)
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for {content_type_name} '{item_name}' (ID: {item_id}): "
@@ -1207,7 +1257,6 @@ class BookStackConnector(BaseConnector):
         fallback_permissions = permissions_data.get("fallback_permissions", {})
         inheriting_bool = fallback_permissions.get("inheriting", False)
         if content_type_name == "book" and inheriting_bool:
-            print("\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Fallback Permissions")
             for role_id, role_details in roles_details.items():
                 role_system_permissions = set(role_details.get("permissions", []))
 
@@ -1537,7 +1586,6 @@ class BookStackConnector(BaseConnector):
                 if fallback_permissions:
                     # Set inherit_permissions based on the 'inheriting' flag
                     file_record.inherit_permissions = fallback_permissions.get("inheriting", True)
-                    print("\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! inherit_permissions: ", file_record.inherit_permissions)
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "
@@ -1635,7 +1683,6 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) to update.")
             for event in permissions_update_response.data['data']:
                 if event.get('loggable_type') == 'page':
-                    print("\n\n\n\n Permissions Update event !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                     await self._handle_page_upsert_event(event, roles_details)
 
         # 4. Process Delete Events

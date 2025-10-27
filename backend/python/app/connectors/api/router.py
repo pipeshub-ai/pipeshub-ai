@@ -2293,7 +2293,8 @@ async def get_oauth_authorization_url(
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config",
+            connector_name=filtered_app_name
         )
         # Generate authorization URL using OAuth provider
         # Add provider-specific parameters to ensure refresh_token is issued where applicable
@@ -2452,7 +2453,8 @@ async def handle_oauth_callback(
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config",
+            connector_name=connector_name
         )
 
         # Exchange code for token using OAuth provider (ensure cleanup)

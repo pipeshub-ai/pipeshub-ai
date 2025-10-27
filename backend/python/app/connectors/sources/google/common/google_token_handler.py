@@ -122,7 +122,8 @@ class GoogleTokenHandler:
             provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,  # type: ignore
-                credentials_path=config_key
+                credentials_path=config_key,
+                connector_name=filtered_app_name
             )
 
             try:

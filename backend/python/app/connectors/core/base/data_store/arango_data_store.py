@@ -171,7 +171,6 @@ class ArangoTransactionStore(TransactionStore):
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
 
-                print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! record inherit perms: ", record.inherit_permissions)
                 # Upsert base record
                 await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
                 # Upsert specific record type if it has a specific method
