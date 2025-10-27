@@ -19,6 +19,7 @@ class RecordGroupType(str, Enum):
     SHAREPOINT_SITE = "SHAREPOINT_SITE"
     SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
     MAILBOX = "MAILBOX"
+    WEB = "WEB"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -72,6 +73,7 @@ class Record(BaseModel):
     weburl: Optional[str] = None
     signed_url: Optional[str] = None
     fetch_signed_url: Optional[str] = None
+    preview_renderable: Optional[bool] = True
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
@@ -79,7 +81,6 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
-
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
@@ -104,6 +105,7 @@ class Record(BaseModel):
             "isDeleted": False,
             "isArchived": False,
             "deletedByUserId": None,
+            "previewRenderable": self.preview_renderable,
         }
 
     @staticmethod
@@ -139,6 +141,7 @@ class Record(BaseModel):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
+            preview_renderable=arango_base_record.get("previewRenderable", True),
         )
 
     def to_kafka_record(self) -> Dict:

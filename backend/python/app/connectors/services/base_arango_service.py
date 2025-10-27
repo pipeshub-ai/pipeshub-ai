@@ -1096,7 +1096,27 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET allConnectorRecordsNewPermission = UNION_DISTINCT(connectorRecordsNewPermission, groupConnectorRecordsNewPermission)
+            LET orgAccessPermission = {
+                f'''(
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR record, permEdge IN 1..1 ANY org._id @@permission
+                            FILTER permEdge.type == "ORG"
+                            {permission_filter}
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: permEdge.role, type: permEdge.type }}
+                            }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET allConnectorRecordsNewPermission = UNION_DISTINCT(connectorRecordsNewPermission, groupConnectorRecordsNewPermission, orgAccessPermission)
             LET allConnectorRecordsDistinct = (
                 FOR item IN allConnectorRecordsNewPermission
                     COLLECT recordKey = item.record._key
@@ -1266,8 +1286,25 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            LET orgAccessKeys = {
+                f'''(
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR record, permEdge IN 1..1 ANY org._id @@permission
+                            FILTER permEdge.type == "ORG"
+                            {permission_filter}
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
             // Combine all keys and count unique ones
-            LET allNewPermissionKeys = APPEND(connectorKeysNewPermission, groupConnectorKeysNewPermission)
+            LET allNewPermissionKeys = APPEND(connectorKeysNewPermission, groupConnectorKeysNewPermission, orgAccessKeys)
             LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
 
             RETURN kbCount + connectorCount + uniqueNewPermissionCount
@@ -1360,7 +1397,25 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET ConnectorRecords = UNION_DISTINCT(allConnectorRecordsNewPermission, allGroupConnectorRecordsNewPermission)
+            LET allOrgAccessRecords = {
+                '''(
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR record, permEdge IN 1..1 ANY org._id @@permission
+                            FILTER permEdge.type == "ORG"
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            RETURN {
+                                record: record,
+                                permission: { role: permEdge.role, type: permEdge.type }
+                            }
+                )''' if include_connector_records else '[]'
+            }
+
+            LET ConnectorRecords = UNION_DISTINCT(allConnectorRecordsNewPermission, allGroupConnectorRecordsNewPermission, allOrgAccessRecords)
             LET allConnectorRecordsDistinct = (
                 FOR item IN ConnectorRecords
                     COLLECT recordKey = item.record._key
@@ -2758,7 +2813,7 @@ class BaseArangoService:
                     FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == org._id
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
 
@@ -2771,7 +2826,7 @@ class BaseArangoService:
                     FOR perm IN @@permission
                         FILTER perm._from == org._id
                         FILTER perm._to == record_from
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
 
@@ -2923,7 +2978,7 @@ class BaseArangoService:
                     FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == org._id
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
             // 4. Check 'anyone' permissions (Drive-specific)
@@ -3084,7 +3139,7 @@ class BaseArangoService:
                     FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == org._id
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
             // 5. Check 'anyone' permissions
