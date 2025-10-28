@@ -8,6 +8,7 @@ import Typography from '@mui/material/Typography';
 import { alpha, useTheme } from '@mui/material/styles';
 
 import { RouterLink } from 'src/routes/components';
+import { varAlpha } from 'src/theme/styles/utils';
 
 import { AuthSplitLogo } from './logo';
 
@@ -91,7 +92,8 @@ export function Section({
         sx={{
           position: 'absolute',
           inset: 0,
-          bgcolor: alpha(theme.palette.common.black, 0.48),
+          borderRadius: 'inherit',
+          bgcolor: varAlpha(theme.vars.palette.common.blackChannel, 0.2),
         }}
       />
 
