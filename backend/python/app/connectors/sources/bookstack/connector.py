@@ -1309,7 +1309,7 @@ class BookStackConnector(BaseConnector):
                     f"Skipping permission for user {user.full_name} "
                     f"due to missing email or source_user_id."
                 )
-        
+
         return permissions_list
 
     async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict]) -> None:
