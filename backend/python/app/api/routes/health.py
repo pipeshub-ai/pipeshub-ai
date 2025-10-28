@@ -455,30 +455,37 @@ async def perform_embedding_health_check(
             try:
                 retrieval_service = await request.app.container.retrieval_service()
                 collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
-                qdrant_vector_size = collection_info.config.params.vectors.get("dense").size
-                points_count = getattr(collection_info, "points_count", 0)
 
-                if points_count and qdrant_vector_size and qdrant_vector_size != embedding_dimension:
-                    return JSONResponse(
-                        status_code=400,
-                        content={
-                            "status": "error",
-                            "message": "Embedding model dimension mismatch with existing non-empty collection",
-                            "details": {
-                                "existing_vector_size": qdrant_vector_size,
-                                "new_embedding_size": embedding_dimension,
-                                "points_count": points_count,
+                if collection_info:
+                    dense_vector = collection_info.config.params.vectors.get("dense")
+                    qdrant_vector_size = getattr(dense_vector, "size", None) if dense_vector else None
+
+                    if qdrant_vector_size is None:
+                        raise Exception("Qdrant vector size not found")
+
+                    points_count = getattr(collection_info, "points_count", 0)
+
+                    if points_count>0 and qdrant_vector_size != embedding_dimension:
+                        return JSONResponse(
+                            status_code=400,
+                            content={
+                                "status": "error",
+                                "message": "Embedding model dimension mismatch with existing non-empty collection",
+                                "details": {
+                                    "existing_vector_size": qdrant_vector_size,
+                                    "new_embedding_size": embedding_dimension,
+                                    "points_count": points_count,
+                                },
+                                "timestamp": get_epoch_timestamp_in_ms(),
                             },
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                        },
-                    )
+                        )
             except Exception:
-                logger.error(f"Collection lookup failed")
+                logger.error("Collection lookup failed")
                 return JSONResponse(
                     status_code=500,
                     content={
                         "status": "error",
-                        "message": f"Something went wrong! Please try again.",
+                        "message": "Something went wrong! Please try again.",
                     },
                 )
 
