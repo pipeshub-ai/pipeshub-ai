@@ -1539,7 +1539,17 @@ async def final_response_node(
             synthesis_instruction += "- Provide a COMPLETE, DETAILED response (NOT just 1-2 sentences)\n"
             synthesis_instruction += "- Use proper markdown formatting with headers and lists\n"
             synthesis_instruction += "- Be specific - mention actual tool names, errors, and outcomes\n"
-            synthesis_instruction += "- Help the user understand what happened and what to do next"
+            synthesis_instruction += "- Help the user understand what happened and what to do next\n"
+            synthesis_instruction += "\n**CRITICAL - JSON FORMAT REQUIRED**:\n"
+            synthesis_instruction += "You MUST respond with ONLY a valid JSON object in this exact format:\n"
+            synthesis_instruction += '{\n'
+            synthesis_instruction += '  "answer": "Your detailed markdown response here",\n'
+            synthesis_instruction += '  "citations": [],\n'
+            synthesis_instruction += '  "confidence": "High",\n'
+            synthesis_instruction += '  "reason": "Brief explanation",\n'
+            synthesis_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
+            synthesis_instruction += '}\n'
+            synthesis_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
 
             full_context += synthesis_instruction
 
@@ -1556,12 +1566,23 @@ async def final_response_node(
                 })
         elif tool_context:
             # Normal case - just add tool context
+            json_format_instruction = "\n\n**CRITICAL - JSON FORMAT REQUIRED**:\n"
+            json_format_instruction += "You MUST respond with ONLY a valid JSON object in this exact format:\n"
+            json_format_instruction += '{\n'
+            json_format_instruction += '  "answer": "Your detailed response here",\n'
+            json_format_instruction += '  "citations": [],\n'
+            json_format_instruction += '  "confidence": "High",\n'
+            json_format_instruction += '  "reason": "Brief explanation",\n'
+            json_format_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
+            json_format_instruction += '}\n'
+            json_format_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
+            
             if validated_messages and validated_messages[-1]["role"] == "user":
-                validated_messages[-1]["content"] += f"\n\n{tool_context}"
+                validated_messages[-1]["content"] += f"\n\n{tool_context}{json_format_instruction}"
             else:
                 validated_messages.append({
                     "role": "user",
-                    "content": f"{tool_context}\n\nPlease provide your response."
+                    "content": f"{tool_context}{json_format_instruction}\n\nPlease provide your response."
                 })
 
         # Get final results for citations
