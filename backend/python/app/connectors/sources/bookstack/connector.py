@@ -1288,6 +1288,30 @@ class BookStackConnector(BaseConnector):
 
         return permissions_list
 
+    def _parse_bookstack_permissions_all_users(self, all_users: List[AppUser]) -> List[Permission]:
+        """
+        Creates a list of Permission objects granting READ access to every user
+        in the provided list.
+        """
+        permissions_list = []
+        for user in all_users:
+            if user.email and user.source_user_id:
+                permissions_list.append(
+                    Permission(
+                        external_id=user.source_user_id,
+                        email=user.email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER
+                    )
+                )
+            else:
+                self.logger.warning(
+                    f"Skipping permission for user {user.full_name} "
+                    f"due to missing email or source_user_id."
+                )
+        
+        return permissions_list
+
     async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict]) -> None:
         """
         Sync all record groups (books, shelves and chapter) from BookStack as RecordGroup objects, handling new/updated/deleted record groups.
@@ -1412,23 +1436,24 @@ class BookStackConnector(BaseConnector):
         bookstack_record_sync_point = await self.record_sync_point.read_sync_point(bookstack_record_sync_key)
 
         roles_details = await self.list_roles_with_details()
+        users = await self.get_all_users()
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_record_sync_point.get('timestamp'):
-            await self._sync_records_full(roles_details)
+            await self._sync_records_full(roles_details, users)
             await self.record_sync_point.update_sync_point(
                 bookstack_record_sync_key,
                 {"timestamp": current_timestamp}
             )
         else:
             last_sync_timestamp = bookstack_record_sync_point.get('timestamp')
-            await self._sync_records_incremental(last_sync_timestamp, roles_details)
+            await self._sync_records_incremental(last_sync_timestamp, roles_details, users)
             await self.record_sync_point.update_sync_point(
                 bookstack_record_sync_key,
                 {"timestamp": current_timestamp}
             )
 
-    async def _sync_records_full(self, roles_details: Dict[int, Dict]) -> None:
+    async def _sync_records_full(self, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
         """
         Sync all pages from BookStack as Record objects, handling new/updated/deleted records.
         """
@@ -1460,7 +1485,7 @@ class BookStackConnector(BaseConnector):
 
             # Process each page from the current API response
             for page in pages_page:
-                record_update = await self._process_bookstack_page(page, roles_details)
+                record_update = await self._process_bookstack_page(page, roles_details, users)
 
                 if not record_update:
                     continue
@@ -1497,7 +1522,7 @@ class BookStackConnector(BaseConnector):
 
         self.logger.info("✅ Finished syncing all page records.")
 
-    async def _process_bookstack_page(self, page: Dict, roles_details: Dict[int, Dict]) -> Optional[RecordUpdate]:
+    async def _process_bookstack_page(self, page: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> Optional[RecordUpdate]:
         """
         Process a single BookStack page, create a Record object, detect changes, and fetch its permissions.
         Returns RecordUpdate object containing the record and change information.
@@ -1577,9 +1602,11 @@ class BookStackConnector(BaseConnector):
                 content_type="page", content_id=page_id
             )
             if permissions_response.success and permissions_response.data:
-                new_permissions = await self._parse_bookstack_permissions(
-                    permissions_response.data, roles_details, "page"
-                )
+                # new_permissions = await self._parse_bookstack_permissions(
+                #     permissions_response.data, roles_details, "page"
+                # )
+
+                new_permissions = self._parse_bookstack_permissions_all_users(all_users=users)
 
                 fallback_permissions = permissions_response.data.get("fallback_permissions")
 
@@ -1646,7 +1673,7 @@ class BookStackConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def _sync_records_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict]) -> None:
+    async def _sync_records_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
         """
         Syncs records (pages) incrementally by processing create, update, and
         delete events from the audit log since the last sync.
@@ -1669,21 +1696,21 @@ class BookStackConnector(BaseConnector):
         if create_response and create_response.success and create_response.data.get('data'):
             self.logger.info(f"Found {len(create_response.data['data'])} new page(s) to create.")
             for event in create_response.data['data']:
-                await self._handle_page_upsert_event(event, roles_details)
+                await self._handle_page_upsert_event(event, roles_details, users)
 
         # 3. Process Update Events
         update_response = event_responses.get("update")
         if update_response and update_response.success and update_response.data.get('data'):
             self.logger.info(f"Found {len(update_response.data['data'])} page(s) to update.")
             for event in update_response.data['data']:
-                await self._handle_page_upsert_event(event, roles_details)
+                await self._handle_page_upsert_event(event, roles_details, users)
 
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
             self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) to update.")
             for event in permissions_update_response.data['data']:
                 if event.get('loggable_type') == 'page':
-                    await self._handle_page_upsert_event(event, roles_details)
+                    await self._handle_page_upsert_event(event, roles_details, users)
 
         # 4. Process Delete Events
         delete_response = event_responses.get("delete")
@@ -1702,7 +1729,7 @@ class BookStackConnector(BaseConnector):
 
         self.logger.info("✅ Finished incremental record sync.")
 
-    async def _handle_page_upsert_event(self, event: Dict, roles_details: Dict[int, Dict]) -> None:
+    async def _handle_page_upsert_event(self, event: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
         """
         Handles a 'page_create' or 'page_update' event by fetching the page's
         latest details and calling the correct data processor method.
@@ -1742,7 +1769,7 @@ class BookStackConnector(BaseConnector):
             return
 
         # Process the page to determine if it's new or updated
-        record_update = await self._process_bookstack_page(page_details, roles_details)
+        record_update = await self._process_bookstack_page(page_details, roles_details, users)
 
         if not record_update:
             return

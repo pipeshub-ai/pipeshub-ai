@@ -157,7 +157,7 @@ class TokenRefreshService:
 
         # Calculate refresh time (refresh 5 minutes before expiry)
         # Refresh 10 minutes before expiry for safety
-        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 60))
+        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 600))
         delay = (refresh_time - datetime.now()).total_seconds()
 
         if delay > 0:
