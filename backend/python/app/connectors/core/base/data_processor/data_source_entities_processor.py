@@ -462,6 +462,11 @@ class DataSourceEntitiesProcessor:
 
                     if user.email not in existing_user_emails:
                         await tx_store.batch_upsert_app_users([user])
+                    else:
+                        await tx_store.update_user_source_id(
+                            email=user.email,
+                            source_user_id=user.source_user_id
+                        )
 
 
         except Exception as e:

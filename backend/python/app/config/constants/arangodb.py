@@ -50,6 +50,8 @@ class Connectors(Enum):
 
     SERVICENOWKB = "SERVICENOWKB"
 
+    UNKNOWN = "UNKNOWN"
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"

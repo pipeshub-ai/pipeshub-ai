@@ -72,6 +72,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_user_by_email(self, email: str) -> Optional[User]:
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
+    async def get_app_user_by_email(self, email: str) -> Optional[AppUser]:
+        return await self.arango_service.get_app_user_by_email(email, transaction=self.txn)
+
     async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
         return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
 
@@ -245,7 +248,8 @@ class ArangoTransactionStore(TransactionStore):
             #     [user_app_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
             # )
 
-
+    async def update_user_source_id(self, email: str, source_user_id: str) -> None:
+        return await self.arango_service.update_user_source_id(email=email,source_user_id=source_user_id,transaction=self.txn)
 
     async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
         return await self.arango_service.batch_upsert_orgs(orgs, transaction=self.txn)

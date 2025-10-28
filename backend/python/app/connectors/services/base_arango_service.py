@@ -26,7 +26,14 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import AppUserGroup, FileRecord, Record, RecordGroup, User
+from app.models.entities import (
+    AppUser,
+    AppUserGroup,
+    FileRecord,
+    Record,
+    RecordGroup,
+    User,
+)
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
@@ -3871,6 +3878,38 @@ class BaseArangoService:
             )
             return None
 
+    async def get_app_user_by_email(self, email: str, transaction: Optional[TransactionDatabase] = None) -> Optional[AppUser]:
+        """
+        Get app user key using the email
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for email %s", email
+            )
+            query = f"""
+            FOR user IN {CollectionNames.USERS.value}
+                FILTER LOWER(user.email) == LOWER(@email)
+                RETURN user
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"email": email})
+            result = next(cursor, None)
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for email %s", email
+                )
+                return AppUser.from_arango_user(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for email %s", email
+                )
+                return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for email %s: %s", email, str(e)
+            )
+            return None
+
     async def get_users(self, org_id, active=True) -> List[Dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -4357,6 +4396,47 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to get edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return None
+
+    async def update_user_source_id(
+        self,
+        email: str,
+        source_user_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> None:
+        """
+        Update a user's sourceUserId.
+
+        Args:
+            email: User's email address
+            source_user_id: The source user ID from the external system
+            transaction: Optional transaction context
+        """
+        db = transaction if transaction else self.db
+
+        query = """
+        FOR user IN @@collection
+            FILTER user.email == @email
+            UPDATE user WITH {
+                sourceUserId: @source_user_id,
+                updatedAtTimestamp: @timestamp
+            } IN @@collection
+            RETURN NEW
+        """
+
+        bind_vars = {
+            "@collection": CollectionNames.USERS.value,
+            "email": email,
+            "source_user_id": source_user_id,
+            "timestamp": get_epoch_timestamp_in_ms()
+        }
+
+        cursor = db.aql.execute(query, bind_vars=bind_vars)
+        result = [doc for doc in cursor]
+
+        if not result:
+            self.logger.warning(f"User with email {email} not found for update")
+        else:
+            self.logger.info(f"Updated sourceUserId for user {email}")
 
     async def update_node(self, key: str, node_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """

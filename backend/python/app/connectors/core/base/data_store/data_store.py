@@ -78,6 +78,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_app_user_by_email(self, email: str) -> Optional[AppUser]:
+        pass
+
+    @abstractmethod
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         pass
 
@@ -175,6 +179,10 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def update_sync_point(self, sync_point: "SyncPoint") -> None:
+        pass
+
+    @abstractmethod
+    async def update_user_source_id(self, email: str, source_user_id: str) -> None:
         pass
 
 

@@ -656,6 +656,18 @@ class AppUser(BaseModel):
             "updatedAtTimestamp": self.updated_at,
         }
 
+    @staticmethod
+    def from_arango_user(data: Dict[str, Any]) -> 'AppUser':
+        return AppUser(
+            id=data.get("_key", None),
+            email=data.get("email", ""),
+            org_id=data.get("orgId", ""),
+            user_id=data.get("userId", None),
+            is_active=data.get("isActive", False),
+            full_name=data.get("fullName", None),
+            source_user_id=data.get("sourceUserId", ""),
+            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value)),
+        )
 
 class AppUserGroup(BaseModel):
     id: str = Field(description="Unique identifier for the user group", default_factory=lambda: str(uuid4()))

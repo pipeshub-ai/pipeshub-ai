@@ -10586,6 +10586,7 @@ class ServiceNowDataSource:
         sysparm_view: Optional[str] = None,
         sysparm_query_category: Optional[str] = None,
         sysparm_query_no_domain: Optional[str] = None,
+        impersonate_user: Optional[str] = None,
     ) -> ServiceNowResponse:
         """Retrieve records from a table
         Args:
@@ -10600,6 +10601,7 @@ class ServiceNowDataSource:
             sysparm_query_category: Name of the query category (read replica category) to use for queries
             sysparm_query_no_domain: True to access data across domains if authorized (default: false)
             sysparm_no_count: Do not execute a select count(*) on table (default: false)
+            impersonate_user: ServiceNow username or sys_id to impersonate (requires impersonator role)
         Returns:
             ServiceNowResponse object with success status and data/error"""
         url = self._build_url(f"/table/{tableName}")
@@ -10617,10 +10619,15 @@ class ServiceNowDataSource:
             sysparm_query_no_domain=sysparm_query_no_domain,
         )
 
+        request_headers = self.client.headers.copy()
+
+        if impersonate_user:
+            request_headers["X-UserToken"] = impersonate_user
+
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.client.headers,
+            headers=request_headers,
             query=params
         )
 
