@@ -35,7 +35,7 @@ const authJwt = {
         <GuestGuard>
           <AuthSplitLayout
             section={{
-              title: 'Hi, Welcome',
+              title: 'Welcome back to|Relationship Intelligence',
               ...leftPanelMedia,
             }}
           >

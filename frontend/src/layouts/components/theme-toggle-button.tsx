@@ -1,106 +1,113 @@
-import type { IconButtonProps } from '@mui/material/IconButton';
+import type { StackProps } from '@mui/material/Stack';
+import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useState } from 'react';
-import { m, AnimatePresence } from 'framer-motion';
-import sunBoldIcon from '@iconify-icons/solar/sun-bold';
-import moonBoldIcon from '@iconify-icons/solar/moon-bold';
+import { m } from 'framer-motion';
+import { useMemo } from 'react';
 
-import Tooltip from '@mui/material/Tooltip';
-import IconButton from '@mui/material/IconButton';
-import { useTheme, useColorScheme } from '@mui/material/styles';
+import Button from '@mui/material/Button';
+import Stack from '@mui/material/Stack';
+
+import { useColorScheme } from '@mui/material/styles';
+
+import type { IconifyIcon } from '@iconify/react';
+
+import monitorIcon from '@iconify-icons/mdi/monitor-dashboard';
+import sunIcon from '@iconify-icons/mdi/weather-sunny';
+import moonIcon from '@iconify-icons/mdi/weather-night';
 
 import { Iconify } from 'src/components/iconify';
 
-export type ThemeToggleButtonProps = IconButtonProps;
+type ThemeValue = 'light' | 'dark' | 'system';
 
-export function ThemeToggleButton({ sx, ...other }: ThemeToggleButtonProps) {
-  const theme = useTheme();
+const OPTIONS: { value: ThemeValue; icon: IconifyIcon | string }[] = [
+  { value: 'system', icon: monitorIcon },
+  { value: 'light', icon: sunIcon },
+  { value: 'dark', icon: moonIcon },
+];
+
+export type ThemeToggleButtonProps = Omit<StackProps, 'onClick'> & {
+  sx?: SxProps<Theme>;
+  disabled?: boolean;
+};
+
+export function ThemeToggleButton({ sx, disabled, ...other }: ThemeToggleButtonProps) {
   const { mode, setMode } = useColorScheme();
-  const isDarkMode = mode === 'dark';
-  const [isTransitioning, setIsTransitioning] = useState(false);
 
-  const toggleTheme = () => {
-    setIsTransitioning(true);
-    setMode(isDarkMode ? 'light' : 'dark');
-    // Reset transition state after animation completes
-    setTimeout(() => setIsTransitioning(false), 400);
+  const activeValue: ThemeValue = useMemo(() => {
+    if (mode === 'light' || mode === 'dark') {
+      return mode;
+    }
+    return 'system';
+  }, [mode]);
+
+  const handleChange = (value: ThemeValue) => {
+    if (value === 'system') {
+      setMode('system');
+    } else {
+      setMode(value);
+    }
   };
 
   return (
-    <Tooltip title={`Switch to ${isDarkMode ? 'light' : 'dark'} mode`} arrow placement="bottom">
-      <IconButton
-        aria-label={`Switch to ${isDarkMode ? 'light' : 'dark'} mode`}
-        onClick={toggleTheme}
-        sx={{
-          p: 0,
-          width: 40,
-          height: 40,
-          backgroundColor: 'transparent',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          position: 'relative',
-          overflow: 'hidden',
-          '&:hover': {
-            backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.04)',
-          },
-          transition: 'background-color 300ms cubic-bezier(0.4, 0, 0.2, 1)',
-          ...sx,
-        }}
-        {...other}
-      >
-        <AnimatePresence mode="wait">
-          <m.div
-            key={isDarkMode ? 'sun' : 'moon'}
-            initial={{
-              scale: 0.5,
-              opacity: 0,
-              rotate: isDarkMode ? -90 : 90,
-            }}
-            animate={{
-              scale: 1,
-              opacity: 1,
-              rotate: 0,
-            }}
-            exit={{
-              scale: 0.5,
-              opacity: 0,
-              rotate: isDarkMode ? 90 : -90,
-            }}
-            transition={{
-              duration: 0.4,
-              ease: [0.4, 0, 0.2, 1],
+    <Stack
+      direction="row"
+      spacing={0.5}
+      role="radiogroup"
+      sx={{
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: 40,
+        px: 0.5,
+        borderRadius: 999,
+        bgcolor: (theme) => theme.palette.background.paper,
+        border: (theme) => `1px solid ${theme.palette.divider}`,
+        boxShadow: (theme) => theme.customShadows?.z1 ?? 'none',
+        ...(disabled && { opacity: 0.6, pointerEvents: 'none' }),
+        ...sx,
+      }}
+      {...other}
+    >
+      {OPTIONS.map(({ value, icon }) => {
+        const selected = activeValue === value;
+
+        return (
+          <Button
+            key={value}
+            variant={selected ? 'contained' : 'text'}
+            color={selected ? 'primary' : 'inherit'}
+            onClick={() => handleChange(value)}
+            disabled={disabled}
+            disableElevation
+            size="small"
+            role="radio"
+            aria-checked={selected}
+            aria-label={`Switch to ${value} theme`}
+            sx={{
+              minWidth: 0,
+              width: 40,
+              height: 32,
+              borderRadius: 999,
+              px: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textTransform: 'none',
+              color: selected ? 'primary.contrastText' : 'text.secondary',
+              '&:hover': {
+                bgcolor: (theme) => (selected ? theme.palette.primary.dark : theme.palette.action.hover),
+              },
             }}
           >
-            <m.div
-              animate={{
-                rotate: isTransitioning ? [0, 360] : 0,
-              }}
-              transition={{
-                duration: isTransitioning ? 0.4 : 0,
-                ease: 'easeInOut',
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
+            <m.span
+              animate={{ scale: selected ? 1.05 : 1 }}
+              transition={{ duration: 0.2 }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
             >
-              <Iconify
-                icon={isDarkMode ? sunBoldIcon : moonBoldIcon}
-                sx={{
-                  width: 24,
-                  height: 24,
-                  color: isDarkMode ? '#FFA726' : '#5C6BC0',
-                  filter: isDarkMode
-                    ? 'drop-shadow(0 0 8px rgba(255, 167, 38, 0.3))'
-                    : 'drop-shadow(0 0 8px rgba(92, 107, 192, 0.3))',
-                }}
-              />
-            </m.div>
-          </m.div>
-        </AnimatePresence>
-      </IconButton>
-    </Tooltip>
+              <Iconify icon={icon} width={18} />
+            </m.span>
+          </Button>
+        );
+      })}
+    </Stack>
   );
 }

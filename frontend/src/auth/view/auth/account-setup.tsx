@@ -42,6 +42,7 @@ import {
 import { setEmail } from 'src/store/auth-slice';
 
 import { OrgExists, AccountSetUp } from 'src/auth/context/jwt';
+import { varAlpha } from 'src/theme/styles/utils';
 
 // Import the AccountType type
 export type AccountType = 'individual' | 'business';
@@ -137,19 +138,37 @@ const StyledContainer = styled(Container)(({ theme }) => ({
 
 const StyledPaper = styled(Paper)(({ theme }) => ({
   padding: theme.spacing(2.5),
-  backgroundColor: theme.palette.background.paper,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: theme.spacing(2),
+  backgroundColor: alpha(theme.palette.background.paper, 0.92),
+  backgroundImage: `linear-gradient(180deg, ${varAlpha(
+    theme.vars.palette.grey['500Channel'],
+    0.12
+  )} 0%, transparent 55%)`,
   borderRadius: theme.shape.borderRadius * 1.5,
-  boxShadow: 'none',
-  border: `1px solid ${theme.palette.divider}`,
+  boxShadow: theme.customShadows?.z12 ?? '0 20px 40px -20px rgba(0,0,0,0.45)',
+  border: `1px solid ${alpha(theme.palette.common.white, 0.04)}`,
+  borderTop: `1px solid ${varAlpha(theme.vars.palette.grey['300Channel'], 0.55)}`,
   width: '100%',
   maxWidth: 720,
   flex: '1 1 auto',
   minHeight: 0,
   maxHeight: '100%',
   overflowY: 'auto',
-  display: 'flex',
-  flexDirection: 'column',
   margin: '0 auto',
+  backdropFilter: 'blur(4px)',
+  transition: theme.transitions.create(['background-color', 'border-color'], {
+    duration: theme.transitions.duration.shorter,
+  }),
+  '&:hover': {
+    backgroundColor: alpha(theme.palette.background.paper, 0.96),
+    backgroundImage: `linear-gradient(180deg, ${varAlpha(
+      theme.vars.palette.grey['500Channel'],
+      0.18
+    )} 0%, transparent 60%)`,
+    borderTop: `1px solid ${varAlpha(theme.vars.palette.grey['300Channel'], 0.7)}`,
+  },
   [theme.breakpoints.down('md')]: {
     maxHeight: 'none',
   },

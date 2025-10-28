@@ -8,6 +8,7 @@ import { varAlpha, hideScrollY } from 'src/theme/styles';
 
 import { Scrollbar } from 'src/components/scrollbar';
 import { NavSectionMini, NavSectionVertical } from 'src/components/nav-section';
+import { Logo } from 'src/components/logo';
 
 import { NavToggleButton } from '../components/nav-toggle-button';
 
@@ -38,15 +39,7 @@ export function NavVertical({
     <>
       {slots?.topArea ?? (
         <Box sx={{ pl: 3.5, pt: 2.5, pb: 1 }}>
-          <Box
-            component="img"
-            src="/logo/logo-blue.svg"
-            alt="Logo"
-            sx={{
-              width: 60,
-              height: 30,
-            }}
-          />
+          <Logo variant="symbol" iconSize={28} disableLink sx={{ color: 'text.primary' }} />
         </Box>
       )}
 
@@ -60,15 +53,7 @@ export function NavVertical({
     <>
       {slots?.topArea ?? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 2.5 }}>
-           <Box
-            component="img"
-            src="/logo/logo-blue.svg"
-            alt="Logo"
-            sx={{
-              width: 60,
-              height: 30,
-            }}
-          />
+          <Logo variant="symbol" iconSize={28} disableLink sx={{ color: 'text.primary' }} />
         </Box>
       )}
 

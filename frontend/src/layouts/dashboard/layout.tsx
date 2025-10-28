@@ -15,6 +15,7 @@ import { useBoolean } from 'src/hooks/use-boolean';
 import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
+import { Logo } from 'src/components/logo';
 import { useSettingsContext } from 'src/components/settings';
 
 import { getOrgLogo, getOrgIdFromToken } from 'src/sections/accountdetails/utils';
@@ -177,19 +178,16 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                     />
                   </Box>
                 ) : (
-                  <Box
-                    component="img"
-                    onClick={() => navigate('/')}
-                    src="/logo/logo-blue.svg"
-                    alt="Logo"
+                  <Logo
+                    variant="symbol"
+                    iconSize={28}
                     sx={{
                       display: 'none',
                       [theme.breakpoints.up(layoutQuery)]: {
                         display: 'inline-flex',
                       },
-                      width: 60,
-                      height: 30,
                       cursor: 'pointer',
+                      color: 'text.primary',
                     }}
                   />
                 )}

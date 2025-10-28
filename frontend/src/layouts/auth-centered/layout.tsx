@@ -1,9 +1,11 @@
 import type { Theme, SxProps, Breakpoint } from '@mui/material/styles';
 
-import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
 
 import { stylesMode } from 'src/theme/styles';
+
+import { Logo } from 'src/components/logo';
 
 import { Main } from './main';
 import { HeaderSection } from '../core/header-section';
@@ -43,15 +45,7 @@ export function AuthCenteredLayout({ sx, children, header }: AuthCenteredLayoutP
             leftArea: (
               <>
                 {/* -- Logo -- */}
-               <Box
-                  component="img"
-                  src="/logo/logo-blue.svg"
-                  alt="Logo"
-                  sx={{
-                    width: 60,
-                    height: 30,
-                  }}
-                />
+                <Logo variant="symbol" iconSize={28} disableLink sx={{ color: 'text.primary' }} />
               </>
             ),
             rightArea: (

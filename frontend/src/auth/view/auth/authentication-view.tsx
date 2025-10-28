@@ -36,6 +36,8 @@ import { Tab, Tabs, Fade, Grow, useTheme, Snackbar } from '@mui/material';
 
 import { ErrorType, withErrorHandling } from 'src/utils/axios';
 
+import { varAlpha } from 'src/theme/styles/utils';
+
 import { setEmail } from 'src/store/auth-slice';
 
 import { Iconify } from 'src/components/iconify';
@@ -466,91 +468,115 @@ export const AuthenticationView = () => {
   if (authSteps.length === 0) {
     return (
       <Fade in timeout={450}>
-        <Card
+        <Box
           sx={{
-            width: '100%',
-            maxWidth: 480,
-            mx: 'auto',
-            mt: 4,
-            backdropFilter: 'blur(6px)',
-            bgcolor: (theme1) => alpha(theme1.palette.background.paper, 0.9),
-            boxShadow: (theme1) => `0 0 2px ${alpha(theme1.palette.grey[500], 0.2)}, 
-                                 0 12px 24px -4px ${alpha(theme1.palette.grey[500], 0.12)}`,
+            width: 1,
+            minHeight: { xs: 'auto', md: 1 },
+            display: 'flex',
+            alignItems: { xs: 'flex-start', md: 'center' },
+            justifyContent: 'center',
+            py: { xs: 4, md: 0 },
           }}
         >
-          <CardContent sx={{ pt: 5, pb: 5 }}>
-            <Box sx={{ mb: 5, textAlign: 'center' }}>
-              <Typography variant="h4" sx={{ mb: 1, fontWeight: 700 }}>
-                Welcome
-              </Typography>
+          <Card
+            elevation={0}
+            sx={(theme1) => ({
+              width: '100%',
+              maxWidth: 520,
+              mx: 'auto',
+              borderRadius: theme1.shape.borderRadius * 0.75,
+              backgroundColor: alpha(theme1.palette.background.paper, 0.92),
+              backgroundImage: `linear-gradient(180deg, ${varAlpha(
+                theme1.vars.palette.grey['500Channel'],
+                0.12
+              )} 0%, transparent 55%)`,
+              border: `1px solid ${alpha(theme1.palette.common.white, 0.04)}`,
+              borderTop: `1px solid ${varAlpha(theme1.vars.palette.grey['300Channel'], 0.55)}`,
+              boxShadow:
+                theme1.customShadows?.z12 ?? '0 20px 40px -20px rgba(0,0,0,0.45)',
+              backdropFilter: 'blur(4px)',
+              overflow: 'hidden',
+            })}
+          >
+            <CardContent
+              sx={{
+                px: { xs: 3, sm: 4 },
+                py: 4,
+              }}
+            >
+              <Box sx={{ mb: 5, textAlign: 'center' }}>
+                <Typography variant="h4" sx={{ mb: 1, fontWeight: 700 }}>
+                  Welcome
+                </Typography>
 
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Sign in to continue to your account
-              </Typography>
-            </Box>
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                  Sign in to continue to your account
+                </Typography>
+              </Box>
 
-            {error && (
-              <Grow in>
-                <Alert
-                  severity="error"
-                  onClose={() => setError('')}
+              {error && (
+                <Grow in>
+                  <Alert
+                    severity="error"
+                    onClose={() => setError('')}
+                    sx={{
+                      mb: 3,
+                      '& .MuiAlert-message': { width: '100%' },
+                    }}
+                  >
+                    {error}
+                  </Alert>
+                </Grow>
+              )}
+
+              <form onSubmit={handleSubmit(onSubmit)}>
+                <TextField
+                  fullWidth
+                  autoFocus
+                  size="medium"
+                  label="Email address"
+                  variant="outlined"
+                  {...register('email')}
+                  error={!!errors.email}
+                  helperText={errors.email?.message}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Iconify icon={emailIcon} width={24} sx={{ color: 'text.secondary' }} />
+                      </InputAdornment>
+                    ),
+                  }}
                   sx={{
                     mb: 3,
-                    '& .MuiAlert-message': { width: '100%' },
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1.5,
+                      bgcolor: 'background.paper',
+                    },
+                  }}
+                />
+
+                <LoadingButton
+                  fullWidth
+                  size="large"
+                  type="submit"
+                  variant="contained"
+                  loading={loading}
+                  sx={{
+                    height: 48,
+                    bgcolor: 'primary.main',
+                    color: 'primary.contrastText',
+                    borderRadius: 1.5,
+                    '&:hover': {
+                      bgcolor: 'primary.dark',
+                    },
                   }}
                 >
-                  {error}
-                </Alert>
-              </Grow>
-            )}
-
-            <form onSubmit={handleSubmit(onSubmit)}>
-              <TextField
-                fullWidth
-                autoFocus
-                size="medium"
-                label="Email address"
-                variant="outlined"
-                {...register('email')}
-                error={!!errors.email}
-                helperText={errors.email?.message}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Iconify icon={emailIcon} width={24} sx={{ color: 'text.secondary' }} />
-                    </InputAdornment>
-                  ),
-                }}
-                sx={{
-                  mb: 3,
-                  '& .MuiOutlinedInput-root': {
-                    borderRadius: 1.5,
-                    bgcolor: 'background.paper',
-                  },
-                }}
-              />
-
-              <LoadingButton
-                fullWidth
-                size="large"
-                type="submit"
-                variant="contained"
-                loading={loading}
-                sx={{
-                  height: 48,
-                  bgcolor: 'primary.main',
-                  color: 'primary.contrastText',
-                  borderRadius: 1.5,
-                  '&:hover': {
-                    bgcolor: 'primary.dark',
-                  },
-                }}
-              >
-                Continue
-              </LoadingButton>
-            </form>
-          </CardContent>
-        </Card>
+                  Continue
+                </LoadingButton>
+              </form>
+            </CardContent>
+          </Card>
+        </Box>
       </Fade>
     );
   }
@@ -576,19 +602,42 @@ export const AuthenticationView = () => {
 
   return (
     <Fade in timeout={450} key={`step-${currentStepIndex}-tab-${selectedTab}`}>
-      <Card
+      <Box
         sx={{
-          width: '100%',
-          maxWidth: 480,
-          mx: 'auto',
-          mt: 4,
-          backdropFilter: 'blur(6px)',
-          bgcolor: (theme1) => alpha(theme1.palette.background.paper, 0.9),
-          boxShadow: (theme1) => `0 0 2px ${alpha(theme1.palette.grey[500], 0.2)}, 
-                              0 12px 24px -4px ${alpha(theme1.palette.grey[500], 0.12)}`,
+          width: 1,
+          minHeight: { xs: 'auto', md: 1 },
+          display: 'flex',
+          alignItems: { xs: 'flex-start', md: 'center' },
+          justifyContent: 'center',
+          py: { xs: 4, md: 0 },
         }}
       >
-        <CardContent sx={{ pt: 3, pb: 5 }}>
+        <Card
+          elevation={0}
+          sx={(theme1) => ({
+            width: '100%',
+            maxWidth: 520,
+            mx: 'auto',
+            borderRadius: theme1.shape.borderRadius * 0.75,
+            backgroundColor: alpha(theme1.palette.background.paper, 0.92),
+            backgroundImage: `linear-gradient(180deg, ${varAlpha(
+              theme1.vars.palette.grey['500Channel'],
+              0.12
+            )} 0%, transparent 55%)`,
+            border: `1px solid ${alpha(theme1.palette.common.white, 0.04)}`,
+            borderTop: `1px solid ${varAlpha(theme1.vars.palette.grey['300Channel'], 0.55)}`,
+            boxShadow:
+              theme1.customShadows?.z12 ?? '0 20px 40px -20px rgba(0,0,0,0.45)',
+            backdropFilter: 'blur(4px)',
+            overflow: 'hidden',
+          })}
+        >
+          <CardContent
+            sx={{
+              px: { xs: 3, sm: 4 },
+              py: 4,
+            }}
+          >
           {/* Header with back button */}
           <Box sx={{ display: 'flex', alignItems: 'center', mb: 4 }}>
             <Tooltip title="Back to email">
@@ -789,28 +838,29 @@ export const AuthenticationView = () => {
               </Stack>
             </>
           )}
-        </CardContent>
-        <Snackbar
-          open={snackbar.open}
-          autoHideDuration={6000}
-          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
-          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        >
-          <Alert
-            severity={snackbar.severity}
-            sx={{
-              width: '100%',
-              ...(snackbar.severity === 'success' && {
-                bgcolor: theme.palette.success.main,
-                color: theme.palette.success.contrastText,
-              }),
-            }}
+          </CardContent>
+          <Snackbar
+            open={snackbar.open}
+            autoHideDuration={6000}
             onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           >
-            {snackbar.message}
-          </Alert>
-        </Snackbar>
-      </Card>
+            <Alert
+              severity={snackbar.severity}
+              sx={{
+                width: '100%',
+                ...(snackbar.severity === 'success' && {
+                  bgcolor: theme.palette.success.main,
+                  color: theme.palette.success.contrastText,
+                }),
+              }}
+              onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+            >
+              {snackbar.message}
+            </Alert>
+          </Snackbar>
+        </Card>
+      </Box>
     </Fade>
   );
 };

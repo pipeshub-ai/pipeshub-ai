@@ -1,5 +1,8 @@
+import type { ReactNode } from 'react';
 import type { BoxProps } from '@mui/material/Box';
 import type { Breakpoint } from '@mui/material/styles';
+
+import { Fragment } from 'react';
 
 import Box from '@mui/material/Box';
 import Link from '@mui/material/Link';
@@ -143,7 +146,12 @@ export function Section({
               lineHeight: 1.15,
             }}
           >
-            {title}
+            {title.split('|').map((line, index, array) => (
+              <Fragment key={index}>
+                {line}
+                {index < array.length - 1 && <br />}
+              </Fragment>
+            ))}
           </Typography>
         </Box>
 
