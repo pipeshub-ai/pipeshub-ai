@@ -1,39 +1,18 @@
-import type { BoxProps } from '@mui/material/Box';
+import type { ComponentProps } from 'react';
 
-import Box from '@mui/material/Box';
-import Typography from '@mui/material/Typography';
-import { alpha, useTheme } from '@mui/material/styles';
+import { Logo } from 'src/components/logo';
 
 // ----------------------------------------------------------------------
 
-export function AuthSplitLogo({ sx, ...other }: BoxProps) {
-  const theme = useTheme();
-
+export function AuthSplitLogo(props: ComponentProps<typeof Logo>) {
   return (
-    <Box
-      sx={{
-        display: 'inline-flex',
-        flexDirection: 'column',
-        gap: 0,
-        color: theme.palette.common.white,
-        textTransform: 'none',
-        letterSpacing: theme.typography.caption.letterSpacing,
-        ...sx,
-      }}
-      {...other}
-    >
-      <Typography
-        variant="caption"
-        sx={{
-          fontWeight: 600,
-          lineHeight: 1.25,
-          textTransform: 'none',
-        }}
-      >
-        Relationship
-        <br />
-        Intelligence
-      </Typography>
-    </Box>
+    <Logo
+      variant="wordmark"
+      iconSize={18}
+      textVariant="caption"
+      spacing={1.2}
+      disableLink
+      {...props}
+    />
   );
 }

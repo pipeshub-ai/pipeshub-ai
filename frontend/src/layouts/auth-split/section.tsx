@@ -110,7 +110,7 @@ export function Section({
         }}
       >
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <AuthSplitLogo />
+          <AuthSplitLogo sx={{ color: theme.palette.common.white }} />
         </Box>
 
         <Box
