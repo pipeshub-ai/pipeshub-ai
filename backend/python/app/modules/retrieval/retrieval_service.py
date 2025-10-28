@@ -287,6 +287,8 @@ class RetrievalService:
                 if record.get("virtualRecordId") is not None
             ]
 
+            self.logger.info(f"Accessible virtual record ids: {accessible_virtual_record_ids}")
+
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
@@ -647,7 +649,7 @@ class RetrievalService:
 
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
-                raise ValueError("No dense embeddings found")
+            raise ValueError("No dense embeddings found")
 
         # OPTIMIZATION: Parallelize embedding generation for multiple queries
         query_embeddings = await asyncio.gather(*[

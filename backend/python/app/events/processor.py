@@ -2,6 +2,8 @@ import io
 import json
 from datetime import datetime
 
+from bs4 import BeautifulSoup
+
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -1154,13 +1156,27 @@ class Processor:
         self.logger.info(
             f"🚀 Starting HTML document processing for record: {recordName}"
         )
-
+        html_content = None
         try:
-            if isinstance(html_binary, bytes):
-                html_content = html_binary.decode("utf-8")
-            else:
-                html_content = html_binary
+            soup = BeautifulSoup(html_binary, 'html.parser')
 
+            # Remove script, style, and other non-content elements
+            for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
+                element.decompose()
+            
+            html_content = str(soup)
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to parse HTML: {e}")
+            
+        try:
+            if html_content is None:
+                if isinstance(html_binary, bytes):
+                    html_content = html_binary.decode("utf-8")
+                else:
+                    html_content = html_binary
+            html_parser = self.parsers[ExtensionTypes.HTML.value]
+            html_content = html_parser.replace_relative_image_urls(html_content)
             markdown = convert(html_content)
             md_binary = markdown.encode("utf-8")
 

@@ -649,29 +649,6 @@ class WebConnector(BaseConnector):
                 content_bytes = await response.read()
                 mime_type = record.mime_type or "text/html"
 
-                # For HTML content, use BeautifulSoup to extract clean text
-                if mime_type == MimeTypes.HTML.value or mime_type == "text/html":
-                    try:
-                        soup = BeautifulSoup(content_bytes, 'html.parser')
-
-                        # Remove script, style, and other non-content elements
-                        for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
-                            element.decompose()
-
-                        # Get clean text content
-                        text_content = soup.get_text(separator='\n', strip=True)
-
-                        # Remove excessive blank lines
-                        lines = [line for line in text_content.split('\n') if line.strip()]
-                        cleaned_content = '\n'.join(lines)
-
-                        content_bytes = cleaned_content.encode('utf-8')
-                        mime_type = "text/plain"
-
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to parse HTML for streaming {record.weburl}: {e}")
-                        # Fall back to returning raw content
-
                 # For PDF and other binary formats, return as-is
                 # For other text formats (JSON, XML, TXT), return as-is
 
