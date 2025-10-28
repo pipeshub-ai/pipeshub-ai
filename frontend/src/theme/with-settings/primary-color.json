@@ -38,5 +38,13 @@
     "dark": "#B71833",
     "darker": "#7A0930",
     "contrastText": "#FFFFFF"
+  },
+  "plum": {
+    "lighter": "#EFE8FF",
+    "light": "#C9B9FF",
+    "main": "#9C83FF",
+    "dark": "#5F4DC6",
+    "darker": "#35267E",
+    "contrastText": "#FFFFFF"
   }
 }

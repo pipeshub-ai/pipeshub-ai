@@ -17,19 +17,19 @@ export const SettingsConsumer = SettingsContext.Consumer;
 export function SettingsProvider({ children, settings }: SettingsProviderProps) {
   const values = useLocalStorage<SettingsState>(STORAGE_KEY, settings);
 
-  // Force blue theme permanently
+  // Force default theme permanently
   useEffect(() => {
-    if (values.state.primaryColor !== 'blue') {
-      values.setField('primaryColor', 'blue');
+    if (values.state.primaryColor !== 'default') {
+      values.setField('primaryColor', 'default');
     }
   }, [values]);
 
   // Override setField to prevent changing primaryColor
-  const setFieldWithBlueTheme = useCallback((
+  const setFieldWithDefaultTheme = useCallback((
     name: keyof SettingsState,
     updateValue: SettingsState[keyof SettingsState]
   ) => {
-    // Prevent changing primary color from blue
+    // Prevent changing primary color from default
     if (name === 'primaryColor') {
       return;
     }
@@ -37,20 +37,20 @@ export function SettingsProvider({ children, settings }: SettingsProviderProps) 
   }, [values]);
 
   // Override setState to prevent changing primaryColor
-  const setStateWithBlueTheme = useCallback((updateValue: Partial<SettingsState>) => {
+  const setStateWithDefaultTheme = useCallback((updateValue: Partial<SettingsState>) => {
     const { primaryColor, ...rest } = updateValue;
-    // Always keep primaryColor as blue
-    values.setState({ ...rest, primaryColor: 'blue' });
+    // Always keep primaryColor as default
+    values.setState({ ...rest, primaryColor: 'default' });
   }, [values]);
 
   const memoizedValue = useMemo(
     () => ({
       ...values.state,
-      primaryColor: 'blue' as const, // Force blue theme
-      canReset: false, // Disable reset since we want to keep blue theme
+      primaryColor: 'default' as const, // Force default theme
+      canReset: false, // Disable reset since we want to keep default theme
       onReset: () => {}, // Disable reset functionality
-      onUpdate: setStateWithBlueTheme,
-      onUpdateField: setFieldWithBlueTheme,
+      onUpdate: setStateWithDefaultTheme,
+      onUpdateField: setFieldWithDefaultTheme,
       // Remove drawer functionality since we're not using the settings drawer
       openDrawer: false,
       onCloseDrawer: () => {},
@@ -58,8 +58,8 @@ export function SettingsProvider({ children, settings }: SettingsProviderProps) 
     }),
     [
       values.state,
-      setFieldWithBlueTheme,
-      setStateWithBlueTheme,
+      setFieldWithDefaultTheme,
+      setStateWithDefaultTheme,
     ]
   );
 

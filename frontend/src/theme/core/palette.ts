@@ -82,14 +82,18 @@ export const common = createPaletteChannel(COLORS.common);
 
 // Text
 export const text = {
-  light: createPaletteChannel({ primary: grey[800], secondary: grey[600], disabled: grey[500] }),
-  dark: createPaletteChannel({ primary: '#FFFFFF', secondary: grey[500], disabled: grey[600] }),
+  light: createPaletteChannel({ primary: grey[900], secondary: grey[600], disabled: grey[500] }),
+  dark: createPaletteChannel({
+    primary: '#F4F4F6',
+    secondary: '#B5B6C1',
+    disabled: '#6F7077',
+  }),
 };
 
 // Background
 export const background = {
   light: createPaletteChannel({ paper: '#FFFFFF', default: '#FFFFFF', neutral: grey[200] }),
-  dark: createPaletteChannel({ paper: grey[800], default: grey[900], neutral: '#28323D' }),
+  dark: createPaletteChannel({ paper: '#19191D', default: '#141417', neutral: '#1C1C21' }),
 };
 
 // Action
