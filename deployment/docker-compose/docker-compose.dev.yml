@@ -91,6 +91,30 @@ services:
       - pipeshub_root_local:/root/.local
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    develop:
+      watch:
+        - action: sync
+          path: ../../backend/python
+          target: /app/python
+          ignore:
+            - __pycache__
+            - .venv
+            - .pytest_cache
+        - action: sync+restart
+          path: ../../backend/nodejs/apps/src
+          target: /app/backend/src
+          ignore:
+            - node_modules
+            - dist
+        - action: sync+restart
+          path: ../../frontend
+          target: /app/frontend
+          ignore:
+            - node_modules
+            - dist
+            - coverage
+        - action: rebuild
+          path: ../../Dockerfile
 
   mongodb:
     image: mongo:8.0.6

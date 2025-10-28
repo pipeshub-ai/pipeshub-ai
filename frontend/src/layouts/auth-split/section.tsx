@@ -4,11 +4,11 @@ import type { Breakpoint } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Link from '@mui/material/Link';
 import Tooltip from '@mui/material/Tooltip';
-import { useTheme } from '@mui/material/styles';
+import Typography from '@mui/material/Typography';
+import { alpha, useTheme } from '@mui/material/styles';
 
 import { RouterLink } from 'src/routes/components';
 
-import { varAlpha, bgGradient } from 'src/theme/styles';
 
 // ----------------------------------------------------------------------
 
@@ -16,6 +16,7 @@ type SectionProps = BoxProps & {
   title?: string;
   method?: string;
   imgUrl?: string;
+  videoUrl?: string;
   subtitle?: string;
   layoutQuery: Breakpoint;
   methods?: {
@@ -32,115 +33,137 @@ export function Section({
   methods,
   title = 'Manage the job',
   imgUrl = `/logo/welcomegif.gif`,
-  subtitle = 'More effectively with optimized workflows.',
+  videoUrl = '/left-panel.mp4',
+  subtitle,
   ...other
 }: SectionProps) {
   const theme = useTheme();
 
+  const mediaSx = {
+    position: 'absolute' as const,
+    inset: 0,
+    width: 1,
+    height: 1,
+    objectFit: 'cover' as const,
+  };
+
+  const renderMedia = videoUrl ? (
+    <Box
+      component="video"
+      src={videoUrl}
+      autoPlay
+      muted
+      loop
+      playsInline
+      poster={imgUrl}
+      aria-hidden
+      sx={mediaSx}
+    />
+  ) : (
+    <Box component="img" alt="Auth visual" src={imgUrl} sx={mediaSx} aria-hidden />
+  );
+
   return (
     <Box
       sx={{
-        ...bgGradient({
-          color: `0deg, ${varAlpha(theme.vars.palette.background.defaultChannel, 0.92)}, ${varAlpha(
-            theme.vars.palette.background.defaultChannel,
-            0.92
-          )}`,
-        }),
-        maxWidth: 780,
         display: 'none',
         position: 'relative',
-        backgroundColor: theme.palette.background.default, // Background color for the entire component
-        width: '100%', // Take up full width
-        height: '100%', // Take up full height
-        minHeight: '100vh', // Ensure it takes at least the full viewport height
-        overflow: 'hidden', // Prevent content from spilling outside the box
+        overflow: 'hidden',
+        borderRadius: 3,
+        minHeight: { xs: 0, [layoutQuery]: '100%' },
+        backgroundColor: alpha(theme.palette.background.default, 0.3),
         [theme.breakpoints.up(layoutQuery)]: {
           display: 'flex',
-          alignItems: 'flex-start', // Align to the left instead of center
           flexDirection: 'column',
-          justifyContent: 'flex-start', // Start from the top
-        },
-        '&:before': {
-          content: '""',
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          width: '100%',
-          height: '100%',
-          backgroundColor: theme.palette.background.default,
-          zIndex: -1,
+          justifyContent: 'space-between',
+          color: 'common.white',
+          p: { md: theme.spacing(5), lg: theme.spacing(6) },
         },
         ...sx,
       }}
       {...other}
     >
-      <div>
-        {/* <Typography variant="h3" sx={{ textAlign: 'center' }}>
-          {title}
-        </Typography> */}
-
-        {/* {subtitle && (
-          <Typography sx={{ color: 'text.secondary', textAlign: 'center', mt: 2 }}>
-            {subtitle}
-          </Typography>
-        )} */}
-      </div>
+      {renderMedia}
 
       <Box
-        component="img"
-        alt="Dashboard illustration"
-        src={imgUrl}
         sx={{
-          width: 'auto', // Auto width
-          height: '100vh', // Full viewport height
-          display: 'block', // Block display
-          objectFit: 'contain', // Maintain aspect ratio
-          position: 'fixed', // Fixed position relative to viewport
-          top: 0, // Top of viewport
-          left: 0, // Left side of viewport
-          marginLeft: '0', // No margin on left
-          marginRight: '0', // Auto margin on right
-          zIndex: 0, // Higher z-index to keep above other elements
+          position: 'absolute',
+          inset: 0,
+          bgcolor: alpha(theme.palette.common.black, 0.48),
         }}
       />
 
-      {!!methods?.length && method && (
-        <Box component="ul" gap={2} display="flex">
-          {methods.map((option) => {
-            const selected = method === option.label.toLowerCase();
+      <Box
+        sx={{
+          position: 'relative',
+          zIndex: 1,
+          display: 'none',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          gap: 4,
+          height: 1,
+          [theme.breakpoints.up(layoutQuery)]: {
+            display: 'flex',
+          },
+        }}
+      >
+        <Box>
+          {subtitle && (
+            <Typography variant="overline" sx={{ opacity: 0.64 }}>
+              {subtitle}
+            </Typography>
+          )}
 
-            return (
-              <Box
-                key={option.label}
-                component="li"
-                sx={{
-                  ...(!selected && {
-                    cursor: 'not-allowed',
-                    filter: 'grayscale(1)',
-                  }),
-                }}
-              >
-                <Tooltip title={option.label} placement="top">
-                  <Link
-                    component={RouterLink}
-                    href={option.path}
-                    sx={{
-                      ...(!selected && { pointerEvents: 'none' }),
-                    }}
-                  >
-                    <Box
-                      component="img"
-                      alt={option.label}
-                      src={option.icon}
-                      sx={{ width: 32, height: 32 }}
-                    />
-                  </Link>
-                </Tooltip>
-              </Box>
-            );
-          })}
+          <Typography
+            variant="h3"
+            sx={{
+              mt: subtitle ? 2 : 0,
+              fontWeight: 700,
+              lineHeight: 1.15,
+            }}
+          >
+            {title}
+          </Typography>
         </Box>
-      )}
+
+        {!!methods?.length && method && (
+          <Box component="ul" gap={2} display="flex">
+            {methods.map((option) => {
+              const selected = method === option.label.toLowerCase();
+
+              return (
+                <Box
+                  key={option.label}
+                  component="li"
+                  sx={{
+                    ...(!selected && {
+                      cursor: 'not-allowed',
+                      filter: 'grayscale(1)',
+                    }),
+                  }}
+                >
+                  <Tooltip title={option.label} placement="top">
+                    <Link
+                      component={RouterLink}
+                      href={option.path}
+                      sx={{
+                        ...(!selected && { pointerEvents: 'none' }),
+                      }}
+                    >
+                      <Box
+                        component="img"
+                        alt={option.label}
+                        src={option.icon}
+                        sx={{ width: 32, height: 32 }}
+                      />
+                    </Link>
+                  </Tooltip>
+                </Box>
+              );
+            })}
+          </Box>
+        )}
+      </Box>
     </Box>
   );
 }

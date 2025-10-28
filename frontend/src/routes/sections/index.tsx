@@ -14,12 +14,22 @@ import { dashboardRoutes } from './dashboard';
 // const HomePage = lazy(() => import('src/pages/home'));
 
 export function Router() {
+  const leftPanelMedia = {
+    videoUrl: '/left-panel.mp4',
+    imgUrl: '/logo/welcomegif.gif',
+  };
+
   return useRoutes([
     {
       path: 'reset-password',
       element: (
         <GuestGuard>
-          <AuthSplitLayout>
+          <AuthSplitLayout
+            section={{
+              title: 'Reset your password',
+              ...leftPanelMedia,
+            }}
+          >
             <ResetPasswordPage />
           </AuthSplitLayout>
         </GuestGuard>

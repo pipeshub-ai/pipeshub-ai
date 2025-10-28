@@ -13,6 +13,7 @@ export type AuthSplitLayoutProps = {
     title?: string;
     imgUrl?: string;
     subtitle?: string;
+    videoUrl?: string;
   };
 };
 
@@ -23,7 +24,7 @@ export function AuthSplitLayout({ sx, section, children }: AuthSplitLayoutProps)
     <LayoutSection
       headerSection={null} // Removed header
       footerSection={null}
-      cssVars={{ '--layout-auth-content-width': '800px' }}
+      cssVars={{ '--layout-auth-content-width': '100%' }}
       sx={sx}
     >
       <Main layoutQuery={layoutQuery}>
@@ -33,6 +34,7 @@ export function AuthSplitLayout({ sx, section, children }: AuthSplitLayoutProps)
           title={section?.title}
           subtitle={section?.subtitle}
           imgUrl={section?.imgUrl}
+          videoUrl={section?.videoUrl}
         />
 
         {/* Content area (form) */}

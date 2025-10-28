@@ -13,24 +13,43 @@ type MainProps = BoxProps & {
 };
 
 export function Main({ sx, children, layoutQuery, ...other }: MainProps) {
-  const theme = useTheme();
+  const gridColumns: Record<string, string> = { xs: '1fr' };
+  gridColumns[layoutQuery] = 'repeat(2, minmax(0, 1fr))';
 
   return (
     <Box
       component="main"
       className={layoutClasses.main}
       sx={{
+        height: '100vh',
+        maxHeight: '100vh',
+        width: 1,
         display: 'flex',
         flex: '1 1 auto',
         flexDirection: 'column',
-        [theme.breakpoints.up(layoutQuery)]: {
-          flexDirection: 'row',
-        },
+        boxSizing: 'border-box',
+        px: { xs: 2, md: 2 },
+        py: { xs: 3, md: 2 },
+        backgroundColor: 'background.default',
+        overflow: 'hidden',
         ...sx,
       }}
       {...other}
     >
-      {children}
+      <Box
+        sx={{
+          flex: 1,
+          display: 'grid',
+          gap: { xs: 2, md: 2 },
+          alignItems: 'stretch',
+          gridTemplateColumns: gridColumns,
+          width: 1,
+          height: 1,
+          minHeight: 0,
+        }}
+      >
+        {children}
+      </Box>
     </Box>
   );
 }
@@ -46,7 +65,9 @@ export function Content({ sx, children, layoutQuery, ...other }: MainProps) {
         width: 1,
         display: 'flex',
         flexDirection: 'column',
-        maxWidth: 'var(--layout-auth-content-width)',
+        height: 1,
+        minHeight: 0,
+        overflow: 'hidden',
       }}
     >
       {children}
@@ -57,14 +78,22 @@ export function Content({ sx, children, layoutQuery, ...other }: MainProps) {
     <Box
       className={layoutClasses.content}
       sx={{
+        position: 'relative',
         display: 'flex',
         flex: '1 1 auto',
-        alignItems: 'center',
         flexDirection: 'column',
-        p: theme.spacing(3, 2, 10, 2),
+        justifyContent: 'flex-start',
+        alignItems: 'stretch',
+        height: 1,
+        minHeight: 0,
+        maxHeight: '100%',
+        overflow: 'hidden',
+        boxSizing: 'border-box',
+        padding: theme.spacing(2),
         [theme.breakpoints.up(layoutQuery)]: {
           justifyContent: 'center',
-          p: theme.spacing(0, 2, 0, 2),
+          alignItems: 'stretch',
+          padding: theme.spacing(2),
         },
         ...sx,
       }}

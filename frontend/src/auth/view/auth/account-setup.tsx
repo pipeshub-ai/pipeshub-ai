@@ -115,30 +115,52 @@ const getValidationSchema = (accountType: AccountType) => {
 
 // Update the styled components for better UI
 const StyledContainer = styled(Container)(({ theme }) => ({
-  maxWidth: '800px !important',
-  margin: '0 auto',
+  width: '100%',
+  maxWidth: '100% !important',
+  margin: 0,
   height: '100%',
+  maxHeight: '100%',
   display: 'flex',
   flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  overflow: 'hidden',
+  paddingLeft: '0 !important',
+  paddingRight: '0 !important',
+  paddingTop: theme.spacing(2),
+  paddingBottom: theme.spacing(2),
+  [theme.breakpoints.down('sm')]: {
+    paddingLeft: theme.spacing(2),
+    paddingRight: theme.spacing(2),
+  },
+}));
+
+const StyledPaper = styled(Paper)(({ theme }) => ({
+  padding: theme.spacing(2.5),
+  backgroundColor: theme.palette.background.paper,
+  borderRadius: theme.shape.borderRadius * 1.5,
+  boxShadow: 'none',
+  border: `1px solid ${theme.palette.divider}`,
+  width: '100%',
+  maxWidth: 720,
+  flex: '1 1 auto',
+  minHeight: 0,
+  maxHeight: '100%',
+  overflowY: 'auto',
+  display: 'flex',
+  flexDirection: 'column',
+  margin: '0 auto',
+  [theme.breakpoints.down('md')]: {
+    maxHeight: 'none',
+  },
   [theme.breakpoints.down('sm')]: {
     padding: theme.spacing(2),
   },
 }));
 
-const StyledPaper = styled(Paper)(({ theme }) => ({
-  padding: theme.spacing(3),
-  backgroundColor: theme.palette.background.paper,
-  borderRadius: theme.shape.borderRadius * 1.5,
-  boxShadow: 'none',
-  border: `1px solid ${theme.palette.divider}`,
-  [theme.breakpoints.down('sm')]: {
-    padding: theme.spacing(3),
-  },
-}));
-
 const SectionTitle = styled(Typography)(({ theme }) => ({
   fontWeight: 600,
-  marginBottom: theme.spacing(0),
+  marginBottom: theme.spacing(0.5),
   color: theme.palette.text.primary,
   display: 'flex',
   alignItems: 'center',
@@ -339,11 +361,13 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
   return (
     <Box
       sx={{
-        minHeight: '100vh',
+        height: 1,
+        minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
         backgroundColor: theme.palette.background.default,
         zIndex: 2,
+        overflow: 'hidden',
       }}
     >
       <StyledContainer>
@@ -352,22 +376,31 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            mt: accountType === 'individual' ? 16 : 0,
-            py: { xs: 2, sm: 3 },
+            justifyContent: { xs: 'flex-start', md: 'center' },
+            alignItems: { xs: 'stretch', md: 'center' },
+            gap: { xs: 2, md: 3 },
+            height: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            mt: 0,
+            py: { xs: 1, md: 0 },
           }}
         >
-          <Box sx={{ mb: 2, textAlign: 'center' }}>
+          <Box sx={{ mb: 2, textAlign: 'center', flexShrink: 0 }}>
             <Typography
-              variant="h3"
+              variant="h4"
               sx={{
                 color: theme.palette.primary.main,
                 fontWeight: 700,
-                mb: 1,
+                mb: 0.5,
               }}
             >
               {accountType === 'business' ? 'Set Up Your Organization' : 'Create Your Account'}
             </Typography>
-            <Typography variant="body2" sx={{ color: theme.palette.text.secondary }}>
+            <Typography
+              variant="body2"
+              sx={{ color: theme.palette.text.secondary, maxWidth: 440, mx: 'auto' }}
+            >
               {accountType === 'business'
                 ? 'Create your organization profile to get started with PIPESHUB'
                 : 'Create your individual account to get started with PIPESHUB'}
@@ -376,8 +409,17 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
 
           <StyledPaper>
             <FormProvider {...methods}>
-              <form onSubmit={handleSubmit(onSubmit)}>
-                <Grid container spacing={2}>
+              <Box
+                component="form"
+                onSubmit={handleSubmit(onSubmit)}
+                sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+              >
+                <Grid
+                  container
+                  columnSpacing={{ xs: 1.5, md: 2 }}
+                  rowSpacing={{ xs: 1.5, md: 2 }}
+                  sx={{ flex: 1, alignContent: 'flex-start', minHeight: 0 }}
+                >
                   {/* Organization Details Section - Only show for organization account type */}
                   {accountType === 'business' && (
                     <>
@@ -504,7 +546,12 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                       </Grid>
 
                       <Grid item xs={12}>
-                        <Grid container spacing={2}>
+                        <Grid
+                          container
+                          columnSpacing={{ xs: 1.5, md: 2 }}
+                          rowSpacing={{ xs: 1.5, md: 2 }}
+                          sx={{ alignContent: 'flex-start' }}
+                        >
                           <Grid item xs={12}>
                             <Controller
                               name="permanentAddress.addressLine1"
@@ -521,7 +568,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                             />
                           </Grid>
 
-                          <Grid item xs={12} sm={6}>
+                          <Grid item xs={12} sm={6} md={3}>
                             <Controller
                               name="permanentAddress.city"
                               control={control}
@@ -537,7 +584,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                             />
                           </Grid>
 
-                          <Grid item xs={12} sm={6}>
+                          <Grid item xs={12} sm={6} md={3}>
                             <Controller
                               name="permanentAddress.state"
                               control={control}
@@ -553,7 +600,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                             />
                           </Grid>
 
-                          <Grid item xs={12} sm={6}>
+                          <Grid item xs={12} sm={6} md={3}>
                             <Controller
                               name="permanentAddress.postCode"
                               control={control}
@@ -569,7 +616,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                             />
                           </Grid>
 
-                          <Grid item xs={12} sm={6}>
+                          <Grid item xs={12} sm={6} md={3}>
                             <Controller
                               name="permanentAddress.country"
                               control={control}
@@ -596,7 +643,8 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                         display: 'flex',
                         justifyContent: 'flex-end',
                         gap: 2,
-                        mt: 2,
+                        mt: 1.5,
+                        flexShrink: 0,
                       }}
                     >
                       <StyledButton
@@ -640,7 +688,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                     </Box>
                   </Grid>
                 </Grid>
-              </form>
+              </Box>
             </FormProvider>
           </StyledPaper>
           <Snackbar
