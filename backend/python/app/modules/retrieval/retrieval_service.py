@@ -287,7 +287,7 @@ class RetrievalService:
                 if record.get("virtualRecordId") is not None
             ]
 
-            self.logger.info(f"Accessible virtual record ids: {accessible_virtual_record_ids}")
+            self.logger.debug(f"Accessible virtual record ids: {accessible_virtual_record_ids}")
 
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
