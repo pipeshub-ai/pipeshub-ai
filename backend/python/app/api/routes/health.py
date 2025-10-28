@@ -386,6 +386,7 @@ async def perform_llm_health_check(
         )
 
 async def perform_embedding_health_check(
+    request: Request,
     embedding_config: dict,
     logger: Logger,
 ) -> Dict[str, Any]:
@@ -450,14 +451,45 @@ async def perform_embedding_health_check(
             embedding_dimension = len(test_embeddings[0]) if test_embeddings else 0
             all(len(emb) == embedding_dimension for emb in test_embeddings)
 
+            # Additional policy: If existing collection has points and vector size differs, reject
+            try:
+                retrieval_service = await request.app.container.retrieval_service()
+                collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
+                qdrant_vector_size = collection_info.config.params.vectors.get("dense").size
+                points_count = getattr(collection_info, "points_count", 0)
+
+                if points_count and qdrant_vector_size and qdrant_vector_size != embedding_dimension:
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "status": "error",
+                            "message": "Embedding model dimension mismatch with existing non-empty collection",
+                            "details": {
+                                "existing_vector_size": qdrant_vector_size,
+                                "new_embedding_size": embedding_dimension,
+                                "points_count": points_count,
+                            },
+                            "timestamp": get_epoch_timestamp_in_ms(),
+                        },
+                    )
+            except Exception:
+                logger.error(f"Collection lookup failed")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": f"Something went wrong! Please try again.",
+                    },
+                )
+
             return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
 
         except asyncio.TimeoutError:
             logger.error(f"Embedding health check timed out for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
@@ -516,10 +548,9 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
         logger.info(f"Health check endpoint called for {model_type}")
         logger.info(f"Request body: {model_config}")
 
-
         if model_type == "embedding":
             logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
-            return await perform_embedding_health_check(model_config, logger)
+            return await perform_embedding_health_check(request, model_config, logger)
 
         elif model_type == "llm":
             logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
