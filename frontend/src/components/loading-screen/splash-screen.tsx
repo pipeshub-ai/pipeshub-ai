@@ -5,6 +5,8 @@ import { useState, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Portal from '@mui/material/Portal';
 
+import { LogoSpinner } from './logo-spinner';
+
 // ----------------------------------------------------------------------
 
 type Props = BoxProps & {
@@ -44,40 +46,13 @@ export function SplashScreen({ portal = true, sx, ...other }: Props) {
         }}
         {...other}
       >
-        <Box
-          component="img"
-          src="/logo/logo-full.svg"
-          alt="Logo"
+        <LogoSpinner
+          size={112}
           sx={{
-            width: { xs: 180, sm: 240, md: 300 },
-            height: 'auto',
-            transition: 'all 0.8s ease-out',
-            transform: loaded ? 'scale(1)' : 'scale(0.8)',
+            opacity: loaded ? 1 : 0,
+            transition: 'opacity 0.4s ease',
           }}
         />
-        
-        {/* Loading indicators */}
-        <Box 
-          sx={{ 
-            mt: 4,
-            display: 'flex',
-            gap: 1.5
-          }}
-        >
-          {[0, 1, 2].map((i) => (
-            <Box
-              key={i}
-              sx={{
-                width: 10,
-                height: 10,
-                borderRadius: '50%',
-                bgcolor: 'primary.main',
-                opacity: 0.7,
-                transition: 'opacity 0.3s ease',
-              }}
-            />
-          ))}
-        </Box>
       </Box>
     </Box>
   );
