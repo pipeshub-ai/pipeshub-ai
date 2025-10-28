@@ -108,21 +108,21 @@ export default function Page() {
             pb: 2,
           }}
         >
-          <Typography 
-            variant="h5" 
-            sx={{ 
-              fontWeight: 600, 
-              mb: 1,
-              color: 'text.primary',
-            }}
-          >
-            Choose Account Type
-          </Typography>
+            <Typography 
+              variant="h5" 
+              sx={{ 
+                fontWeight: 600, 
+                mb: 1,
+                color: 'text.primary',
+              }}
+            >
+              Choose Account Type
+            </Typography>
           <Typography 
             variant="body2" 
             color="text.secondary"
           >
-            Select the type of account you want to create
+            Select the type of Relationship Intelligence account you want to create
           </Typography>
         </DialogTitle>
 

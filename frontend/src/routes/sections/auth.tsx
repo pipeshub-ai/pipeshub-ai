@@ -74,7 +74,6 @@ const authJwt = {
           <AuthSplitLayout
             section={{
               title: 'Create your account',
-              subtitle: 'Set up PipesHub in a few minutes',
               ...leftPanelMedia,
             }}
           >

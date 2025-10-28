@@ -402,8 +402,8 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
               sx={{ color: theme.palette.text.secondary, maxWidth: 440, mx: 'auto' }}
             >
               {accountType === 'business'
-                ? 'Create your organization profile to get started with PIPESHUB'
-                : 'Create your individual account to get started with PIPESHUB'}
+                ? 'Create your organization profile to get started.'
+                : 'Create your individual account to get started.'}
             </Typography>
           </Box>
 

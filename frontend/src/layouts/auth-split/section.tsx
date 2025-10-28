@@ -9,6 +9,8 @@ import { alpha, useTheme } from '@mui/material/styles';
 
 import { RouterLink } from 'src/routes/components';
 
+import { AuthSplitLogo } from './logo';
+
 
 // ----------------------------------------------------------------------
 
@@ -107,9 +109,27 @@ export function Section({
           },
         }}
       >
-        <Box>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <AuthSplitLogo />
+        </Box>
+
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            gap: 1.5,
+            flex: 1,
+          }}
+        >
           {subtitle && (
-            <Typography variant="overline" sx={{ opacity: 0.64 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: alpha(theme.palette.common.white, 0.72),
+                textTransform: 'none',
+              }}
+            >
               {subtitle}
             </Typography>
           )}
@@ -117,7 +137,6 @@ export function Section({
           <Typography
             variant="h3"
             sx={{
-              mt: subtitle ? 2 : 0,
               fontWeight: 700,
               lineHeight: 1.15,
             }}
@@ -126,43 +145,55 @@ export function Section({
           </Typography>
         </Box>
 
-        {!!methods?.length && method && (
-          <Box component="ul" gap={2} display="flex">
-            {methods.map((option) => {
-              const selected = method === option.label.toLowerCase();
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {!!methods?.length && method && (
+            <Box component="ul" gap={2} display="flex">
+              {methods.map((option) => {
+                const selected = method === option.label.toLowerCase();
 
-              return (
-                <Box
-                  key={option.label}
-                  component="li"
-                  sx={{
-                    ...(!selected && {
-                      cursor: 'not-allowed',
-                      filter: 'grayscale(1)',
-                    }),
-                  }}
-                >
-                  <Tooltip title={option.label} placement="top">
-                    <Link
-                      component={RouterLink}
-                      href={option.path}
-                      sx={{
-                        ...(!selected && { pointerEvents: 'none' }),
-                      }}
-                    >
-                      <Box
-                        component="img"
-                        alt={option.label}
-                        src={option.icon}
-                        sx={{ width: 32, height: 32 }}
-                      />
-                    </Link>
-                  </Tooltip>
-                </Box>
-              );
-            })}
-          </Box>
-        )}
+                return (
+                  <Box
+                    key={option.label}
+                    component="li"
+                    sx={{
+                      ...(!selected && {
+                        cursor: 'not-allowed',
+                        filter: 'grayscale(1)',
+                      }),
+                    }}
+                  >
+                    <Tooltip title={option.label} placement="top">
+                      <Link
+                        component={RouterLink}
+                        href={option.path}
+                        sx={{
+                          ...(!selected && { pointerEvents: 'none' }),
+                        }}
+                      >
+                        <Box
+                          component="img"
+                          alt={option.label}
+                          src={option.icon}
+                          sx={{ width: 32, height: 32 }}
+                        />
+                      </Link>
+                    </Tooltip>
+                  </Box>
+                );
+              })}
+            </Box>
+          )}
+
+          <Typography
+            variant="body2"
+            sx={{
+              color: alpha(theme.palette.common.white, 0.72),
+              maxWidth: 280,
+            }}
+          >
+            Turn every client interaction into actionable insight with guided deal workflows.
+          </Typography>
+        </Box>
       </Box>
     </Box>
   );
