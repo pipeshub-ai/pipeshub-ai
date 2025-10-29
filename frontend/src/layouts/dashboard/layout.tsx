@@ -58,6 +58,9 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
   const dynamicNavData = getDashboardNavData(user?.accountType, isAdmin);
 
   const navData = data?.nav ?? dynamicNavData;
+  const hasHorizontalNavItems = navData.some(
+    (section) => Array.isArray(section.items) && section.items.length > 0
+  );
   const navigate = useNavigate();
 
   // Get dynamic account menu items
@@ -195,7 +198,7 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                     sx={{ [theme.breakpoints.up(layoutQuery)]: { display: 'flex' } }}
                   />
                 )}
-                {isNavHorizontal && (
+                {isNavHorizontal && hasHorizontalNavItems && (
                   <NavHorizontal
                     data={navData}
                     layoutQuery={layoutQuery}

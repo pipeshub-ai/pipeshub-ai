@@ -1,13 +1,42 @@
+import bookOpenIcon from '@iconify-icons/mdi/book-open-outline';
+import connectionIcon from '@iconify-icons/mdi/connection';
+import searchIcon from '@iconify-icons/mdi/magnify';
 import settingsIcon from '@iconify-icons/solar/settings-bold-duotone';
 
 import SvgIcon from '@mui/material/SvgIcon';
 
-import { useAdmin } from 'src/context/AdminContext';
-
 import { Iconify } from 'src/components/iconify';
 
+import { useAdmin } from 'src/context/AdminContext';
+
 import { useAuthContext } from 'src/auth/hooks';
+import { paths } from 'src/routes/paths';
 // ----------------------------------------------------------------------
+
+const knowledgeMenuItems = [
+  {
+    label: 'Knowledge Base',
+    href: paths.dashboard.knowledgebase.root,
+    icon: <Iconify icon={bookOpenIcon} />,
+  },
+  {
+    label: 'Knowledge Search',
+    href: paths.dashboard.knowledgebase.search,
+    icon: <Iconify icon={searchIcon} />,
+  },
+];
+
+const businessConnectorMenuItem = {
+  label: 'Connector Settings',
+  href: '/account/company-settings/settings/connector',
+  icon: <Iconify icon={connectionIcon} />,
+};
+
+const individualConnectorMenuItem = {
+  label: 'Connector Settings',
+  href: '/account/individual/settings/connector',
+  icon: <Iconify icon={connectionIcon} />,
+};
 
 // Business-specific menu items
 const baseBusinessMenuItems = [
@@ -114,7 +143,13 @@ export const useAccountMenu = () => {
   // Return different menu items based on account type
   if (isBusiness) {
     // Start with base business menu items
-    const businessItems = [...baseBusinessMenuItems];
+    const businessItems = [...knowledgeMenuItems];
+
+    if (isAdmin === true) {
+      businessItems.push(businessConnectorMenuItem);
+    }
+
+    businessItems.push(...baseBusinessMenuItems);
 
     // Only add settings item if user is an admin
     if (isAdmin === true) {
@@ -125,7 +160,7 @@ export const useAccountMenu = () => {
   }
 
   // Default to individual menu items
-  return individualMenuItems;
+  return [...knowledgeMenuItems, individualConnectorMenuItem, ...individualMenuItems];
 };
 
 // Route configuration for React Router
