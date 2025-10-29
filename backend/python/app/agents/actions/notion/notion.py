@@ -93,6 +93,16 @@ class Notion:
                     else:
                         data = str(response_data)
 
+                # Notion API returns HTTP 200 OK but with error in response body
+                if isinstance(data, dict) and data.get("object") == "error":
+                    logger.error(f"Notion API error in response data: {data}")
+                    return False, json.dumps({
+                        "error": data.get("message", "Unknown Notion API error"),
+                        "error_code": data.get("code"),
+                        "status": data.get("status"),
+                        "details": data
+                    })
+
                 return True, json.dumps({
                     "message": success_message,
                     "data": data
@@ -123,40 +133,46 @@ class Notion:
     @tool(
         app_name="notion",
         tool_name="create_page",
-        description="Create a page in Notion",
+        description="""Create a new page in Notion. **IMPORTANT**: You MUST have a valid parent_id before calling this tool.
+        If you don't have a parent_id, use notion.search to find existing pages/databases first, or ask the user to provide it.
+        Valid parent_id format: 32-character UUID with dashes (e.g., '12345678-1234-1234-1234-123456789012') or 32-character hex string.
+        **DO NOT** use placeholder IDs - always get a real ID first.""",
         parameters=[
             ToolParameter(
                 name="parent_id",
                 type=ParameterType.STRING,
-                description="The ID of the parent page or database",
+                description="""The ID of the parent page or database where this page will be created.
+                REQUIRED format: Valid Notion page/database ID (32-char UUID or hex string).
+                1. Use notion.search to find existing pages/databases, OR
+                2. Ask the user to provide the parent page/database ID (found in Notion URL)""",
                 required=True
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
-                description="The title of the page",
+                description="The title/name of the page to create",
                 required=True
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
-                description="The content of the page",
+                description="Optional markdown content to add to the page body",
                 required=False
             ),
             ToolParameter(
                 name="parent_is_database",
                 type=ParameterType.BOOLEAN,
-                description="Whether the parent is a database (default: False)",
+                description="Set to True if parent_id refers to a database, False if it's a page (default: False)",
                 required=False
             ),
             ToolParameter(
                 name="title_property",
                 type=ParameterType.STRING,
-                description="The property name for the title (default: 'title')",
+                description="The property name for the title in database pages (default: 'title')",
                 required=False
             ),
         ],
-        returns="JSON with success status and page details"
+        returns="JSON with success status and created page details, or error with explanation"
     )
     def create_page(
         self,
@@ -366,40 +382,43 @@ class Notion:
     @tool(
         app_name="notion",
         tool_name="search",
-        description="Search Notion pages and databases",
+        description="""Search for pages and databases in Notion workspace.
+        **USE THIS FIRST** before calling notion.create_page or notion.create_database if you need to find existing resources or get valid parent IDs.
+        Returns list of pages/databases with their IDs which can be used as parent_id in create operations.
+        If no query provided, returns recent pages/databases.""",
         parameters=[
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Search query text",
+                description="Search query text to find specific pages/databases by title or content. Leave empty to get recent pages/databases.",
                 required=False
             ),
             ToolParameter(
                 name="sort",
                 type=ParameterType.DICT,
-                description="Sort configuration",
+                description="Sort configuration (e.g., {'direction': 'ascending', 'timestamp': 'last_edited_time'})",
                 required=False
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.DICT,
-                description="Filter configuration",
+                description="Filter configuration to narrow results (e.g., {'value': 'page', 'property': 'object'} to only get pages)",
                 required=False
             ),
             ToolParameter(
                 name="start_cursor",
                 type=ParameterType.STRING,
-                description="Pagination cursor",
+                description="Pagination cursor for getting next page of results",
                 required=False
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
-                description="Number of results (max 100)",
+                description="Number of results to return (max 100, default 100)",
                 required=False
             ),
         ],
-        returns="JSON with search results"
+        returns="JSON with array of pages/databases including their IDs, titles, and metadata. Use the 'id' field from results as parent_id for creating new pages."
     )
     def search(
         self,
@@ -526,28 +545,36 @@ class Notion:
     @tool(
         app_name="notion",
         tool_name="create_database",
-        description="Create a database in Notion",
+        description="""Create a new database in Notion. **IMPORTANT**: You MUST have a valid parent_id (page ID) before calling this tool.
+        Databases can only be created inside pages, not inside other databases.
+        If you don't have a parent page ID, use notion.search to find existing pages first, or ask the user to provide it.
+        Valid parent_id format: 32-character UUID with dashes or 32-character hex string.
+        **DO NOT** use placeholder IDs - always get a real page ID first.""",
         parameters=[
             ToolParameter(
                 name="parent_id",
                 type=ParameterType.STRING,
-                description="The ID of the parent page",
+                description="""The ID of the parent PAGE where this database will be created (databases must be inside pages).
+                REQUIRED format: Valid Notion page ID (32-char UUID or hex string).
+                1. Use notion.search to find existing pages, OR
+                2. Ask the user to provide the parent page ID (found in Notion URL)""",
                 required=True
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
-                description="The title of the database",
+                description="The title/name of the database to create",
                 required=True
             ),
             ToolParameter(
                 name="properties",
                 type=ParameterType.DICT,
-                description="Database properties schema",
+                description="""Database properties schema defining columns. Example: {'Name': {'title': {}}, 'Status': {'select': {'options': [{'name': 'To Do'}]}}}
+                Each property defines a column with its type (title, text, select, multi_select, date, etc.)""",
                 required=True
             ),
         ],
-        returns="JSON with database details"
+        returns="JSON with success status and created database details, or error with explanation"
     )
     def create_database(
         self,

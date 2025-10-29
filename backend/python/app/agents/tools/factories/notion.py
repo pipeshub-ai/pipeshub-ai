@@ -13,7 +13,7 @@ from app.sources.client.notion.notion import NotionClient
 class NotionClientFactory(ClientFactory):
     """Factory for creating Notion clients"""
 
-    async def create_client(self, config_service, logger) -> NotionClient:
+    async def create_client(self, config_service, logger, state=None) -> NotionClient:
         """Create Notion client instance"""
 
         return await NotionClient.build_from_services(
