@@ -1274,7 +1274,7 @@ class Processor:
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
-                    if base64_urls[i] is not None and base64_urls[i]:
+                    if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
                     else:
                         self.logger.warning(f"⚠️ Failed to convert image URL to base64: {image['url']}")
