@@ -291,7 +291,9 @@ class GmailChangeHandler:
                                 entity_id = await self.arango_service.get_entity_id_by_email(
                                     email
                                 )
-                                entityType = None
+                                # Default to PEOPLE/USER; override if found in USERS or GROUPS
+                                entityType = CollectionNames.PEOPLE.value
+                                permType = "USER"
                                 if entity_id:
                                     # Check if entity exists in users or groups
                                     if self.arango_service.db.collection(
@@ -306,9 +308,7 @@ class GmailChangeHandler:
                                         permType = "GROUP"
                                 else:
                                     # Save entity in people collection
-                                    entityType = CollectionNames.PEOPLE.value
                                     entity_id = str(uuid.uuid4())
-                                    permType = "USER"
                                     people_record = await self.arango_service.save_to_people_collection(
                                         entity_id, email
                                     )
