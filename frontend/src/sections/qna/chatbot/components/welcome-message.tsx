@@ -1,71 +1,12 @@
 // WelcomeMessage.tsx - Using ChatInput component
-import { Icon } from '@iconify/react';
-import githubIcon from '@iconify-icons/mdi/github';
-import React, { memo, useRef, useCallback } from 'react';
+import React, { useRef, useCallback } from 'react';
 
-import {
-  Box,
-  Link,
-  alpha,
-  useTheme,
-  Container,
-  Typography,
-} from '@mui/material';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { Box, useTheme, Container, Typography } from '@mui/material';
 
+import { useAuthContext } from 'src/auth/hooks';
+import { SiriOrb } from 'src/components/siri-orb';
 import ChatInput, { Model, ChatMode } from './chat-input';
-
-// Simple Footer component
-const Footer = memo(({ isDark }: { isDark: boolean }) => {
-  const theme = useTheme();
-
-  return (
-    <Box
-      sx={{
-        display: 'flex',
-        justifyContent: 'center',
-        mt: 'auto',
-        pt: 2,
-        pb: 3,
-        width: '100%',
-        marginTop: 6,
-      }}
-    >
-      <Link
-        href="https://github.com/pipeshub-ai/pipeshub-ai"
-        target="_blank"
-        underline="none"
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 0.75,
-          fontSize: '0.7rem',
-          color: isDark ? alpha('#fff', 0.5) : alpha('#000', 0.4),
-          opacity: 0.85,
-          transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-          padding: '6px 12px',
-          borderRadius: '6px',
-          '&:hover': {
-            color: theme.palette.primary.main,
-            opacity: 1,
-            backgroundColor: isDark ? alpha('#fff', 0.03) : alpha('#000', 0.02),
-            transform: 'translateY(-1px)',
-          },
-        }}
-      >
-        <Icon
-          icon={githubIcon}
-          style={{
-            fontSize: '0.9rem',
-            color: 'inherit',
-          }}
-        />
-        pipeshub-ai
-      </Link>
-    </Box>
-  );
-});
-
-Footer.displayName = 'Footer';
 
 interface WelcomeMessageProps {
   onSubmit: (
@@ -102,8 +43,14 @@ const WelcomeMessageComponent = ({
   onFiltersChange,
 }: WelcomeMessageProps) => {
   const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
+  const isSmUp = useMediaQuery(theme.breakpoints.up('sm'));
+  const { user } = useAuthContext();
   const isSubmittingRef = useRef(false);
+  const displayName =
+    (user?.fullName && user.fullName.trim()) ||
+    (user?.firstName && user.firstName.trim()) ||
+    (user?.email && user.email.trim()) ||
+    'there';
 
   // Direct submission handler that stores message text in a ref
   const handleDirectSubmit = useCallback(
@@ -148,67 +95,53 @@ const WelcomeMessageComponent = ({
           flexDirection: 'column',
           alignItems: 'center',
           textAlign: 'center',
+          gap: 2.5,
           mb: 8,
-          mt: { xs: -2, sm: -8 },
+          mt: { xs: -2, sm: -6 },
         }}
       >
-        <Typography
-          variant="h5"
+        <SiriOrb
+          size={isSmUp ? 128 : 96}
+          animationDuration={18}
           sx={{
-            fontWeight: 600,
-            color: theme.palette.text.primary,
-            mb: 2,
-            fontSize: { xs: '1.6rem', sm: '1.85rem' },
-            letterSpacing: '-0.03em',
-            background: isDark
-              ? 'linear-gradient(90deg, #fff 0%, #e0e0e0 100%)'
-              : 'linear-gradient(90deg, #222 0%, #555 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
+            filter: 'drop-shadow(0 24px 60px rgba(0,0,0,0.18))',
           }}
-        >
-          PipesHub AI
-        </Typography>
+        />
 
         <Typography
-          variant="caption"
+          variant="h4"
           sx={{
             fontWeight: 500,
-            color: theme.palette.primary.main,
-            letterSpacing: '0.02em',
-            fontSize: '0.85rem',
-            opacity: 0.92,
-            background: isDark
-              ? `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${alpha(theme.palette.primary.light, 0.8)} 100%)`
-              : `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
+            color: theme.palette.text.primary,
+            letterSpacing: '-0.02em',
+            mt: 0,
+            lineHeight: 1.1,
+            textTransform: 'capitalize',
           }}
         >
-          Workplace AI that understands your workplace inside out
+          Welcome Back, {displayName}
+          <br />
+          Tell Agent Which Relationship Intel You Need Now
         </Typography>
       </Box>
 
       {/* ChatInput Component */}
-      
-        <ChatInput
-          onSubmit={handleDirectSubmit}
-          isLoading={isLoading || isSubmittingRef.current}
-          disabled={isLoading || isSubmittingRef.current}
-          placeholder="Ask anything..."
-          selectedModel={selectedModel}
-          selectedChatMode={selectedChatMode}
-          onModelChange={onModelChange}
-          onChatModeChange={onChatModeChange}
-          apps={apps}
-          knowledgeBases={knowledgeBases}
-          initialSelectedApps={initialSelectedApps}
-          initialSelectedKbIds={initialSelectedKbIds}
-          onFiltersChange={onFiltersChange}
-        />
+      <ChatInput
+        onSubmit={handleDirectSubmit}
+        isLoading={isLoading || isSubmittingRef.current}
+        disabled={isLoading || isSubmittingRef.current}
+        placeholder="Ask anything..."
+        selectedModel={selectedModel}
+        selectedChatMode={selectedChatMode}
+        onModelChange={onModelChange}
+        onChatModeChange={onChatModeChange}
+        apps={apps}
+        knowledgeBases={knowledgeBases}
+        initialSelectedApps={initialSelectedApps}
+        initialSelectedKbIds={initialSelectedKbIds}
+        onFiltersChange={onFiltersChange}
+      />
 
-      {/* Footer */}
-      <Footer isDark={isDark} />
     </Container>
   );
 };

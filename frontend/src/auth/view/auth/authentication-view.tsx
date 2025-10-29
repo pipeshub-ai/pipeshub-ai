@@ -484,7 +484,7 @@ export const AuthenticationView = () => {
               width: '100%',
               maxWidth: 520,
               mx: 'auto',
-              borderRadius: theme1.shape.borderRadius * 0.75,
+              borderRadius: theme1.shape.borderRadius * 0.25,
               backgroundColor: alpha(theme1.palette.background.paper, 0.92),
               backgroundImage: `linear-gradient(180deg, ${varAlpha(
                 theme1.vars.palette.grey['500Channel'],
@@ -618,7 +618,7 @@ export const AuthenticationView = () => {
             width: '100%',
             maxWidth: 520,
             mx: 'auto',
-            borderRadius: theme1.shape.borderRadius * 0.75,
+            borderRadius: theme1.shape.borderRadius * 0.25,
             backgroundColor: alpha(theme1.palette.background.paper, 0.92),
             backgroundImage: `linear-gradient(180deg, ${varAlpha(
               theme1.vars.palette.grey['500Channel'],

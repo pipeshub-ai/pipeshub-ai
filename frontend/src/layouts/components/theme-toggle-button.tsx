@@ -73,8 +73,8 @@ export function ThemeToggleButton({ sx, disabled, ...other }: ThemeToggleButtonP
         return (
           <Button
             key={value}
-            variant={selected ? 'contained' : 'text'}
-            color={selected ? 'primary' : 'inherit'}
+            variant="text"
+            color="inherit"
             onClick={() => handleChange(value)}
             disabled={disabled}
             disableElevation
@@ -92,9 +92,12 @@ export function ThemeToggleButton({ sx, disabled, ...other }: ThemeToggleButtonP
               alignItems: 'center',
               justifyContent: 'center',
               textTransform: 'none',
-              color: selected ? 'primary.contrastText' : 'text.secondary',
+              color: selected ? 'text.primary' : 'text.secondary',
+              bgcolor: (theme) =>
+                selected ? theme.vars.palette.action.selected : 'transparent',
               '&:hover': {
-                bgcolor: (theme) => (selected ? theme.palette.primary.dark : theme.palette.action.hover),
+                bgcolor: (theme) =>
+                  selected ? theme.vars.palette.action.selected : theme.vars.palette.action.hover,
               },
             }}
           >

@@ -457,7 +457,7 @@ const AgentChatSidebar = ({
           }}
         >
           {activeTab === 'my'
-            ? 'Start a new conversation to begin chatting with PipesHub Agent'
+            ? 'Start a new conversation to begin chatting with Agent'
             : 'When someone shares a conversation with you, it will appear here'}
         </Typography>
         {activeTab === 'my' && (
