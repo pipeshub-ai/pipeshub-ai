@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.agents.qna.chat_state import build_initial_state
-from app.modules.agents.qna.graph import qna_graph
+from app.modules.agents.qna.graph import agent_graph
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -93,7 +93,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
 
         # Execute the graph with async
         logger.info(f"Starting LangGraph execution for query: {query_info.query}")
-        final_state = await qna_graph.ainvoke(initial_state)  # Using async invoke
+        final_state = await agent_graph.ainvoke(initial_state)  # Using async invoke
 
         # Check for errors
         if final_state.get("error"):
@@ -142,7 +142,7 @@ async def stream_response(
     # Execute the graph with async
     logger.info(f"Query info: {query_info}")
     logger.info(f"Starting LangGraph execution for query: {query_info.get('query')}")
-    async for chunk in qna_graph.astream(initial_state, stream_mode="custom"):
+    async for chunk in agent_graph.astream(initial_state, stream_mode="custom"):
         if isinstance(chunk, dict) and "event" in chunk:
             # Convert dict to JSON string for streaming
             yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
@@ -949,7 +949,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
 
         # Execute the graph with async
         logger.info(f"Starting LangGraph execution for query: {query_info.query}")
-        final_state = await qna_graph.ainvoke(initial_state)  # Using async invoke
+        final_state = await agent_graph.ainvoke(initial_state)  # Using async invoke
 
         # Check for errors
         if final_state.get("error"):

@@ -29,7 +29,6 @@ class DoclingProcessor():
              InputFormat.DOCX: WordFormatOption(),
                  InputFormat.MD: MarkdownFormatOption(),
         })
-        self.doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=logger,config=config)
 
     async def load_document(self, doc_name: str, content: bytes) -> BlocksContainer|bool:
         stream = BytesIO(content)
@@ -39,9 +38,8 @@ class DoclingProcessor():
             raise ValueError(f"Failed to parse PDF: {conv_res.status}")
 
         doc = conv_res.document
-        block_containers = await self.doc_to_blocks_converter.convert(doc)
-        if block_containers is False:
-            return False
+        doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger,config=self.config)
+        block_containers = await doc_to_blocks_converter.convert(doc)
 
         return block_containers
 

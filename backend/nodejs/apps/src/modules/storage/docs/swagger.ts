@@ -13,7 +13,7 @@ export const storageSwaggerConfig: ModuleSwaggerInfo = {
   tagName: 'Storage',
   tagDescription:
     'Storage service operations for document management, versioning, and retrieval',
-  yamlFilePath: path.join(__dirname, 'swagger.yaml'),
+  yamlFilePath: path.join(process.cwd(), 'src/modules/storage/docs/swagger.yaml'),
   baseUrl: '/api/v1/document', // for storage module
 };
 

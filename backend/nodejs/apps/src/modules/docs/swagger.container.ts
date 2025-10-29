@@ -179,7 +179,7 @@ export class SwaggerService {
         `Registered Swagger documentation for module: ${moduleInfo.moduleId}`,
       );
     } catch (error) {
-      this.logger.error(
+      this.logger.warn(
         `Failed to register module ${moduleInfo.moduleId} for Swagger:`,
         {
           error: error instanceof Error ? error.message : 'Unknown error',

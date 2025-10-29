@@ -1,10 +1,9 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from logging import Logger
 from typing import Optional
 
 import aiohttp  # type: ignore
-from jose import jwt  # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
@@ -15,7 +14,6 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
@@ -24,6 +22,8 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 # from app.connectors.sources.google.common.arango_service import ArangoService
 from app.services.scheduler.interface.scheduler import Scheduler
 from app.services.scheduler.scheduler_factory import SchedulerFactory
+from app.utils.api_call import make_api_call
+from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.redis_util import build_redis_url
 
@@ -49,41 +49,6 @@ async def make_signed_url_api_call(signed_url: str) -> dict:
     except Exception:
         raise Exception("Failed to make signed URL API call")
 
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
-async def make_api_call(signed_url_route: str, token: str) -> dict:
-    """
-    Make an API call with the JWT token.
-
-    Args:
-        signed_url_route (str): The route to send the request to
-        token (str): The JWT token to use for authentication
-
-    Returns:
-        dict: The response from the API
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = signed_url_route
-
-            # Add the JWT to the Authorization header
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            }
-
-            # Make the request
-            async with session.get(url, headers=headers) as response:
-                content_type = response.headers.get("Content-Type", "").lower()
-
-                if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
-                    data = await response.json()
-                    return {"is_json": True, "data": data}
-                else:
-                    data = await response.read()
-                    return {"is_json": False, "data": data}
-    except Exception:
-        raise Exception("Failed to make API call")
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -187,6 +152,13 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.GOOGLE_SHEETS.value,
                 MimeTypes.HTML.value,
                 MimeTypes.PLAIN_TEXT.value,
+                MimeTypes.PNG.value,
+                MimeTypes.JPG.value,
+                MimeTypes.JPEG.value,
+                MimeTypes.WEBP.value,
+                MimeTypes.SVG.value,
+                MimeTypes.HEIC.value,
+                MimeTypes.HEIF.value,
             ]
 
             supported_extensions = [
@@ -202,6 +174,13 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.MD.value,
                 ExtensionTypes.MDX.value,
                 ExtensionTypes.TXT.value,
+                ExtensionTypes.PNG.value,
+                ExtensionTypes.JPG.value,
+                ExtensionTypes.JPEG.value,
+                ExtensionTypes.WEBP.value,
+                ExtensionTypes.SVG.value,
+                ExtensionTypes.HEIC.value,
+                ExtensionTypes.HEIF.value,
             ]
 
             if (
@@ -245,11 +224,11 @@ class RecordEventHandler(BaseEventService):
                         "orgId": payload["orgId"],
                         "scopes": ["storage:token"],
                     }
-                    token = await self.__generate_jwt(jwt_payload)
+                    token = await generate_jwt(self.config_service, jwt_payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
 
                     response = await make_api_call(
-                        payload["signedUrlRoute"], token
+                        route=payload["signedUrlRoute"], token=token
                     )
                     self.logger.debug(
                         f"Received signed URL response for message {message_id}"
@@ -280,7 +259,7 @@ class RecordEventHandler(BaseEventService):
 
             elif payload and payload.get("signedUrl"):
                 try:
-                    response = await make_signed_url_api_call(payload["signedUrl"])
+                    response = await make_signed_url_api_call(signed_url=payload["signedUrl"])
                     if response:
                         payload["buffer"] = response
                     event_data_for_processor = {
@@ -304,14 +283,14 @@ class RecordEventHandler(BaseEventService):
                         "orgId": payload["orgId"],
                         "scopes": ["connector:signedUrl"],
                     }
-                    token = await self.__generate_jwt(jwt_payload)
+                    token = await generate_jwt(self.config_service, jwt_payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
 
                     endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     response = await make_api_call(
-                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token
+                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
                     )
 
                     event_data_for_processor = {
@@ -358,39 +337,6 @@ class RecordEventHandler(BaseEventService):
                 )
                 return False
 
-    async def __generate_jwt(self, token_payload: dict) -> str:
-        """
-        Generate a JWT token using the jose library.
-
-        Args:
-            token_payload (dict): The payload to include in the JWT
-
-        Returns:
-            str: The generated JWT token
-        """
-        # Get the JWT secret from environment variable
-        secret_keys = await self.config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
-        )
-        if not secret_keys:
-            raise ValueError("SECRET_KEYS environment variable is not set")
-        scoped_jwt_secret = secret_keys.get("scopedJwtSecret") # type: ignore
-        if not scoped_jwt_secret:
-            raise ValueError("SCOPED_JWT_SECRET environment variable is not set")
-
-        # Add standard claims if not present
-        if "exp" not in token_payload:
-            # Set expiration to 1 hour from now
-            token_payload["exp"] = datetime.now(timezone.utc) + timedelta(hours=1)
-
-        if "iat" not in token_payload:
-            # Set issued at to current time
-            token_payload["iat"] = datetime.now(timezone.utc)
-
-        # Generate the JWT token using jose
-        token = jwt.encode(token_payload, scoped_jwt_secret, algorithm="HS256")
-
-        return token
 
     async def __create_scheduler(self, scheduler_type: str, logger: Logger, config_service: ConfigurationService) -> Scheduler:
         """Create a Redis scheduler instance"""

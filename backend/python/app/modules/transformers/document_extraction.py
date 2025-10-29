@@ -52,6 +52,9 @@ class DocumentExtraction(Transformer):
         record = ctx.record
         blocks = record.block_containers.blocks
         document_classification = await self.process_document(blocks, record.org_id)
+        if document_classification is None:
+            record.semantic_metadata = None
+            return
         record.semantic_metadata = SemanticMetadata(
             departments=document_classification.departments,
             languages=document_classification.languages,
@@ -106,26 +109,41 @@ class DocumentExtraction(Transformer):
                         break
                     content.append(candidate)
                     total_tokens += increment
-            elif block.type.value == "image" and is_multimodal_llm:
+            elif block.type.value == "image":
                 # Respect provider limits on images per request
                 if image_count >= MAX_IMAGES:
                     if not image_cap_logged:
                         self.logger.info("🛑 Reached image cap of %d. Skipping additional images.", MAX_IMAGES)
                         image_cap_logged = True
                     continue
-                if block.data and block.format.value == "base64":
-                    image_data = block.data
-                    image_data = image_data.get("uri")
+                if is_multimodal_llm:
+                    if block.data and block.format.value == "base64":
+                        image_data = block.data
+                        image_data = image_data.get("uri")
 
-                    candidate = {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_data
-                        }
-                    }
-                    # Images are provider-specific for token accounting; treat as zero-text here
-                    content.append(candidate)
-                    image_count += 1
+                        # Validate that the image URL is either a valid HTTP/HTTPS URL or a base64 data URL
+                        if image_data and (
+                            image_data.startswith("http://") or
+                            image_data.startswith("https://") or
+                            image_data.startswith("data:image/")
+                        ):
+                            candidate = {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_data
+                                }
+                            }
+                            # Images are provider-specific for token accounting; treat as zero-text here
+                            content.append(candidate)
+                            image_count += 1
+                        else:
+                            self.logger.warning(f"⚠️ Skipping invalid image URL format: {image_data[:100] if image_data else 'None'}")
+                            continue
+                    else:
+                        continue
+                else:
+                    continue
+
             elif block.type.value == "table_row":
                 if block.data:
                     if isinstance(block.data, dict):
@@ -174,6 +192,9 @@ class DocumentExtraction(Transformer):
             # Prepare multimodal content
             content = self._prepare_content(blocks, is_multimodal_llm)
 
+            if len(content) == 0:
+                self.logger.info("No content to process in document extraction")
+                return None
             # Create the multimodal message
             message_content = [
                 {

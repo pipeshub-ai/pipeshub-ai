@@ -265,12 +265,28 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
   const prepareAiModelConfig = useCallback(
     (stepData: LlmFormValues | EmbeddingFormValues | null, configType: 'llm' | 'embedding') => {
       if (!stepData) return null;
+      let isReasoning = false;
 
       const { providerType, modelType, _provider, isMultimodal, ...cleanConfig } = stepData;
+      if (configType === 'llm') {
+        const llmData = stepData as LlmFormValues;
+        isReasoning = Boolean(llmData.isReasoning);
+      }
       const provider = providerType || modelType;
       if (!provider) {
         console.warn(`Provider is undefined for ${configType} configuration`);
         return null;
+      }
+
+      if (configType === 'llm') {
+        return [
+          {
+            provider,
+            configuration: cleanConfig,
+            isMultimodal: Boolean(isMultimodal),
+            isReasoning: Boolean(isReasoning),
+          },
+        ];
       }
 
       return [

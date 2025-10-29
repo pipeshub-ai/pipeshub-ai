@@ -186,6 +186,9 @@ export const extensionToMimeType: Record<string, string> = {
 
 // Helper function to get mimetype
 export const getMimeType = (extension: string): string => {
+  if (!extension) {
+    return '';
+  }
   const normalizedExtension = extension.toLowerCase().replace('.', '');
   return extensionToMimeType[normalizedExtension] || '';
 };

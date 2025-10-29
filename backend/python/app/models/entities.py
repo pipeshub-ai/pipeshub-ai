@@ -23,6 +23,7 @@ class RecordGroupType(str, Enum):
     SERVICENOW_CATEGORY = "SERVICENOW_CATEGORY"
 
     MAILBOX = "MAILBOX"
+    WEB = "WEB"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -76,6 +77,7 @@ class Record(BaseModel):
     weburl: Optional[str] = None
     signed_url: Optional[str] = None
     fetch_signed_url: Optional[str] = None
+    preview_renderable: Optional[bool] = True
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
@@ -83,7 +85,6 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
-
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
@@ -108,10 +109,22 @@ class Record(BaseModel):
             "isDeleted": False,
             "isArchived": False,
             "deletedByUserId": None,
+            "previewRenderable": self.preview_renderable,
         }
 
     @staticmethod
     def from_arango_base_record(arango_base_record: Dict) -> "Record":
+        # Handle connectorName which might be missing for uploaded files
+        conn_name_value = arango_base_record.get("connectorName")
+        try:
+            connector_name = (
+                Connectors(conn_name_value)
+                if conn_name_value is not None
+                else Connectors.KNOWLEDGE_BASE
+            )
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
         return Record(
             id=arango_base_record["_key"],
             org_id=arango_base_record["orgId"],
@@ -124,7 +137,7 @@ class Record(BaseModel):
             parent_external_record_id=arango_base_record.get("externalParentId", None),
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
-            connector_name=Connectors(arango_base_record["connectorName"]),
+            connector_name=connector_name,
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
@@ -132,6 +145,7 @@ class Record(BaseModel):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
+            preview_renderable=arango_base_record.get("previewRenderable", True),
         )
 
     def to_kafka_record(self) -> Dict:

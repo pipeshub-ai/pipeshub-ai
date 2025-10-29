@@ -12,7 +12,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    EventTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
@@ -92,7 +97,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                     "recordName": record.get("recordName"),
                     "orgId": record.get("orgId"),
                     "version": record.get("version", 0),
-                    "connectorName": record.get("connectorName"),
+                    "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
                     "extension": record.get("extension"),
                     "mimeType": record.get("mimeType"),
                     "origin": record.get("origin"),
@@ -101,10 +106,17 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 }
 
                 # Determine event type - default to NEW_RECORD for recovery
-                if payload.get("version") == 0:
-                    event_type = EventTypes.NEW_RECORD.value
-                else:
+                # Only treat as REINDEX if version > 0 AND virtualRecordId exists
+                # Otherwise, treat as NEW_RECORD (even if version > 0, the initial indexing might have failed)
+                version = payload.get("version", 0)
+                virtual_record_id = payload.get("virtualRecordId")
+
+                if version > 0 and virtual_record_id is not None:
                     event_type = EventTypes.REINDEX_RECORD.value
+                    logger.info(f"   Treating as REINDEX_RECORD (version={version}, virtualRecordId={virtual_record_id})")
+                else:
+                    event_type = EventTypes.NEW_RECORD.value
+                    logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
                 # Process the record using the same handler that processes Kafka messages
                 success = await record_message_handler({

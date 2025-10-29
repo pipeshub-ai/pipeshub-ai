@@ -2,6 +2,7 @@ import io
 import json
 from datetime import datetime
 
+from bs4 import BeautifulSoup
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -17,6 +18,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.models.blocks import BlockType
 from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -24,6 +26,7 @@ from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.llm import get_llm
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -90,6 +93,41 @@ class Processor:
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
+
+    async def process_image(self, record_id, content, virtual_record_id) -> None:
+        try:
+            # Initialize image parser
+            self.logger.debug("📸 Processing image content")
+            if not content:
+                raise Exception("No image data provided")
+
+            record = await self.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return
+            mime_type = record.get("mimeType")
+            if mime_type is None:
+                raise Exception("No mime type present in the record from graph db")
+            extension = get_extension_from_mimetype(mime_type)
+
+            parser = self.parsers.get(extension)
+            if not parser:
+                raise Exception(f"Unsupported extension: {extension}")
+
+            block_containers = parser.parse_image(content,extension)
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+            self.logger.info("✅ Image processing completed successfully")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing image: {str(e)}")
+            raise
 
     async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         """Process Google Slides presentation and extract structured content
@@ -579,7 +617,7 @@ class Processor:
                 version=version,
                 source=source,
                 orgId=orgId,
-                html_content=html_content,
+                html_binary=html_content,
                 virtual_record_id=virtual_record_id
             )
 
@@ -1111,7 +1149,7 @@ class Processor:
         return
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
+        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
     ) -> None:
         """Process HTML document by converting to markdown and using markdown processing"""
         self.logger.info(
@@ -1119,33 +1157,27 @@ class Processor:
         )
 
         try:
-            # Convert binary to string
-            html_content = (
-                html_content.decode("utf-8")
-                if isinstance(html_content, bytes)
-                else html_content
-            )
-            self.logger.debug(f"📄 Decoded HTML content length: {len(html_content)}")
+            html_content = None
+            try:
+                soup = BeautifulSoup(html_binary, 'html.parser')
 
-            # Convert HTML to markdown
-            self.logger.debug("📄 Converting HTML to markdown")
+                # Remove script, style, and other non-content elements
+                for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
+                    element.decompose()
+
+                html_content = str(soup)
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to clean HTML: {e}")
+
+            if html_content is None:
+                if isinstance(html_binary, bytes):
+                    html_content = html_binary.decode("utf-8")
+                else:
+                    html_content = html_binary
+            html_parser = self.parsers[ExtensionTypes.HTML.value]
+            html_content = html_parser.replace_relative_image_urls(html_content)
             markdown = convert(html_content)
-            markdown = markdown.strip()
-
-            if markdown is None or markdown == "":
-                try:
-                    await self._mark_record_as_completed(recordId, virtual_record_id)
-                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
-                    return
-                except DocumentProcessingError:
-                    raise
-                except Exception as e:
-                    raise DocumentProcessingError(
-                        "Error updating record status: " + str(e),
-                        doc_id=recordId,
-                        details={"error": str(e)},
-                    )
-            # Convert markdown content to bytes for processing
             md_binary = markdown.encode("utf-8")
 
             # Use the existing markdown processing function
@@ -1207,10 +1239,48 @@ class Processor:
             # Convert binary to string
             md_content = md_binary.decode("utf-8")
 
+            markdown = md_content.strip()
+
+            if markdown is None or markdown == "":
+                try:
+                    await self._mark_record_as_completed(recordId, virtual_record_id)
+                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    return
+                except DocumentProcessingError:
+                    raise
+                except Exception as e:
+                    raise DocumentProcessingError(
+                        "Error updating record status: " + str(e),
+                        doc_id=recordId,
+                        details={"error": str(e)},
+                    )
+
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
             parser = self.parsers[ExtensionTypes.MD.value]
-            md_bytes = parser.parse_string(md_content)
+
+            modified_markdown, images = parser.extract_and_replace_images(markdown)
+            caption_map = {}
+            urls_to_convert = []
+
+            # Collect all image URLs
+            for image in images:
+                urls_to_convert.append(image["url"])
+
+            # Convert URLs to base64 if there are any images
+            if urls_to_convert:
+                image_parser = self.parsers[ExtensionTypes.PNG.value]
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+
+                # Create caption map with base64 URLs
+                for i, image in enumerate(images):
+                    if base64_urls[i] is not None:
+                        caption_map[image["new_alt_text"]] = base64_urls[i]
+                    else:
+                        self.logger.warning(f"⚠️ Failed to convert image URL to base64: {image['url']}")
+
+            md_bytes = parser.parse_string(modified_markdown)
+
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
             block_containers = await processor.load_document(f"{recordName}.md", md_bytes)
             if block_containers is False:
@@ -1223,6 +1293,24 @@ class Processor:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 raise Exception(f"Record {recordId} not found in graph db")
             record = convert_record_dict_to_record(record)
+
+            blocks = block_containers.blocks
+            for block in blocks:
+                if block.type == BlockType.IMAGE.value and block.image_metadata:
+                    caption = block.image_metadata.captions
+                    if caption:
+                        caption = caption[0]
+                        if caption in caption_map:
+                            if block.data is None:
+                                block.data = {}
+                            if isinstance(block.data, dict):
+                                block.data["uri"] = caption_map[caption]
+                            else:
+                                # If data is not a dict, create a new dict with the uri
+                                block.data = {"uri": caption_map[caption]}
+
+            block_containers.blocks = blocks
+
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
             ctx = TransformContext(record=record)

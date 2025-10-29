@@ -390,7 +390,6 @@ class DoclingDocToBlocksConverter():
 
         # Start processing from body
         doc_dict = doc.export_to_dict()
-        self.pages = doc_dict.get("pages")
         body = doc_dict.get("body", {})
         texts = doc_dict.get("texts", [])
         if texts == []:

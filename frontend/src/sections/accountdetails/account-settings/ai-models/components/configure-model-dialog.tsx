@@ -166,13 +166,14 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
         const formDataResults = await Promise.all(formDataPromises);
 
         formDataResults.forEach(({ type, formData }) => {
-          const { providerType, modelType, _provider, isMultimodal, ...cleanConfig } = formData;
+          const { providerType, modelType, _provider, isMultimodal, isReasoning, ...cleanConfig } = formData;
           promises.push(
             modelService.addModel(type as ModelType, {
               provider: currentProvider.id,
               configuration: cleanConfig,
               name: formData.name || `${currentProvider.name} ${type.toUpperCase()} Model`,
               isMultimodal,
+              isReasoning,
             })
           );
           configuredTypes.push(type);
@@ -217,6 +218,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
           modelType: currentProvider.id,
           _provider: currentProvider.id,
           isMultimodal: currentProvider.editingModel!.isMultimodal === true,
+          isReasoning: currentProvider.editingModel!.isReasoning === true,
         };
       }
       return {
@@ -232,6 +234,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
           modelType: configModelType,
           _provider,
           isMultimodal,
+          isReasoning,
           ...cleanConfig
         } = config;
         try {
@@ -243,6 +246,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
               configuration: cleanConfig,
               isDefault: currentProvider.editingModel!.isDefault,
               isMultimodal,
+              isReasoning,
               name: config.name || currentProvider.editingModel!.name,
             }
           );

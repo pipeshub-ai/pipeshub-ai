@@ -1,5 +1,5 @@
 # Stage 1: Base dependencies
-FROM pipeshubai/pipeshub-ai-base:latest AS base
+FROM python:3.10-slim AS base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 WORKDIR /app

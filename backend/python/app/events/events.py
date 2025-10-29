@@ -355,7 +355,7 @@ class EventProcessor:
                     version=record_version,
                     source=connector,
                     orgId=org_id,
-                    html_content=file_content,
+                    html_binary=file_content,
                     virtual_record_id = virtual_record_id,
                 )
                 return result
@@ -453,7 +453,7 @@ class EventProcessor:
                     version=record_version,
                     source=connector,
                     orgId=org_id,
-                    html_content=file_content,
+                    html_binary=file_content,
                     virtual_record_id = virtual_record_id,
 
                 )
@@ -514,6 +514,33 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin
+                )
+
+            elif (
+                 extension in {
+                    ExtensionTypes.PNG.value,
+                    ExtensionTypes.JPG.value,
+                    ExtensionTypes.JPEG.value,
+                    ExtensionTypes.WEBP.value,
+                    # ExtensionTypes.SVG.value,
+                    # ExtensionTypes.HEIC.value,
+                    # ExtensionTypes.HEIF.value,
+                }
+                or mime_type in {
+                    MimeTypes.PNG.value,
+                    MimeTypes.JPG.value,
+                    MimeTypes.JPEG.value,
+                    MimeTypes.WEBP.value,
+                    # MimeTypes.SVG.value,
+                    # MimeTypes.HEIC.value,
+                    # MimeTypes.HEIF.value,
+                }
+            ):
+                # Route image files to the image processor
+                result = await self.processor.process_image(
+                    record_id,
+                    file_content,
+                    virtual_record_id,
                 )
 
             else:

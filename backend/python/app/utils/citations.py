@@ -130,8 +130,9 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
 
             if 0 <= chunk_index < len(flattened_final_results):
                 doc = flattened_final_results[chunk_index]
+                content = doc.get("content", "")
                 new_citations.append({
-                    "content": doc.get("content", ""),
+                    "content": "Image" if content.startswith("data:image/") else content,
                     "chunkIndex": new_citation_num,  # Use new sequential number
                     "metadata": doc.get("metadata", {}),
                     "citationType": "vectordb|document",
@@ -176,7 +177,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 data = data.get("uri","")
             enhanced_metadata = get_enhanced_metadata(record,block,{})
             new_citations.append({
-                "content": data,
+                "content": "Image" if data.startswith("data:image/") else data,
                 "chunkIndex": new_citation_num,  # Use new sequential number
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
@@ -192,7 +193,9 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]],records: List[Dict[str, Any]],from_agent:bool = False) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]],records: List[Dict[str, Any]]=None,from_agent:bool = False) -> Dict[str, Any]:
+    if records is None:
+        records = []
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -287,7 +290,8 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
     and create corresponding citation chunks with correct mapping
     """
     # Extract all citation numbers from the answer text
-    citation_pattern = r'\[(\d+)\]'
+    # Match both regular square brackets [1] and Chinese brackets 【1】
+    citation_pattern = r'[\[【](\d+)[\]】]'
     matches = re.findall(citation_pattern, answer_text)
 
     if not matches:
@@ -322,7 +326,7 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
                 "citationType": "vectordb|document",
             })
 
-    # Replace citation numbers in answer text
+    # Replace citation numbers in answer text - convert both bracket types to regular brackets
     normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "", answer_text)
 
     return normalized_answer, new_citations

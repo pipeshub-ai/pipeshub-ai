@@ -11,6 +11,7 @@ from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     AzureOpenAILLM,
 )
+from app.utils.logger import create_logger
 
 
 class ModelType(str, Enum):
@@ -71,6 +72,7 @@ def get_default_embedding_model() -> Embeddings:
     except Exception  as e:
         raise e
 
+logger = create_logger("aimodels")
 def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -84,6 +86,8 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+
+    logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     if provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
@@ -148,9 +152,8 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     elif provider == EmbeddingProvider.JINA_AI.value:
         from langchain_community.embeddings.jina import JinaEmbeddings
-
         return JinaEmbeddings(
-            model=model_name,
+            model_name=model_name,
             jina_api_key=configuration['apiKey'],
         )
 
@@ -220,11 +223,11 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         )
 
     elif provider == EmbeddingProvider.VOYAGE.value:
-        from langchain_voyageai import VoyageAIEmbeddings
+        from app.utils.custom_embeddings import VoyageEmbeddings
 
-        return VoyageAIEmbeddings(
+        return VoyageEmbeddings(
             model=model_name,
-            api_key=configuration['apiKey'],
+            voyage_api_key=configuration['apiKey'],
         )
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
@@ -243,14 +246,14 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
-    DEFAULT_LLM_TIMEOUT = 300.0
+    DEFAULT_LLM_TIMEOUT = 360.0
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 max_retries=2,
                 api_key=configuration["apiKey"],
             )
@@ -260,7 +263,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatBedrock(
                 model_id=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 aws_access_key_id=configuration["awsAccessKeyId"],
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
                 region_name=configuration["region"],
@@ -276,7 +279,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 azure_endpoint=configuration["endpoint"],
                 api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
                 temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
             )
 
@@ -286,7 +289,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatCohere(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 cohere_api_key=configuration["apiKey"],
             )
     elif provider == LLMProvider.FIREWORKS.value:
@@ -295,7 +298,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatFireworks(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
             )
 
@@ -306,7 +309,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 model=model_name,
                 temperature=0.2,
                 max_tokens=None,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 max_retries=2,
                 google_api_key=configuration["apiKey"],
             )
@@ -317,7 +320,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatGroq(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
             )
 
@@ -327,7 +330,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatMistralAI(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
             )
 
@@ -337,8 +340,9 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatOllama(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
-                base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+                base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434")),
+                reasoning=False
             )
 
     elif provider == LLMProvider.OPENAI.value:
@@ -349,7 +353,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatOpenAI(
                 model=model_name,
                 temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 organization=configuration.get("organizationId"),
             )
@@ -360,7 +364,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatXAI(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
             )
 
@@ -370,7 +374,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatTogether(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
             )
@@ -381,7 +385,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatOpenAI(
                 model=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 5 minute timeout
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
             )

@@ -35,6 +35,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 from app.connectors.sources.servicenow.servicenowkb.connector import (
     ServiceNowKBConnector,
 )
+from app.connectors.sources.web.connector import WebConnector
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.featureflag import FeatureFlagService
 
@@ -51,6 +52,7 @@ class ConnectorFactory:
         "jira": JiraConnector,
         "dropbox": DropboxConnector,
         "servicenowkb": ServiceNowKBConnector,
+        "web": WebConnector,
     }
 
 

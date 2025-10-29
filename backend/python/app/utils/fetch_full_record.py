@@ -11,15 +11,15 @@ from app.modules.transformers.blob_storage import BlobStorage
 
 class FetchFullRecordArgs(BaseModel):
     """
-    Required tool args for fetching a full record.
+    Required tool args for fetching full records.
     """
-    record_id: str = Field(
+    record_ids: List[str] = Field(
         ...,
-        description="ID (or virtualRecordId) of the record to fetch. Prefer the ID found in chunk metadata."
+        description="List of IDs (or virtualRecordIds) of the records to fetch. Pass all record IDs that need to be fetched in a single call. Prefer the IDs found in chunk metadata."
     )
     reason: str = Field(
-        ...,
-        description="Why the full record is needed (explain the gap in the provided blocks)."
+        default="Fetching full record content for comprehensive answer",
+        description="Why the full records are needed (explain the gap in the provided blocks)."
     )
 
 class FetchBlockGroupArgs(BaseModel):
@@ -31,7 +31,7 @@ class FetchBlockGroupArgs(BaseModel):
         description="Number of the block group to fetch."
     )
     reason: str = Field(
-        ...,
+        default="Fetching block group for additional context",
         description="Why the block group is needed (explain the gap in the provided blocks)."
     )
 
@@ -82,20 +82,70 @@ async def _fetch_full_record_impl(
     return {"ok": False, "error": f"Record '{record_id}' not found via blob store or arango."}
 
 
+async def _fetch_multiple_records_impl(
+    record_ids: List[str],
+    virtual_record_id_to_result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Fetch multiple complete records at once.
+    Returns:
+    {
+      "ok": true,
+      "records": [...],
+      "not_found": [...]  # IDs that weren't found
+    }
+    """
+    records = list(virtual_record_id_to_result.values())
+
+    found_records = []
+    not_found_ids = []
+
+    for record_id in record_ids:
+        record = next((record for record in records if record is not None and record.get("id") == record_id), None)
+        if record:
+            found_records.append(record)
+        else:
+            not_found_ids.append(record_id)
+
+    if found_records:
+        result = {
+            "ok": True,
+            "records": found_records,
+            "record_count": len(found_records)
+        }
+        if not_found_ids:
+            result["not_found"] = not_found_ids
+        return result
+
+    # Nothing found
+    return {"ok": False, "error": f"None of the requested records were found: {', '.join(record_ids)}"}
+
+
 # Option 1: Create the tool without the decorator and handle runtime kwargs manually
 def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
-    async def fetch_full_record_tool(record_id: str, reason: str) -> str:
+    async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
         """
-        Retrieve the complete content of a record (all blocks/groups) for better answering.
-        Returns a JSON string: {"ok": true, "record": {...}} or {"ok": false, "error": "..."}.
-        """
+        Retrieve the complete content of multiple records (all blocks/groups) for better answering.
+        Pass all record IDs at once instead of making multiple separate calls.
 
-        result = await _fetch_full_record_impl(record_id, virtual_record_id_to_result)
-        return result
+        Args:
+            record_ids: List of virtual record IDs to fetch (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19"])
+            reason: Clear explanation of why the full records are needed
+
+        Returns:
+        {"ok": true, "records": [...], "record_count": N, "not_found": [...]}
+        or {"ok": false, "error": "..."}.
+        """
+        try:
+            result = await _fetch_multiple_records_impl(record_ids, virtual_record_id_to_result)
+            return result
+        except Exception as e:
+            # Return error as dict
+            return {"ok": False, "error": f"Failed to fetch records: {str(e)}"}
 
     return fetch_full_record_tool
 
@@ -104,10 +154,10 @@ def create_fetch_block_group_tool(blob_store: BlobStorage,final_results: List[Di
     Factory function to create the tool with runtime dependencies injected.
     """
     @tool("fetch_block_group", args_schema=FetchBlockGroupArgs)
-    async def fetch_block_group_tool(block_group_number: str, reason: str) -> str:
+    async def fetch_block_group_tool(block_group_number: str, reason: str = "Fetching block group for additional context") -> str:
         record_number = block_group_number.split("-")[0]
         number = int(re.findall(r'\d+', record_number)[0])
-        count =0
+        count = 0
         seen = set()
         record = None
         vrid = None
