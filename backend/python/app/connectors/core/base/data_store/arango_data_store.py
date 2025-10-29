@@ -76,7 +76,7 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
-        return await self.arango_service.get_user_by_user_id(user_id, transaction=self.txn)
+        return await self.arango_service.get_user_by_user_id(user_id)
 
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
@@ -101,6 +101,9 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
+
+    async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
+        return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
@@ -293,6 +296,26 @@ class ArangoTransactionStore(TransactionStore):
             [record_edge], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
         )
 
+    async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
+        record_edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+        await self.arango_service.batch_create_edges(
+            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+        )
+    async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
+        record_edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{child_record_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+        await self.arango_service.batch_create_edges(
+            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+        )
     async def get_sync_point(self, sync_point_key: str) -> Optional[Dict]:
         return await self.arango_service.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 

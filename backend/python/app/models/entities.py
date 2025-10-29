@@ -63,6 +63,7 @@ class Record(BaseModel):
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
+    inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -471,6 +472,7 @@ class RecordGroup(BaseModel):
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group update")
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
+    inherit_permissions: Optional[bool] = Field(default=False, description="Permissions for the record group")
 
     def to_arango_base_record_group(self) -> Dict:
         doc = {

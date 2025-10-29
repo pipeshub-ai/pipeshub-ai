@@ -46,8 +46,10 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
+
     DROPBOX = "DROPBOX"
     WEB = "WEB"
+    BOOKSTACK = "BOOKSTACK"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -56,6 +58,7 @@ class AppGroups(Enum):
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
     WEB = "Web"
+    BOOKSTACK = "BookStack"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -79,6 +82,7 @@ class CollectionNames(Enum):
     RECORD_RELATIONS = "recordRelations"
     RECORD_GROUPS = "recordGroups"
     SYNC_POINTS = "syncPoints"
+    INHERIT_PERMISSIONS = "inheritPermissions"
 
     # Knowledge base
     IS_OF_TYPE = "isOfType"

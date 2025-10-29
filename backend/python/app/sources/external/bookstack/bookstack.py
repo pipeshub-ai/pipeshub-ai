@@ -1023,11 +1023,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, str] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -1042,7 +1042,7 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 
@@ -1366,7 +1366,8 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            response_text = response.text()
+            return BookStackResponse(success=True, data={'markdown': response_text})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1876,11 +1877,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, str] = {}  # Changed to Dict[str, str]
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)  # Convert to string
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)  # Convert to string
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -1895,7 +1896,7 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 
@@ -2217,13 +2218,19 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            response_data = response.json()
+
+            if 'error' in response_data:
+                error_message = response_data.get('error', {}).get('message', 'Unknown API error')
+                return BookStackResponse(success=False, error=error_message)
+
+            return BookStackResponse(success=True, data=response_data)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2545,7 +2552,7 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 

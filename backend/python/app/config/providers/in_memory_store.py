@@ -22,7 +22,6 @@ class KeyData(Generic[T]):
 
     def __init__(self, value: T, ttl: Optional[int] = None) -> None:
         logger.debug("🔧 Creating KeyData instance")
-        logger.debug("📋 Value: %s (type: %s)", value, type(value))
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         self.value = value
@@ -97,7 +96,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
     def _notify_watchers(self, key: str, value: Optional[T]) -> None:
         """Notify all watchers of a key about value changes."""
         logger.debug("🔄 Notifying watchers for key: %s", key)
-        logger.debug("📋 New value: %s", value)
         if key in self.watchers:
             logger.debug("📋 Found %d watchers", len(self.watchers[key]))
             for callback, watch_id in self.watchers[key]:
@@ -122,7 +120,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             KeyError: If the key already exists
         """
         logger.debug("🔄 Creating key: %s", key)
-        logger.debug("📋 Value: %s (type: %s)", value, type(value))
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         with self.lock:
@@ -150,7 +147,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             KeyError: If the key doesn't exist or has expired
         """
         logger.debug("🔄 Updating key: %s", key)
-        logger.debug("📋 New value: %s (type: %s)", value, type(value))
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         with self.lock:
@@ -182,7 +178,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             if key in self.store:
                 data = self.store[key]
                 if not data.is_expired():
-                    logger.debug("✅ Found value: %s", data.value)
                     return data.value
                 else:
                     logger.debug("⚠️ Key exists but has expired")
