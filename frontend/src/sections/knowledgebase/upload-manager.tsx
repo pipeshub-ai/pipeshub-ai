@@ -106,7 +106,10 @@ export default function UploadManager({
   }, [files]);
 
   const removeFileFromSelection = (target: ProcessedFile) => {
-    setFiles((prev) => prev.filter((pf) => !(pf.file === target.file && pf.path === target.path)));
+    const targetKey = `${target.path}-${target.file.size}-${target.lastModified}`;
+    setFiles((prev) =>
+      prev.filter((pf) => `${pf.path}-${pf.file.size}-${pf.lastModified}` !== targetKey)
+    );
   };
 
   const removeAllOversizedFiles = () => {
@@ -131,14 +134,14 @@ export default function UploadManager({
 
   const onDrop = (acceptedFiles: FileWithPath[]) => {
     const processedFiles = processFiles(acceptedFiles);
-    
+
     // Append new files to existing ones instead of replacing
     setFiles((prevFiles) => {
       // Create a map of existing files by path to avoid duplicates
       const existingFileMap = new Map(
         prevFiles.map((pf) => [`${pf.path}-${pf.file.size}-${pf.lastModified}`, pf])
       );
-      
+
       // Add new files, skipping duplicates
       processedFiles.forEach((pf) => {
         const key = `${pf.path}-${pf.file.size}-${pf.lastModified}`;
@@ -146,10 +149,10 @@ export default function UploadManager({
           existingFileMap.set(key, pf);
         }
       });
-      
+
       return Array.from(existingFileMap.values());
     });
-    
+
     setUploadError({ show: false, message: '' });
   };
 
@@ -196,14 +199,6 @@ export default function UploadManager({
       setUploadError({
         show: true,
         message: `Cannot upload: ${fileStats.oversized} file(s) exceed the 30MB limit. Please remove them to continue.`,
-      });
-      return;
-    }
-
-    if (fileStats.valid === 0) {
-      setUploadError({
-        show: true,
-        message: 'No valid files to upload.',
       });
       return;
     }
@@ -292,9 +287,9 @@ export default function UploadManager({
         }
         folderGroups[folderPath].files.push(file);
         if (file.isOversized) {
-          folderGroups[folderPath].oversizedCount+=1;
+          folderGroups[folderPath].oversizedCount += 1;
         } else {
-          folderGroups[folderPath].validCount+=1;
+          folderGroups[folderPath].validCount += 1;
         }
       } else {
         // Root file
@@ -340,7 +335,7 @@ export default function UploadManager({
           flexShrink: 0,
         }}
       />
-      
+
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography
           variant="body2"
@@ -409,7 +404,7 @@ export default function UploadManager({
             <Typography variant="body2" fontWeight={600} color="text.primary">
               {fileStats.total} selected
             </Typography>
-            
+
             <Stack direction="row" spacing={1}>
               {fileStats.valid > 0 && (
                 <Box
@@ -586,9 +581,7 @@ export default function UploadManager({
                 {[...folderData.files]
                   .sort((a, b) => (b.isOversized ? 1 : 0) - (a.isOversized ? 1 : 0))
                   .map((processedFile, index) => (
-                    <Box key={`${folderPath}-${index}`}>
-                      {renderFileItem(processedFile, true)}
-                    </Box>
+                    <Box key={`${folderPath}-${index}`}>{renderFileItem(processedFile, true)}</Box>
                   ))}
               </Box>
             </Box>
@@ -623,12 +616,10 @@ export default function UploadManager({
                   color="error.main"
                   sx={{ mb: 0.5, fontSize: '0.875rem' }}
                 >
-                  {fileStats.oversized} {fileStats.oversized === 1 ? 'file exceeds' : 'files exceed'} size limit
+                  {fileStats.oversized}{' '}
+                  {fileStats.oversized === 1 ? 'file exceeds' : 'files exceed'} size limit
                 </Typography>
-                <Typography
-                  variant="body2"
-                  sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}
-                >
+                <Typography variant="body2" sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}>
                   Remove oversized files to continue with the remaining {fileStats.valid}{' '}
                   {fileStats.valid === 1 ? 'file' : 'files'}.
                 </Typography>
@@ -694,10 +685,9 @@ export default function UploadManager({
               color="text.secondary"
               sx={{ mt: 0.5, fontSize: '0.8125rem', fontWeight: 400 }}
             >
-              {files.length > 0 
+              {files.length > 0
                 ? `${files.length} ${files.length === 1 ? 'file' : 'files'} selected • Add more or remove to adjust`
-                : 'Select files or folders to upload • Max 30MB per file'
-              }
+                : 'Select files or folders to upload • Max 30MB per file'}
             </Typography>
           </Box>
           <IconButton
@@ -788,7 +778,10 @@ export default function UploadManager({
                     >
                       Upload Error
                     </Typography>
-                    <Typography variant="body2" sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}>
+                    <Typography
+                      variant="body2"
+                      sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}
+                    >
                       {uploadError.message}
                     </Typography>
                   </Box>
@@ -836,9 +829,7 @@ export default function UploadManager({
                   textAlign: 'center',
                   cursor: 'pointer',
                   transition: 'all 0.2s ease',
-                  bgcolor: isDragActive
-                    ? alpha(theme.palette.primary.main, 0.04)
-                    : 'transparent',
+                  bgcolor: isDragActive ? alpha(theme.palette.primary.main, 0.04) : 'transparent',
                   '&:hover': {
                     borderColor: theme.palette.primary.main,
                     bgcolor: alpha(theme.palette.primary.main, 0.02),
@@ -851,16 +842,18 @@ export default function UploadManager({
                   style={{
                     fontSize: '48px',
                     marginBottom: '16px',
-                    color: isDragActive
-                      ? theme.palette.primary.main
-                      : theme.palette.text.secondary,
+                    color: isDragActive ? theme.palette.primary.main : theme.palette.text.secondary,
                     opacity: isDragActive ? 1 : 0.6,
                   }}
                 />
                 <Typography variant="h6" sx={{ mb: 0.5, fontWeight: 600, fontSize: '1rem' }}>
                   {isDragActive ? 'Drop here to upload' : 'Drag and drop files or folders'}
                 </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 3, fontSize: '0.875rem' }}>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mb: 3, fontSize: '0.875rem' }}
+                >
                   or click to browse from your computer
                 </Typography>
 
@@ -943,8 +936,8 @@ export default function UploadManager({
                 />
                 <Typography
                   variant="body2"
-                  sx={{ 
-                    flex: 1, 
+                  sx={{
+                    flex: 1,
                     fontSize: '0.875rem',
                     color: 'text.secondary',
                     fontWeight: 500,
