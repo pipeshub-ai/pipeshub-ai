@@ -124,7 +124,7 @@ class DataSourceEntitiesProcessor:
             await tx_store.create_record_group_relation(record.id, record_group.id)
 
             if record.inherit_permissions:
-                await tx_store.create_inherit_permissions_relation(record.id, record_group.id)
+                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
@@ -241,7 +241,7 @@ class DataSourceEntitiesProcessor:
                                                                       external_id=record.external_record_group_id)
 
                     if record_group:
-                        await tx_store.create_inherit_permissions_relation(record.id, record_group.id)
+                        await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
 
                 if not record.inherit_permissions:
                     record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
@@ -371,7 +371,7 @@ class DataSourceEntitiesProcessor:
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
 
-                    # 3. Create BELONGS_TO edge to the parent record group (e.g., Chapter -> Book)
+                    # 3. Handle User and Group Permissions (from the passed 'permissions' list)
                     if record_group.parent_external_group_id:
                         parent_record_group = await tx_store.get_record_group_by_external_id(
                             connector_name=record_group.connector_name,
@@ -853,56 +853,58 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
 
-    async def on_user_removed(
-        self,
-        user_email: str,
-        connector_name: str
-    ) -> bool:
-        """
-        Delete a user and all its associated edges from the database.
+    #IMPORTANT: DO NOT USE THIS METHOD
+    #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user
+    # async def on_user_removed(
+    #     self,
+    #     user_email: str,
+    #     connector_name: str
+    # ) -> bool:
+    #     """
+    #     Delete a user and all its associated edges from the database.
 
-        Args:
-            user_email: The email of the user to be removed
-            connector_name: The name of the connector (e.g., 'DROPBOX')
+    #     Args:
+    #         user_email: The email of the user to be removed
+    #         connector_name: The name of the connector (e.g., 'DROPBOX')
 
-        Returns:
-            bool: True if the user was successfully deleted, False otherwise
-        """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
+    #     Returns:
+    #         bool: True if the user was successfully deleted, False otherwise
+    #     """
+    #     try:
+    #         async with self.data_store_provider.transaction() as tx_store:
+    #             # 1. Look up the user by email
+    #             user = await tx_store.get_user_by_email(user_email)
 
-                if not user:
-                    self.logger.warning(
-                        f"Cannot delete user: User with email {user_email} not found in database"
-                    )
-                    return False
+    #             if not user:
+    #                 self.logger.warning(
+    #                     f"Cannot delete user: User with email {user_email} not found in database"
+    #                 )
+    #                 return False
 
-                if user.is_active:
-                    self.logger.warning(
-                        f"Cannot delete user: User with email {user_email} is still active"
-                    )
-                    return False
+    #             if user.is_active:
+    #                 self.logger.warning(
+    #                     f"Cannot delete user: User with email {user_email} is still active"
+    #                 )
+    #                 return False
 
-                user_internal_id = user.id
-                user_name = user.full_name
+    #             user_internal_id = user.id
+    #             user_name = user.full_name
 
-                self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
+    #             self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
 
-                # Delete the node and edges
-                await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
+    #             # Delete the node and edges
+    #             await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
 
-                self.logger.info(
-                    f"Successfully deleted user {user_name} "
-                    f"(email: {user_email}, internal_id: {user_internal_id}) "
-                    f"and all associated edges"
-                )
-                return True
+    #             self.logger.info(
+    #                 f"Successfully deleted user {user_name} "
+    #                 f"(email: {user_email}, internal_id: {user_internal_id}) "
+    #                 f"and all associated edges"
+    #             )
+    #             return True
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to delete user {user_email}: {str(e)}",
-                exc_info=True
-            )
-            return False
+    #     except Exception as e:
+    #         self.logger.error(
+    #             f"Failed to delete user {user_email}: {str(e)}",
+    #             exc_info=True
+    #         )
+    #         return False

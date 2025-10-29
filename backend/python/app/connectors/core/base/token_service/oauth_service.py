@@ -42,6 +42,7 @@ class OAuthConfig:
     response_type: str = "code"
     grant_type: GrantType = GrantType.AUTHORIZATION_CODE
     additional_params: Dict[str, Any] = field(default_factory=dict)
+    token_access_type: Optional[str] = None
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -137,6 +138,7 @@ class OAuthProvider:
             "client_id": self.config.client_id,
             "redirect_uri": self.config.redirect_uri,
             "response_type": self.config.response_type,
+            "token_access_type": self.config.token_access_type,
             "state": state
         }
 
@@ -146,8 +148,6 @@ class OAuthProvider:
         params.update(self.config.additional_params)
         params.update(kwargs)
 
-        if(self.connector_name.lower()=="dropbox"):
-            params["token_access_type"] = "offline"
 
         return f"{self.config.authorize_url}?{urlencode(params)}"
 

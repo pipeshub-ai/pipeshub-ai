@@ -9,8 +9,9 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 from app.config.key_value_store import KeyValueStore
-from app.connectors.core.base.token_service.oauth_service import OAuthConfig, OAuthToken
+from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.utils.oauth_config import get_oauth_config
 
 
 class TokenRefreshService:
@@ -84,14 +85,7 @@ class TokenRefreshService:
 
 
             # Create OAuth config
-            oauth_config = OAuthConfig(
-                client_id=auth_config['clientId'],
-                client_secret=auth_config['clientSecret'],
-                redirect_uri=auth_config.get('redirectUri', ''),
-                authorize_url=auth_config.get('authorizeUrl', ''),
-                token_url=auth_config.get('tokenUrl', ''),
-                scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
-            )
+            oauth_config = get_oauth_config(connector_name, auth_config)
 
             # Create OAuth provider
             from app.connectors.core.base.token_service.oauth_service import (
@@ -100,8 +94,7 @@ class TokenRefreshService:
             oauth_provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,
-                credentials_path=f"/services/connectors/{filtered_app_name}/config",
-                connector_name=filtered_app_name
+                credentials_path=f"/services/connectors/{filtered_app_name}/config"
             )
 
             # Create token from stored credentials

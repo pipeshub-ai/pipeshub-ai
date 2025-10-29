@@ -295,10 +295,21 @@ class ArangoTransactionStore(TransactionStore):
         await self.arango_service.batch_create_edges(
             [record_edge], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
         )
-    async def create_inherit_permissions_relation(self, record_id: str, record_group_id: str) -> None:
+
+    async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
         record_edge = {
                     "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                     "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+        await self.arango_service.batch_create_edges(
+            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+        )
+    async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
+        record_edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{child_record_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_id}",
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }

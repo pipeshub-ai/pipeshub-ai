@@ -70,6 +70,7 @@ from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -2259,7 +2260,7 @@ async def get_oauth_authorization_url(
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
+        connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
@@ -2269,7 +2270,6 @@ async def get_oauth_authorization_url(
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
             OAuthProvider,
         )
         if base_url and len(base_url) > 0:
@@ -2280,21 +2280,14 @@ async def get_oauth_authorization_url(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
+        oauth_config = get_oauth_config(app_name, auth_config)
+
 
         # Create OAuth provider and generate authorization URL
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config",
-            connector_name=filtered_app_name
+            credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
         # Generate authorization URL using OAuth provider
         # Add provider-specific parameters to ensure refresh_token is issued where applicable
@@ -2419,7 +2412,7 @@ async def handle_oauth_callback(
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
+        connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
@@ -2429,7 +2422,6 @@ async def handle_oauth_callback(
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
             OAuthProvider,
         )
         if base_url and len(base_url) > 0:
@@ -2440,21 +2432,13 @@ async def handle_oauth_callback(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
+        oauth_config = get_oauth_config(app_name, auth_config)
 
         # Create OAuth provider and exchange code for token
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config",
-            connector_name=connector_name
+            credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
         # Exchange code for token using OAuth provider (ensure cleanup)
@@ -2476,6 +2460,7 @@ async def handle_oauth_callback(
             kv_store = container.key_value_store()
             updated_config = await kv_store.get_key(f"/services/connectors/{filtered_app_name}/config")
             if isinstance(updated_config, dict):
+                print("\n\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! config updated:", updated_config)
                 await config_service.set_config(f"/services/connectors/{filtered_app_name}/config", updated_config)
                 logger.info(f"Refreshed config cache for {app_name} after OAuth callback")
         except Exception as cache_err:

@@ -496,7 +496,8 @@ class BookStackConnector(BaseConnector):
         if user_update_response.success and user_update_response.data.get('data'):
             await self._handle_user_update_event(user_update_response.data.get('data'), app_users)
         if user_delete_response.success and user_delete_response.data.get('data'):
-            await self._handle_user_delete_event(user_delete_response.data.get('data'), app_users)
+            # await self._handle_user_delete_event(user_delete_response.data.get('data'), app_users)
+            self.logger.info("Method not implemenet yet !")
 
     async def _handle_user_create_event(self, user_create_events: List[Dict], app_users: List[AppUser]) -> None:
         self.logger.info("New users found !")

@@ -229,6 +229,7 @@ class DropboxConnector(BaseConnector):
         config = await self.config_service.get_config(
             "/services/connectors/dropbox/config"
         )
+        print("\n\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! config from ETCD:", config)
         if not config:
             self.logger.error("Dropbox access token not found in configuration.")
             return False
@@ -238,8 +239,19 @@ class DropboxConnector(BaseConnector):
         refresh_token = credentials_config.get("refresh_token")
         is_team = credentials_config.get("isTeam", True)
 
+        auth_config = config.get("auth")
+        app_key = auth_config.get("clientId")
+        app_secret = auth_config.get("clientSecret")
+        print("!!!!!!!!!!! app_key:", app_key)
+        print("!!!!!!!!!!! app_secret:", app_secret)
+
         try:
-            config = DropboxTokenConfig(token=access_token, refresh_token=refresh_token)
+            config = DropboxTokenConfig(
+                token=access_token,
+                refresh_token=refresh_token,
+                app_key=app_key,
+                app_secret=app_secret
+            )
             client = await DropboxClient.build_with_config(config, is_team=is_team)
             self.data_source = DropboxDataSource(client)
             self.logger.info("Dropbox client initialized successfully.")
@@ -1666,11 +1678,11 @@ class DropboxConnector(BaseConnector):
         # Create permissions list (from _sync_user_groups section 3c)
         member_permissions = []
         for member in all_members:
+            print("\n\n\n !!!!!!!!!!!!!!!!!!!!!! member: ", member)
             user_permission = AppUser(
                 source_user_id=member.profile.team_member_id,
                 email=member.profile.email,
-                full_name=member.profile.display_name,
-                created_at_timestamp=get_epoch_timestamp_in_ms(),
+                full_name=member.profile.name.display_name,
                 app_name=self.connector_name,
             )
             member_permissions.append(user_permission)
