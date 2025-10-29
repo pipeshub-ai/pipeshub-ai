@@ -154,6 +154,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         return;
       }
 
+      let initalModel = availableModels.find((model) => model.isReasoning);
+
+      if (!initalModel) {
+        initalModel = availableModels[0];
+      }
+
       // Create default flow for new agents
       const initialNodes = [
         {
@@ -178,21 +184,22 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           position: { x: 50, y: 250 },
           data: {
             id: 'llm-1',
-            type: `llm-${availableModels[0]?.provider || 'azureOpenAI'}-${availableModels[0]?.modelName || 'default'}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase(),
+            type: `llm-${initalModel?.provider || 'azureOpenAI'}-${initalModel?.modelName || 'default'}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase(),
             label:
-              availableModels[0]?.modelName
+              initalModel?.modelName
                 ?.replace(/[^a-zA-Z0-9]/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim() || 'AI Model',
-            description: `${formattedProvider(availableModels[0]?.provider || 'AI')} language model for text generation`,
+            description: `${formattedProvider(initalModel?.provider || 'AI')} language model for text generation`,
             icon: brainIcon,
             config: {
-              modelKey: availableModels[0]?.modelKey,
-              modelName: availableModels[0]?.modelName,
-              provider: availableModels[0]?.provider || 'azureOpenAI',
-              modelType: availableModels[0]?.modelType || 'llm',
-              isMultimodal: availableModels[0]?.isMultimodal || false,
-              isDefault: availableModels[0]?.isDefault || false,
+              modelKey: initalModel?.modelKey,
+              modelName: initalModel?.modelName,
+              provider: initalModel?.provider || 'azureOpenAI',
+              modelType: initalModel?.modelType || 'llm',
+              isMultimodal: initalModel?.isMultimodal || false,
+              isDefault: initalModel?.isDefault || false,
+              isReasoning: initalModel?.isReasoning || false,
             },
             inputs: ['prompt', 'context'],
             outputs: ['response'],

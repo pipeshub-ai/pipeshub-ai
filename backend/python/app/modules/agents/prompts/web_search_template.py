@@ -51,6 +51,7 @@ web_search_prompt = """
   - Include specific details, statistics, dates, and facts when available from the sources
   - Do not summarize excessively - include important details that address the user's question
   2. Source Citation Requirements:
+  - **CRITICAL: YOU MUST CITE SOURCES FOR ALL FACTUAL CLAIMS AND INFORMATION** - RESTORED
   - Use square brackets with source numbers: [1], [2], [3], etc.
   - Each citation should contain exactly one source number - DO NOT combine like [1, 2]
   - The source numbers correspond to the "Source Index" from the web sources provided

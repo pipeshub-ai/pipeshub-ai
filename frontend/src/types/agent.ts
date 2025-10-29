@@ -33,6 +33,7 @@ export interface Agent {
   models: {
     provider: string;
     modelName: string;
+    isReasoning: boolean;
   }[];
   apps: string[];
   kb: string[];
@@ -116,6 +117,7 @@ export interface AgentFormData {
   models: {
     provider: string;
     modelName: string;
+    isReasoning: boolean;
   }[];
   apps: string[];
   kb: string[];

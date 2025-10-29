@@ -123,6 +123,10 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       logger.error(`No response from backend during ${operation}`);
       return new ServiceUnavailableError('Backend service unavailable');
     }
+
+    if(error.detail) {
+      return new BadRequestError(error.detail);
+    }
   
     return new InternalServerError(`${operation} failed: ${error.message}`);
   };

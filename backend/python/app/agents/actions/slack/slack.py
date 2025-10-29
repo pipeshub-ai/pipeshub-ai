@@ -2184,13 +2184,22 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     def _resolve_user_identifier(self, user_identifier: str) -> Optional[str]:
-        """Resolve user identifier (email, display name, or user ID) to user ID"""
+        """Resolve user identifier (email, display name, or user ID) to user ID.
+
+        Optimized for large workspaces:
+        - Uses normalized name fields when available for more reliable matching
+        - Early termination when user is found
+        - Handles pagination efficiently
+        """
         try:
             # If it's already a user ID (starts with U), return as is
             if user_identifier.startswith('U'):
                 return user_identifier
 
-            # Try to find by email first
+            # Normalize the identifier for comparison (remove @ prefix if present)
+            target_identifier = user_identifier.lstrip('@').casefold()
+
+            # Try to find by email first (fastest, O(1) API call)
             if '@' in user_identifier:
                 try:
                     response = self._run_async(self.client.users_lookup_by_email(email=user_identifier))
@@ -2201,17 +2210,47 @@ class Slack:
                     pass
 
             # Try to find by display name or real name
+            # Use pagination to search through all users, but stop early when found
             try:
-                users_response = self._run_async(self.client.users_list())
-                users_slack_response = self._handle_slack_response(users_response)
+                cursor = None
+                while True:
+                    # Request larger page size for fewer API calls (Slack max is typically 1000)
+                    users_response = self._run_async(self.client.users_list(cursor=cursor, limit=1000))
+                    users_slack_response = self._handle_slack_response(users_response)
 
-                if users_slack_response.success and users_slack_response.data:
+                    if not users_slack_response.success or not users_slack_response.data:
+                        break
+
                     users = users_slack_response.data.get('members', [])
+                    if not users:
+                        break
+
+                    # Search through users in this page
                     for user in users:
-                        profile = user.get('profile', {})
-                        display_name = profile.get('display_name') or profile.get('real_name') or user.get('name')
-                        if display_name and display_name.lower() == user_identifier.lower():
-                            return user.get('id')
+                        profile = user.get('profile', {}) or {}
+
+                        # Prefer normalized fields (more reliable), fallback to regular fields
+                        # Check multiple name variations for better matching
+                        names_to_match = [
+                            profile.get('display_name_normalized'),
+                            profile.get('real_name_normalized'),
+                            profile.get('display_name'),
+                            profile.get('real_name'),
+                            user.get('name'),
+                        ]
+
+                        for name in names_to_match:
+                            if isinstance(name, str) and name.casefold() == target_identifier:
+                                # Early return when match is found
+                                return user.get('id')
+
+                    # Check for next page
+                    response_metadata = users_slack_response.data.get('response_metadata', {})
+                    next_cursor = response_metadata.get('next_cursor')
+                    if not next_cursor:
+                        # No more pages
+                        break
+                    cursor = next_cursor
             except Exception:
                 pass
 

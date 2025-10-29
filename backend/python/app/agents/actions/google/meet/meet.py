@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from typing import Optional
 
 from app.agents.tools.decorator import tool
@@ -9,7 +11,9 @@ from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 from app.sources.external.google.meet.meet import GoogleMeetDataSource
+from app.utils.time_conversion import parse_timestamp, prepare_iso_timestamps
 
 logger = logging.getLogger(__name__)
 
@@ -215,16 +219,8 @@ class GoogleMeet:
             tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Import calendar client
-            from datetime import datetime, timedelta
-            from datetime import timezone as dt_timezone
-
-            from app.sources.external.google.calendar.gcalendar import (
-                GoogleCalendarDataSource,
-            )
-            from app.utils.time_conversion import parse_timestamp
-
             # Calculate end time - parse start_time and calculate end_time
+
             start_timestamp = parse_timestamp(start_time)
             start_dt = datetime.fromtimestamp(start_timestamp / 1000, tz=dt_timezone.utc)
             end_dt = start_dt + timedelta(minutes=duration_minutes)
@@ -233,30 +229,8 @@ class GoogleMeet:
             start_time_iso = start_dt.isoformat()
             end_time_iso = end_dt.isoformat()
 
-            # The meet client now includes calendar scopes (see scopes.py)
-            from googleapiclient.discovery import build
-
-            # self.google_client is a GoogleClient wrapper object
-            # Get the underlying Google API Resource (the actual service client)
-            if hasattr(self.google_client, 'get_client'):
-                # It's a GoogleClient wrapper - unwrap it
-                meet_service = self.google_client.get_client()
-            elif hasattr(self.google_client, 'client'):
-                # It might be wrapped in .client attribute
-                meet_service = self.google_client.client
-            else:
-                # It's already the raw Resource object
-                meet_service = self.google_client
-
-            # Build calendar service using the same authenticated HTTP session
-            # This works because meet client now has both meet + calendar scopes
-            if hasattr(meet_service, '_http'):
-                calendar_service = build('calendar', 'v3', http=meet_service._http)
-            else:
-                raise Exception("Unable to build calendar client - meet service missing _http attribute")
-
-            # Wrap calendar service in data source
-            calendar_client = GoogleCalendarDataSource(calendar_service)
+            # Use GoogleCalendarDataSource directly with the authenticated GoogleClient
+            calendar_client = GoogleCalendarDataSource(self.google_client)
 
             event_config = {
                 "summary": title,
@@ -381,10 +355,6 @@ class GoogleMeet:
             tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            from app.sources.external.google.calendar.gcalendar import (
-                GoogleCalendarDataSource,
-            )
-            from app.utils.time_conversion import prepare_iso_timestamps
 
             # Prepare time range
             start_iso, end_iso = prepare_iso_timestamps(date_range_start, date_range_end)
@@ -414,22 +384,36 @@ class GoogleMeet:
 
             # Find available slots (simplified algorithm)
             available_slots = []
-            from datetime import datetime, timedelta
 
             current_time = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
             end_time = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+
+            # Sort busy periods by start for consistent advancement
+            busy_times_sorted = sorted(
+                (
+                    {
+                        "start": datetime.fromisoformat(p["start"].replace('Z', '+00:00')),
+                        "end": datetime.fromisoformat(p["end"].replace('Z', '+00:00')),
+                    }
+                    for p in busy_times
+                    if p.get("start") and p.get("end")
+                ),
+                key=lambda x: x["start"]
+            )
 
             while current_time + timedelta(minutes=duration_minutes) <= end_time:
                 slot_end = current_time + timedelta(minutes=duration_minutes)
 
                 # Check if this slot conflicts with any busy time
                 conflicts = False
-                for busy_period in busy_times:
-                    busy_start = datetime.fromisoformat(busy_period["start"].replace('Z', '+00:00'))
-                    busy_end = datetime.fromisoformat(busy_period["end"].replace('Z', '+00:00'))
-
-                    if (current_time < busy_end and slot_end > busy_start):
+                next_time = None
+                for busy_period in busy_times_sorted:
+                    busy_start = busy_period["start"]
+                    busy_end = busy_period["end"]
+                    if current_time < busy_end and slot_end > busy_start:
                         conflicts = True
+                        # Jump to end of this conflicting busy period
+                        next_time = busy_end if next_time is None else max(next_time, busy_end)
                         break
 
                 if not conflicts:
@@ -439,8 +423,12 @@ class GoogleMeet:
                         "duration_minutes": duration_minutes
                     })
 
-                # Move to next 30-minute slot
-                current_time += timedelta(minutes=30)
+                # Advance time
+                if conflicts and next_time:
+                    current_time = next_time
+                else:
+                    # No conflict: step by granularity (30 minutes)
+                    current_time += timedelta(minutes=30)
 
             result = {
                 "attendees": attendees,
