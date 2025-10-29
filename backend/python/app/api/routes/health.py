@@ -479,8 +479,20 @@ async def perform_embedding_health_check(
                                 "timestamp": get_epoch_timestamp_in_ms(),
                             },
                         )
-            except Exception:
-                logger.error("Collection lookup failed")
+            except grpc._channel._InactiveRpcError as e:
+                if e.code() == grpc.StatusCode.NOT_FOUND:
+                    logger.info("Collection not found - acceptable for health check")
+                else:
+                    logger.error(f"Collection lookup failed: {str(e)}")
+                    return JSONResponse(
+                        status_code=500,
+                        content={
+                            "status": "error",
+                            "message": "Something went wrong! Please try again.",
+                        },
+                    )
+            except Exception as e:
+                logger.error(f"Collection lookup failed: {str(e)}")
                 return JSONResponse(
                     status_code=500,
                     content={
