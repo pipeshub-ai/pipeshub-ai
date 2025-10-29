@@ -2460,7 +2460,6 @@ async def handle_oauth_callback(
             kv_store = container.key_value_store()
             updated_config = await kv_store.get_key(f"/services/connectors/{filtered_app_name}/config")
             if isinstance(updated_config, dict):
-                print("\n\n\n\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! config updated:", updated_config)
                 await config_service.set_config(f"/services/connectors/{filtered_app_name}/config", updated_config)
                 logger.info(f"Refreshed config cache for {app_name} after OAuth callback")
         except Exception as cache_err:

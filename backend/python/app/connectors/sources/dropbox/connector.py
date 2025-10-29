@@ -229,7 +229,6 @@ class DropboxConnector(BaseConnector):
         config = await self.config_service.get_config(
             "/services/connectors/dropbox/config"
         )
-        print("\n\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! config from ETCD:", config)
         if not config:
             self.logger.error("Dropbox access token not found in configuration.")
             return False
@@ -242,8 +241,6 @@ class DropboxConnector(BaseConnector):
         auth_config = config.get("auth")
         app_key = auth_config.get("clientId")
         app_secret = auth_config.get("clientSecret")
-        print("!!!!!!!!!!! app_key:", app_key)
-        print("!!!!!!!!!!! app_secret:", app_secret)
 
         try:
             config = DropboxTokenConfig(
@@ -1678,7 +1675,6 @@ class DropboxConnector(BaseConnector):
         # Create permissions list (from _sync_user_groups section 3c)
         member_permissions = []
         for member in all_members:
-            print("\n\n\n !!!!!!!!!!!!!!!!!!!!!! member: ", member)
             user_permission = AppUser(
                 source_user_id=member.profile.team_member_id,
                 email=member.profile.email,
