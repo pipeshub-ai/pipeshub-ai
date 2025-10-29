@@ -1576,7 +1576,7 @@ async def final_response_node(
             json_format_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
             json_format_instruction += '}\n'
             json_format_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
-            
+
             if validated_messages and validated_messages[-1]["role"] == "user":
                 validated_messages[-1]["content"] += f"\n\n{tool_context}{json_format_instruction}"
             else:
