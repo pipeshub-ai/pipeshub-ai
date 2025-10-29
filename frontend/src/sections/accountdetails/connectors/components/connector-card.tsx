@@ -246,21 +246,23 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
           alignItems="center"
           sx={{ minHeight: 20 }}
         >
-          <Typography
-            variant="caption"
-            sx={{
-              px: 1,
-              py: 0.25,
-              borderRadius: 0.5,
-              fontSize: '0.6875rem',
-              fontWeight: 500,
-              color: theme.palette.text.secondary,
-              backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-              border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
-            }}
-          >
-            {connector.authType.split('_').join(' ')}
-          </Typography>
+          {(connector.authType || '').toUpperCase() !== 'NONE' && (
+            <Typography
+              variant="caption"
+              sx={{
+                px: 1,
+                py: 0.25,
+                borderRadius: 0.5,
+                fontSize: '0.6875rem',
+                fontWeight: 500,
+                color: theme.palette.text.secondary,
+                backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
+              }}
+            >
+              {connector.authType.split('_').join(' ')}
+            </Typography>
+          )}
           
           {connector.supportsRealtime && (
             <Tooltip title="Real-time sync supported" arrow>

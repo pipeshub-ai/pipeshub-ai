@@ -444,6 +444,14 @@ export const useConnectorConfig = ({
   const handleNext = useCallback(() => {
     if (!connectorConfig) return;
 
+    const isNoAuthType = (connector.authType || '').toUpperCase() === 'NONE';
+    
+    // For 'NONE' authType, we're already on the sync step (step 0), so we can save
+    if (isNoAuthType) {
+      // No need to go to next step, directly save
+      return;
+    }
+
     let errors: Record<string, string> = {};
 
     // Validate current step
@@ -511,6 +519,8 @@ export const useConnectorConfig = ({
       setSaving(true);
       setSaveError(null);
 
+      const isNoAuthType = (connector.authType || '').toUpperCase() === 'NONE';
+
       // For business OAuth, validate admin email and JSON file
       if (customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual')) {
         if (!isBusinessGoogleOAuthValid()) {
@@ -519,23 +529,25 @@ export const useConnectorConfig = ({
         }
       }
 
-      // Validate all sections
+      // Validate all sections (skip auth validation for 'NONE' authType)
       let authErrors: Record<string, string> = {};
-      const isBusinessMode = customGoogleBusinessOAuth(
-        connector,
-        isBusiness ? 'business' : 'individual'
-      );
-
-      if (isBusinessMode) {
-        if (!isBusinessGoogleOAuthValid()) {
-          authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
-        }
-      } else {
-        authErrors = validateSection(
-          'auth',
-          connectorConfig.config.auth.schema.fields,
-          formData.auth
+      if (!isNoAuthType) {
+        const isBusinessMode = customGoogleBusinessOAuth(
+          connector,
+          isBusiness ? 'business' : 'individual'
         );
+
+        if (isBusinessMode) {
+          if (!isBusinessGoogleOAuthValid()) {
+            authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+          }
+        } else {
+          authErrors = validateSection(
+            'auth',
+            connectorConfig.config.auth.schema.fields,
+            formData.auth
+          );
+        }
       }
       const syncErrors = validateSection(
         'sync',
