@@ -483,14 +483,7 @@ async def perform_embedding_health_check(
                 if e.code() == grpc.StatusCode.NOT_FOUND:
                     logger.info("Collection not found - acceptable for health check")
                 else:
-                    logger.error(f"Collection lookup failed: {str(e)}")
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "status": "error",
-                            "message": "Something went wrong! Please try again.",
-                        },
-                    )
+                    raise
             except Exception as e:
                 logger.error(f"Collection lookup failed: {str(e)}")
                 return JSONResponse(
