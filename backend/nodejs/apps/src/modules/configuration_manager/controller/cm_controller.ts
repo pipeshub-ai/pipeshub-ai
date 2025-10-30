@@ -2428,6 +2428,9 @@ export const addAIModelProvider =
         provider,
         configuration,
         modelType,
+        isMultimodal,
+        isDefault,
+        isReasoning,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -2598,6 +2601,9 @@ export const updateAIModelProvider =
         provider,
         configuration,
         modelType,
+        isMultimodal,
+        isReasoning,
+        isDefault,
       };
 
       const aiCommandOptions: AICommandOptions = {

@@ -1,10 +1,13 @@
 import asyncio
+import base64
+from io import BytesIO
 from logging import Logger
 from typing import Any, Dict, Tuple
 
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
+from langchain_core.messages import HumanMessage  #type: ignore
 
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.utils.aimodels import (
@@ -18,6 +21,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 router = APIRouter()
 
 SPARSE_IDF = False
+TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 
 @router.post("/llm-health-check")
@@ -320,15 +324,38 @@ async def perform_llm_health_check(
             model_name=model_name
         )
 
-        # Test with a simple prompt
-        test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
+        # Check if multimodal is enabled
+        is_multimodal = llm_config.get("isMultimodal", False) or llm_config.get("configuration", {}).get("isMultimodal", False)
 
         # Set timeout for the test
         try:
-            test_response = await asyncio.wait_for(
-                asyncio.to_thread(llm_model.invoke, test_prompt),
-                timeout=120.0  # 120 second timeout
-            )
+            if is_multimodal:
+                # Test with multimodal input (text + small image)
+                logger.info("Multimodal model detected - testing with text and small image")
+                test_image_url = TEST_IMAGE
+                
+                # Create multimodal message content
+                multimodal_content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": test_image_url
+                        }
+                    }
+                ]
+                
+                test_message = HumanMessage(content=multimodal_content)
+                test_response = await asyncio.wait_for(
+                    asyncio.to_thread(llm_model.invoke, [test_message]),
+                    timeout=120.0  # 120 second timeout
+                )
+            else:
+                # Test with a simple text prompt
+                test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
+                test_response = await asyncio.wait_for(
+                    asyncio.to_thread(llm_model.invoke, test_prompt),
+                    timeout=120.0  # 120 second timeout
+                )
 
             return JSONResponse(
                 status_code=200,
