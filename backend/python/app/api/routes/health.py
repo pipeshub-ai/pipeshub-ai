@@ -1,6 +1,4 @@
 import asyncio
-import base64
-from io import BytesIO
 from logging import Logger
 from typing import Any, Dict, Tuple
 
@@ -333,7 +331,7 @@ async def perform_llm_health_check(
                 # Test with multimodal input (text + small image)
                 logger.info("Multimodal model detected - testing with text and small image")
                 test_image_url = TEST_IMAGE
-                
+
                 # Create multimodal message content
                 multimodal_content = [
                     {
@@ -343,7 +341,7 @@ async def perform_llm_health_check(
                         }
                     }
                 ]
-                
+
                 test_message = HumanMessage(content=multimodal_content)
                 test_response = await asyncio.wait_for(
                     asyncio.to_thread(llm_model.invoke, [test_message]),
