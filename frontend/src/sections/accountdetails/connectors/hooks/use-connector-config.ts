@@ -598,6 +598,14 @@ export const useConnectorConfig = ({
           maxRetries: 3,
           timeout: 300000,
         });
+      } else {
+        // Remove any existing scheduled jobs if strategy is not SCHEDULED
+        try {
+          await CrawlingManagerApi.remove(connector.name.toLowerCase());
+        } catch (removeError) {
+          console.error('Error removing scheduled jobs:', removeError);
+          // Continue execution - removal failure shouldn't block the save operation
+        }
       }
 
       onSuccess?.();
