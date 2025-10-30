@@ -521,6 +521,84 @@ const StreamingContent = React.memo(
               </Box>
             ),
             hr: () => <Divider sx={{ my: 3 }} />,
+            table: ({ children }) => (
+              <Box
+                sx={{
+                  my: 2,
+                }}
+              >
+                <Box
+                  component="table"
+                  sx={{
+                    width: '100%',
+                    borderCollapse: 'collapse',
+                    '& th, & td': {
+                      border: (theme) =>
+                        `1px solid ${
+                          theme.palette.mode === 'dark'
+                            ? 'rgba(255, 255, 255, 0.12)'
+                            : 'rgba(0, 0, 0, 0.12)'
+                        }`,
+                      padding: '8px 12px',
+                      textAlign: 'left',
+                    },
+                    '& th': {
+                      fontWeight: 600,
+                      bgcolor: (theme) =>
+                        theme.palette.mode === 'dark'
+                          ? 'rgba(255, 255, 255, 0.05)'
+                          : 'rgba(0, 0, 0, 0.03)',
+                    },
+                  }}
+                >
+                  {children}
+                </Box>
+              </Box>
+            ),
+            thead: ({ children }) => (
+              <Box component="thead" sx={{ display: 'table-header-group' }}>
+                {children}
+              </Box>
+            ),
+            tbody: ({ children }) => (
+              <Box component="tbody" sx={{ display: 'table-row-group' }}>
+                {children}
+              </Box>
+            ),
+            tr: ({ children }) => (
+              <Box component="tr" sx={{ display: 'table-row' }}>
+                {children}
+              </Box>
+            ),
+            th: ({ children }) => {
+              const processedChildren = processChildrenForCitations(children);
+              return (
+                <Box
+                  component="th"
+                  sx={{
+                    display: 'table-cell',
+                    fontWeight: 600,
+                    fontSize: '0.875rem',
+                  }}
+                >
+                  {processedChildren}
+                </Box>
+              );
+            },
+            td: ({ children }) => {
+              const processedChildren = processChildrenForCitations(children);
+              return (
+                <Box
+                  component="td"
+                  sx={{
+                    display: 'table-cell',
+                    fontSize: '0.875rem',
+                  }}
+                >
+                  {processedChildren}
+                </Box>
+              );
+            },
           }}
           className="markdown-body"
         >
