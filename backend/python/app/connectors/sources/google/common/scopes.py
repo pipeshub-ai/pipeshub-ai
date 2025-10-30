@@ -1,19 +1,13 @@
 GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/meetings.space.created",
-    "https://www.googleapis.com/auth/meetings.space.settings",
-    "https://www.googleapis.com/auth/meetings.space.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly"
 ]
 
 GOOGLE_CONNECTOR_ENTERPRISE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/meetings.space.created",
-    "https://www.googleapis.com/auth/meetings.space.settings",
-    "https://www.googleapis.com/auth/meetings.space.readonly",
     "https://www.googleapis.com/auth/admin.directory.user.readonly",
     "https://www.googleapis.com/auth/admin.directory.group.readonly",
     "https://www.googleapis.com/auth/admin.directory.domain.readonly",
