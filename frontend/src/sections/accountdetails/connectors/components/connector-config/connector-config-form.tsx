@@ -25,6 +25,7 @@ import AuthSection from './auth-section';
 import SyncSection from './sync-section';
 import ConfigStepper from './config-stepper';
 import { Connector } from '../../types/types';
+import { isNoneAuthType } from '../../utils/auth';
 
 interface ConnectorConfigFormProps {
   connector: Connector;
@@ -74,7 +75,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   } = useConnectorConfig({ connector, onClose, onSuccess });
 
   // Skip auth step if authType is 'NONE'
-  const isNoAuthType = (connector.authType || '').toUpperCase() === 'NONE';
+  const isNoAuthType = isNoneAuthType(connector.authType);
   const steps = isNoAuthType ? ['Sync Settings'] : ['Authentication', 'Sync Settings'];
 
   const renderStepContent = () => {
@@ -216,7 +217,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   '& .MuiChip-label': { px: 1 },
                 }}
               />
-              {(connector.authType || '').toUpperCase() !== 'NONE' && (
+              {!isNoneAuthType(connector.authType) && (
                 <Chip
                   label={connector.authType.split('_').join(' ')}
                   size="small"

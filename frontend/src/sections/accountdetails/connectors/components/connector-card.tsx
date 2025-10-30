@@ -21,6 +21,7 @@ import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
 import boltIcon from '@iconify-icons/mdi/bolt';
 import { Connector } from '../types/types';
 import ConnectorConfigForm from './connector-config/connector-config-form';
+import { isNoneAuthType } from '../utils/auth';
 
 interface ConnectorCardProps {
   connector: Connector;
@@ -246,7 +247,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
           alignItems="center"
           sx={{ minHeight: 20 }}
         >
-          {(connector.authType || '').toUpperCase() !== 'NONE' && (
+          {!isNoneAuthType(connector.authType) && (
             <Typography
               variant="caption"
               sx={{

@@ -11,6 +11,7 @@ import {
   useTheme,
 } from '@mui/material';
 import { Connector } from '../../types/types';
+import { isNoneAuthType } from '../../utils/auth';
 
 interface ConnectorStatusCardProps {
   connector: Connector;
@@ -144,7 +145,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
               }}
             />
 
-            {(connector.authType || '').toUpperCase() !== 'NONE' && (
+            {!isNoneAuthType(connector.authType) && (
               <Chip
                 label={connector.authType.split('_').join(' ')}
                 size="small"
