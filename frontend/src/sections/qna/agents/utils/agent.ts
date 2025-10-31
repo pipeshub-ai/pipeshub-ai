@@ -462,7 +462,7 @@ export const extractAgentConfigFromFlow = (
   currentAgent?: Agent | null
 ) => {
   const tools: string[] = [];
-  const models: { provider: string; modelName: string }[] = [];
+  const models: { provider: string; modelName: string; isReasoning: boolean }[] = [];
   const kb: string[] = [];
   const apps: string[] = [];
 
@@ -483,9 +483,12 @@ export const extractAgentConfigFromFlow = (
         tools.push(toolName);
       }
     } else if (node.data.type.startsWith('llm-')) {
+      console.log("node.data.config", node.data.config);
+      console.log("node.data", node.data);
       models.push({
         provider: node.data.config.provider || 'azureOpenAI',
         modelName: node.data.config.modelName || node.data.config.model,
+        isReasoning: node.data.config.isReasoning || false,
       });
     } else if (node.data.type.startsWith('kb-') && node.data.type !== 'kb-group') {
       // Individual knowledge base nodes

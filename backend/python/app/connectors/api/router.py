@@ -41,7 +41,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import (
     HttpStatusCode,
 )
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
@@ -66,8 +66,11 @@ from app.containers.connector import ConnectorAppContainer
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
+from app.utils.api_call import make_api_call
+from app.utils.jwt import generate_jwt
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -352,7 +355,27 @@ async def stream_record_internal(
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
-        connector = container.connectors_map[connector_name]
+        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
+            endpoints = await config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
+            jwt_payload  = {
+                "orgId": org_id,
+                "scopes": ["storage:token"],
+            }
+            token = await generate_jwt(config_service, jwt_payload)
+            response = await make_api_call(
+                route=buffer_url, token=token
+            )
+            return response["data"]
+        connector = container.connectors_map.get(connector_name)
+        if not connector:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector '{connector_name}' not found"
+            )
         buffer = await connector.stream_record(record)
         return buffer
 
@@ -758,7 +781,12 @@ async def download_file(
             else:
                 connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_name]
+                connector: BaseConnector = container.connectors_map.get(connector_name)
+                if not connector:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=f"Connector '{connector_name}' not found"
+                    )
                 buffer = await connector.stream_record(record)
                 return buffer
 
@@ -1357,7 +1385,12 @@ async def stream_record(
             else:
                 connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_name]
+                connector: BaseConnector = container.connectors_map.get(connector_name)
+                if not connector:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=f"Connector '{connector_name}' not found"
+                    )
                 buffer = await connector.stream_record(record)
                 return buffer
         except Exception as e:
@@ -2227,7 +2260,7 @@ async def get_oauth_authorization_url(
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
+        connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
@@ -2237,7 +2270,6 @@ async def get_oauth_authorization_url(
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
             OAuthProvider,
         )
         if base_url and len(base_url) > 0:
@@ -2248,14 +2280,8 @@ async def get_oauth_authorization_url(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
+        oauth_config = get_oauth_config(app_name, auth_config)
+
 
         # Create OAuth provider and generate authorization URL
         oauth_provider = OAuthProvider(
@@ -2386,7 +2412,7 @@ async def handle_oauth_callback(
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = connector_auth_config.get('authorizeUrl', '')
         token_url = connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
+        connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
@@ -2396,7 +2422,6 @@ async def handle_oauth_callback(
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
             OAuthProvider,
         )
         if base_url and len(base_url) > 0:
@@ -2407,14 +2432,7 @@ async def handle_oauth_callback(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
+        oauth_config = get_oauth_config(app_name, auth_config)
 
         # Create OAuth provider and exchange code for token
         oauth_provider = OAuthProvider(

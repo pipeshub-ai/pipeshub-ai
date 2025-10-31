@@ -13,8 +13,9 @@ from app.connectors.sources.google.common.google_token_handler import (
     CredentialKeys,
 )
 from app.connectors.sources.google.common.scopes import (
-    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES_FULL,
     GOOGLE_PARSER_SCOPES,
+    GOOGLE_SERVICE_SCOPES,
+    SERVICES_WITH_PARSER_SCOPES,
 )
 from app.sources.client.iclient import IClient
 from app.sources.client.utils.utils import merge_scopes
@@ -47,6 +48,31 @@ class GoogleClient(IClient):
     def __init__(self, client: object) -> None:
         """Initialize with a Google Drive client object"""
         self.client = client
+
+    @staticmethod
+    def _get_optimized_scopes(service_name: str, additional_scopes: Optional[List[str]] = None) -> List[str]:
+        """
+        Get optimized scopes for a specific service.
+
+        Args:
+            service_name: Name of the Google service
+            additional_scopes: Additional scopes to merge
+
+        Returns:
+            List of optimized scopes for the service
+        """
+        # Get base scopes for the service
+        base_scopes = GOOGLE_SERVICE_SCOPES.get(service_name, [])
+
+        # Add parser scopes only if the service needs them
+        if service_name in SERVICES_WITH_PARSER_SCOPES:
+            base_scopes = merge_scopes(base_scopes, GOOGLE_PARSER_SCOPES)
+
+        # Add additional scopes if provided
+        if additional_scopes:
+            base_scopes = merge_scopes(base_scopes, additional_scopes)
+
+        return base_scopes
 
     def get_client(self) -> object:
         """Return the Google Drive client object"""
@@ -87,6 +113,7 @@ class GoogleClient(IClient):
         version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
         scopes: Optional[List[str]] = None, # Scopes of the service to build the client
         calendar_id: Optional[str] = 'primary', # Calendar ID to build the client for
+        user_email: Optional[str] = None, # User email for enterprise impersonation
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service
@@ -108,7 +135,8 @@ class GoogleClient(IClient):
                 if not saved_credentials:
                     raise ValueError("Failed to get individual token")
 
-                default_scopes = await GoogleClient.get_account_scopes(service_name, logger, config_service)
+                # Get optimized scopes for the service
+                optimized_scopes = GoogleClient._get_optimized_scopes(service_name, scopes)
 
                 google_credentials = Credentials(
                     token=saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value),
@@ -116,7 +144,7 @@ class GoogleClient(IClient):
                     token_uri="https://oauth2.googleapis.com/token",
                     client_id=saved_credentials.get(CredentialKeys.CLIENT_ID.value),
                     client_secret=saved_credentials.get(CredentialKeys.CLIENT_SECRET.value),
-                    scopes=merge_scopes(default_scopes, scopes),
+                    scopes=optimized_scopes,
                 )
 
                 # Create Google Drive service using the credentials
@@ -142,11 +170,15 @@ class GoogleClient(IClient):
                 raise AdminAuthError("Failed to get enterprise token: " + str(e))
 
             try:
+                # Get optimized scopes for the service
+                optimized_scopes = GoogleClient._get_optimized_scopes(service_name, scopes)
+
                 google_credentials = (
                         service_account.Credentials.from_service_account_info(
                             saved_credentials,
-                            scopes=merge_scopes(GOOGLE_CONNECTOR_ENTERPRISE_SCOPES_FULL + GOOGLE_PARSER_SCOPES, scopes),
-                            subject=admin_email
+                            scopes=optimized_scopes,
+                            # Impersonate the specific user when provided; otherwise default to admin
+                            subject=(user_email or admin_email)
                         )
                     )
             except Exception as e:
@@ -155,6 +187,7 @@ class GoogleClient(IClient):
                     details={
                         "service_name": service_name,
                         "admin_email": admin_email,
+                        "user_email": user_email,
                         "error": str(e),
                     },
                 )

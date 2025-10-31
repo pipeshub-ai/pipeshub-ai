@@ -127,6 +127,9 @@ class DataSourceEntitiesProcessor:
             # Create a edge between the record and the record group if it doesn't exist
             await tx_store.create_record_group_relation(record.id, record_group.id)
 
+            if record.inherit_permissions:
+                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
         record.org_id = self.org_id
@@ -171,10 +174,8 @@ class DataSourceEntitiesProcessor:
                     else:
                         self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
                         continue
-                # if permission.entity_type == EntityType.ORG.value:
-                #     org = await self.data_store.get_org_by_external_id(permission.external_id)
-                #     if org:
-                #         from_collection = f"{CollectionNames.ORGS.value}/{org.id}"
+                if permission.entity_type == EntityType.ORG.value:
+                    from_collection = f"{CollectionNames.ORGS.value}/{self.org_id}"
 
                 # if permission.entity_type == EntityType.DOMAIN.value:
                 #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
@@ -238,6 +239,21 @@ class DataSourceEntitiesProcessor:
                 if permissions:
                     self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
                     await self._handle_record_permissions(record, permissions, tx_store)
+                # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
+                if record.inherit_permissions:
+                    record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
+                                                                      external_id=record.external_record_group_id)
+
+                    if record_group:
+                        await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+
+                if not record.inherit_permissions:
+                    record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
+                                                                      external_id=record.external_record_group_id)
+                    if record_group:
+                        to_key = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
+                        from_key = f"{CollectionNames.RECORDS.value}/{record.id}"
+                        await tx_store.delete_edge(from_key=from_key, to_key=to_key, collection=CollectionNames.INHERIT_PERMISSIONS.value)
                 else:
                     self.logger.info(f"No new permissions to add for record: {record.id}")
 
@@ -360,6 +376,44 @@ class DataSourceEntitiesProcessor:
                     )
 
                     # 3. Handle User and Group Permissions (from the passed 'permissions' list)
+                    if record_group.parent_external_group_id:
+                        parent_record_group = await tx_store.get_record_group_by_external_id(
+                            connector_name=record_group.connector_name,
+                            external_id=record_group.parent_external_group_id
+                        )
+
+                        if parent_record_group:
+                            self.logger.info(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
+
+                            # Define the edge document from child to parent RecordGroup
+                            parent_relation = {
+                                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
+                                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_group.id}",
+                                "createdAtTimestamp": record_group.created_at,
+                                "updatedAtTimestamp": record_group.updated_at,
+                                "entityType": "KB",
+                            }
+
+                            # Create the edge using the same batch method
+                            await tx_store.batch_create_edges(
+                                [parent_relation], collection=CollectionNames.BELONGS_TO.value
+                            )
+
+                            if record_group.inherit_permissions:
+                                inherit_relation = parent_relation.copy()
+                                inherit_relation.pop("entityType", None)
+
+                                await tx_store.batch_create_edges(
+                                    [inherit_relation], collection=CollectionNames.INHERIT_PERMISSIONS.value
+                                )
+                            #if inherit records is false we need to remove the edge aswell
+                        else:
+                            self.logger.warning(
+                                f"Could not find parent record group with external_id "
+                                f"'{record_group.parent_external_group_id}' for child '{record_group.name}'"
+                            )
+
+                    # 4. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
                         continue
 
@@ -460,19 +514,19 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
 
-    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[Permission]]]) -> None:
+    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
         """
         try:
             async with self.data_store_provider.transaction() as tx_store:
-                for user_group, permissions in user_groups:
+                for user_group, members in user_groups:
                     # Set the org_id on the object, as it's needed for the doc
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name}")
-                    self.logger.info(f"Processing user group permissions: {permissions}")
+                    self.logger.info(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -493,36 +547,33 @@ class DataSourceEntitiesProcessor:
                     # (This uses batch_upsert_user_groups and the to_arango... method)
                     await tx_store.batch_upsert_user_groups([user_group])
 
-                    # 3. Handle User Permissions (from the passed 'permissions' list)
-                    if not permissions:
-                        continue
 
                     user_group_permissions = []
                     # Set the 'to' side of the edge to be this user group
                     to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
 
-                    for permission in permissions:
+                    for member in members:
                         from_collection = None
+                        user = None
+                        if member.email:
+                            # Find the user's internal DB ID
+                            user = await tx_store.get_user_by_email(member.email)
 
-                        if permission.entity_type == EntityType.GROUP:
-                            user = None
-                            if permission.email:
-                                # Find the user's internal DB ID
-                                user = await tx_store.get_user_by_email(permission.email)
+                        if not user:
+                            self.logger.warning(f"Could not find user with email {member.email} for UserGroup permission.")
+                            continue
 
-                            if user:
-                                # Set the 'from' side of the edge to be the user
-                                from_collection = f"{CollectionNames.USERS.value}/{user.id}"
-                            else:
-                                self.logger.warning(f"Could not find user with email {permission.email} for UserGroup permission.")
+                        permission = Permission(
+                            external_id=member.id,
+                            email=member.email,
+                            type=PermissionType.READ,
+                            entity_type=EntityType.USER
+                        )
+                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
 
-                        # (Other entity_type cases like GROUP could be added here if needed)
-
-                        if from_collection:
-                            # (Assuming Permission class has this method)
-                            user_group_permissions.append(
-                                permission.to_arango_permission(from_collection, to_collection)
-                            )
+                        user_group_permissions.append(
+                            permission.to_arango_permission(from_collection, to_collection)
+                        )
 
                     # Batch create (upsert) all permission edges for this user group
                     if user_group_permissions:
@@ -806,50 +857,58 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
 
-    async def on_user_removed(
-        self,
-        user_email: str,
-        connector_name: str
-    ) -> bool:
-        """
-        Delete a user and all its associated edges from the database.
+    #IMPORTANT: DO NOT USE THIS METHOD
+    #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user
+    # async def on_user_removed(
+    #     self,
+    #     user_email: str,
+    #     connector_name: str
+    # ) -> bool:
+    #     """
+    #     Delete a user and all its associated edges from the database.
 
-        Args:
-            user_email: The email of the user to be removed
-            connector_name: The name of the connector (e.g., 'DROPBOX')
+    #     Args:
+    #         user_email: The email of the user to be removed
+    #         connector_name: The name of the connector (e.g., 'DROPBOX')
 
-        Returns:
-            bool: True if the user was successfully deleted, False otherwise
-        """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
+    #     Returns:
+    #         bool: True if the user was successfully deleted, False otherwise
+    #     """
+    #     try:
+    #         async with self.data_store_provider.transaction() as tx_store:
+    #             # 1. Look up the user by email
+    #             user = await tx_store.get_user_by_email(user_email)
 
-                if not user:
-                    self.logger.warning(
-                        f"Cannot delete user: User with email {user_email} not found in database"
-                    )
-                    return False
+    #             if not user:
+    #                 self.logger.warning(
+    #                     f"Cannot delete user: User with email {user_email} not found in database"
+    #                 )
+    #                 return False
 
-                user_internal_id = user.id
-                user_name = user.full_name
+    #             if user.is_active:
+    #                 self.logger.warning(
+    #                     f"Cannot delete user: User with email {user_email} is still active"
+    #                 )
+    #                 return False
 
-                self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
+    #             user_internal_id = user.id
+    #             user_name = user.full_name
 
-                # Delete the node and edges
-                await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
+    #             self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
 
-                self.logger.info(
-                    f"Successfully deleted user {user_name} "
-                    f"(email: {user_email}, internal_id: {user_internal_id}) "
-                    f"and all associated edges"
-                )
-                return True
+    #             # Delete the node and edges
+    #             await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to delete user {user_email}: {str(e)}",
-                exc_info=True
-            )
-            return False
+    #             self.logger.info(
+    #                 f"Successfully deleted user {user_name} "
+    #                 f"(email: {user_email}, internal_id: {user_internal_id}) "
+    #                 f"and all associated edges"
+    #             )
+    #             return True
+
+    #     except Exception as e:
+    #         self.logger.error(
+    #             f"Failed to delete user {user_email}: {str(e)}",
+    #             exc_info=True
+    #         )
+    #         return False

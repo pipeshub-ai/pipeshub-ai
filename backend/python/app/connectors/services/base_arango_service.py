@@ -45,6 +45,7 @@ from app.schema.arango.documents import (
 from app.schema.arango.edges import (
     basic_edge_schema,
     belongs_to_schema,
+    inherit_permissions_schema,
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
@@ -95,6 +96,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_DEPARTMENT.value, basic_edge_schema),
     (CollectionNames.ORG_DEPARTMENT_RELATION.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO.value, belongs_to_schema),
+    (CollectionNames.INHERIT_PERMISSIONS.value, inherit_permissions_schema),
     (CollectionNames.PERMISSIONS.value, permissions_schema),
     (CollectionNames.ORG_APP_RELATION.value, basic_edge_schema),
     (CollectionNames.USER_APP_RELATION.value, user_app_relation_schema),
@@ -673,7 +675,7 @@ class BaseArangoService:
             )
             LET groupAccess = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER belongsEdge.entityType == 'GROUP'
+                FILTER belongsEdge.entityType == 'USER'
                 FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
                 FILTER records._key == @recordId
                 RETURN {{
@@ -684,13 +686,57 @@ class BaseArangoService:
             )
             LET groupAccessPermissionEdge = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER belongsEdge.type == 'GROUP'
+                FILTER belongsEdge.type == 'USER'
+                FILTER IS_SAME_COLLECTION("groups", group)
                 FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
                     type: 'GROUP',
                     source: group,
                     role: permEdge.role
+                }}
+            )
+            LET recordGroupAccess = (
+                // Hop 1: User -> Group
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER userToGroupEdge.type == 'USER'
+                FILTER IS_SAME_COLLECTION("groups", group)
+
+                // Hop 2: Group -> RecordGroup
+                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER groupToRecordGroupEdge.type == 'GROUP'
+
+                // Hop 3: RecordGroup -> Record
+                FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                FILTER record._key == @recordId
+
+                RETURN {{
+                    type: 'RECORD_GROUP',
+                    source: recordGroup,
+                    role: recordGroupToRecordEdge.role
+                }}
+            )
+            LET inheritedRecordGroupAccess = (
+                // Hop 1: User -> Group (permission)
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER userToGroupEdge.type == 'USER'
+                    FILTER IS_SAME_COLLECTION("groups", group)
+
+                // Hop 2: Group -> Parent RecordGroup (permission)
+                FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    FILTER groupToRgEdge.type == 'GROUP'
+
+                // Hop 3: Parent RecordGroup -> Child RecordGroup (belongs_to)
+                FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+
+                // Hop 4: Child RecordGroup -> Record (belongs_to)
+                FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER record._key == @recordId
+
+                RETURN {{
+                    type: 'NESTED_RECORD_GROUP',
+                    source: childRecordGroup,
+                    role: childRgToRecordEdge.role
                 }}
             )
             LET orgAccess = (
@@ -746,7 +792,9 @@ class BaseArangoService:
                 directAccess,
                 directAccessPermissionEdge,
                 groupAccess,
+                recordGroupAccess,
                 groupAccessPermissionEdge,
+                inheritedRecordGroupAccess,
                 orgAccess,
                 orgAccessPermissionEdge,
                 kbAccess,
@@ -1075,7 +1123,8 @@ class BaseArangoService:
             LET groupConnectorRecordsNewPermission = {
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                        FILTER userToGroupEdge.type == "GROUP"
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
 
                         FOR record, permissionEdge IN 1..1 ANY group._id @@permission
                             FILTER permissionEdge.type == "GROUP"
@@ -1095,7 +1144,102 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET allConnectorRecordsNewPermission = UNION_DISTINCT(connectorRecordsNewPermission, groupConnectorRecordsNewPermission)
+            LET orgAccessPermission = {
+                f'''(
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR record, permEdge IN 1..1 ANY org._id @@permission
+                            FILTER permEdge.type == "ORG"
+                            {permission_filter}
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            RETURN {{
+                                record: record,
+                                permission: {{ role: permEdge.role, type: permEdge.type }}
+                            }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET recordGroupConnectorRecords = {
+                f'''(
+                    // First hop: user -> group
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
+
+                        // Second hop: group -> recordgroup
+                        FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
+                            FILTER groupToRecordGroupEdge.type == "GROUP"
+
+                            // Third hop: recordgroup -> record
+                            FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
+                                // Assuming the edge from recordgroup to record should also be filtered
+                                {permission_filter}
+
+                                FILTER record != null
+                                FILTER record.recordType != @drive_record_type
+                                FILTER record.isDeleted != true
+                                FILTER record.orgId == org_id OR record.orgId == null
+                                FILTER record.origin == "CONNECTOR"
+                                {record_filter}
+
+                                RETURN {{
+                                    record: record,
+                                    permission: {{
+                                        role: recordGroupToRecordEdge.role,
+                                        type: recordGroupToRecordEdge.type
+                                    }}
+                                }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET inheritedRecordGroupConnectorRecords = {
+                f'''(
+                    // Hop 1: user -> group
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
+
+                    // Hop 2: group -> parent record_group
+                    FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                        FILTER groupToRgEdge.type == "GROUP"
+
+                    // Hop 3: parent record_group -> child record_group
+                    FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
+
+                    // Hop 4: child record_group -> record
+                    FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id @@inherit_permissions
+                        {permission_filter}
+
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+
+                        RETURN {{
+                            record: record,
+                            permission: {{
+                                role: childRgToRecordEdge.role,
+                                type: childRgToRecordEdge.type
+                            }}
+                        }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET allConnectorRecordsNewPermission = UNION_DISTINCT(
+                connectorRecordsNewPermission,
+                groupConnectorRecordsNewPermission,
+                orgAccessPermission,
+                recordGroupConnectorRecords,
+                inheritedRecordGroupConnectorRecords
+            )
+
             LET allConnectorRecordsDistinct = (
                 FOR item IN allConnectorRecordsNewPermission
                     COLLECT recordKey = item.record._key
@@ -1247,7 +1391,8 @@ class BaseArangoService:
             LET groupConnectorKeysNewPermission = {
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                        FILTER userToGroupEdge.type == "GROUP"
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
 
                         FOR record, permissionEdge IN 1..1 ANY group._id @@permission
                             FILTER permissionEdge.type == "GROUP"
@@ -1263,8 +1408,80 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            LET orgAccessKeys = {
+                f'''(
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR record, permEdge IN 1..1 ANY org._id @@permission
+                            FILTER permEdge.type == "ORG"
+                            {permission_filter}
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            {record_filter}
+                            RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
+            LET recordGroupConnectorRecordsCount = {
+                f'''(
+                    // First hop: user -> group
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
+
+                        // Second hop: group -> recordgroup
+                        FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
+                            FILTER groupToRecordGroupEdge.type == "GROUP"
+
+                            // Third hop: recordgroup -> record
+                            FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
+                                {permission_filter}
+
+                                FILTER record != null
+                                FILTER record.recordType != @drive_record_type
+                                FILTER record.isDeleted != true
+                                FILTER record.orgId == org_id OR record.orgId == null
+                                FILTER record.origin == "CONNECTOR"
+                                {record_filter}
+
+                                RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
+            LET inheritedRecordGroupConnectorRecordsCount = {
+                f'''(
+                    // Hop 1: user -> group
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
+
+                    // Hop 2: group -> parent record_group
+                    FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                        FILTER groupToRgEdge.type == "GROUP"
+
+                    // Hop 3: parent record_group -> child record_group (inheritance)
+                    FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
+
+                    // Hop 4: child record_group -> record
+                    FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id @@inherit_permissions
+                        {permission_filter}
+
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+
+                        RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
             // Combine all keys and count unique ones
-            LET allNewPermissionKeys = APPEND(connectorKeysNewPermission, groupConnectorKeysNewPermission)
+            LET allNewPermissionKeys = UNION_DISTINCT(connectorKeysNewPermission, groupConnectorKeysNewPermission, orgAccessKeys, recordGroupConnectorRecordsCount, inheritedRecordGroupConnectorRecordsCount)
             LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
 
             RETURN kbCount + connectorCount + uniqueNewPermissionCount
@@ -1335,7 +1552,8 @@ class BaseArangoService:
             LET allGroupConnectorRecordsNewPermission = {
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                        FILTER userToGroupEdge.type == "GROUP"
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
 
                         FOR record, permissionEdge IN 1..1 ANY group._id @@permission
                             FILTER permissionEdge.type == "GROUP"
@@ -1355,7 +1573,99 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            LET ConnectorRecords = UNION_DISTINCT(allConnectorRecordsNewPermission, allGroupConnectorRecordsNewPermission)
+            LET allOrgAccessRecords = {
+                '''(
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR record, permEdge IN 1..1 ANY org._id @@permission
+                            FILTER permEdge.type == "ORG"
+                            FILTER record != null
+                            FILTER record.recordType != @drive_record_type
+                            FILTER record.isDeleted != true
+                            FILTER record.orgId == org_id OR record.orgId == null
+                            FILTER record.origin == "CONNECTOR"
+                            RETURN {
+                                record: record,
+                                permission: { role: permEdge.role, type: permEdge.type }
+                            }
+                )''' if include_connector_records else '[]'
+            }
+
+            LET recordGroupConnectorRecordsFilter = {
+                '''(
+                    // First hop: user -> group
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
+
+                        // Second hop: group -> recordgroup
+                        FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
+                            FILTER groupToRecordGroupEdge.type == "GROUP"
+
+                            // Third hop: recordgroup -> record (via belongs_to)
+                            FOR belongsEdge IN @@inherit_permissions
+                                FILTER belongsEdge._to == recordGroup._id
+                                LET record = DOCUMENT(belongsEdge._from)
+
+                                FILTER record != null
+                                FILTER record.recordType != @drive_record_type
+                                FILTER record.isDeleted != true
+                                FILTER record.orgId == org_id OR record.orgId == null
+                                FILTER record.origin == "CONNECTOR"
+                                // Note: No record_filter here as this is for getting all available filter values
+
+                                RETURN {
+                                    record: record,
+                                    permission: {
+                                        role: groupToRecordGroupEdge.role,
+                                        type: groupToRecordGroupEdge.type
+                                    }
+                                }
+                )''' if include_connector_records else '[]'
+            }
+
+            LET inheritedRecordGroupConnectorRecordsFilter = {
+                f'''(
+                    // Hop 1: user -> group
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group)
+
+                    // Hop 2: group -> parent record_group
+                    FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                        FILTER groupToRgEdge.type == "GROUP"
+
+                    // Hop 3: parent record_group -> child record_group
+                    FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
+
+                    // Hop 4: child record_group -> record
+                    FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id @@inherit_permissions
+                        {permission_filter}
+
+                        FILTER record != null
+                        FILTER record.recordType != @drive_record_type
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {record_filter}
+
+                        RETURN {{
+                            record: record,
+                            permission: {{
+                                role: childRgToRecordEdge.role,
+                                type: childRgToRecordEdge.type
+                            }}
+                        }}
+                )''' if include_connector_records else '[]'
+            }
+
+            LET ConnectorRecords = UNION_DISTINCT(
+                allConnectorRecordsNewPermission,
+                allGroupConnectorRecordsNewPermission,
+                allOrgAccessRecords,
+                recordGroupConnectorRecordsFilter,
+                inheritedRecordGroupConnectorRecordsFilter
+            )
             LET allConnectorRecordsDistinct = (
                 FOR item IN ConnectorRecords
                     COLLECT recordKey = item.record._key
@@ -1422,6 +1732,7 @@ class BaseArangoService:
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
@@ -1435,6 +1746,7 @@ class BaseArangoService:
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
@@ -1446,6 +1758,7 @@ class BaseArangoService:
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
@@ -1538,7 +1851,7 @@ class BaseArangoService:
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
 
-            #TODO: implement for DROPBOX
+
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
                 if connector_name == Connectors.GOOGLE_DRIVE.value:
@@ -2718,7 +3031,7 @@ class BaseArangoService:
             LET group_permission_old_permission = FIRST(
                 FOR belongs_edge IN @@permission
                     FILTER belongs_edge._from == user_from
-                    FILTER belongs_edge.entityType == "GROUP"
+                    FILTER belongs_edge.entityType == "USER"
                     LET group = DOCUMENT(belongs_edge._to)
                     FILTER group != null
                     FOR perm IN @@permission
@@ -2743,6 +3056,45 @@ class BaseArangoService:
 
             LET group_permission = group_permission_old_permission ? group_permission_old_permission : group_permission_new_permission
 
+            // 2.5 Check inherited group->record_group permissions
+            LET record_group_permission = FIRST(
+                // First hop: user -> group
+                FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                    FILTER userToGroupEdge.type == "USER"
+                    FILTER IS_SAME_COLLECTION("groups", group)
+
+                    // Second hop: group -> recordgroup
+                    FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
+                        FILTER groupToRecordGroupEdge.type == "GROUP"
+
+                        // Third hop: recordgroup -> record
+                        FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
+                            FILTER rec._id == record_from
+                            // The role is on the final edge from the record group to the record
+                            RETURN recordGroupToRecordEdge.role
+            )
+
+            LET nested_record_group_permission = FIRST(
+                // First hop: user -> group
+                FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                    FILTER userToGroupEdge.type == "USER"
+                    FILTER IS_SAME_COLLECTION("groups", group)
+
+                // Second hop: group -> recordgroup1
+                FOR recordGroup1, groupToRg1Edge IN 1..1 ANY group._id @@permission
+                    FILTER groupToRg1Edge.type == "GROUP"
+
+                // Third hop: recordgroup1 -> recordgroup2
+                FOR recordGroup2, rg1ToRg2Edge IN 1..1 INBOUND recordGroup1._id @@inherit_permissions
+                    FILTER rg1ToRg2Edge.type == "GROUP"
+
+                // Fourth hop: recordgroup2 -> record
+                FOR rec, rg2ToRecordEdge IN 1..1 INBOUND recordGroup2._id @@inherit_permissions
+                    FILTER rec._id == record_from
+                    // The role is on the final edge from the record group (rg2) to the record
+                    RETURN rg2ToRecordEdge.role
+            )
+
             // 3. Check domain/organization permissions
             LET domain_permission_old_permission = FIRST(
                 FOR belongs_edge IN @@belongs_to
@@ -2753,7 +3105,7 @@ class BaseArangoService:
                     FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == org._id
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
 
@@ -2766,7 +3118,7 @@ class BaseArangoService:
                     FOR perm IN @@permission
                         FILTER perm._from == org._id
                         FILTER perm._to == record_from
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
 
@@ -2821,11 +3173,12 @@ class BaseArangoService:
             // Return the highest permission level found (in order of precedence)
             LET final_permission = (
                 direct_permission ? direct_permission :
-                direct_permission_new_permission ? direct_permission:
+                direct_permission_new_permission ? direct_permission_new_permission : // FIXED
                 group_permission ? group_permission :
-                group_permission_new_permission ? group_permission :
+                group_permission_new_permission ? group_permission_new_permission : // FIXED
+                record_group_permission ? record_group_permission :
                 domain_permission ? domain_permission :
-                domain_permission_new_permission ? domain_permission :
+                domain_permission_new_permission ? domain_permission_new_permission : // FIXED
                 anyone_permission ? anyone_permission :
                 drive_access ? drive_access :
                 null
@@ -2835,8 +3188,12 @@ class BaseArangoService:
                 permission: final_permission,
                 source: (
                     direct_permission ? "DIRECT" :
+                    direct_permission_new_permission ? "DIRECT" : // FIXED
                     group_permission ? "GROUP" :
+                    group_permission_new_permission ? "GROUP" : // FIXED
+                    record_group_permission ? "RECORD_GROUP" :
                     domain_permission ? "DOMAIN" :
+                    domain_permission_new_permission ? "DOMAIN" : // FIXED
                     anyone_permission ? "ANYONE" :
                     drive_access ? "DRIVE_ACCESS" :
                     "NONE"
@@ -2851,6 +3208,7 @@ class BaseArangoService:
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@anyone": CollectionNames.ANYONE.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
@@ -2918,7 +3276,7 @@ class BaseArangoService:
                     FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == org._id
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
             // 4. Check 'anyone' permissions (Drive-specific)
@@ -3079,7 +3437,7 @@ class BaseArangoService:
                     FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == org._id
-                        FILTER perm.type == "DOMAIN"
+                        FILTER perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
             // 5. Check 'anyone' permissions
@@ -4248,6 +4606,49 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges to target: %s in collection: %s: %s", to_key, collection, str(e))
             return 0
 
+    async def delete_edges_to_groups(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete all edges from the given node if those edges are pointing to nodes in the groups collection
+
+        Args:
+            from_key: The source node key (e.g., "users/12345")
+            collection: The edge collection name to search in
+            transaction: Optional transaction database
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting edges from %s to groups collection in %s", from_key, collection)
+
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                FILTER IS_SAME_COLLECTION("groups", edge._to)
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={
+                "from_key": from_key,
+                "@collection": collection
+            })
+
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d edges from %s to groups", count, from_key)
+            else:
+                self.logger.warning("⚠️ No edges found from %s to groups in collection: %s", from_key, collection)
+
+            return count
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edges from %s to groups in %s: %s", from_key, collection, str(e))
+            return 0
+
     async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
         """
         Delete all edges connected to a node (both incoming and outgoing)
@@ -4756,6 +5157,17 @@ class BaseArangoService:
                 self.logger.info("✅ Got group ID: %s", group_id)
                 return group_id
 
+            query = """
+            FOR doc IN people
+                FILTER doc.email == @email
+                RETURN doc._key
+            """
+            result = db.aql.execute(query, bind_vars={"email": email})
+            people_id = next(result, None)
+            if people_id:
+                self.logger.info("✅ Got People ID: %s", people_id)
+                return people_id
+
             return None
 
         except Exception as e:
@@ -4763,6 +5175,115 @@ class BaseArangoService:
                 "❌ Failed to get entity ID for email %s: %s", email, str(e)
             )
             return None
+
+    async def bulk_get_entity_ids_by_email(
+        self,
+        emails: List[str],
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict[str, Tuple[str, str, str]]:
+        """
+        Bulk get entity IDs for multiple emails across users, groups, and people collections
+
+        Args:
+            emails (List[str]): List of email addresses to look up
+            transaction: Optional transaction database context
+        Returns:
+            Dict[email, (entity_id, collection_name, permission_type)]
+
+            Example:
+            {
+                "user@example.com": ("123abc", "users", "USER"),
+                "group@example.com": ("456def", "groups", "GROUP"),
+                "external@example.com": ("789ghi", "people", "USER")
+            }
+        """
+        if not emails:
+            return {}
+
+        try:
+            self.logger.info("🚀 Bulk getting Entity Keys for %d emails", len(emails))
+
+            result_map = {}
+            db = transaction if transaction else self.db
+
+            # Deduplicate emails to avoid redundant queries
+            unique_emails = list(set(emails))
+
+            # ===================================================
+            # QUERY 1: Check users collection
+            # ===================================================
+            user_query = """
+            FOR doc IN users
+                FILTER doc.email IN @emails
+                RETURN {email: doc.email, id: doc._key}
+            """
+            try:
+                users = list(db.aql.execute(user_query, bind_vars={"emails": unique_emails}))
+                for user in users:
+                    result_map[user["email"]] = (
+                        user["id"],
+                        CollectionNames.USERS.value,
+                        "USER"
+                    )
+                self.logger.info("✅ Found %d users", len(users))
+            except Exception as e:
+                self.logger.error("❌ Error querying users: %s", str(e))
+
+            # ===================================================
+            # QUERY 2: Check groups collection (only for remaining emails)
+            # ===================================================
+            remaining_emails = [e for e in unique_emails if e not in result_map]
+            if remaining_emails:
+                group_query = """
+                FOR doc IN groups
+                    FILTER doc.email IN @emails
+                    RETURN {email: doc.email, id: doc._key}
+                """
+                try:
+                    groups = list(db.aql.execute(group_query, bind_vars={"emails": remaining_emails}))
+                    for group in groups:
+                        result_map[group["email"]] = (
+                            group["id"],
+                            CollectionNames.GROUPS.value,
+                            "GROUP"
+                        )
+                    self.logger.info("✅ Found %d groups", len(groups))
+                except Exception as e:
+                    self.logger.error("❌ Error querying groups: %s", str(e))
+
+            # ===================================================
+            # QUERY 3: Check people collection (only for remaining emails)
+            # ===================================================
+            remaining_emails = [e for e in unique_emails if e not in result_map]
+            if remaining_emails:
+                people_query = """
+                FOR doc IN people
+                    FILTER doc.email IN @emails
+                    RETURN {email: doc.email, id: doc._key}
+                """
+                try:
+                    people = list(db.aql.execute(people_query, bind_vars={"emails": remaining_emails}))
+                    for person in people:
+                        result_map[person["email"]] = (
+                            person["id"],
+                            CollectionNames.PEOPLE.value,
+                            "USER"
+                        )
+                    self.logger.info("✅ Found %d people", len(people))
+                except Exception as e:
+                    self.logger.error("❌ Error querying people: %s", str(e))
+
+            self.logger.info(
+                "✅ Bulk lookup complete: found %d/%d entities",
+                len(result_map),
+                len(unique_emails)
+            )
+
+            return result_map
+
+        except Exception as e:
+            self.logger.error("❌ Failed to bulk get entity IDs: %s", str(e))
+            return {}
 
     async def organization_exists(self, organization_name: str) -> bool:
         """Check if the organization exists in the database"""
@@ -5319,7 +5840,7 @@ class BaseArangoService:
             return []
 
 
-    async def save_to_people_collection(self, entity_id: str, email: str) -> bool:
+    async def save_to_people_collection(self, entity_id: str, email: str) -> Optional[Dict]:
         """Save an entity to the people collection if it doesn't already exist"""
         try:
             self.logger.info(
@@ -5337,15 +5858,15 @@ class BaseArangoService:
                     {"_key": entity_id, "email": email}
                 )
                 self.logger.info("✅ Entity %s saved to people collection", entity_id)
-                return True
+                return {"_key": entity_id, "email": email}
             else:
                 self.logger.info(
                     "⏩ Entity %s already exists in people collection", entity_id
                 )
-                return False
+                return exists[0]
         except Exception as e:
             self.logger.error("❌ Error saving entity to people collection: %s", str(e))
-            return False
+            return None
 
     async def get_all_pageTokens(self) -> List[Dict]:
         """Get all page tokens from the pageTokens collection.

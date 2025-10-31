@@ -186,6 +186,7 @@ record_schema = {
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
+            "previewRenderable": {"type": ["boolean", "null"], "default": True},
         },
         "required": [
             "recordName",
@@ -460,8 +461,9 @@ agent_schema = {
                 "items": {"type": "object", "properties": {
                     "provider": {"type": "string"},
                     "modelName": {"type": "string"},
+                    "isReasoning": {"type": "boolean", "default": False},
                 },
-                "required": ["provider", "modelName"],
+                "required": ["provider", "modelName", "isReasoning"],
                 "additionalProperties": True,
                 },
                 "default": [],

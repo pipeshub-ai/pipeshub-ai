@@ -26,7 +26,7 @@ class MSGraphClientFactory(ClientFactory):
         """
         self.service_name = service_name
 
-    async def create_client(self, config_service, logger) -> MSGraphClient:
+    async def create_client(self, config_service, logger, state=None) -> MSGraphClient:
         """Create Microsoft Graph client instance"""
         from app.sources.client.microsoft.microsoft import GraphMode
 

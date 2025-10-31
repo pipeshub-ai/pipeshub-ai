@@ -9,8 +9,9 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 from app.config.key_value_store import KeyValueStore
-from app.connectors.core.base.token_service.oauth_service import OAuthConfig, OAuthToken
+from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.utils.oauth_config import get_oauth_config
 
 
 class TokenRefreshService:
@@ -67,6 +68,7 @@ class TokenRefreshService:
 
     async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
+
         try:
             filtered_app_name = connector_name.replace(" ", "").lower()
             config_key = f"/services/connectors/{filtered_app_name}/config"
@@ -83,14 +85,7 @@ class TokenRefreshService:
 
 
             # Create OAuth config
-            oauth_config = OAuthConfig(
-                client_id=auth_config['clientId'],
-                client_secret=auth_config['clientSecret'],
-                redirect_uri=auth_config.get('redirectUri', ''),
-                authorize_url=auth_config.get('authorizeUrl', ''),
-                token_url=auth_config.get('tokenUrl', ''),
-                scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
-            )
+            oauth_config = get_oauth_config(connector_name, auth_config)
 
             # Create OAuth provider
             from app.connectors.core.base.token_service.oauth_service import (
@@ -148,6 +143,8 @@ class TokenRefreshService:
 
     async def schedule_token_refresh(self, connector_name: str, token: OAuthToken) -> None:
         """Schedule token refresh for a specific connector"""
+
+        self.logger.info("Scheduling token refresh for connector %s", connector_name)
         if not token.expires_in:
             return
 
@@ -165,6 +162,8 @@ class TokenRefreshService:
             self._refresh_tasks[connector_name] = asyncio.create_task(
                 self._delayed_refresh(connector_name, delay)
             )
+
+        self.logger.info("Scheduled token refresh for connector %s", connector_name)
 
     async def _delayed_refresh(self, connector_name: str, delay: float) -> None:
         """Delayed token refresh"""

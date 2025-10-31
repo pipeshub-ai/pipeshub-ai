@@ -46,8 +46,11 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
+
     DROPBOX = "DROPBOX"
     ZAMMAD = "ZAMMAD"
+    WEB = "WEB"
+    BOOKSTACK = "BOOKSTACK"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -56,6 +59,9 @@ class AppGroups(Enum):
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
     ZAMMAD = "Zammad"
+    WEB = "Web"
+    BOOKSTACK = "BookStack"
+
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
@@ -78,6 +84,7 @@ class CollectionNames(Enum):
     RECORD_RELATIONS = "recordRelations"
     RECORD_GROUPS = "recordGroups"
     SYNC_POINTS = "syncPoints"
+    INHERIT_PERMISSIONS = "inheritPermissions"
 
     # Knowledge base
     IS_OF_TYPE = "isOfType"
@@ -207,9 +214,9 @@ class MimeTypes(Enum):
     SVG = "image/svg+xml"
     HEIC = "image/heic"
     HEIF = "image/heif"
-
-
-
+    TEXT = "text/plain"
+    ZIP = "application/zip"
+    GIF = "image/gif"
 
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"

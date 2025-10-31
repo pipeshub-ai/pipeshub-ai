@@ -119,7 +119,7 @@ class GoogleGmailDataSource:
         if id is not None:
             kwargs['id'] = id
 
-        request = self.client.users_drafts().delete(**kwargs) # type: ignore
+        request = self.client.users().drafts().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def users_drafts_create(
@@ -144,9 +144,9 @@ class GoogleGmailDataSource:
         # Handle request body if needed
         if 'body' in kwargs:
             body = kwargs.pop('body')
-            request = self.client.users_drafts().create(**kwargs, body=body) # type: ignore
+            request = self.client.users().drafts().create(**kwargs, body=body) # type: ignore
         else:
-            request = self.client.users_drafts().create(**kwargs) # type: ignore
+            request = self.client.users().drafts().create(**kwargs) # type: ignore
         return request.execute()
 
     async def users_drafts_get(
@@ -176,7 +176,7 @@ class GoogleGmailDataSource:
         if format is not None:
             kwargs['format'] = format
 
-        request = self.client.users_drafts().get(**kwargs) # type: ignore
+        request = self.client.users().drafts().get(**kwargs) # type: ignore
         return request.execute()
 
     async def users_drafts_list(
@@ -214,7 +214,7 @@ class GoogleGmailDataSource:
         if includeSpamTrash is not None:
             kwargs['includeSpamTrash'] = includeSpamTrash
 
-        request = self.client.users_drafts().list(**kwargs) # type: ignore
+        request = self.client.users().drafts().list(**kwargs) # type: ignore
         return request.execute()
 
     async def users_drafts_send(
@@ -239,9 +239,9 @@ class GoogleGmailDataSource:
         # Handle request body if needed
         if 'body' in kwargs:
             body = kwargs.pop('body')
-            request = self.client.users_drafts().send(**kwargs, body=body) # type: ignore
+            request = self.client.users().drafts().send(**kwargs, body=body) # type: ignore
         else:
-            request = self.client.users_drafts().send(**kwargs) # type: ignore
+            request = self.client.users().drafts().send(**kwargs) # type: ignore
         return request.execute()
 
     async def users_drafts_update(
@@ -270,9 +270,9 @@ class GoogleGmailDataSource:
         # Handle request body if needed
         if 'body' in kwargs:
             body = kwargs.pop('body')
-            request = self.client.users_drafts().update(**kwargs, body=body) # type: ignore
+            request = self.client.users().drafts().update(**kwargs, body=body) # type: ignore
         else:
-            request = self.client.users_drafts().update(**kwargs) # type: ignore
+            request = self.client.users().drafts().update(**kwargs) # type: ignore
         return request.execute()
 
     async def users_history_list(

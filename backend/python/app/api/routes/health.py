@@ -5,6 +5,7 @@ from typing import Any, Dict, Tuple
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
+from langchain_core.messages import HumanMessage  #type: ignore
 
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.utils.aimodels import (
@@ -18,6 +19,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 router = APIRouter()
 
 SPARSE_IDF = False
+TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 
 @router.post("/llm-health-check")
@@ -320,15 +322,38 @@ async def perform_llm_health_check(
             model_name=model_name
         )
 
-        # Test with a simple prompt
-        test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
+        # Check if multimodal is enabled
+        is_multimodal = llm_config.get("isMultimodal", False) or llm_config.get("configuration", {}).get("isMultimodal", False)
 
         # Set timeout for the test
         try:
-            test_response = await asyncio.wait_for(
-                asyncio.to_thread(llm_model.invoke, test_prompt),
-                timeout=120.0  # 120 second timeout
-            )
+            if is_multimodal:
+                # Test with multimodal input (text + small image)
+                logger.info("Multimodal model detected - testing with text and small image")
+                test_image_url = TEST_IMAGE
+
+                # Create multimodal message content
+                multimodal_content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": test_image_url
+                        }
+                    }
+                ]
+
+                test_message = HumanMessage(content=multimodal_content)
+                test_response = await asyncio.wait_for(
+                    asyncio.to_thread(llm_model.invoke, [test_message]),
+                    timeout=120.0  # 120 second timeout
+                )
+            else:
+                # Test with a simple text prompt
+                test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
+                test_response = await asyncio.wait_for(
+                    asyncio.to_thread(llm_model.invoke, test_prompt),
+                    timeout=120.0  # 120 second timeout
+                )
 
             return JSONResponse(
                 status_code=200,
@@ -386,6 +411,7 @@ async def perform_llm_health_check(
         )
 
 async def perform_embedding_health_check(
+    request: Request,
     embedding_config: dict,
     logger: Logger,
 ) -> Dict[str, Any]:
@@ -450,14 +476,57 @@ async def perform_embedding_health_check(
             embedding_dimension = len(test_embeddings[0]) if test_embeddings else 0
             all(len(emb) == embedding_dimension for emb in test_embeddings)
 
+            # Additional policy: If existing collection has points and vector size differs, reject
+            try:
+                retrieval_service = await request.app.container.retrieval_service()
+                collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
+
+                if collection_info:
+                    dense_vector = collection_info.config.params.vectors.get("dense")
+                    qdrant_vector_size = getattr(dense_vector, "size", None) if dense_vector else None
+
+                    if qdrant_vector_size is None:
+                        raise Exception("Qdrant vector size not found")
+
+                    points_count = getattr(collection_info, "points_count", 0)
+
+                    if points_count>0 and qdrant_vector_size != embedding_dimension:
+                        return JSONResponse(
+                            status_code=400,
+                            content={
+                                "status": "error",
+                                "message": "Embedding model dimension mismatch with existing non-empty collection",
+                                "details": {
+                                    "existing_vector_size": qdrant_vector_size,
+                                    "new_embedding_size": embedding_dimension,
+                                    "points_count": points_count,
+                                },
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                            },
+                        )
+            except grpc._channel._InactiveRpcError as e:
+                if e.code() == grpc.StatusCode.NOT_FOUND:
+                    logger.info("Collection not found - acceptable for health check")
+                else:
+                    raise
+            except Exception as e:
+                logger.error(f"Collection lookup failed: {str(e)}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": "Something went wrong! Please try again.",
+                    },
+                )
+
             return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
 
         except asyncio.TimeoutError:
             logger.error(f"Embedding health check timed out for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
@@ -516,10 +585,9 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
         logger.info(f"Health check endpoint called for {model_type}")
         logger.info(f"Request body: {model_config}")
 
-
         if model_type == "embedding":
             logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
-            return await perform_embedding_health_check(model_config, logger)
+            return await perform_embedding_health_check(request, model_config, logger)
 
         elif model_type == "llm":
             logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")

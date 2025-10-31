@@ -1,6 +1,7 @@
 services:
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    container_name: pipeshub-ai
     restart: always
     ports:
       - "8091:8091"
@@ -67,15 +68,15 @@ services:
       qdrant:
         condition: service_healthy
       kafka-1:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       etcd:
-        condition: service_started
+        condition: service_healthy
       arango:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
@@ -85,6 +86,7 @@ services:
 
   mongodb:
     image: mongo:8.0.6
+    container_name: mongodb
     restart: always
     ports:
       - "27017:27017"
@@ -111,9 +113,15 @@ services:
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   arango:
     image: arangodb:3.12.4
+    container_name: arango
     restart: always
     ports:
       - "8529:8529"
@@ -122,13 +130,14 @@ services:
     volumes:
       - arango_data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version"]
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.17
+    container_name: etcd
     restart: always
     ports:
       - "2379:2379"
@@ -138,15 +147,21 @@ services:
       --name etcd-node
       --data-dir /etcd-data
       --listen-client-urls http://0.0.0.0:2379
-      --advertise-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd:2379
       --listen-peer-urls http://0.0.0.0:2380
-      --initial-advertise-peer-urls http://0.0.0.0:2380
-      --initial-cluster etcd-node=http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://etcd:2380
+      --initial-cluster etcd-node=http://etcd:2380
     volumes:
       - etcd_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
+    container_name: zookeeper
     restart: always
     ports:
       - "2181:2181"
@@ -156,6 +171,7 @@ services:
 
   kafka-1:
     image: confluentinc/cp-kafka:7.9.0
+    container_name: kafka-1
     restart: always
     depends_on:
       - zookeeper
@@ -176,9 +192,17 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   qdrant:
     image: qdrant/qdrant:v1.15
+    container_name: qdrant
+    restart: always
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -190,7 +214,6 @@ services:
       nofile:
         soft: 50000
         hard: 50000
-    restart: always
     healthcheck:
       test:
         - CMD-SHELL

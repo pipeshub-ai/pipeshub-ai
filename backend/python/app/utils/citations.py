@@ -290,7 +290,8 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
     and create corresponding citation chunks with correct mapping
     """
     # Extract all citation numbers from the answer text
-    citation_pattern = r'\[(\d+)\]'
+    # Match both regular square brackets [1] and Chinese brackets 【1】
+    citation_pattern = r'[\[【](\d+)[\]】]'
     matches = re.findall(citation_pattern, answer_text)
 
     if not matches:
@@ -325,7 +326,7 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
                 "citationType": "vectordb|document",
             })
 
-    # Replace citation numbers in answer text
+    # Replace citation numbers in answer text - convert both bracket types to regular brackets
     normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "", answer_text)
 
     return normalized_answer, new_citations

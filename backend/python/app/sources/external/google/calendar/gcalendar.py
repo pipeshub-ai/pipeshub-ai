@@ -1226,10 +1226,13 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().watch(**kwargs) # type: ignore
         return request.execute()
 
-    async def freebusy_query(self) -> Dict[str, Any]:
+    async def freebusy_query(self, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Google Calendar API: Returns free/busy information for a set of calendars.
 
         HTTP POST freeBusy
+
+        Args:
+            body (dict, optional): Request body containing timeMin, timeMax, and items
 
         Returns:
             Dict[str, Any]: API response
@@ -1238,8 +1241,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         # No parameters for this method
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if body is not None:
             request = self.client.freebusy().query(**kwargs, body=body) # type: ignore
         else:
             request = self.client.freebusy().query(**kwargs) # type: ignore

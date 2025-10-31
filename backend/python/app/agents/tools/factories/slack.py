@@ -12,7 +12,7 @@ from app.sources.client.slack.slack import SlackClient
 class SlackClientFactory(ClientFactory):
     """Factory for creating Slack clients"""
 
-    async def create_client(self, config_service, logger) -> SlackClient:
+    async def create_client(self, config_service, logger, state=None) -> SlackClient:
         """Create Slack client instance"""
 
         return await SlackClient.build_from_services(

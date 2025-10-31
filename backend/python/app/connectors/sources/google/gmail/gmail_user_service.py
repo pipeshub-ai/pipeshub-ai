@@ -1,10 +1,12 @@
 # pylint: disable=E1101, W0718
 
+import asyncio
 import base64
 import os
 import re
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, TypeVar
 from uuid import uuid4
 
 import google.oauth2.credentials
@@ -29,6 +31,8 @@ from app.connectors.sources.google.gmail.gmail_drive_interface import (
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+T = TypeVar('T')
 
 
 class GmailUserService:
@@ -69,6 +73,8 @@ class GmailUserService:
             self.is_delegated = (
                 credentials is not None
             )  # True if created through admin service
+            # Protect shared google service across threads
+            self._service_lock = threading.Lock()
         except Exception as e:
             raise GoogleMailError(
                 "Failed to initialize Gmail service: " + str(e),
@@ -1003,3 +1009,33 @@ class GmailUserService:
             raise MailOperationError(
                 "Failed to fetch attachment ID", details={"error": str(e), "combined_id": combined_id}
             )
+
+    # Async wrapper methods for blocking operations
+    async def list_messages_async(self, query: str = "newer_than:30d") -> List[Dict]:
+        """Async wrapper for list_messages to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_messages, query))
+
+    async def list_threads_async(self, query: str = "newer_than:30d") -> List[Dict]:
+        """Async wrapper for list_threads to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_threads, query))
+
+    async def get_message_async(self, message_id: str) -> Dict:
+        """Async wrapper for get_message to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.get_message, message_id))
+
+    async def list_attachments_async(self, message, org_id: str, user, account_type: str) -> List[Dict]:
+        """Async wrapper for list_attachments to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_attachments, message, org_id, user, account_type))
+
+    async def fetch_gmail_changes_async(self, user_email: str, history_id: str) -> Dict:
+        """Async wrapper for fetch_gmail_changes to run in separate thread"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.fetch_gmail_changes, user_email, history_id))
+
+    def _run_with_service_lock(self, func: Callable[..., T], *args, **kwargs) -> T:
+        with self._service_lock:
+            return asyncio.run(func(*args, **kwargs))
