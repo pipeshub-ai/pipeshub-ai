@@ -32,8 +32,8 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
-from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.web.connector import WebConnector
+from app.connectors.sources.zammad.connector import ZammadConnector
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.featureflag import FeatureFlagService
 

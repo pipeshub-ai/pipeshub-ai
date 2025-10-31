@@ -327,7 +327,7 @@ class WebpageRecord(Record):
                 domain = parsed_url.netloc or None
             except Exception:
                 domain = None
-        
+
         # Return only fields allowed by webpage_record_schema
         return {
             "_key": self.id,
