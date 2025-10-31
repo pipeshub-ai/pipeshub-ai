@@ -461,8 +461,9 @@ agent_schema = {
                 "items": {"type": "object", "properties": {
                     "provider": {"type": "string"},
                     "modelName": {"type": "string"},
+                    "isReasoning": {"type": "boolean", "default": False},
                 },
-                "required": ["provider", "modelName"],
+                "required": ["provider", "modelName", "isReasoning"],
                 "additionalProperties": True,
                 },
                 "default": [],

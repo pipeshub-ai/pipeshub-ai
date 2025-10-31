@@ -60,6 +60,47 @@ async def get_services(request: Request) -> Dict[str, Any]:
         "llm": llm,
     }
 
+async def get_user_org_info(request: Request, user_info: Dict[str, Any], arango_service: BaseArangoService, logger: Logger) -> Dict[str, Any]:
+    """Get user and org info from request"""
+    org_info = None
+    try:
+        # Get user document
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        if not user or not isinstance(user, dict):
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Extract user email and add to user_info
+        user_email = str(user.get("email", "")).strip()
+        if not user_email:
+            raise HTTPException(status_code=400, detail="User email missing")
+
+        # Add user_email and _key to user_info
+        user_info["userEmail"] = user_email
+        user_info["_key"] = user.get("_key")
+
+        # Get organization document
+        org_doc = await arango_service.get_document(user_info.get("orgId"), CollectionNames.ORGS.value)
+        if not org_doc or not isinstance(org_doc, dict):
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Determine account type
+        raw_account_type = str(org_doc.get("accountType", "")).lower()
+        account_type = "enterprise" if raw_account_type == "enterprise" else ("individual" if raw_account_type == "individual" else "")
+        if account_type == "":
+            raise HTTPException(status_code=400, detail="Invalid account type")
+
+        org_info = {
+            "orgId": user_info.get("orgId"),
+            "accountType": account_type
+        }
+        return org_info
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching user/org info: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch user/org information")
+
 
 @router.post("/agent-chat")
 async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
@@ -80,6 +121,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             "sendUserInfo": request.query_params.get("sendUserInfo", True),
         }
 
+        # Fetch user and org info for impersonation
+        org_info = await get_user_org_info(request, user_info, arango_service, logger)
+
         # Build initial state
         initial_state = build_initial_state(
             query_info.model_dump(),
@@ -89,11 +133,15 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             retrieval_service,
             arango_service,
             reranker_service,
+            org_info,
         )
 
         # Execute the graph with async
         logger.info(f"Starting LangGraph execution for query: {query_info.query}")
-        final_state = await agent_graph.ainvoke(initial_state)  # Using async invoke
+
+        config = {"recursion_limit": 50}
+
+        final_state = await agent_graph.ainvoke(initial_state, config=config)  # Using async invoke
 
         # Check for errors
         if final_state.get("error"):
@@ -127,6 +175,7 @@ async def stream_response(
     retrieval_service: RetrievalService,
     arango_service: BaseArangoService,
     reranker_service: RerankerService,
+    org_info: Dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     # Build initial state
     initial_state = build_initial_state(
@@ -137,12 +186,16 @@ async def stream_response(
         retrieval_service,
         arango_service,
         reranker_service,
+        org_info,
     )
 
     # Execute the graph with async
     logger.info(f"Query info: {query_info}")
     logger.info(f"Starting LangGraph execution for query: {query_info.get('query')}")
-    async for chunk in agent_graph.astream(initial_state, stream_mode="custom"):
+
+    config = {"recursion_limit": 50}  # Increased from default 25 to 50
+
+    async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
         if isinstance(chunk, dict) and "event" in chunk:
             # Convert dict to JSON string for streaming
             yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
@@ -167,10 +220,13 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
             "sendUserInfo": request.query_params.get("sendUserInfo", True),
         }
 
+        # Fetch user and org info for impersonation
+        org_info = await get_user_org_info(request, user_info, arango_service, logger)
+
         # Stream the response
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service
+                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info
             ),
             media_type="text/event-stream",
         )
@@ -491,6 +547,21 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.info(f"User: {user}")
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for creating agent")
+
+        # Validate that at least one reasoning model is present
+        models = body_dict.get("models", [])
+        if models and isinstance(models, list) and len(models) > 0:
+            has_reasoning_model = any(
+                model.get("isReasoning", False) is True
+                for model in models
+                if isinstance(model, dict)
+            )
+            if not has_reasoning_model:
+                raise HTTPException(
+                    status_code=400,
+                    detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration."
+                )
+
         agent = {
             "_key": str(uuid.uuid4()),
             "name": body_dict.get("name"),
@@ -534,6 +605,9 @@ async def create_agent(request: Request) -> JSONResponse:
                 "agent": agent,
             },
         )
+    except HTTPException as he:
+        # Re-raise HTTP exceptions with their original status codes
+        raise he
     except Exception as e:
         logger.error(f"Error in create_agent: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
@@ -890,8 +964,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "sendUserInfo": request.state.user.get("sendUserInfo", True),
         }
 
+        # Fetch user and org info for impersonation
+        org_info = await get_user_org_info(request, user_info, arango_service, logger)
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for chatting with agent")
 
@@ -944,12 +1019,16 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             logger,
             retrieval_service,
             arango_service,
-            reranker_service
+            reranker_service,
+            org_info,
         )
 
         # Execute the graph with async
         logger.info(f"Starting LangGraph execution for query: {query_info.query}")
-        final_state = await agent_graph.ainvoke(initial_state)  # Using async invoke
+
+        config = {"recursion_limit": 50}  # Increased from default 25 to 50
+
+        final_state = await agent_graph.ainvoke(initial_state, config=config)  # Using async invoke
 
         # Check for errors
         if final_state.get("error"):
@@ -990,9 +1069,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "sendUserInfo": request.state.user.get("sendUserInfo", True),
         }
 
+        # Fetch user and org info for impersonation
+        org_info = await get_user_org_info(request, user_info, arango_service, logger)
+
         # Get the agent
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for chatting with agent")
 
@@ -1057,7 +1138,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service
+                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info
             ),
             media_type="text/event-stream",
         )

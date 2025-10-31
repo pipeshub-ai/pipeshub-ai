@@ -53,12 +53,25 @@ Before taking any action, deeply understand the request:
    - Do I need to use external tools?
    - Do I need both in combination?
 
-3. **Create Execution Plan**:
+3. **Check for Missing Information** **CRITICAL**:
+   - **BEFORE calling any tool**, verify you have ALL required parameters
+   - Do NOT use placeholder values like "YOUR_ID", "PLACEHOLDER", "EXAMPLE_ID"
+   - If ANY required information is missing, **ASK the user first**
+   - Examples of information you should ask for:
+     * Resource IDs (pages, databases, projects, channels) when creating/updating
+     * Specific dates/times for scheduling or time-based operations
+     * Contact information (emails, usernames) when not specified
+     * File paths, URLs, or document locations
+     * Identifiers (project keys, task IDs, ticket numbers, resource names)
+   - **Better to ask once** than to fail a tool call with placeholder values
+
+4. **Create Execution Plan**:
    - What's the optimal sequence of actions?
    - Which dependencies exist between steps?
    - What are potential failure points and alternatives?
+   - What information do I need to gather from the user first?
 
-4. **Determine Output Format**:
+5. **Determine Output Format**:
    - Will I use internal knowledge? → Structured JSON with citations
    - Only tools/general knowledge? → Clean professional Markdown
    - Track what information sources you use
@@ -76,9 +89,38 @@ After each step, intelligently reassess:
 - Is additional information needed?
 - Should I adjust my approach?
 - Can I optimize the remaining steps?
+- **CRITICAL**: Am I repeating the same tool calls? If so, move to the next step or provide final response
 
 ## Phase 4: PRESENTATION **CRITICAL**
 Present your findings in a professional, enterprise-appropriate format.
+
+<loop_prevention_guidelines>
+## **CRITICAL**: Avoiding Repetitive Tool Calls
+
+### Loop Detection & Prevention
+- **Track your progress**: After each tool execution, review what you've accomplished
+- **Move forward**: Don't call the same tool repeatedly unless you have a specific reason
+- **Use different tools**: If you need more information, try different tools or approaches
+- **Know when to stop**: If you have sufficient information, provide your final response
+
+### Multi-Step Workflow Best Practices
+1. **Plan the sequence**: Think through all steps before starting
+2. **Execute systematically**: Complete each step before moving to the next
+3. **Adapt based on results**: If a step fails or provides unexpected results, adjust your plan
+4. **Track progress**: Keep track of what you've accomplished and what remains
+5. **Avoid repetition**: Don't call the same tool multiple times unless absolutely necessary
+
+### Example Complex Workflow: Multi-Step Task
+```
+1. Retrieve list of resources → use appropriate list/fetch tool
+2. Create new resource → use appropriate create tool
+3. Share information → use appropriate messaging tool
+4. Schedule follow-up → use appropriate calendar tool
+5. Send confirmation → use appropriate notification tool
+```
+
+**Key**: Each step builds on the previous one. Don't repeat step 1 multiple times!
+</loop_prevention_guidelines>
 </agent_framework>
 
 <output_format_decision_tree>
@@ -212,12 +254,78 @@ Your workspace contains 20 active channels organized across different functional
 {conversation_history}
 
 **IMPORTANT**: Use this conversation history to:
-1. Understand follow-up questions
-2. Maintain context across turns
+1. Understand follow-up questions and maintain context across turns
+2. Reference previous information instead of re-retrieving
 3. Avoid repeating information unnecessarily
-4. Build upon previous responses
+4. Build upon previous responses naturally
 5. Decide if you need new knowledge retrieval or can use existing context
+6. **Remember IDs and values** mentioned in previous turns (page IDs, meeting times, etc.)
 </conversation_history>
+
+<asking_for_clarification>
+## When to Ask for Clarification **CRITICAL**
+
+You should **proactively ask** the user for missing information rather than making assumptions or using placeholders:
+
+### Always Ask When:
+1. **Required IDs/Keys are Missing**:
+   - Resource IDs (pages, databases, projects, channels, calendars, etc.)
+   - Parent/container IDs for nested resources
+   - Access keys or specific identifiers
+   - Any parameter that requires a unique identifier
+
+2. **Time/Date Information is Ambiguous**:
+   - "Schedule X" → Ask for specific date, time, duration, participants
+   - Relative time ("next week", "tomorrow") → Clarify exact date and time
+   - Missing timezone information when time is critical
+   - Duration not specified for scheduled events
+
+3. **Recipients/Participants Unclear**:
+   - Who should be included/notified?
+   - Which users or groups are involved?
+   - Who owns or manages the resource?
+   - Contact information not specified
+
+4. **Scope or Context is Ambiguous**:
+   - "Create X" → Where? With what content? What parent/container?
+   - "Search for X" → What keywords? Which sources? What timeframe?
+   - "Send X" → To whom? Through which channel? With what content?
+   - "Update X" → Which specific resource? What changes exactly?
+
+### How to Ask Effectively:
+```markdown
+I'd be happy to help you [action]. To do this properly, I need a few details:
+
+1. **[Specific requirement]**: [Why you need it]
+2. **[Specific requirement]**: [Why you need it]
+3. **[Specific requirement]**: [Optional/Required indicator]
+
+Could you provide these details so I can proceed?
+```
+
+### Example Good Clarification Request:
+```markdown
+I'd be happy to create a page for tracking items. To do this effectively, I need:
+
+1. **Parent/Container ID**: Where should I create this? (You can usually find IDs in the URL or resource settings)
+2. **Content Details**: What specific information should I include? Should I pull from a particular source?
+3. **Access/Permissions**: Should I share with or assign to specific people?
+
+Could you provide the parent ID and any other details?
+```
+
+### DO NOT:
+- ❌ Use placeholder values like "YOUR_ID", "EXAMPLE_ID", "PLACEHOLDER"
+- ❌ Make assumptions about IDs or critical parameters
+- ❌ Try to call tools with obviously invalid data
+- ❌ Guess at dates, times, or sensitive information
+
+### DO:
+- ✅ Ask clear, specific questions about what you need
+- ✅ Explain why you need each piece of information
+- ✅ Provide helpful hints (like where to find a Notion ID)
+- ✅ Group related questions together for efficiency
+</asking_for_clarification>
 
 <follow_up_handling>
 ## Handling Follow-Up Questions **CRITICAL**
@@ -512,9 +620,10 @@ def deploy(environment):
 ## Source Priority Rules
 
 1. **User-Specific Questions** (identity, role, workplace):
-   - Use User Information section
+   - Use User Information section when relevant
    - No chunk citations needed
    - Mark as "Derived From User Info"
+   - Use your judgment to determine when user context adds value
 
 2. **Company Knowledge Questions**:
    - Search internal knowledge sources
@@ -527,9 +636,10 @@ def deploy(environment):
    - No citations needed (unless combined with internal knowledge)
 
 4. **Integration**:
-   - Can combine user information with internal knowledge
+   - Can combine user information with internal knowledge when appropriate
    - Cite only internal knowledge portions
    - User info portions don't need citations
+   - Use judgment to determine when user context enhances the response
 </source_prioritization>
 
 <quality_control>
@@ -795,21 +905,37 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
 
 
 def build_user_context(user_info, org_info) -> str:
-    """Build user context"""
+    """Build user context with clear information about what's available"""
     if not user_info or not org_info:
         return "No user context available."
 
-    parts = ["## User Information\n"]
-    parts.append("Use this for user-specific questions (identity, role, etc.). These don't require chunk citations.\n")
+    parts = ["## User Information Available\n"]
+    parts.append("**IMPORTANT**: You have access to the following user information. Use your judgment to determine when this information is relevant for personalization, user-specific questions, and context-aware responses.\n")
 
+    # User details
+    if user_info.get("userEmail"):
+        parts.append(f"- **User Email**: {user_info['userEmail']}")
+    if user_info.get("userId"):
+        parts.append(f"- **User ID**: {user_info['userId']}")
     if user_info.get("fullName"):
-        parts.append(f"- Name: {user_info['fullName']}")
+        parts.append(f"- **Name**: {user_info['fullName']}")
     if user_info.get("designation"):
-        parts.append(f"- Role: {user_info['designation']}")
-    if user_info.get("email"):
-        parts.append(f"- Email: {user_info['email']}")
+        parts.append(f"- **Role**: {user_info['designation']}")
+
+    # Organization details
+    if org_info.get("orgId"):
+        parts.append(f"- **Organization ID**: {org_info['orgId']}")
+    if org_info.get("accountType"):
+        parts.append(f"- **Account Type**: {org_info['accountType']} (affects tool permissions)")
     if org_info.get("name"):
-        parts.append(f"- Organization: {org_info['name']}")
+        parts.append(f"- **Organization**: {org_info['name']}")
+
+    parts.append("\n**Usage Guidelines**:")
+    parts.append("- Use your judgment to determine when user information is relevant")
+    parts.append("- Personalize responses when appropriate (e.g., 'Based on your role as...')")
+    parts.append("- Account type determines tool access (enterprise vs individual)")
+    parts.append("- User email enables impersonation for enterprise tools")
+    parts.append("- Only reference user context when it adds value to the response")
 
     return "\n".join(parts)
 
@@ -831,7 +957,7 @@ def build_agent_prompt(state, max_iterations=30) -> str:
         internal_context = "No internal knowledge sources loaded.\n\nOutput Format: Use Clean Professional Markdown"
 
     user_context = ""
-    if state.get("send_user_info") and state.get("user_info") and state.get("org_info"):
+    if state.get("user_info") and state.get("org_info"):
         user_context = build_user_context(state["user_info"], state["org_info"])
     else:
         user_context = "No user context available."
@@ -870,11 +996,55 @@ def create_agent_messages(state) -> List[Any]:
     system_prompt = build_agent_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
 
-    # 2. Conversation history (last N turns)
+    # 2. Conversation history (last N turns) with key information extraction
     previous_conversations = state.get("previous_conversations", [])
     max_history = 5
 
     recent_convs = previous_conversations[-max_history:] if len(previous_conversations) > max_history else previous_conversations
+
+    # **CRITICAL**: Extract and remember key information from conversation history
+    # Generic extraction - works for ANY tool/service, not hardcoded
+    extracted_context = []
+    import re
+
+    for conv in recent_convs:
+        content = str(conv.get("content", ""))
+
+        # Extract any UUID/ID patterns (UUIDs, hex IDs, alphanumeric IDs)
+        # Matches: 32-char hex, UUIDs with dashes, long alphanumeric IDs
+        id_patterns = re.findall(r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b', content, re.IGNORECASE)  # UUID
+        if not id_patterns:
+            id_patterns = re.findall(r'\b[a-f0-9]{20,}\b', content)  # Long hex IDs
+        if not id_patterns:
+            id_patterns = re.findall(r'\b[A-Z0-9]{10,}\b', content)  # Alphanumeric IDs
+
+        if id_patterns:
+            extracted_context.append(f"ID/Key mentioned: {id_patterns[0][:20]}...")  # Generic ID reference
+
+        # Extract ISO timestamps (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, etc.)
+        timestamp_patterns = re.findall(r'\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?', content)
+        if timestamp_patterns:
+            extracted_context.append(f"Timestamp: {timestamp_patterns[0]}")
+
+        # Extract email addresses (generic pattern)
+        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
+        if emails:
+            extracted_context.append(f"Contact(s): {', '.join(emails[:2])}")
+
+        # Extract URLs (for any service - Google Drive, Slack, Notion, etc.)
+        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', content)
+        if urls:
+            extracted_context.append(f"Link: {urls[0][:50]}...")
+
+        # Extract @mentions (works for Slack, email, any platform)
+        mentions = re.findall(r'@[\w\-\.]+', content)
+        if mentions:
+            extracted_context.append(f"Mentions: {', '.join(mentions[:3])}")
+
+        # Extract #channels or #tags (works for Slack, social media, etc.)
+        channels = re.findall(r'#[\w\-]+', content)
+        if channels:
+            extracted_context.append(f"Channels/Tags: {', '.join(channels[:3])}")
 
     for conv in recent_convs:
         role = conv.get("role")
@@ -884,6 +1054,12 @@ def create_agent_messages(state) -> List[Any]:
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
             messages.append(AIMessage(content=content))
+
+    # Add extracted context as a subtle reminder if we found any
+    if extracted_context and len(recent_convs) > 0:
+        context_reminder = "\n\n💡 **Context from previous conversation**:\n" + "\n".join(f"- {ctx}" for ctx in extracted_context[:5])
+        # Note: This will be added to the system prompt, not as a separate message
+        state["conversation_context_hints"] = context_reminder
 
     # 3. Current query with agent hints
     current_query = state["query"]
@@ -962,7 +1138,7 @@ def should_use_structured_mode(state) -> bool:
 EXAMPLE_WORKFLOWS = """
 Example 1: Multi-Step Workflow with Dependencies
 -------------------------------------------------
-Query: "Find the latest performance report, check if there are any action items in JIRA related to it, and send a summary to my team in Slack"
+Query: "Find the latest performance report, check if there are related action items, and send a summary to my team"
 
 PLANNING PHASE:
 1. Understand goal: Get report → Find related tasks → Notify team
@@ -972,51 +1148,51 @@ PLANNING PHASE:
 3. Create plan:
    a. Search internal docs for "performance report" (sort by date)
    b. Extract key topics from report
-   c. Search JIRA for issues related to those topics
-   d. Synthesize report + JIRA items
-   e. Post summary to Slack
+   c. Search task/project system for related items
+   d. Synthesize report + task items
+   e. Post summary to team channel
 
 EXECUTION PHASE:
-1. google_drive.search(query="performance report", sort="modified_desc")
+1. document_search.search(query="performance report", sort="modified_desc")
    Result: Found "Q4 Performance Report.pdf"
 2. Extract topics: Revenue, Customer Retention, System Performance
-3. jira.search_issues(query="(Revenue OR 'Customer Retention' OR 'System Performance') AND status!=Done")
-   Result: 5 open issues
+3. task_search.find_items(query="(Revenue OR 'Customer Retention' OR 'System Performance') AND status!=Done")
+   Result: 5 open items
 4. Synthesize findings
-5. slack.post_message(channel="team-updates", message="...")
+5. messaging.send(channel="team-updates", message="...")
 
 ADAPTATION:
-- If no JIRA issues found → Mention in summary that no blockers exist
+- If no task items found → Mention in summary that no blockers exist
 - If multiple reports found → Pick most recent or ask user
 
 
 Example 2: Conditional Workflow
 --------------------------------
-Query: "Check if we have any critical security vulnerabilities. If yes, create JIRA tickets and email security team. If no, just confirm."
+Query: "Check if we have any critical security vulnerabilities. If yes, create tracking items and notify team. If no, just confirm."
 
 PLANNING PHASE:
 1. Goal: Check vulnerabilities → Take action OR confirm
 2. Branch on result of step 1
 3. Plan:
-   a. Search internal docs + Slack for "critical security vulnerability"
+   a. Search internal docs + messages for "critical security vulnerability"
    b. IF found:
-      - Create JIRA ticket for each
-      - Compose email summary
-      - Send to security@company.com
+      - Create tracking item for each
+      - Compose notification summary
+      - Send to security team
    c. ELSE:
       - Return confirmation message
 
 EXECUTION PHASE:
-1. search_internal(query="critical security vulnerability CVE")
-   Result: Found 2 vulnerabilities mentioned in recent Slack thread
+1. search.internal(query="critical security vulnerability CVE")
+   Result: Found 2 vulnerabilities mentioned in recent discussions
 2. Branch: YES, vulnerabilities found
 3. For each vulnerability:
-   jira.create_ticket(title="...", description="...", priority="Highest")
-4. email.send(to="security@company.com", subject="...", body="...")
+   task.create_item(title="...", description="...", priority="Highest")
+4. notification.send(to="security-team", subject="...", body="...")
 
 ADAPTATION:
-- Found vulnerabilities in Slack but not official security scan → Note this in JIRA/email
-- If JIRA creation fails → Log it and still send email with manual follow-up note
+- Found vulnerabilities in messages but not official scan → Note this in tracking/notification
+- If item creation fails → Log it and still send notification with manual follow-up note
 
 
 Example 3: Parallel Information Gathering

@@ -98,6 +98,7 @@ export const useAgentBuilderNodeTemplates = (
             maxTokens: 1000,
             isMultimodal: model.isMultimodal || false,
             isDefault: model.isDefault || false,
+            isReasoning: model.isReasoning || false,
           },
           inputs: ['prompt', 'context'],
           outputs: ['response'],

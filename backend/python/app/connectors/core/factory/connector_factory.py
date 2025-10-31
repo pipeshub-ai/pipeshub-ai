@@ -9,7 +9,6 @@ from app.connectors.core.base.data_store.arango_data_store import ArangoDataStor
 from app.connectors.core.registry.connector import (
     AirtableConnector,
     AzureBlobConnector,
-    BookStackConnector,
     CalendarConnector,
     DocsConnector,
     FormsConnector,
@@ -28,6 +27,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
@@ -55,6 +55,7 @@ class ConnectorFactory:
         "dropbox": DropboxConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
+        "bookstack": BookStackConnector,
     }
 
 

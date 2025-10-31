@@ -235,9 +235,20 @@ class DropboxConnector(BaseConnector):
 
         credentials_config = config.get("credentials")
         access_token = credentials_config.get("access_token")
+        refresh_token = credentials_config.get("refresh_token")
         is_team = credentials_config.get("isTeam", True)
+
+        auth_config = config.get("auth")
+        app_key = auth_config.get("clientId")
+        app_secret = auth_config.get("clientSecret")
+
         try:
-            config = DropboxTokenConfig(token=access_token)
+            config = DropboxTokenConfig(
+                token=access_token,
+                refresh_token=refresh_token,
+                app_key=app_key,
+                app_secret=app_secret
+            )
             client = await DropboxClient.build_with_config(config, is_team=is_team)
             self.data_source = DropboxDataSource(client)
             self.logger.info("Dropbox client initialized successfully.")
@@ -609,16 +620,24 @@ class DropboxConnector(BaseConnector):
                 'viewer': PermissionType.READ,
             }
 
-            # Process user permissions
             if hasattr(members_result.data, 'users') and members_result.data.users:
                 for user_membership in members_result.data.users:
                     access_type_tag = user_membership.access_type._tag
                     permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
 
                     user_info = user_membership.user
+
+                    # Get email and check validity
+                    email = user_info.email if hasattr(user_info, 'email') else None
+
+                    # Skip users without email or with email ending in '#'
+                    if not email or email.endswith('#'):
+                        self.logger.debug(f"Skipping user {user_info.account_id} with invalid email: {email}")
+                        continue
+
                     permissions.append(Permission(
                         external_id=user_info.account_id,
-                        email=user_info.email if hasattr(user_info, 'email') else None,
+                        email=email,
                         type=permission_type,
                         entity_type=EntityType.USER
                     ))
@@ -1659,8 +1678,7 @@ class DropboxConnector(BaseConnector):
             user_permission = AppUser(
                 source_user_id=member.profile.team_member_id,
                 email=member.profile.email,
-                full_name=member.profile.display_name,
-                created_at_timestamp=get_epoch_timestamp_in_ms(),
+                full_name=member.profile.name.display_name,
                 app_name=self.connector_name,
             )
             member_permissions.append(user_permission)
@@ -2580,7 +2598,6 @@ class DropboxConnector(BaseConnector):
                 team_folder_id = record.external_record_group_id
 
             response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
-            # print("!!!!!!!!!!!!!!!!!!! response:", response)
             return response.data.link
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}")

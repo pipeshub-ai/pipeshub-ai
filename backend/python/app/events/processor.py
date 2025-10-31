@@ -1274,7 +1274,7 @@ class Processor:
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
-                    if base64_urls[i] is not None:
+                    if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
                     else:
                         self.logger.warning(f"⚠️ Failed to convert image URL to base64: {image['url']}")
@@ -1300,7 +1300,7 @@ class Processor:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
-                        if caption in caption_map:
+                        if caption in caption_map and caption_map[caption]:
                             if block.data is None:
                                 block.data = {}
                             if isinstance(block.data, dict):
@@ -1308,8 +1308,11 @@ class Processor:
                             else:
                                 # If data is not a dict, create a new dict with the uri
                                 block.data = {"uri": caption_map[caption]}
+                        else:
+                            self.logger.warning(f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available")
 
             block_containers.blocks = blocks
+
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id

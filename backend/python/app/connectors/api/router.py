@@ -70,6 +70,7 @@ from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -2269,7 +2270,6 @@ async def get_oauth_authorization_url(
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
             OAuthProvider,
         )
         if base_url and len(base_url) > 0:
@@ -2280,14 +2280,8 @@ async def get_oauth_authorization_url(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
+        oauth_config = get_oauth_config(app_name, auth_config)
+
 
         # Create OAuth provider and generate authorization URL
         oauth_provider = OAuthProvider(
@@ -2428,7 +2422,6 @@ async def handle_oauth_callback(
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
             OAuthProvider,
         )
         if base_url and len(base_url) > 0:
@@ -2439,14 +2432,7 @@ async def handle_oauth_callback(
             base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
+        oauth_config = get_oauth_config(app_name, auth_config)
 
         # Create OAuth provider and exchange code for token
         oauth_provider = OAuthProvider(
