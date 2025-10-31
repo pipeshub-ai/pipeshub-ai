@@ -1,9 +1,9 @@
 """Zammad Connector Implementation"""
-import re
 import base64
-from datetime import datetime, timedelta
+import re
+from datetime import datetime
 from logging import Logger
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse  # type: ignore
@@ -50,15 +50,13 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.zammad.zammad import (
-    ZammadClient,
-    ZammadTokenConfig,
-)
+from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.zammad.zammad import ZammadClient, ZammadTokenConfig
 from app.sources.external.zammad.zammad import ZammadDataSource, ZammadResponse
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.sources.client.http.http_request import HTTPRequest
 
 THRESHOLD_PAGINATION_LIMIT: int = 100
+HTTP_ERROR_STATUS_CODE: int = 400  # HTTP status codes >= 400 indicate errors
 
 # Zammad default role IDs
 ZAMMAD_ADMIN_ROLE_ID: int = 1
@@ -640,10 +638,10 @@ class ZammadConnector(BaseConnector):
             # Process records through data_entities_processor for storage + Kafka publishing
             # Only send NEW records to avoid re-indexing existing ones
             new_records_with_permissions = [
-                (record, perms) for record, perms in records_with_permissions 
+                (record, perms) for record, perms in records_with_permissions
                 if record.version == 0  # version 0 means it's a new record
             ]
-            
+
             if new_records_with_permissions:
                 self.logger.info("Indexing the following ticket records:")
                 for record, perms in new_records_with_permissions:
@@ -692,9 +690,9 @@ class ZammadConnector(BaseConnector):
                 )
 
         except Exception as e:
-            self.logger.error(f"Error streaming record: {e}")
+            self.logger.error(f"Error streaming record: {e}", exc_info=True)
             return StreamingResponse(
-                iter([f"Error: {str(e)}"]),
+                iter(["An error occurred while processing the record."]),
                 media_type=MimeTypes.PLAIN_TEXT.value
             )
 
@@ -702,7 +700,7 @@ class ZammadConnector(BaseConnector):
         """Stream ticket content with articles"""
         try:
             ticket_id: int = int(record.external_record_id)
-            
+
             # Fetch ticket details
             ticket_response: ZammadResponse = await self.zammad_datasource.get_ticket(ticket_id)
             if not ticket_response.success or not ticket_response.data:
@@ -730,9 +728,9 @@ class ZammadConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"Error streaming ticket: {e}")
+            self.logger.error(f"Error streaming ticket: {e}", exc_info=True)
             return StreamingResponse(
-                iter([f"Error: {str(e)}"]),
+                iter(["An error occurred while processing the ticket."]),
                 media_type=MimeTypes.PLAIN_TEXT.value
             )
 
@@ -767,7 +765,7 @@ class ZammadConnector(BaseConnector):
                     iter(["KB Answer data not found in response"]),
                     media_type=MimeTypes.HTML.value
                 )
-            
+
             answer: ZammadKBAnswer = ZammadKBAnswer(**answer_dict)
             self.logger.info(f"Fetched KB Answer: {answer}")
             # Generate content from translations
@@ -780,9 +778,9 @@ class ZammadConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"Error streaming KB answer: {e}")
+            self.logger.error(f"Error streaming KB answer: {e}", exc_info=True)
             return StreamingResponse(
-                iter([f"Error: {str(e)}"]),
+                iter(["An error occurred while processing the KB answer."]),
                 media_type=MimeTypes.HTML.value
             )
 
@@ -811,7 +809,7 @@ class ZammadConnector(BaseConnector):
 
     async def run_incremental_sync(self) -> None:
         """Implement incremental sync using updated_at timestamps and sync points"""
-        pass
+        raise NotImplementedError("Incremental sync is not yet implemented for the Zammad connector.")
 
     async def cleanup(self) -> None:
         """Cleanup resources"""
@@ -833,7 +831,7 @@ class ZammadConnector(BaseConnector):
             # Clear KB data from any previous runs
             self.kb_categories_data = []
             self.kb_answers_data = []
-            
+
             # 1. Fetch sub-organizations from Zammad
             self.logger.info("Fetching sub-organizations from Zammad")
             self.sub_orgs_data = await self.__fetch_sub_organizations()
@@ -1075,7 +1073,7 @@ class ZammadConnector(BaseConnector):
     async def __process_knowledge_base(self, org_id: str, app_key: str) -> None:
         """Process KB categories as RecordGroups and KB answers as WebpageRecords"""
         try:
-            self.logger.info(f"   PROCESSING KNOWLEDGE BASE")
+            self.logger.info("   PROCESSING KNOWLEDGE BASE")
             self.logger.info(f"   Categories to process: {len(self.kb_categories_data)}")
             self.logger.info(f"   Answers to process: {len(self.kb_answers_data)}")
             self.logger.info(f"   Org ID: {org_id}")
@@ -1129,7 +1127,7 @@ class ZammadConnector(BaseConnector):
                     source_created_at=created_at,
                     source_updated_at=updated_at
                 )
-                
+
                 self.logger.info(f"      Created RecordGroup: {category_name}")
 
                 # No specific permissions for categories (permissions are per-article)
@@ -1186,7 +1184,7 @@ class ZammadConnector(BaseConnector):
                     db_user = await tx_store_users.get_user_by_email(user.email)
                     if db_user:
                         user_id_map[user_external_id] = db_user.id
-            
+
             self.logger.info(f" Built user_id_map with {len(user_id_map)} users")
 
             records_with_permissions: List[Tuple[WebpageRecord, List[Permission]]] = []
@@ -1209,14 +1207,14 @@ class ZammadConnector(BaseConnector):
                     if not answer_title and answer.translations and len(answer.translations) > 0:
                         first_translation = answer.translations[0]
                         answer_title = first_translation.get('title', f"KB Answer {external_answer_id}")
-                    
+
                     self.logger.info(f"      Title: {answer_title}")
                     self.logger.info(f"      Category ID: {answer.category_id}")
 
                     # Get category ID
                     category_id: str = str(answer.category_id)
                     external_group_id: Optional[str] = category_id if category_id in kb_category_map else None
-                    
+
                     if external_group_id:
                         self.logger.info(f"    Linked to RecordGroup: {kb_category_map[external_group_id]}")
                     else:
@@ -1231,7 +1229,7 @@ class ZammadConnector(BaseConnector):
 
                     record_id: str = existing_record.id if existing_record else str(uuid4())
                     is_new: bool = existing_record is None
-                    
+
                     self.logger.info(f"      Record ID: {record_id} (New: {is_new}, Version: {0 if is_new else existing_record.version + 1})")
 
                     # Create WebpageRecord for records collection (full model)
@@ -1254,7 +1252,7 @@ class ZammadConnector(BaseConnector):
 
                     # Build permissions list - KB articles are typically readable by all users
                     record_permissions: List[Permission] = []
-                    
+
                     # Add READ permissions for all users in the organization
                     for user_external_id, user_id in user_id_map.items():
                         # Create permission edge from user to KB answer record
@@ -1294,16 +1292,16 @@ class ZammadConnector(BaseConnector):
 
             # Process records through data_entities_processor for storage + Kafka publishing (OUTSIDE transaction)
             # Only send NEW records to avoid re-indexing existing ones
-            self.logger.info(f"\n Preparing to dispatch KB records...")
-            
+            self.logger.info("\n Preparing to dispatch KB records...")
+
             new_records_with_permissions = [
-                (record, perms) for record, perms in records_with_permissions 
+                (record, perms) for record, perms in records_with_permissions
                 if record.version == 0  # version 0 means it's a new record
             ]
-            
+
             self.logger.info(f"   New records (version==0): {len(new_records_with_permissions)}")
             self.logger.info(f"   Existing records (skipped): {len(records_with_permissions) - len(new_records_with_permissions)}")
-            
+
             if new_records_with_permissions:
                 self.logger.info("Indexing the following KB answer records:")
                 for record, perms in new_records_with_permissions:
@@ -1314,11 +1312,11 @@ class ZammadConnector(BaseConnector):
                 self.logger.info(f" No new KB records to dispatch - all {len(records_with_permissions)} KB answers already exist")
 
             # Create isOfType and belongsTo edges in a separate transaction
-            self.logger.info(f"\n Creating edges...")
+            self.logger.info("\n Creating edges...")
             self.logger.info(f"   isOfType edges to create: {len(kb_answer_edges)}")
             self.logger.info(f"   belongsTo edges to create: {len(kb_answer_category_edges)}")
             self.logger.info(f"   Permission edges to create: {len(user_permission_edges)}")
-            
+
             async with self.data_store_provider.transaction() as tx_store_2:
                 # Create isOfType edges (record -> webpage)
                 if kb_answer_edges:
@@ -1329,12 +1327,12 @@ class ZammadConnector(BaseConnector):
                 if kb_answer_category_edges:
                     await tx_store_2.batch_create_edges(kb_answer_category_edges, CollectionNames.BELONGS_TO.value)
                     self.logger.info(f" Created {len(kb_answer_category_edges)} KB answer-category belongsTo edges")
-                
+
                 # Create permission edges (user -> KB answer) for visibility in "All Records"
                 if user_permission_edges:
                     await tx_store_2.batch_create_edges(user_permission_edges, CollectionNames.PERMISSION.value)
                     self.logger.info(f" Created {len(user_permission_edges)} user-to-answer permission edges")
-            
+
             self.logger.info(" KB Answers processing completed!")
 
         except Exception as e:
@@ -1417,7 +1415,7 @@ class ZammadConnector(BaseConnector):
 
         before = html
         html = re.sub(
-            r"(?P<attr>\b(?:src|href))=(?P<q>[\"\']) (?P<url>/[^\"\']+)(?P=q)",
+            r"(?P<attr>\b(?:src|href))=(?P<q>[\"\'])(?P<url>/[^\"\']+)(?P=q)",
             _prefix_root,
             html,
             flags=re.X,
@@ -1487,7 +1485,7 @@ class ZammadConnector(BaseConnector):
             try:
                 request = HTTPRequest(url=abs_url, method="GET", headers={"Accept": "*/*"})
                 response = await http_client.execute(request)
-                if response.status >= 400:
+                if response.status >= HTTP_ERROR_STATUS_CODE:
                     self.logger.debug(f"Image fetch failed {response.status}: {abs_url}")
                     continue
                 ctype = response.content_type

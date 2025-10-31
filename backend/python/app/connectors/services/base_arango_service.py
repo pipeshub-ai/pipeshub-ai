@@ -885,7 +885,6 @@ class BaseArangoService:
                 additional_data["webUrl"] = (
                     f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
                 )
-            
 
             metadata_query = f"""
             LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))

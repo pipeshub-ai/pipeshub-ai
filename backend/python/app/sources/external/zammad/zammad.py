@@ -1074,7 +1074,7 @@ class ZammadDataSource:
         if include_contents is not None:
             # API expects the answer_id value when requesting contents
             query_params["include_contents"] = str(id) if include_contents else "0"
-        
+
         try:
             request_url = url
             if query_params:
