@@ -49,7 +49,7 @@ class Connectors(Enum):
     DROPBOX = "DROPBOX"
     WEB = "WEB"
 
-    SERVICENOWKB = "SERVICENOWKB"
+    SERVICENOW = "SERVICENOW"
 
     UNKNOWN = "UNKNOWN"
 

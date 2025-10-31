@@ -69,11 +69,17 @@ class ArangoTransactionStore(TransactionStore):
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn)
 
+    async def get_or_create_app_by_name(self, app_name: str, org_id: str) -> Optional[Dict]:
+        return await self.arango_service.get_or_create_app_by_name(app_name, org_id)
+
     async def get_user_by_email(self, email: str) -> Optional[User]:
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
-    async def get_app_user_by_email(self, email: str) -> Optional[AppUser]:
-        return await self.arango_service.get_app_user_by_email(email, transaction=self.txn)
+    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
+        return await self.arango_service.get_user_by_source_id(source_user_id, connector_name, transaction=self.txn)
+
+    async def get_app_user_by_email(self, email: str, app_name: Connectors) -> Optional[AppUser]:
+        return await self.arango_service.get_app_user_by_email(email, app_name, transaction=self.txn)
 
     async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
         return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
@@ -114,8 +120,106 @@ class ArangoTransactionStore(TransactionStore):
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
 
+    async def get_app_users(self, org_id: str, app_name: str) -> List[AppUser]:
+        return await self.arango_service.get_app_users(org_id, app_name)
+
     async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[AppUserGroup]:
         return await self.arango_service.get_user_groups(app_name, org_id, transaction=self.txn)
+
+    async def create_user_group_hierarchy(
+        self,
+        child_external_id: str,
+        parent_external_id: str,
+        connector_name: Connectors
+    ) -> bool:
+        """Create BELONGS_TO edge between child and parent user groups"""
+        try:
+            # Lookup both groups
+            child_group = await self.get_user_group_by_external_id(connector_name, child_external_id)
+            if not child_group:
+                self.logger.warning(
+                    f"Child user group not found: {child_external_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            parent_group = await self.get_user_group_by_external_id(connector_name, parent_external_id)
+            if not parent_group:
+                self.logger.warning(
+                    f"Parent user group not found: {parent_external_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            # Create BELONGS_TO edge
+            edge = {
+                "_from": f"{CollectionNames.GROUPS.value}/{child_group.id}",
+                "_to": f"{CollectionNames.GROUPS.value}/{parent_group.id}",
+                "entityType": "GROUP",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            await self.arango_service.batch_create_edges(
+                [edge],
+                collection=CollectionNames.BELONGS_TO.value,
+                transaction=self.txn
+            )
+
+            self.logger.debug(f"Created user group hierarchy: {child_group.name} -> {parent_group.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group hierarchy ({child_external_id} -> {parent_external_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def create_user_group_membership(
+        self,
+        user_source_id: str,
+        group_external_id: str,
+        connector_name: Connectors
+    ) -> bool:
+        """Create BELONGS_TO edge from user to group using source IDs"""
+        try:
+            # Lookup user by sourceUserId
+            user = await self.get_user_by_source_id(user_source_id, connector_name)
+            if not user:
+                self.logger.warning(
+                    f"User not found: {user_source_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            # Lookup group
+            group = await self.get_user_group_by_external_id(connector_name, group_external_id)
+            if not group:
+                self.logger.warning(
+                    f"User group not found: {group_external_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            # Create BELONGS_TO edge
+            edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                "_to": f"{CollectionNames.GROUPS.value}/{group.id}",
+                "entityType": "GROUP",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            await self.arango_service.batch_create_edges(
+                [edge],
+                collection=CollectionNames.BELONGS_TO.value,
+                transaction=self.txn
+            )
+
+            self.logger.debug(f"Created user group membership: {user.email} -> {group.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
 
     async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[str]:
         return await self.arango_service.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
@@ -198,6 +302,9 @@ class ArangoTransactionStore(TransactionStore):
     async def batch_upsert_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
         return await self.arango_service.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
 
+    async def batch_create_user_app_edges(self, edges: List[Dict]) -> int:
+        return await self.arango_service.batch_create_user_app_edges(edges)
+
     async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
         return await self.arango_service.batch_upsert_nodes(
                             [user_group.to_arango_base_user_group() for user_group in user_groups],
@@ -210,6 +317,13 @@ class ArangoTransactionStore(TransactionStore):
         if not orgs:
             raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
         org_id = orgs[0]["_key"]
+        app_name = users[0].app_name.value
+
+        app = await self.arango_service.get_or_create_app_by_name(app_name, org_id)
+        if not app:
+            raise Exception(f"Failed to get/create app: {app_name}")
+
+        app_id = app["_id"]
 
         for user in users:
             user_record = await self.arango_service.get_user_by_email(user.email)
@@ -220,6 +334,8 @@ class ArangoTransactionStore(TransactionStore):
                     collection=CollectionNames.USERS.value,
                     transaction=self.txn
                 )
+
+                user_record = await self.arango_service.get_user_by_email(user.email, transaction=self.txn)
 
                 # Create a edge between the user and the org if it doesn't exist
                 user_org_relation = {
@@ -233,23 +349,22 @@ class ArangoTransactionStore(TransactionStore):
                     [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
                 )
 
+            user_key = user_record.id
+            user_app_relation = {
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": app_id,
+                "sourceUserId": user.source_user_id,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": get_epoch_timestamp_in_ms(),
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
 
-            # Todo: Create app if it doesn't exist
-            # Todo: Create a edge between the user and the app with sync status if it doesn't exist
-            # user_app_relation = {
-            #     "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
-            #     "_to": f"{CollectionNames.APPS.value}/{self.app.id}",
-            #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            #     "syncState": "PENDING",
-            # }
-
-            # await self.arango_service.batch_create_edges(
-            #     [user_app_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
-            # )
-
-    async def update_user_source_id(self, email: str, source_user_id: str) -> None:
-        return await self.arango_service.update_user_source_id(email=email,source_user_id=source_user_id,transaction=self.txn)
+            await self.arango_service.batch_create_edges(
+                [user_app_relation],
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=self.txn
+            )
 
     async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
         return await self.arango_service.batch_upsert_orgs(orgs, transaction=self.txn)

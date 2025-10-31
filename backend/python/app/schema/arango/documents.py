@@ -43,8 +43,6 @@ user_schema = {
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
             "updatedAtTimestamp": {"type": "number"},
-            "appName": {"type": "string"},
-            "sourceUserId": {"type": "string"},
         },
         "required": ["email"],  # Required fields
         "additionalProperties": False,  # disallow extra fields

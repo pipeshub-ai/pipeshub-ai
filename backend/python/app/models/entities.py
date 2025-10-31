@@ -660,8 +660,6 @@ class AppUser(BaseModel):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "appName": self.app_name.value,
-            "sourceUserId": self.source_user_id,
             "email": self.email,
             "fullName": self.full_name,
             "userId": self.source_user_id,

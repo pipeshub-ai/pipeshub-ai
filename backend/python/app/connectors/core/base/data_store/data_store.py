@@ -74,7 +74,19 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def create_user_group_hierarchy(self, child_external_id: str, parent_external_id: str, connector_name: Connectors) -> bool:
+        pass
+
+    @abstractmethod
+    async def create_user_group_membership(self, user_source_id: str, group_external_id: str, connector_name: Connectors, org_id: str) -> bool:
+        pass
+
+    @abstractmethod
     async def get_user_by_email(self, email: str) -> Optional[User]:
+        pass
+
+    @abstractmethod
+    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
         pass
 
     @abstractmethod
@@ -179,10 +191,6 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def update_sync_point(self, sync_point: "SyncPoint") -> None:
-        pass
-
-    @abstractmethod
-    async def update_user_source_id(self, email: str, source_user_id: str) -> None:
         pass
 
 

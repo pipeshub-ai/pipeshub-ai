@@ -13,8 +13,9 @@ Synced Entities:
 """
 
 import uuid
+from collections import defaultdict
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -37,7 +38,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-from app.connectors.sources.servicenow.common.apps import ServicenowKBApp
+from app.connectors.sources.servicenow.common.apps import ServicenowApp
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -87,7 +88,7 @@ ORGANIZATIONAL_ENTITIES = {
 }
 
 
-@ConnectorBuilder("ServiceNowKB")\
+@ConnectorBuilder("ServiceNow")\
     .in_group("ServiceNow")\
     .with_auth_type("OAUTH")\
     .with_description("Sync knowledge base articles, categories, and permissions from ServiceNow")\
@@ -101,7 +102,7 @@ ORGANIZATIONAL_ENTITIES = {
                 "https://docs.servicenow.com/bundle/latest/page/administer/security/concept/c_OAuthApplications.html",
             )
         )
-        .with_redirect_uri("connectors/oauth/callback/ServiceNowKB", True)
+        .with_redirect_uri("connectors/oauth/callback/ServiceNow", True)
         .with_oauth_urls(
             "https://example.service-now.com/oauth_auth.do",
             "https://example.service-now.com/oauth_token.do",
@@ -146,7 +147,7 @@ ORGANIZATIONAL_ENTITIES = {
         .with_scheduled_config(True, 60)
     )\
     .build_decorator()
-class ServiceNowKBConnector(BaseConnector):
+class ServiceNowConnector(BaseConnector):
     """
     ServiceNow Knowledge Base Connector
 
@@ -174,7 +175,7 @@ class ServiceNowKBConnector(BaseConnector):
             config_service: Configuration service
         """
         super().__init__(
-            ServicenowKBApp(),
+            ServicenowApp(),
             logger,
             data_entities_processor,
             data_store_provider,
@@ -248,7 +249,7 @@ class ServiceNowKBConnector(BaseConnector):
 
             # Load configuration
             config = await self.config_service.get_config(
-                "/services/connectors/servicenowkb/config"
+                "/services/connectors/servicenow/config"
             )
 
             if not config:
@@ -383,7 +384,7 @@ class ServiceNowKBConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 for user in active_users:
                     try:
-                        app_user = await tx_store.get_app_user_by_email(user.email)
+                        app_user = await tx_store.get_app_user_by_email(user.email, Connectors.SERVICENOW)
 
                         if app_user and app_user.source_user_id:
                             matched_users.append((user.email, app_user.source_user_id))
@@ -688,21 +689,18 @@ class ServiceNowKBConnector(BaseConnector):
             await self._sync_users()
 
             # Step 2: Sync groups
-            await self._sync_groups()
+            await self._sync_user_groups()
 
-            # Step 3: Sync group memberships (user-group relationships)
-            await self._sync_group_memberships()
-
-            # # Step 4: Sync roles (creates role-based usergroups)
+            # # Step 3: Sync roles (creates role-based usergroups)
             # await self._sync_roles()
 
-            # # Step 5: Sync role hierarchy (parent-child edges between roles)
+            # # Step 4: Sync role hierarchy (parent-child edges between roles)
             # await self._sync_role_hierarchy()
 
-            # # Step 6: Sync user-role assignments (user-to-role membership edges)
+            # # Step 5: Sync user-role assignments (user-to-role membership edges)
             # await self._sync_user_role_assignments()
 
-            # Step 7: Sync organizational entities (companies, departments, locations, cost centers)
+            # Step 6: Sync organizational entities (companies, departments, locations, cost centers)
             await self._sync_organizational_entities()
 
             self.logger.info("✅ Users, groups, and roles synced successfully")
@@ -816,11 +814,10 @@ class ServiceNowKBConnector(BaseConnector):
                     self.logger.info(f"Creating {len(user_org_links)} user-to-organizational-entity link")
                     async with self.data_store_provider.transaction() as tx_store:
                         for link in user_org_links:
-                            await self.data_entities_processor.create_user_group_membership(
+                            await tx_store.create_user_group_membership(
                                 link["user_sys_id"],
                                 link["org_sys_id"],
-                                Connectors.SERVICENOWKB,
-                                tx_store,
+                                Connectors.SERVICENOW,
                             )
 
                 # Move to next page
@@ -840,41 +837,54 @@ class ServiceNowKBConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_groups(self) -> None:
+    async def _sync_user_groups(self) -> None:
         """
-        Sync groups from ServiceNow using offset-based pagination.
-        Uses two-pass approach: first sync all groups, then create hierarchy edges.
-
-        First sync: Fetches all groups
-        Subsequent syncs: Only fetches groups modified since last sync
+        Sync user groups and flatten memberships.
+        Simple 3-step process: fetch groups → fetch memberships → flatten & upsert
         """
         try:
-            # Get last sync checkpoint
-            last_sync_data = await self.group_sync_point.read_sync_point("groups")
-            last_sync_time = (last_sync_data.get("last_sync_time") if last_sync_data else None)
+            self.logger.info("Starting user group synchronization")
 
-            if last_sync_time:
-                self.logger.info(f"🔄 Delta sync: fetching groups updated after {last_sync_time}")
-                query = f"sys_updated_on>{last_sync_time}^ORDERBYsys_updated_on"
-            else:
-                self.logger.info("🆕 Full sync: fetching all groups")
-                query = "ORDERBYsys_updated_on"
+            # STEP 1: Fetch all memberships
+            memberships_data = await self._fetch_all_memberships()
 
-            # Pagination variables
+            if not memberships_data:
+                self.logger.info("No memberships found, skipping group sync")
+                return
+
+            # STEP 2: Fetch all groups
+            groups_data = await self._fetch_all_groups()
+
+            # STEP 3: Flatten and create AppUserGroup objects
+            group_with_permissions = await self._flatten_and_create_user_groups(
+                groups_data,
+                memberships_data
+            )
+
+            self.logger.info(f"Flattened groups with permissions: {group_with_permissions}")
+
+            # STEP 4: Upsert to database
+            if group_with_permissions:
+                await self.data_entities_processor.on_new_user_groups(group_with_permissions)
+
+            self.logger.info(f"✅ Processed {len(group_with_permissions)} user groups")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
+            raise
+
+
+    async def _fetch_all_groups(self) -> List[dict]:
+        """Fetch all groups from ServiceNow (no delta sync)"""
+        try:
+            all_groups = []
             batch_size = 100
             offset = 0
-            total_synced = 0
-            latest_update_time = None
 
-            # Collect parent-child relationships for second pass
-            parent_child_relationships = []
-
-            # FIRST PASS: Sync all group nodes
             while True:
-                # Fetch one page of groups
                 response = await self.servicenow_datasource.get_now_table_tableName(
                     tableName="sys_user_group",
-                    sysparm_query=query,
+                    sysparm_query="ORDERBYsys_updated_on",
                     sysparm_fields="sys_id,name,description,parent,manager,sys_created_on,sys_updated_on",
                     sysparm_limit=str(batch_size),
                     sysparm_offset=str(offset),
@@ -883,124 +893,46 @@ class ServiceNowKBConnector(BaseConnector):
                     sysparm_exclude_reference_link="true",
                 )
 
-                # Check for errors
                 if not response.success or not response.data:
-                    if response.error:
-                        self.logger.error(f"❌ API error: {response.error}")
                     break
 
-                # Extract groups from response
-                groups_data = response.data.get("result", [])
-
-                if not groups_data:
+                groups = response.data.get("result", [])
+                if not groups:
                     break
 
-                # Track the latest update timestamp for checkpoint
-                if groups_data:
-                    latest_update_time = groups_data[-1].get("sys_updated_on")
-
-                # Collect parent-child relationships for later
-                for group_data in groups_data:
-                    parent_ref = group_data.get("parent")
-                    if parent_ref:
-                        # Extract parent sys_id from reference field
-                        parent_sys_id = None
-                        if isinstance(parent_ref, dict):
-                            parent_sys_id = parent_ref.get("value")
-                        elif isinstance(parent_ref, str) and parent_ref:
-                            parent_sys_id = parent_ref
-
-                        if parent_sys_id:
-                            child_sys_id = group_data.get("sys_id")
-                            parent_child_relationships.append(
-                                {
-                                    "child_sys_id": child_sys_id,
-                                    "parent_sys_id": parent_sys_id,
-                                }
-                            )
-
-                # Transform groups
-                user_groups = []
-                for group_data in groups_data:
-                    user_group = self._transform_to_user_group(group_data)
-                    if user_group:
-                        user_groups.append(user_group)
-
-                # Save groups (nodes only, no edges yet)
-                if user_groups:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_upsert_user_groups(user_groups)
-
-                    total_synced += len(user_groups)
-
-                # Move to next page
+                all_groups.extend(groups)
                 offset += batch_size
 
-                # If this page has fewer records than batch_size, we're done
-                if len(groups_data) < batch_size:
+                if len(groups) < batch_size:
                     break
 
-            # SECOND PASS: Create all hierarchy edges now that all nodes exist
-            if parent_child_relationships:
-                async with self.data_store_provider.transaction() as tx_store:
-                    success_count = 0
-                    for relationship in parent_child_relationships:
-                        success = await self.data_entities_processor.create_user_group_hierarchy(
-                            relationship["child_sys_id"],
-                            relationship["parent_sys_id"],
-                            Connectors.SERVICENOWKB,
-                            tx_store,
-                        )
-                        if success:
-                            success_count += 1
-
-                    if success_count > 0:
-                        self.logger.info(f"Created {success_count} group hierarchy edges")
-
-            # Save checkpoint for next sync
-            if latest_update_time:
-                await self.group_sync_point.update_sync_point("groups", {"last_sync_time": latest_update_time})
-
-            self.logger.info(f"Groups sync complete, Total synced: {total_synced}")
+            self.logger.info(f"Fetched {len(all_groups)} groups")
+            return all_groups
 
         except Exception as e:
-            self.logger.error(f"❌ Groups sync failed: {e}", exc_info=True)
+            self.logger.error(f"❌ Error fetching groups: {e}", exc_info=True)
             raise
 
-    async def _sync_group_memberships(self) -> None:
-        """
-        Sync group memberships from ServiceNow using offset-based pagination.
 
-        This handles the case where new users are added to groups - when a new user joins a group,
-        the sys_user_grmember record gets a sys_updated_on timestamp, allowing us to detect
-        membership changes and grant permissions to new users for existing articles.
-
-        First sync: Fetches all memberships
-        Subsequent syncs: Only fetches memberships modified since last sync
-        """
+    async def _fetch_all_memberships(self) -> List[dict]:
+        """Fetch all user-group memberships from ServiceNow"""
         try:
-            # Get last sync checkpoint (using separate key from groups sync)
-            last_sync_data = await self.group_sync_point.read_sync_point("group_memberships")
+            last_sync_data = await self.group_sync_point.read_sync_point("groups")
             last_sync_time = (last_sync_data.get("last_sync_time") if last_sync_data else None)
 
             if last_sync_time:
-                self.logger.info(f"🔄 Delta sync: fetching memberships updated after {last_sync_time}")
+                self.logger.info(f"🔄 Delta sync: fetching user memberships updated after {last_sync_time}")
                 query = f"sys_updated_on>{last_sync_time}^ORDERBYsys_updated_on"
             else:
-                self.logger.info("🆕 Full sync: fetching all memberships")
+                self.logger.info("🆕 Full sync: fetching all user memberships")
                 query = "ORDERBYsys_updated_on"
 
-            # Pagination variables
+            all_memberships = []
             batch_size = 100
             offset = 0
             latest_update_time = None
 
-            # Collect all memberships to process
-            all_memberships = []
-
-            # Paginate through all memberships
             while True:
-                # Fetch one page of memberships
                 response = await self.servicenow_datasource.get_now_table_tableName(
                     tableName="sys_user_grmember",
                     sysparm_query=query,
@@ -1012,70 +944,140 @@ class ServiceNowKBConnector(BaseConnector):
                     sysparm_exclude_reference_link="true",
                 )
 
-                # Check for errors
                 if not response.success or not response.data:
-                    if response.error:
-                        self.logger.error(f"❌ API error: {response.error}")
                     break
 
-                # Extract memberships from response
-                memberships_data = response.data.get("result", [])
-
-                if not memberships_data:
+                memberships = response.data.get("result", [])
+                if not memberships:
                     break
 
-                # Track the latest update timestamp for checkpoint
-                for membership in memberships_data:
-                    updated_on = membership.get("sys_updated_on")
-                    if updated_on and (not latest_update_time or updated_on > latest_update_time):
-                        latest_update_time = updated_on
+                latest_update_time = memberships[-1].get("sys_updated_on")
 
-                    # Extract and validate sys_ids
-                    user_sys_id = membership.get("user", {})
-                    group_sys_id = membership.get("group", {})
-
-                    # Extract sys_id from reference fields
-                    if isinstance(user_sys_id, dict):
-                        user_sys_id = user_sys_id.get("value")
-                    if isinstance(group_sys_id, dict):
-                        group_sys_id = group_sys_id.get("value")
-
-                    if user_sys_id and group_sys_id:
-                        all_memberships.append({"user_sys_id": user_sys_id, "group_sys_id": group_sys_id})
-
-                # Move to next page
+                all_memberships.extend(memberships)
                 offset += batch_size
 
-                # If this page has fewer records than batch_size, we're done
-                if len(memberships_data) < batch_size:
+                if len(memberships) < batch_size:
                     break
 
-            # Create user-group membership edges in batches
-            if all_memberships:
-                async with self.data_store_provider.transaction() as tx_store:
-                    success_count = 0
-                    for membership in all_memberships:
-                        success = await self.data_entities_processor.create_user_group_membership(
-                            membership["user_sys_id"],
-                            membership["group_sys_id"],
-                            Connectors.SERVICENOWKB,
-                            tx_store,
-                        )
-                        if success:
-                            success_count += 1
-
-                    if success_count > 0:
-                        self.logger.info(f"Created {success_count} user-group membership edges")
-
-            # Save checkpoint for next sync
+            self.logger.info(f"Fetched {len(all_memberships)} memberships")
             if latest_update_time:
-                await self.group_sync_point.update_sync_point("group_memberships", {"last_sync_time": latest_update_time})
-
-            self.logger.info(f"Memberships sync complete, Total processed: {success_count if all_memberships else 0}")
+                await self.group_sync_point.update_sync_point("groups", {"last_sync_time": latest_update_time})
+            return all_memberships
 
         except Exception as e:
-            self.logger.error(f"❌ Group memberships sync failed: {e}", exc_info=True)
+            self.logger.error(f"❌ Error fetching memberships: {e}", exc_info=True)
             raise
+
+
+    async def _flatten_and_create_user_groups(
+        self,
+        groups_data: List[dict],
+        memberships_data: List[dict]
+    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+        """
+        Flatten group hierarchy and create AppUserGroup objects.
+
+        Returns:
+            List of (AppUserGroup, [AppUser]) tuples
+        """
+        try:
+            # Build parent-child relationships
+            children_map = defaultdict(set)  # parent_id -> {child_ids}
+            group_by_id = {}  # group_id -> group_data
+
+            for group in groups_data:
+                group_id = group['sys_id']
+                group_by_id[group_id] = group
+
+                # Extract parent sys_id
+                parent_ref = group.get('parent')
+                if parent_ref:
+                    parent_id = parent_ref.get('value') if isinstance(parent_ref, dict) else parent_ref
+                    if parent_id:
+                        children_map[parent_id].add(group_id)
+
+            # Build direct user memberships
+            direct_users = defaultdict(set)  # group_id -> {user_ids}
+
+            for membership in memberships_data:
+                user_ref = membership.get('user', {})
+                group_ref = membership.get('group', {})
+
+                user_id = user_ref.get('value') if isinstance(user_ref, dict) else user_ref
+                group_id = group_ref.get('value') if isinstance(group_ref, dict) else group_ref
+
+                if user_id and group_id:
+                    direct_users[group_id].add(user_id)
+
+            # Recursive function to get all users for a group
+            def get_all_users(group_id: str, visited: set = None) -> set:
+                """Get all users including inherited from child groups."""
+                if visited is None:
+                    visited = set()
+
+                # Prevent infinite loops
+                if group_id in visited:
+                    return set()
+                visited.add(group_id)
+
+                # Start with direct users
+                all_users = set(direct_users.get(group_id, []))
+
+                # Add users from child groups recursively
+                for child_id in children_map.get(group_id, []):
+                    all_users.update(get_all_users(child_id, visited))
+
+                return all_users
+
+            # Create AppUserGroup objects with flattened members
+            result = []
+
+             # Get all existing users from database for lookup
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_app_users = await tx_store.get_app_users(
+                    org_id=self.data_entities_processor.org_id,
+                    app_name=Connectors.SERVICENOW
+                )
+
+                self.logger.info(f"Loaded {len(existing_app_users)} existing users from DB for lookup: {existing_app_users}")
+
+                # Create lookup map: source_user_id -> AppUser
+                user_lookup = {user.source_user_id: user for user in existing_app_users}
+                self.logger.info(f"Loaded lookup users: {list(user_lookup.keys())}")
+
+            for group_id, group_data in group_by_id.items():
+                # Create AppUserGroup
+                user_group = self._transform_to_user_group(group_data)
+
+                if not user_group:
+                    continue
+
+                # Get flattened user IDs
+                flattened_user_ids = get_all_users(group_id)
+
+                # Create AppUser objects (just with IDs, assuming they exist in DB)
+                app_users = []
+                for user_id in flattened_user_ids:
+                    app_user = user_lookup.get(user_id)
+                    if app_user:
+                        app_users.append(app_user)
+                    else:
+                        self.logger.debug(f"User {user_id} not found in database (may not be synced yet)")
+
+                self.logger.debug(
+                    f"Group {group_data.get('name')} ({group_id}): "
+                    f"{len(flattened_user_ids)} total users, {len(app_users)} found in DB"
+                )
+
+                result.append((user_group, app_users))
+
+            self.logger.info(f"Flattened {len(result)} groups")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Error flattening groups: {e}", exc_info=True)
+            raise
+
 
     async def _sync_roles(self) -> None:
         """
@@ -1161,7 +1163,7 @@ class ServiceNowKBConnector(BaseConnector):
 
                         # Create AppUserGroup with ROLE_ prefix
                         role_group = AppUserGroup(
-                            app_name=Connectors.SERVICENOWKB,
+                            app_name=Connectors.SERVICENOW,
                             source_user_group_id=role_sys_id,
                             name=f"ROLE_{role_name}",
                             description=(
@@ -1297,11 +1299,10 @@ class ServiceNowKBConnector(BaseConnector):
                             continue
 
                         # Create parent-child hierarchy edge
-                        success = await self.data_entities_processor.create_user_group_hierarchy(
+                        success = await tx_store.create_user_group_hierarchy(
                             child_source_id=child_role_sys_id,
                             parent_source_id=parent_role_sys_id,
-                            connector_name=Connectors.SERVICENOWKB,
-                            tx_store=tx_store,
+                            connector_name=Connectors.SERVICENOW,
                         )
 
                         if success:
@@ -1432,11 +1433,11 @@ class ServiceNowKBConnector(BaseConnector):
                     membership_count = 0
 
                     for assignment in all_assignments:
-                        success = await self.data_entities_processor.create_user_group_membership(
+                        success = await tx_store.create_user_group_membership(
                             assignment["user_sys_id"],
                             assignment["role_sys_id"],
-                            Connectors.SERVICENOWKB,
-                            tx_store,
+                            Connectors.SERVICENOW,
+                            self.org_id,
                         )
 
                         if success:
@@ -1618,11 +1619,10 @@ class ServiceNowKBConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     success_count = 0
                     for relationship in parent_child_relationships:
-                        success = await self.data_entities_processor.create_user_group_hierarchy(
+                        success = await tx_store.create_user_group_hierarchy(
                             relationship["child_sys_id"],
                             relationship["parent_sys_id"],
-                            Connectors.SERVICENOWKB,
-                            tx_store,
+                            Connectors.SERVICENOW,
                         )
                         if success:
                             success_count += 1
@@ -1654,7 +1654,7 @@ class ServiceNowKBConnector(BaseConnector):
         Sync knowledge bases from ServiceNow kb_knowledge_base table using offset-based pagination.
 
         Creates:
-        - RecordGroup nodes (type=SERVICENOWKB) in recordGroups collection
+        - RecordGroup nodes (type=SERVICENOW) in recordGroups collection
         - OWNER edges: owner → KB RecordGroup
         - WRITER edges: kb_managers → KB RecordGroup
         - READ edge: current user → KB RecordGroup (implicit permission)
@@ -1732,7 +1732,7 @@ class ServiceNowKBConnector(BaseConnector):
 
                             # Check if KB already exists
                             existing_kb = await tx_store.get_record_group_by_external_id(
-                                Connectors.SERVICENOWKB,
+                                Connectors.SERVICENOW,
                                 kb_sys_id
                             )
 
@@ -1744,11 +1744,10 @@ class ServiceNowKBConnector(BaseConnector):
                                     entity_type=EntityType.USER,
                                 )
 
-                                await self.data_entities_processor.batch_upsert_record_group_permissions(
+                                await tx_store.batch_upsert_record_group_permissions(
                                     existing_kb.id,
                                     [current_user_permission],
-                                    Connectors.SERVICENOWKB,
-                                    tx_store
+                                    Connectors.SERVICENOW
                                 )
 
                                 self.logger.debug(f"Added permission for {user_email} to existing KB {kb_sys_id}")
@@ -1842,11 +1841,10 @@ class ServiceNowKBConnector(BaseConnector):
                                 permission_objects.append(current_user_permission)
 
                                 if permission_objects:
-                                    await self.data_entities_processor.batch_upsert_record_group_permissions(
+                                    await tx_store.batch_upsert_record_group_permissions(
                                         kb_record_group.id,
                                         permission_objects,
-                                        Connectors.SERVICENOWKB,
-                                        tx_store
+                                        Connectors.SERVICENOW
                                     )
 
                                     self.logger.debug(
@@ -1874,14 +1872,14 @@ class ServiceNowKBConnector(BaseConnector):
 
     async def _sync_categories(self, user_sys_id: str, user_email: str) -> None:
         """
-        Sync categories from ServiceNow kb_category table using two-pass approach.
+        Sync categories from ServiceNow kb_category table using single-pass approach.
 
         Creates:
         - RecordGroup nodes (type=SERVICENOW_CATEGORY) in recordGroups collection
         - PARENT_CHILD edges in recordRelations collection
+        - Permissions for categories (inherited from KB or explicit)
 
-        Pass 1: Fetch and save all category RecordGroups
-        Pass 2: Create hierarchy edges (category → parent KB/Category)
+        Uses on_new_record_groups for efficient single-pass processing with automatic edge creation.
 
         First sync: Fetches all categories
         Subsequent syncs: Only fetches categories modified since last sync
@@ -1909,10 +1907,7 @@ class ServiceNowKBConnector(BaseConnector):
             total_synced = 0
             latest_update_time = None
 
-            # Collect all categories for Pass 2
-            all_categories_data = []
-
-            # Pass 1: Fetching and saving category nodes
+            # Paginate through all categories
             while True:
                 # Fetch categories from ServiceNow
                 response = await self.servicenow_datasource.get_now_table_tableName(
@@ -1940,26 +1935,55 @@ class ServiceNowKBConnector(BaseConnector):
                     self.logger.debug(f"No more categories at offset {offset}")
                     break
 
-                # Store for Pass 2
-                all_categories_data.extend(categories_data)
-
                 # Track the latest update timestamp for checkpoint
                 if categories_data:
                     latest_update_time = categories_data[-1].get("sys_updated_on")
 
-                # Transform categories to RecordGroups
-                category_record_groups = []
+                # Transform categories to RecordGroups with hierarchy information
+                categories_with_permissions = []
                 for cat_data in categories_data:
                     category_rg = self._transform_to_category_record_group(cat_data)
-                    if category_rg:
-                        category_record_groups.append(category_rg)
+                    if not category_rg:
+                        continue
 
-                # Save category RecordGroups (nodes only, no edges yet)
-                if category_record_groups:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_upsert_record_groups(category_record_groups)
+                    # Set parent information for hierarchy edge creation
+                    parent_table = cat_data.get("parent_table")
+                    parent_id_ref = cat_data.get("parent_id")
 
-                    total_synced += len(category_record_groups)
+                    # Extract parent sys_id from reference field
+                    parent_sys_id = None
+                    if isinstance(parent_id_ref, dict):
+                        parent_sys_id = parent_id_ref.get("value")
+                    elif isinstance(parent_id_ref, str) and parent_id_ref:
+                        parent_sys_id = parent_id_ref
+
+                    # Set parent_record_group_id if parent exists
+                    if parent_sys_id and parent_table:
+                        if parent_table == "kb_knowledge_base":
+                            category_rg.parent_record_group_id = parent_sys_id
+                            # category_rg.parent_group_type = RecordGroupType.SERVICENOWKB
+                        elif parent_table == "kb_category":
+                            category_rg.parent_record_group_id = parent_sys_id
+                            # category_rg.parent_group_type = RecordGroupType.SERVICENOW_CATEGORY
+                        else:
+                            self.logger.warning(
+                                f"Unknown parent_table type: {parent_table} for category {cat_data.get('sys_id')}"
+                            )
+
+                    # Categories typically inherit permissions from their parent KB
+                    # Add current user's implicit READ permission
+                    current_user_permission = Permission(
+                        email=user_email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER,
+                    )
+
+                    categories_with_permissions.append((category_rg, [current_user_permission]))
+
+                # Use on_new_record_groups to create nodes and edges in one transaction
+                if categories_with_permissions:
+                    await self.data_entities_processor.on_new_record_groups(categories_with_permissions)
+                    total_synced += len(categories_with_permissions)
 
                 # Move to next page
                 offset += batch_size
@@ -1967,55 +1991,6 @@ class ServiceNowKBConnector(BaseConnector):
                 # If this page has fewer records than batch_size, we're done
                 if len(categories_data) < batch_size:
                     break
-
-            # PASS 2: Create hierarchy edges using processor method
-            if all_categories_data:
-                async with self.data_store_provider.transaction() as tx_store:
-                    success_count = 0
-                    for cat_data in all_categories_data:
-                        category_sys_id = cat_data.get("sys_id")
-                        parent_table = cat_data.get("parent_table")
-                        parent_id_ref = cat_data.get("parent_id")
-
-                        # Extract parent sys_id from reference field
-                        parent_sys_id = None
-                        if isinstance(parent_id_ref, dict):
-                            parent_sys_id = parent_id_ref.get("value")
-                        elif isinstance(parent_id_ref, str) and parent_id_ref:
-                            parent_sys_id = parent_id_ref
-
-                        # Skip if no parent (root level category)
-                        if not parent_sys_id or not parent_table:
-                            continue
-
-                        # Determine parent group type based on parent_table
-                        if parent_table == "kb_knowledge_base":
-                            parent_group_type = RecordGroupType.SERVICENOWKB
-                        elif parent_table == "kb_category":
-                            parent_group_type = RecordGroupType.SERVICENOW_CATEGORY
-                        else:
-                            self.logger.warning(
-                                f"Unknown parent_table type: {parent_table} for category {category_sys_id}"
-                            )
-                            continue
-
-                        # Create hierarchy edge using processor method
-                        success = await self.data_entities_processor.create_record_group_hierarchy(
-                            category_sys_id,
-                            parent_sys_id,
-                            RecordGroupType.SERVICENOW_CATEGORY,
-                            parent_group_type,
-                            Connectors.SERVICENOWKB,
-                            tx_store
-                        )
-
-                        if success:
-                            success_count += 1
-
-                    if success_count > 0:
-                        self.logger.info(f"Created {success_count} category hierarchy edges")
-                    else:
-                        self.logger.info("No hierarchy edges to create")
 
             # Update sync checkpoint (per-user)
             if latest_update_time:
@@ -2042,7 +2017,7 @@ class ServiceNowKBConnector(BaseConnector):
             # Get all usergroups for this connector from database
             async with self.data_store_provider.transaction() as tx_store:
                 all_groups = await tx_store.get_user_groups(
-                    app_name=Connectors.SERVICENOWKB,
+                    app_name=Connectors.SERVICENOW,
                     org_id=self.data_entities_processor.org_id,
                 )
 
@@ -2217,7 +2192,7 @@ class ServiceNowKBConnector(BaseConnector):
             existing_article = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_article = await tx_store.get_record_by_external_id(
-                    Connectors.SERVICENOWKB,
+                    Connectors.SERVICENOW,
                     article_sys_id
                 )
 
@@ -2269,7 +2244,7 @@ class ServiceNowKBConnector(BaseConnector):
                 existing_attachment = None
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_attachment = await tx_store.get_record_by_external_id(
-                        Connectors.SERVICENOWKB,
+                        Connectors.SERVICENOW,
                         att_sys_id
                     )
 
@@ -2580,11 +2555,10 @@ class ServiceNowKBConnector(BaseConnector):
                     continue
 
                 if entity_type == "USER":
-                    # Use processor helper to get user by source_sys_id
-                    user = await self.data_entities_processor.get_user_by_source_id(
+                    # Use tx_store method to get user by source_sys_id
+                    user = await tx_store.get_user_by_source_id(
                         source_sys_id,
-                        Connectors.SERVICENOWKB,
-                        tx_store
+                        Connectors.SERVICENOW,
                     )
 
                     if user:
@@ -2834,15 +2808,6 @@ class ServiceNowKBConnector(BaseConnector):
             if not full_name:
                 full_name = user_name or email
 
-            # Check if user exists in platform database (by email)
-            is_active = False
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user_in_db = await tx_store.get_user_by_email(email)
-                    is_active = user_in_db is not None
-            except Exception as e:
-                self.logger.warning(f"Could not check if user {sys_id} exists in platform: {e}")
-
             # Parse timestamps
             source_created_at = None
             source_updated_at = None
@@ -2852,12 +2817,12 @@ class ServiceNowKBConnector(BaseConnector):
                 source_updated_at = self._parse_servicenow_datetime(user_data["sys_updated_on"])
 
             app_user = AppUser(
-                app_name=Connectors.SERVICENOWKB,
+                app_name=Connectors.SERVICENOW,
                 source_user_id=sys_id,
                 org_id=self.data_entities_processor.org_id,
                 email=email,
                 full_name=full_name,
-                is_active=is_active,
+                is_active=False,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
             )
@@ -2897,7 +2862,7 @@ class ServiceNowKBConnector(BaseConnector):
 
             # Create AppUserGroup (for user groups, not record groups)
             user_group = AppUserGroup(
-                app_name=Connectors.SERVICENOWKB,
+                app_name=Connectors.SERVICENOW,
                 source_user_group_id=sys_id,
                 name=name,
                 org_id=self.data_entities_processor.org_id,
@@ -2947,7 +2912,7 @@ class ServiceNowKBConnector(BaseConnector):
 
             # Create AppUserGroup with prefix
             org_group = AppUserGroup(
-                app_name=Connectors.SERVICENOWKB,
+                app_name=Connectors.SERVICENOW,
                 source_user_group_id=sys_id,
                 name=f"{prefix}{name}",
                 description=f"ServiceNow {prefix.rstrip('_')}: {name}",
@@ -2975,7 +2940,7 @@ class ServiceNowKBConnector(BaseConnector):
             kb_data: ServiceNow kb_knowledge_base record
 
         Returns:
-            RecordGroup: Transformed KB as RecordGroup with type SERVICENOWKB or None if invalid
+            RecordGroup: Transformed KB as RecordGroup with type SERVICENOW or None if invalid
         """
         try:
             sys_id = kb_data.get("sys_id")
@@ -3004,7 +2969,7 @@ class ServiceNowKBConnector(BaseConnector):
                 name=title,
                 description=kb_data.get("description", ""),
                 external_group_id=sys_id,
-                connector_name=Connectors.SERVICENOWKB,
+                connector_name=Connectors.SERVICENOW,
                 group_type=RecordGroupType.SERVICENOWKB,
                 web_url=web_url,
                 source_created_at=source_created_at,
@@ -3056,7 +3021,7 @@ class ServiceNowKBConnector(BaseConnector):
                 name=label,
                 short_name=category_data.get("value", ""),
                 external_group_id=sys_id,
-                connector_name=Connectors.SERVICENOWKB,
+                connector_name=Connectors.SERVICENOW,
                 group_type=RecordGroupType.SERVICENOW_CATEGORY,
                 web_url=web_url,
                 source_created_at=source_created_at,
@@ -3141,7 +3106,7 @@ class ServiceNowKBConnector(BaseConnector):
                 record_name=short_description,
                 record_type=RecordType.WEBPAGE,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.SERVICENOWKB,
+                connector_name=Connectors.SERVICENOW,
                 record_group_type=record_group_type,  # CATEGORY or KB
                 external_record_group_id=external_record_group_id,  # Category or KB sys_id
                 parent_external_record_id=None,
@@ -3222,7 +3187,7 @@ class ServiceNowKBConnector(BaseConnector):
                 external_record_id=sys_id,
                 version=0,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.SERVICENOWKB,
+                connector_name=Connectors.SERVICENOW,
                 mime_type=mime_type,
                 parent_external_record_id=attachment_data.get("table_sys_id"),  # Parent article sys_id
                 parent_record_type=RecordType.WEBPAGE,  # Parent is article
@@ -3271,7 +3236,7 @@ class ServiceNowKBConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-    ) -> "ServiceNowKBConnector":
+    ) -> "ServiceNowConnector":
         """
         Factory method to create and initialize the connector.
 
@@ -3281,7 +3246,7 @@ class ServiceNowKBConnector(BaseConnector):
             config_service: Configuration service
 
         Returns:
-            ServiceNowKBConnector: Initialized connector instance
+            ServiceNowConnector: Initialized connector instance
         """
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service

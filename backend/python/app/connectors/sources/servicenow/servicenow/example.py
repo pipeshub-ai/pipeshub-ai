@@ -9,8 +9,8 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.servicenow.servicenowkb.connector import (
-    ServiceNowKBConnector,
+from app.connectors.sources.servicenow.servicenow.connector import (
+    ServiceNowConnector,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
@@ -57,7 +57,7 @@ async def test_run() -> None:
             CollectionNames.BELONGS_TO.value,
         )
 
-    logger = create_logger("servicenowkb_connector")
+    logger = create_logger("servicenow_connector")
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
@@ -77,15 +77,15 @@ async def test_run() -> None:
             "tokenUrl": os.getenv("SERVICENOW_TOKEN_URL"),
             "clientId": os.getenv("SERVICENOW_CLIENT_ID"),
             "clientSecret": os.getenv("SERVICENOW_CLIENT_SECRET"),
-            "redirectUri": "http://localhost/connectors/oauth/callback/ServiceNowKB",
+            "redirectUri": "http://localhost/connectors/oauth/callback/ServiceNow",
         },
         "credentials": {
             "access_token": os.getenv("SERVICENOW_ACCESS_TOKEN"),
             "refresh_token": os.getenv("SERVICENOW_REFRESH_TOKEN"),
         }
     }
-    await key_value_store.create_key("/services/connectors/servicenowkb/config", config)
-    connector: BaseConnector = await ServiceNowKBConnector.create_connector(
+    await key_value_store.create_key("/services/connectors/servicenow/config", config)
+    connector: BaseConnector = await ServiceNowConnector.create_connector(
         logger, data_store_provider, config_service
     )
     await connector.init()
