@@ -2260,7 +2260,6 @@ async def get_oauth_authorization_url(
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
         token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
@@ -2412,7 +2411,6 @@ async def handle_oauth_callback(
         redirect_uri = connector_auth_config.get('redirectUri', '')
         authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
         token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
