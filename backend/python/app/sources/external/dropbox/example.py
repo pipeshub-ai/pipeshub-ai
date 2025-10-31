@@ -11,17 +11,17 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any
 
-ACCESS_TOKEN = os.getenv("DROPBOX_TOKEN")
-
+ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
+print(ACCESS_TOKEN)
 async def main() -> None:
     config = DropboxTokenConfig(token=ACCESS_TOKEN)
-    client = await DropboxClient.build_with_config(config, is_team=False)
+    client = await DropboxClient.build_with_config(config, is_team=True)
     data_source = DropboxDataSource(client)
 
     # List current user
-    print("\nListing current user:")
-    current_user = await data_source.users_get_current_account()
-    print(current_user.data.name.display_name)
+    # print("\nListing current user:")
+    # current_user = await data_source.users_get_current_account()
+    # print(current_user.data.name.display_name)
     
     # #List shared folders
     print("\nListing shared folders:")
@@ -38,6 +38,16 @@ async def main() -> None:
     print("\nListing team folder:")
     team_files = await data_source.files_list_folder(path="", team_folder_id="13131350499", recursive=True)
     print(to_pretty_json(team_files))
+
+    # List groups
+    print("\nListing groups:")
+    groups = await data_source.team_groups_list()
+    print(to_pretty_json(groups))
+
+    # List group members
+    print("\nListing group members:")
+    group_members = await data_source.team_groups_members_list(group="g:a7389e73eef2b44f0000000000000003")
+    print((group_members))
 
     # Upload a test file
     # print("\nUploading test.txt...")

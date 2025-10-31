@@ -175,7 +175,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
               width: 48,
               height: 48,
               backgroundColor: isDark
-                ? alpha(theme.palette.background.default, 0.4)
+                ? alpha(theme.palette.common.white, 0.9)
                 : alpha(theme.palette.grey[100], 0.8),
               border: `1px solid ${theme.palette.divider}`,
               transition: theme.transitions.create('transform'),

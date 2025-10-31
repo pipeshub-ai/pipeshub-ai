@@ -13,7 +13,7 @@ from app.sources.client.jira.jira import JiraClient
 class JiraClientFactory(ClientFactory):
     """Factory for creating Jira clients"""
 
-    async def create_client(self, config_service, logger) -> JiraClient:
+    async def create_client(self, config_service, logger, state=None) -> JiraClient:
         """Create Jira client instance"""
 
         return await JiraClient.build_from_services(

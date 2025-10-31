@@ -230,7 +230,8 @@ class RegistryToolWrapper(BaseTool):
                     config_service = retrieval_service.config_service
                     logger = self.state.get("logger")
 
-                    client = factory.create_client_sync(config_service, logger)
+                    # Pass chat state into factory for auth/impersonation decisions
+                    client = factory.create_client_sync(config_service, logger, self.state)
                     return action_class(client)
 
             raise ValueError("Not able to get the client from factory")
@@ -258,8 +259,54 @@ class RegistryToolWrapper(BaseTool):
         return str(result)
 
 
+def _get_recently_failed_tools(state: ChatState, logger) -> dict:
+    """
+    Identify tools that have recently failed multiple times and should be blocked.
+
+    Args:
+        state: Chat state
+        logger: Logger instance
+
+    Returns:
+        Dict mapping tool_name to failure count for blocked tools
+    """
+    LOOKBACK_WINDOW = 7  # Check last N tool calls
+    FAILURE_THRESHOLD = 2  # Block if failed N+ times
+
+    all_results = state.get("all_tool_results", [])
+    if not all_results or len(all_results) < FAILURE_THRESHOLD:
+        return {}
+
+    # Look at recent tool results
+    recent_results = all_results[-LOOKBACK_WINDOW:]
+
+    # Count failures per tool
+    failure_counts = {}
+    for result in recent_results:
+        tool_name = result.get("tool_name", "unknown")
+        status = result.get("status", "unknown")
+
+        if status == "error":
+            failure_counts[tool_name] = failure_counts.get(tool_name, 0) + 1
+
+    # Block tools that exceeded failure threshold
+    blocked_tools = {
+        tool: count
+        for tool, count in failure_counts.items()
+        if count >= FAILURE_THRESHOLD
+    }
+
+    if blocked_tools and logger:
+        logger.info(f"🚫 Identified {len(blocked_tools)} tools to block based on recent failures")
+
+    return blocked_tools
+
+
 def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     """Get all available tools from the global registry.
+    - Caches tools after first load for performance
+    - Only re-computes when blocked tools change
+    - Filters out tools that have recently failed to prevent infinite retry loops
 
     Args:
         state: Chat state object
@@ -267,10 +314,31 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     Returns:
         List of tool wrappers
     """
-    tools: List[RegistryToolWrapper] = []
     logger = state.get("logger")
 
+    # **PERFORMANCE OPTIMIZATION**: Check if tools are already cached
+    cached_tools = state.get("_cached_agent_tools")
+    cached_blocked_tools = state.get("_cached_blocked_tools", {})
+
+    # Identify recently failed tools
+    blocked_tools = _get_recently_failed_tools(state, logger)
+
+    # If cache exists and blocked tools haven't changed, return cached tools
+    if cached_tools is not None and blocked_tools == cached_blocked_tools:
+        if logger:
+            logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools) - significant performance boost")
+        return cached_tools
+
+    # Cache miss or blocked tools changed - rebuild tool list
+    if logger:
+        if cached_tools is not None:
+            logger.info("🔄 Blocked tools changed - rebuilding tool cache")
+        else:
+            logger.info("📦 First tool load - building cache")
+
+    tools: List[RegistryToolWrapper] = []
     registry_tools = _global_tools_registry.get_all_tools()
+
     if logger:
         logger.info(f"Loading {len(registry_tools)} tools from global registry")
 
@@ -292,6 +360,12 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
                 user_enabled_tools
             )
 
+            # Exclude tools that have recently failed
+            if should_include and full_tool_name in blocked_tools:
+                if logger:
+                    logger.warning(f"🚫 Blocking tool: {full_tool_name} (recently failed {blocked_tools[full_tool_name]} times)")
+                should_include = False
+
             if should_include:
                 wrapper_tool = RegistryToolWrapper(
                     app_name,
@@ -311,8 +385,14 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     _initialize_tool_state(state)
     state["available_tools"] = [tool.name for tool in tools]
 
+    # **PERFORMANCE**: Cache the tools and blocked tools list
+    state["_cached_agent_tools"] = tools
+    state["_cached_blocked_tools"] = blocked_tools.copy()
+
     if logger:
-        logger.info(f"Total tools available to LLM: {len(tools)}")
+        logger.info(f"✅ Cached {len(tools)} tools for future iterations")
+        if blocked_tools:
+            logger.warning(f"⚠️ Blocked {len(blocked_tools)} tools due to recent failures: {list(blocked_tools.keys())}")
 
     return tools
 
@@ -422,13 +502,8 @@ def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolW
 
 
 def get_tool_results_summary(state: ChatState) -> str:
-    """Get a summary of all tool results.
-
-    Args:
-        state: Chat state object
-
-    Returns:
-        Formatted summary string
+    """Get a summary of all tool results with enhanced progress tracking.
+    **FULLY GENERIC** - dynamically groups tools by their prefix/category.
     """
     all_results = state.get("all_tool_results", [])
     if not all_results:
@@ -437,8 +512,36 @@ def get_tool_results_summary(state: ChatState) -> str:
     summary = f"Tool Execution Summary (Total: {len(all_results)}):\n"
     tool_summary = _build_tool_summary(all_results)
 
+    # **DYNAMIC** categorization - extract categories from tool names
+    tool_categories = {}
+
     for tool_name, stats in tool_summary.items():
-        summary += _format_tool_stats(tool_name, stats)
+        # Extract category from tool name (e.g., "slack.send_message" → "slack")
+        category = tool_name.split('.')[0] if '.' in tool_name else "utility"
+
+        if category not in tool_categories:
+            tool_categories[category] = []
+
+        tool_categories[category].append((tool_name, stats))
+
+    # Add progress insights
+    for category, tools in sorted(tool_categories.items()):
+        if tools:
+            summary += f"\n## {category.title()} Tools:\n"
+            for tool_name, stats in tools:
+                summary += _format_tool_stats(tool_name, stats)
+
+                # **GENERIC** guidance based on tool verb/action
+                if stats["success"] > 0:
+                    tool_action = tool_name.split('.')[-1] if '.' in tool_name else tool_name
+
+                    # Generic guidance based on action type
+                    if any(verb in tool_action.lower() for verb in ["fetch", "get", "list", "retrieve"]):
+                        summary += "  - ✅ Data retrieved successfully - can be used for further actions\n"
+                    elif any(verb in tool_action.lower() for verb in ["create", "send", "post", "add"]):
+                        summary += "  - ✅ Action completed successfully\n"
+                    elif any(verb in tool_action.lower() for verb in ["update", "modify", "edit"]):
+                        summary += "  - ✅ Update completed successfully\n"
 
     return summary
 

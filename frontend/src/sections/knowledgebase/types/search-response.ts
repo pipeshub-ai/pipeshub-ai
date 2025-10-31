@@ -49,6 +49,8 @@ export interface DocumentContent {
   citationType: string;
   metadata: DocumentMetadata;
   chunkIndex?: number;
+  citationId?: string;
+  id?: string;
 }
 
 export interface AggregatedDocument {
@@ -89,6 +91,8 @@ export interface SearchResult {
   score: number;
   citationType: string;
   metadata: DocumentMetadata;
+  citationId?: string;
+  id?: string;
 }
 
 export interface SearchResponse {

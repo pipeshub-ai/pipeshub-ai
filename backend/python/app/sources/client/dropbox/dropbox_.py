@@ -33,8 +33,19 @@ class DropboxResponse:
 
 class DropboxRESTClientViaToken:
     """Dropbox client via short/long‑lived OAuth2 access token."""
-    def __init__(self, access_token: str, timeout: Optional[float] = None, is_team: bool = False) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        refresh_token: Optional[str] = None,
+        app_key: Optional[str] = None,
+        app_secret: Optional[str] = None,
+        timeout: Optional[float] = None,
+        is_team: bool = False
+    ) -> None:
         self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.app_key = app_key
+        self.app_secret = app_secret
         self.timeout = timeout
         self.is_team = is_team
         self.dropbox_client = None
@@ -42,9 +53,21 @@ class DropboxRESTClientViaToken:
     def create_client(self) -> Dropbox: # type: ignore[valid-type]
         # `timeout` is supported by SDK constructor
         if self.is_team:
-            self.dropbox_client = DropboxTeam(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+            self.dropbox_client = DropboxTeam(
+                oauth2_access_token=self.access_token,
+                timeout=self.timeout,
+                oauth2_refresh_token=self.refresh_token,
+                app_key=self.app_key,
+                app_secret=self.app_secret
+            ) # type: ignore[valid-type]
         else:
-            self.dropbox_client = Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+            self.dropbox_client = Dropbox(
+                oauth2_access_token=self.access_token,
+                timeout=self.timeout,
+                oauth2_refresh_token=self.refresh_token,
+                app_key=self.app_key,
+                app_secret=self.app_secret
+            ) # type: ignore[valid-type]
         return self.dropbox_client
 
     def get_dropbox_client(self) -> Dropbox: # type: ignore[valid-type]
@@ -108,13 +131,23 @@ class DropboxTokenConfig:
         ssl: Unused; kept for interface parity
     """
     token: str
+    refresh_token: Optional[str] = None
+    app_key: Optional[str] = None
+    app_secret: Optional[str] = None
     timeout: Optional[float] = None
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK, for parity only
     ssl: bool = True
 
     async def create_client(self, is_team: bool = False) -> DropboxRESTClientViaToken:
         """Create a Dropbox client."""
-        return DropboxRESTClientViaToken(self.token, timeout=self.timeout, is_team=is_team)
+        return DropboxRESTClientViaToken(
+            self.token,
+            self.refresh_token,
+            app_key=self.app_key,
+            app_secret=self.app_secret,
+            timeout=self.timeout,
+            is_team=is_team
+        )
 
     def to_dict(self) -> dict:
         return asdict(self)

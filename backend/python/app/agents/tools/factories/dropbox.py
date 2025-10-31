@@ -13,7 +13,7 @@ from app.sources.client.dropbox.dropbox_ import DropboxClient
 class DropboxClientFactory(ClientFactory):
     """Factory for creating Dropbox clients"""
 
-    async def create_client(self, config_service, logger) -> DropboxClient:
+    async def create_client(self, config_service, logger, state=None) -> DropboxClient:
         """Create Dropbox client instance"""
 
         return await DropboxClient.build_from_services(

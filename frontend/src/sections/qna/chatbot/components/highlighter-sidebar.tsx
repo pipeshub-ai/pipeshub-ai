@@ -169,25 +169,40 @@ const CitationSidebar = ({
   const isDarkMode = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-
+  
   useEffect(() => {
     if (highlightedCitationId) {
-      setSelectedCitation(highlightedCitationId);
-
-      // Find the citation that matches the highlighted ID
+      // Find the citation that matches the highlighted ID using multiple strategies
       const citationToHighlight = citations.find(
-        (citation) => citation.highlight?.id === highlightedCitationId
+        (citation) =>
+          citation.highlight?.id === highlightedCitationId ||
+          citation.citationId === highlightedCitationId ||
+          citation.metadata?._id === highlightedCitationId ||
+          citation.id === highlightedCitationId
       );
 
-      // If we found it, scroll to it in the sidebar
-      if (citationToHighlight?.highlight) {
-        // Find the list item element for this citation
-        const listItem = document.getElementById(`citation-item-${highlightedCitationId}`);
-        if (listItem) {
-          // Scroll the list item into view
-          listItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (citationToHighlight) {
+        // Use the citation's highlight ID or fallback to other IDs
+        const citationId = citationToHighlight.highlight?.id || 
+                          citationToHighlight.citationId || 
+                          citationToHighlight.metadata?._id || 
+                          citationToHighlight.id;
+        
+        setSelectedCitation(citationId || null);
+
+        // If we found it, scroll to it in the sidebar
+        if (citationToHighlight?.highlight) {
+          // Find the list item element for this citation
+          const listItemId = `citation-item-${citationId}`;
+          const listItem = document.getElementById(listItemId);
+          if (listItem) {
+            // Scroll the list item into view
+            listItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
         }
       }
+    } else {
+      setSelectedCitation(null);
     }
   }, [highlightedCitationId, citations]);
 
@@ -203,23 +218,19 @@ const CitationSidebar = ({
           rects: [],
           pageNumber: citation.metadata?.pageNum?.[0] || 1,
         },
-        // Make sure id is defined
-        id: citation.highlight.id || citation.metadata?._id || String(Math.random()).slice(2),
+        // Make sure id is defined with multiple fallback strategies
+        id: citation.highlight.id || citation.citationId || citation.metadata?._id || String(Math.random()).slice(2),
       };
-
       // Try using the highlight we constructed rather than citation.highlight directly
       try {
         scrollViewerTo(highlight);
       } catch (err) {
-        console.error('Error scrolling to highlight:', err);
-
-        // Fallback: try again after small delay (but without the original citation.highlight which could be null)
-        // Fix TypeScript error: citation.highlight might be null
+        // Fallback: try again after small delay
         setTimeout(() => {
           try {
             scrollViewerTo(highlight);
           } catch (fallbackErr) {
-            console.error('Fallback scroll also failed:', fallbackErr);
+            // Silent fallback failure
           }
         }, 200);
       }
@@ -227,6 +238,8 @@ const CitationSidebar = ({
       // Also set the hash
       document.location.hash = `highlight-${highlight.id}`;
       setSelectedCitation(highlight.id);
+    } else {
+      // No highlight found for citation
     }
   };
 
@@ -332,17 +345,17 @@ const CitationSidebar = ({
         {citations.map((citation, index) => (
           <StyledListItem
             key={citation.metadata?._id || citation.highlight?.id || index}
-            id={`citation-item-${citation.highlight?.id || citation.metadata?._id}`}
+            id={`citation-item-${citation.highlight?.id || citation.citationId || citation.metadata?._id || citation.id}`}
             onClick={() => handleCitationClick(citation)}
             sx={{
               bgcolor:
-                selectedCitation === citation.metadata._id
+                selectedCitation === (citation.highlight?.id || citation.citationId || citation.metadata?._id || citation.id)
                   ? isDarkMode
                     ? alpha(theme.palette.primary.dark, 0.15)
                     : alpha(theme.palette.primary.lighter, 0.3)
                   : 'transparent',
               boxShadow:
-                selectedCitation === citation.metadata._id
+                selectedCitation === (citation.highlight?.id || citation.citationId || citation.metadata?._id || citation.id)
                   ? isDarkMode
                     ? `0 0 0 1px ${alpha(theme.palette.primary.main, 0.3)}`
                     : `0 0 0 1px ${alpha(theme.palette.primary.main, 0.3)}`
@@ -353,7 +366,7 @@ const CitationSidebar = ({
               <CitationTitle
                 sx={{
                   color:
-                    selectedCitation === (citation.highlight?.id || citation.metadata?._id)
+                    selectedCitation === (citation.highlight?.id || citation.citationId || citation.metadata?._id || citation.id)
                       ? '#0066cc'
                       : isDarkMode
                         ? '#e8eaed'

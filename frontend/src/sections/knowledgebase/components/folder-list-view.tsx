@@ -9,25 +9,26 @@ import dotsIcon from '@iconify-icons/mdi/dots-vertical';
 // Import specific icons for better type safety
 import folderIcon from '@iconify-icons/mdi/folder-outline';
 import languageGoIcon from '@iconify-icons/mdi/language-go';
-import filePdfBoxIcon from '@iconify-icons/mdi/file-pdf-box';
+import filePdfBoxIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
 import languagePhpIcon from '@iconify-icons/mdi/language-php';
-import fileWordBoxIcon from '@iconify-icons/mdi/file-word-box';
+import fileWordBoxIcon from '@iconify-icons/vscode-icons/file-type-word';
 import languageCss3Icon from '@iconify-icons/mdi/language-css3';
 import languageJavaIcon from '@iconify-icons/mdi/language-java';
 import languageRubyIcon from '@iconify-icons/mdi/language-ruby';
 import emailOutlineIcon from '@iconify-icons/mdi/email-outline';
-import fileExcelBoxIcon from '@iconify-icons/mdi/file-excel-box';
-import fileImageBoxIcon from '@iconify-icons/mdi/file-image-box';
+import fileExcelBoxIcon from '@iconify-icons/vscode-icons/file-type-excel';
+import fileImageBoxIcon from '@iconify-icons/vscode-icons/file-type-image';
 import languageHtml5Icon from '@iconify-icons/mdi/language-html5';
 import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
 import languagePythonIcon from '@iconify-icons/mdi/language-python';
 import noteTextOutlineIcon from '@iconify-icons/mdi/note-text-outline';
-import languageMarkdownIcon from '@iconify-icons/mdi/language-markdown';
+import languageMarkdownIcon from '@iconify-icons/vscode-icons/file-type-markdown';
 import fileMusicOutlineIcon from '@iconify-icons/mdi/file-music-outline';
 import fileVideoOutlineIcon from '@iconify-icons/mdi/file-video-outline';
-import filePowerpointBoxIcon from '@iconify-icons/mdi/file-powerpoint-box';
+import filePowerpointBoxIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
 import languageJavascriptIcon from '@iconify-icons/mdi/language-javascript';
 import fileDocumentOutlineIcon from '@iconify-icons/mdi/file-document-outline';
+
 
 import { DataGrid } from '@mui/x-data-grid';
 import {
@@ -160,6 +161,7 @@ export const ListView: React.FC<ListViewProps> = ({
       case 'rtf':
         return fileDocumentOutlineIcon;
       case 'md':
+      case 'mdx':
         return languageMarkdownIcon;
       case 'html':
       case 'htm':
@@ -425,7 +427,7 @@ export const ListView: React.FC<ListViewProps> = ({
                     : getFileIcon('', item.type, mimeType)
               }
               style={{
-                fontSize: '18px',
+                fontSize: '26px',
                 color: getFileIconColor(extension, item.type, mimeType),
                 marginRight: '10px',
                 flexShrink: 0,

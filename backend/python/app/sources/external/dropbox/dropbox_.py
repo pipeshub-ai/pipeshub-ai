@@ -43,14 +43,18 @@ class DropboxDataSource:
             dropboxClient (DropboxClient): Dropbox client instance
         """
         self._dropbox_client = dropboxClient
-        self._user_client = None
-        self._team_client = None
+        self._base_sdk_client: Union[Dropbox, DropboxTeam] = self._dropbox_client.get_client().create_client()
+        # self._user_client = None
+        # self._team_client = None
 
     async def _get_user_client(self, team_member_id: Optional[str] = None, as_admin: bool = False) -> Union[Dropbox, DropboxTeam]:
         """
         Gets a Dropbox client scoped to a specific user or admin.
+
+        --- FIX: Use the cached base client ---
         """
-        base_client = self._dropbox_client.get_client().create_client()
+        # Get the cached base client created in __init__
+        base_client = self._base_sdk_client
 
         # If this is a team client and a member ID is provided, scope it
         if isinstance(base_client, DropboxTeam) and team_member_id:
@@ -66,12 +70,17 @@ class DropboxDataSource:
 
 
     async def _get_team_client(self) -> DropboxTeam:
-        """Get or create team client."""
-        if self._team_client is None:
-            self._team_client = self._dropbox_client.get_client().create_client()
-            if self._team_client is None:
-                raise Exception("Team operations require team admin token")
-        return self._team_client
+        """
+        Get or create team client.
+
+        --- FIX: Use the cached base client ---
+        """
+        # Return the cached client, ensuring it's the correct type
+        if isinstance(self._base_sdk_client, DropboxTeam):
+            return self._base_sdk_client
+
+        # This will now fail fast if it was initialized as a non-team client
+        raise Exception("Team operations require a team client, but a non-team client was initialized.")
 
     async def account_set_profile_photo(
         self,
@@ -7979,7 +7988,7 @@ class DropboxDataSource:
         ) -> DropboxResponse:
         """Lists members of a group. Permission : Team Information.
 
-        API Endpoint: /2/team/groups/members_list
+        API Endpoint: /2/team/groups/members/list
         """
         client = await self._get_team_client()
         try:
