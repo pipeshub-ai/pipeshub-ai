@@ -1046,6 +1046,23 @@ class BaseArangoService:
             # ===== MAIN QUERY (with pagination and filters and file/mail records) =====
             record_filter = build_record_filters(True)
             permission_filter = build_permission_filter(True)
+            folder_filter = '''
+                LET targetDoc = FIRST(
+                    FOR v IN 1..1 OUTBOUND record._id isOfType
+                        LIMIT 1
+                        RETURN v
+                )
+
+                // If the record connects to a file collection, verify isFile == true
+                // For any other type (webpage, ticket, etc.), automatically accept
+                LET isValidRecord = (
+                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
+                        ? targetDoc.isFile == true
+                        : true  // Not a file (webpage, ticket, etc.) - accept it
+                )
+
+                FILTER isValidRecord
+            '''
 
             main_query = f"""
             LET user_from = @user_from
@@ -1093,22 +1110,7 @@ class BaseArangoService:
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
-
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-
-                        // If the record connects to a file collection, verify isFile == true
-                        // For any other type (webpage, ticket, etc.), automatically accept
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true  // Not a file (webpage, ticket, etc.) - accept it
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
                         RETURN {{
                             record: record,
@@ -1130,21 +1132,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-
-                        // If the record connects to a file collection, verify isFile == true
-                        // For any other type (webpage, ticket, etc.), automatically accept
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true  // Not a file (webpage, ticket, etc.) - accept it
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
                         RETURN {{
                             record: record,
@@ -1169,17 +1157,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            LET targetDoc = FIRST(
-                                FOR v IN 1..1 OUTBOUND record._id isOfType
-                                    LIMIT 1
-                                    RETURN v
-                            )
-                            LET isValidRecord = (
-                                targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                    ? targetDoc.isFile == true
-                                    : true
-                            )
-                            FILTER isValidRecord
+                            {folder_filter}
                             {record_filter}
 
                             RETURN {{
@@ -1202,17 +1180,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            LET targetDoc = FIRST(
-                                FOR v IN 1..1 OUTBOUND record._id isOfType
-                                    LIMIT 1
-                                    RETURN v
-                            )
-
-                            LET isValidRecord = (
-                                targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)? targetDoc.isFile == true : true
-                            )
-
-                            FILTER isValidRecord
+                            {folder_filter}
                             {record_filter}
                             RETURN {{
                                 record: record,
@@ -1243,18 +1211,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
-                                LET targetDoc = FIRST(
-                                    FOR v IN 1..1 OUTBOUND record._id isOfType
-                                        LIMIT 1
-                                        RETURN v
-                                )
-                                LET isValidRecord = (
-                                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                        ? targetDoc.isFile == true
-                                        : true
-                                )
-
-                                FILTER isValidRecord
+                                {folder_filter}
                                 {record_filter}
 
                                 RETURN {{
@@ -1291,18 +1248,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
 
                         RETURN {{
@@ -1451,18 +1397,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
                         RETURN 1
                 )''' if include_connector_records else '0'
@@ -1481,18 +1416,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
                         RETURN record._key
                 )''' if include_connector_records else '[]'
@@ -1514,19 +1438,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            LET targetDoc = FIRST(
-                                FOR v IN 1..1 OUTBOUND record._id isOfType
-                                    LIMIT 1
-                                    RETURN v
-                            )
-
-                            LET isValidRecord = (
-                                targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                    ? targetDoc.isFile == true
-                                    : true
-                            )
-
-                            FILTER isValidRecord
+                            {folder_filter}
                             {record_filter}
                             RETURN record._key
                 )''' if include_connector_records else '[]'
@@ -1545,19 +1457,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            LET targetDoc = FIRST(
-                                FOR v IN 1..1 OUTBOUND record._id isOfType
-                                    LIMIT 1
-                                    RETURN v
-                            )
-
-                            LET isValidRecord = (
-                                targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                    ? targetDoc.isFile == true
-                                    : true
-                            )
-
-                            FILTER isValidRecord
+                            {folder_filter}
                             {record_filter}
                             RETURN record._key
                 )''' if include_connector_records else '[]'
@@ -1584,18 +1484,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
-                                LET targetDoc = FIRST(
-                                    FOR v IN 1..1 OUTBOUND record._id isOfType
-                                        LIMIT 1
-                                        RETURN v
-                                )
-                                LET isValidRecord = (
-                                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                        ? targetDoc.isFile == true
-                                        : true
-                                )
-
-                                FILTER isValidRecord
+                                {folder_filter}
                                 {record_filter}
 
                                 RETURN record._key
@@ -1626,18 +1515,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
 
                         RETURN record._key
@@ -1680,7 +1558,7 @@ class BaseArangoService:
             }
 
             LET allConnectorRecords = {
-                '''(
+                f'''(
                     FOR permissionEdge IN @@permissions
                         FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
@@ -1691,28 +1569,16 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
-                        RETURN {
+                        {folder_filter}
+                        RETURN {{
                             record: record,
-                            permission: { role: permissionEdge.role }
-                        }
+                            permission: {{ role: permissionEdge.role }}
+                        }}
                 )''' if include_connector_records else '[]'
             }
 
             LET allConnectorRecordsNewPermission = {
-                '''(
+                f'''(
                     FOR permissionEdge IN @@permission
                         FILTER permissionEdge._from == user_from
                         FILTER permissionEdge.type == "USER"
@@ -1723,23 +1589,11 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
-                        RETURN {
+                        {folder_filter}
+                        RETURN {{
                             record: record,
-                            permission: { role: permissionEdge.role }
-                        }
+                            permission: {{ role: permissionEdge.role }}
+                        }}
                 )''' if include_connector_records else '[]'
             }
 
@@ -1759,19 +1613,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            LET targetDoc = FIRST(
-                                FOR v IN 1..1 OUTBOUND record._id isOfType
-                                    LIMIT 1
-                                    RETURN v
-                            )
-
-                            LET isValidRecord = (
-                                targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                    ? targetDoc.isFile == true
-                                    : true
-                            )
-
-                            FILTER isValidRecord
+                            {folder_filter}
                             {record_filter}
 
                             RETURN {{
@@ -1814,7 +1656,7 @@ class BaseArangoService:
             }
 
             LET recordGroupConnectorRecordsFilter = {
-                '''(
+                f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
                         FILTER IS_SAME_COLLECTION("groups", group)
@@ -1832,27 +1674,15 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
-                                LET targetDoc = FIRST(
-                                    FOR v IN 1..1 OUTBOUND record._id isOfType
-                                        LIMIT 1
-                                        RETURN v
-                                )
+                                {folder_filter}
 
-                                LET isValidRecord = (
-                                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                        ? targetDoc.isFile == true
-                                        : true
-                                )
-
-                                FILTER isValidRecord
-
-                                RETURN {
+                                RETURN {{
                                     record: record,
-                                    permission: {
+                                    permission: {{
                                         role: groupToRecordGroupEdge.role,
                                         type: groupToRecordGroupEdge.type
-                                    }
-                                }
+                                    }}
+                                }}
                 )''' if include_connector_records else '[]'
             }
 
@@ -1876,19 +1706,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND record._id isOfType
-                                LIMIT 1
-                                RETURN v
-                        )
-
-                        LET isValidRecord = (
-                            targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                                ? targetDoc.isFile == true
-                                : true
-                        )
-
-                        FILTER isValidRecord
+                        {folder_filter}
                         {record_filter}
 
                         RETURN {{
