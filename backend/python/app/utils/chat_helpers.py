@@ -17,8 +17,8 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.logger import create_logger
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value]
 
@@ -1157,7 +1157,7 @@ def count_tokens_in_messages(messages: List[Any],enc) -> int:
         len(messages) if messages else 0,
     )
 
-    
+
 
     total_tokens = 0
 
@@ -1201,11 +1201,13 @@ def count_tokens_text(text: str,enc) -> int:
         try:
             return len(enc.encode(text))
         except Exception:
+            logger.warning("tiktoken encoding failed, falling back to heuristic.")
             pass
+
     # Fallback heuristic: ~4 chars per token
     return max(1, len(text) // 4)
 
-def count_tokens(messages: List[Any], message_contents: List[str]) -> int:
+def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int, int]:
     # Lazy import tiktoken; fall back to a rough heuristic if unavailable
     enc = None
     try:

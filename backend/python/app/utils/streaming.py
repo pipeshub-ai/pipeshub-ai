@@ -391,11 +391,11 @@ async def execute_tool_calls(
         messages.append(ai)
 
         message_contents = []
-        
+
         for record in records:
             message_content = record_to_message_content(record,final_results)
             message_contents.append(message_content)
-        
+
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
 
         logger.debug(
@@ -404,7 +404,7 @@ async def execute_tool_calls(
             new_tokens,
             MAX_TOKENS_THRESHOLD,
         )
-        
+
         if new_tokens+current_message_tokens > MAX_TOKENS_THRESHOLD:
 
             message_contents = []
