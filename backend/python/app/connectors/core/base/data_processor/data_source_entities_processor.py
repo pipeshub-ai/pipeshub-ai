@@ -284,7 +284,7 @@ class DataSourceEntitiesProcessor:
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
         existing_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
-                                                                   external_id=record.external_record_id)
+                                                                   external_id=record.external_record_id,record_type=record.record_type)
 
         if existing_record is None:
             self.logger.info("New record: %s", record)
@@ -319,6 +319,7 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
+            self.logger.info(f"on_new_records for: {records_with_permissions}")
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:

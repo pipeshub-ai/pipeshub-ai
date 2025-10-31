@@ -266,6 +266,7 @@ class ZammadKnowledgeBase(BaseModel):
     # Core KB fields
     id: int = Field(description="Unique knowledge base ID")
     active: bool = Field(default=True, description="Active status")
+    title: str = Field(default="", description="Knowledge base title")
 
     # Appearance fields
     iconset: str = Field(default="FontAwesome", description="Icon set to use")
@@ -341,6 +342,81 @@ class ZammadGroup(BaseModel):
     signature: Optional[str] = Field(default=None, description="Signature name")
     users: List[str] = Field(default_factory=list, description="List of user emails/names")
 
+    class Config:
+        populate_by_name = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+
+class ZammadKBCategory(BaseModel):
+    """Pydantic model for Zammad Knowledge Base Category"""
+
+    # Core category fields
+    id: int = Field(description="Unique category ID")
+    knowledge_base_id: int = Field(description="Parent knowledge base ID")
+    parent_id: Optional[int] = Field(default=None, description="Parent category ID")
+    title: str = Field(default="", description="Category title")
+    
+    # Display fields
+    category_icon: Optional[str] = Field(default=None, description="Category icon")
+    position: int = Field(default=0, description="Position in list")
+    
+    # Timestamps
+    created_at: datetime = Field(description="Category creation timestamp")
+    updated_at: datetime = Field(description="Category update timestamp")
+    
+    # User references (optional - not always returned by API)
+    updated_by_id: Optional[int] = Field(default=None, description="ID of user who last updated this category")
+    created_by_id: Optional[int] = Field(default=None, description="ID of user who created this category")
+    
+    # Related IDs
+    translation_ids: List[int] = Field(default_factory=list, description="List of translation IDs")
+    answer_ids: List[int] = Field(default_factory=list, description="List of answer IDs")
+    
+    # Permission IDs
+    permission_ids: List[int] = Field(default_factory=list, description="List of permission IDs")
+    
+    class Config:
+        populate_by_name = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+
+class ZammadKBAnswer(BaseModel):
+    """Pydantic model for Zammad Knowledge Base Answer (Article)"""
+
+    # Core answer fields
+    id: int = Field(description="Unique answer ID")
+    category_id: int = Field(description="Parent category ID")
+    title: str = Field(default="", description="Answer title")
+    
+    # Content fields
+    promoted: bool = Field(default=False, description="Promoted/featured status")
+    internal_note: Optional[str] = Field(default=None, description="Internal note")
+    internal_at: Optional[datetime] = Field(default=None, description="Internal timestamp")
+    archived_at: Optional[datetime] = Field(default=None, description="Archive timestamp")
+    
+    # Position
+    position: int = Field(default=0, description="Position in list")
+    
+    # Timestamps
+    created_at: datetime = Field(description="Answer creation timestamp")
+    updated_at: datetime = Field(description="Answer update timestamp")
+    published_at: Optional[datetime] = Field(default=None, description="Publish timestamp")
+    
+    # User references (optional - not always returned by API)
+    updated_by_id: Optional[int] = Field(default=None, description="ID of user who last updated this answer")
+    created_by_id: Optional[int] = Field(default=None, description="ID of user who created this answer")
+    
+    # Related IDs
+    translation_ids: List[int] = Field(default_factory=list, description="List of translation IDs")
+    attachment_ids: List[int] = Field(default_factory=list, description="List of attachment IDs")
+    
+    # Translations (expanded)
+    translations: List[Dict[str, Any]] = Field(default_factory=list, description="List of translation objects with title and content")
+    
     class Config:
         populate_by_name = True
         json_encoders = {

@@ -53,8 +53,8 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_key(self, key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_id(key, transaction=self.txn)
 
-    async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_record_by_external_id(self, connector_name: Connectors, external_id: str, record_type: Optional[str] = None) -> Optional[Record]:
+        return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn, record_type=record_type)
 
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)

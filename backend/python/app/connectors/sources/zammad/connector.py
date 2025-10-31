@@ -1,4 +1,6 @@
 """Zammad Connector Implementation"""
+import re
+import base64
 from datetime import datetime, timedelta
 from logging import Logger
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -30,6 +32,8 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.sources.zammad.apps import ZammadApp
 from app.connectors.sources.zammad.models import (
     ZammadGroup,
+    ZammadKBAnswer,
+    ZammadKBCategory,
     ZammadKnowledgeBase,
     ZammadOrganization,
     ZammadRole,
@@ -43,6 +47,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     TicketRecord,
+    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.zammad.zammad import (
@@ -51,6 +56,7 @@ from app.sources.client.zammad.zammad import (
 )
 from app.sources.external.zammad.zammad import ZammadDataSource, ZammadResponse
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.sources.client.http.http_request import HTTPRequest
 
 THRESHOLD_PAGINATION_LIMIT: int = 100
 
@@ -110,6 +116,8 @@ class ZammadConnector(BaseConnector):
         self.groups_data: List[ZammadGroup] = []
         self.tickets_data: List[ZammadTicket] = []
         self.knowledge_base_data: List[ZammadKnowledgeBase] = []
+        self.kb_categories_data: List[ZammadKBCategory] = []
+        self.kb_answers_data: List[ZammadKBAnswer] = []
         self.roles_data: List[ZammadRole] = []
 
         # Initialize sync points for delta sync
@@ -212,6 +220,16 @@ class ZammadConnector(BaseConnector):
 
                 # Step 5: Process tickets as Records with TicketRecords
                 await self.__process_tickets(tx_store, org_id, sub_org_map, user_id_map)
+
+            # Step 6: Process KB categories as RecordGroups and KB answers as WebpageRecords
+            # Done in a separate transaction after tickets to avoid complexity
+            self.logger.info("STEP 6: Processing Knowledge Base")
+            if self.kb_categories_data or self.kb_answers_data:
+                self.logger.info(f"Processing {len(self.kb_categories_data)} KB categories and {len(self.kb_answers_data)} KB answers...")
+                await self.__process_knowledge_base(org_id, app_key)
+                self.logger.info("KB processing completed!")
+            else:
+                self.logger.info("Skipping KB processing - no KB data found")
 
             self.logger.info("Successfully built all nodes and edges for Zammad connector")
 
@@ -470,6 +488,7 @@ class ZammadConnector(BaseConnector):
             record_suborg_edges: List[Dict[str, Any]] = []  # belongsTo edges
             user_permission_edges: List[Dict[str, Any]] = []  # permission edges from users to records
             records_with_permissions: List[Tuple[TicketRecord, List[Permission]]] = []  # For on_new_records dispatch
+            # self.logger.info(f"Tickets data: {self.tickets_data}")
 
             for ticket in self.tickets_data:
                 external_ticket_id: str = str(ticket.id)
@@ -477,7 +496,8 @@ class ZammadConnector(BaseConnector):
                 # Check if record already exists (for deduplication)
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_name=Connectors.ZAMMAD,
-                    external_id=external_ticket_id
+                    external_id=external_ticket_id,
+                    record_type="TICKET"
                 )
                 record_id: str = existing_record.id if existing_record else str(uuid4())
                 is_new: bool = existing_record is None
@@ -501,7 +521,7 @@ class ZammadConnector(BaseConnector):
                     connector_name=Connectors.ZAMMAD,
                     origin=OriginTypes.CONNECTOR,
                     mime_type=MimeTypes.PLAIN_TEXT.value,
-                    weburl=f"{self.base_url}/ticket/zoom/{external_ticket_id}" if self.base_url else None,
+                    weburl=f"{self.base_url}/#ticket/zoom/{external_ticket_id}" if self.base_url else None,
                     created_at=created_at,
                     updated_at=updated_at,
                     source_created_at=created_at,
@@ -534,7 +554,8 @@ class ZammadConnector(BaseConnector):
                     user_permission_edge: Dict[str, Any] = {
                         "_from": f"{CollectionNames.USERS.value}/{customer_user_id}",
                         "_to": f"{CollectionNames.RECORDS.value}/{record_id}",
-                        "permissionType": PermissionType.READ.value,
+                        "role": PermissionType.READ.value,
+                        "type": EntityType.USER.value,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                     }
@@ -556,7 +577,8 @@ class ZammadConnector(BaseConnector):
                     user_permission_edge: Dict[str, Any] = {
                         "_from": f"{CollectionNames.USERS.value}/{owner_user_id}",
                         "_to": f"{CollectionNames.RECORDS.value}/{record_id}",
-                        "permissionType": PermissionType.WRITE.value,
+                        "role": PermissionType.WRITE.value,
+                        "type": EntityType.USER.value,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                     }
@@ -584,7 +606,8 @@ class ZammadConnector(BaseConnector):
                                 user_permission_edge: Dict[str, Any] = {
                                     "_from": f"{CollectionNames.USERS.value}/{internal_user_id}",
                                     "_to": f"{CollectionNames.RECORDS.value}/{record_id}",
-                                    "permissionType": PermissionType.READ.value,
+                                    "role": PermissionType.READ.value,
+                                    "type": EntityType.USER.value,
                                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                     "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                                 }
@@ -615,9 +638,20 @@ class ZammadConnector(BaseConnector):
                     record_suborg_edges.append(record_suborg_edge)
 
             # Process records through data_entities_processor for storage + Kafka publishing
-            if records_with_permissions:
-                await self.data_entities_processor.on_new_records(records_with_permissions)
-                self.logger.info(f"Dispatched {len(records_with_permissions)} records for indexing")
+            # Only send NEW records to avoid re-indexing existing ones
+            new_records_with_permissions = [
+                (record, perms) for record, perms in records_with_permissions 
+                if record.version == 0  # version 0 means it's a new record
+            ]
+            
+            if new_records_with_permissions:
+                self.logger.info("Indexing the following ticket records:")
+                for record, perms in new_records_with_permissions:
+                    self.logger.info(f"Record: id={record.id}, title={getattr(record, 'record_name', None)}, external_id={record.external_record_id}")
+                await self.data_entities_processor.on_new_records(new_records_with_permissions)
+                self.logger.info(f"Dispatched {len(new_records_with_permissions)} NEW records for indexing (skipped {len(records_with_permissions) - len(new_records_with_permissions)} existing)")
+            else:
+                self.logger.info(f"No new records to dispatch - all {len(records_with_permissions)} records already exist")
 
             # Create isOfType, belongsTo, and hasAccess edges in a separate transaction
             async with self.data_store_provider.transaction() as tx_store_2:
@@ -633,7 +667,7 @@ class ZammadConnector(BaseConnector):
 
                 # Create permission edges (user -> record)
                 if user_permission_edges:
-                    await tx_store_2.batch_create_edges(user_permission_edges, CollectionNames.PERMISSIONS.value)
+                    await tx_store_2.batch_create_edges(user_permission_edges, CollectionNames.PERMISSION.value)
                     self.logger.info(f"Created {len(user_permission_edges)} user-record permission edges")
 
         except Exception as e:
@@ -641,12 +675,34 @@ class ZammadConnector(BaseConnector):
             raise
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Fetch and stream ticket content with articles"""
+        """Fetch and stream record content (tickets or KB answers)"""
         try:
             if not self.zammad_datasource:
                 await self.init()
 
+            # Check record type to determine how to stream
+            if record.record_type == RecordType.TICKET:
+                return await self.__stream_ticket(record)
+            elif record.record_type == RecordType.WEBPAGE:
+                return await self.__stream_kb_answer(record)
+            else:
+                return StreamingResponse(
+                    iter(["Unsupported record type"]),
+                    media_type=MimeTypes.PLAIN_TEXT.value
+                )
+
+        except Exception as e:
+            self.logger.error(f"Error streaming record: {e}")
+            return StreamingResponse(
+                iter([f"Error: {str(e)}"]),
+                media_type=MimeTypes.PLAIN_TEXT.value
+            )
+
+    async def __stream_ticket(self, record: Record) -> StreamingResponse:
+        """Stream ticket content with articles"""
+        try:
             ticket_id: int = int(record.external_record_id)
+            
             # Fetch ticket details
             ticket_response: ZammadResponse = await self.zammad_datasource.get_ticket(ticket_id)
             if not ticket_response.success or not ticket_response.data:
@@ -674,10 +730,60 @@ class ZammadConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"Error streaming record: {e}")
+            self.logger.error(f"Error streaming ticket: {e}")
             return StreamingResponse(
                 iter([f"Error: {str(e)}"]),
                 media_type=MimeTypes.PLAIN_TEXT.value
+            )
+
+    async def __stream_kb_answer(self, record: Record) -> StreamingResponse:
+        """Stream KB answer content"""
+        try:
+            answer_id: int = int(record.external_record_id)
+            # Extract KB ID from metadata or use default (1)
+            kb_id: int = 1  # Default to KB 1
+            self.logger.info(f"Fetched KB ID: {kb_id} for answer ID: {answer_id}")
+            self.logger.info(f"Streaming record data: {record}")
+
+            # Fetch KB answer details with full content
+            answer_response: ZammadResponse = await self.zammad_datasource.get_kb_answer(
+                kb_id=kb_id,
+                id=answer_id,
+                full=True,
+                include_contents=True
+            )
+            self.logger.info(f"Fetched KB Answer Response: {answer_response}")
+            if not answer_response.success or not answer_response.data:
+                return StreamingResponse(
+                    iter(["KB Answer not found"]),
+                    media_type=MimeTypes.HTML.value
+                )
+
+            # Extract answer from assets
+            answer_dict = answer_response.data.get('assets', {}).get('KnowledgeBaseAnswer', {}).get(str(answer_id), {})
+            self.logger.info(f"Fetched KB Answer dict: {answer_dict}")
+            if not answer_dict:
+                return StreamingResponse(
+                    iter(["KB Answer data not found in response"]),
+                    media_type=MimeTypes.HTML.value
+                )
+            
+            answer: ZammadKBAnswer = ZammadKBAnswer(**answer_dict)
+            self.logger.info(f"Fetched KB Answer: {answer}")
+            # Generate content from translations
+            content: str = await self.__get_kb_answer_content(answer, answer_response.data)
+
+            return StreamingResponse(
+                iter([content]),
+                media_type=MimeTypes.HTML.value,
+                headers={}
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error streaming KB answer: {e}")
+            return StreamingResponse(
+                iter([f"Error: {str(e)}"]),
+                media_type=MimeTypes.HTML.value
             )
 
     async def test_connection_and_access(self) -> bool:
@@ -704,46 +810,8 @@ class ZammadConnector(BaseConnector):
         return record.weburl or ""
 
     async def run_incremental_sync(self) -> None:
-        """Implement incremental sync using updated_at timestamps"""
-        try:
-            self.logger.info("Starting Zammad incremental sync")
-
-            # Ensure client is initialized
-            if not self.zammad_datasource:
-                await self.init()
-
-            # Sync changed tickets
-            changed_tickets: List[ZammadTicket] = await self._fetch_delta_tickets()
-            if changed_tickets:
-                self.logger.info(f"Found {len(changed_tickets)} changed tickets")
-                self.tickets_data = changed_tickets
-            else:
-                self.logger.info("No changed tickets found")
-                self.tickets_data = []
-
-            # Sync changed users
-            changed_users: List[ZammadUser] = await self._fetch_delta_users()
-            if changed_users:
-                self.logger.info(f"Found {len(changed_users)} changed users")
-                self.users_data = changed_users
-            else:
-                self.logger.info("No changed users found")
-                self.users_data = []
-
-            # Only build nodes and edges if we have changes
-            if changed_tickets or changed_users:
-                # Fetch supporting data needed for relationships
-                await self._fetch_supporting_entities()
-                await self.__build_nodes_and_edges()
-                self.logger.info("Zammad incremental sync completed successfully")
-            else:
-                self.logger.info("No changes detected, skipping node/edge creation")
-
-        except Exception as e:
-            self.logger.error(f"Error during Zammad incremental sync: {e}", exc_info=True)
-            # Fallback to full sync on error
-            self.logger.warning("Falling back to full sync")
-            await self.run_sync()
+        """Implement incremental sync using updated_at timestamps and sync points"""
+        pass
 
     async def cleanup(self) -> None:
         """Cleanup resources"""
@@ -762,6 +830,10 @@ class ZammadConnector(BaseConnector):
     async def __fetch_entities(self) -> None:
         """Fetch entities from Zammad"""
         try:
+            # Clear KB data from any previous runs
+            self.kb_categories_data = []
+            self.kb_answers_data = []
+            
             # 1. Fetch sub-organizations from Zammad
             self.logger.info("Fetching sub-organizations from Zammad")
             self.sub_orgs_data = await self.__fetch_sub_organizations()
@@ -792,11 +864,15 @@ class ZammadConnector(BaseConnector):
             self.logger.info(f"Fetched {len(self.tickets_data)} tickets from Zammad")
 
             # 5. Fetch Knowledge Base from Zammad
-            self.logger.info("Fetching Knowledge Base from Zammad")
+            self.logger.info("STEP 5: Fetching Knowledge Base from Zammad")
             self.knowledge_base_data = await self.__fetch_knowledge_base()
+            # All categories and answers are fetched in init_knowledge_base, no need to fetch again
             if not self.knowledge_base_data or len(self.knowledge_base_data) == 0:
-                self.logger.debug("No Knowledge Base found or failed to fetch Knowledge Base")
-            self.logger.info(f"Fetched {len(self.knowledge_base_data)} Knowledge Base from Zammad")
+                self.logger.warning("No Knowledge Base found or failed to fetch Knowledge Base")
+                self.logger.info("This is normal if your Zammad instance has no KB configured")
+            else:
+                self.logger.info(f"Fetched {len(self.knowledge_base_data)} Knowledge Base from Zammad")
+                self.logger.info(f"KB SUMMARY: {len(self.kb_categories_data)} categories, {len(self.kb_answers_data)} answers")
 
             # 6. Fetch Roles from Zammad
             self.logger.info("Fetching Roles from Zammad")
@@ -894,27 +970,86 @@ class ZammadConnector(BaseConnector):
             self.logger.error(f"Error fetching tickets: {e}", exc_info=True)
             return []
 
-    async def __fetch_knowledge_base(self) -> List[ZammadKnowledgeBase]:
-        """Fetch Zammad Knowledge Base"""
+    async def __fetch_knowledge_base(self) -> None:
+        """Fetch and parse Zammad Knowledge Base using init_knowledge_base response"""
         try:
-            kb_id: int = 1
-            response: ZammadResponse = await self.zammad_datasource.get_knowledge_base(id=kb_id, expand="true")
+            response: ZammadResponse = await self.zammad_datasource.init_knowledge_base()
             if not response.success or not response.data:
-                return []
+                self.knowledge_base_data = []
+                self.kb_categories_data = []
+                self.kb_answers_data = []
+                return
 
-            kbs: List[ZammadKnowledgeBase] = []
-            data_list: List[Dict[str, Any]] = response.data if isinstance(response.data, list) else [response.data]
-            for kb_data in data_list:
-                try:
-                    kb: ZammadKnowledgeBase = ZammadKnowledgeBase(**kb_data)
-                    kbs.append(kb)
-                except Exception as e:
-                    self.logger.warning(f"Failed to parse knowledge base {kb_data.get('id')}: {e}")
+            data = response.data
+            kb_map = data.get("KnowledgeBase", {})
+            kb_translations = data.get("KnowledgeBaseTranslation", {})
+            category_map = data.get("KnowledgeBaseCategory", {})
+            category_translations = data.get("KnowledgeBaseCategoryTranslation", {})
+            answer_map = data.get("KnowledgeBaseAnswer", {})
+            answer_translations = data.get("KnowledgeBaseAnswerTranslation", {})
 
-            return kbs
+            # 1. Parse KnowledgeBase objects
+            self.knowledge_base_data = []
+            for kb_id, kb in kb_map.items():
+                title = ""
+                translation_ids = kb.get("translation_ids", [])
+                if translation_ids:
+                    translation_id = str(translation_ids[0])
+                    translation = kb_translations.get(translation_id, {})
+                    title = translation.get("title", "")
+                kb_obj = ZammadKnowledgeBase(
+                    id=kb.get("id"),
+                    title=title,
+                    created_at=datetime.fromisoformat(kb.get("created_at").replace("Z", "")) if kb.get("created_at") else None,
+                    updated_at=datetime.fromisoformat(kb.get("updated_at").replace("Z", "")) if kb.get("updated_at") else None
+                )
+                self.knowledge_base_data.append(kb_obj)
+
+            # 2. Parse KnowledgeBaseCategory objects with translation titles and extra fields
+            self.kb_categories_data = []
+            for cat_id, cat in category_map.items():
+                title = ""
+                translation_ids = cat.get("translation_ids", [])
+                if translation_ids:
+                    translation_id = str(translation_ids[0])
+                    translation = category_translations.get(translation_id, {})
+                    title = translation.get("title", "")
+                cat_obj = ZammadKBCategory(
+                    id=cat.get("id"),
+                    knowledge_base_id=cat.get("knowledge_base_id"),
+                    parent_id=cat.get("parent_id"),
+                    title=title,
+                    answer_ids=cat.get("answer_ids", []),
+                    child_ids=cat.get("child_ids", []),
+                    permission_ids=cat.get("permission_ids", []),
+                    created_at=datetime.fromisoformat(cat.get("created_at").replace("Z", "")) if cat.get("created_at") else None,
+                    updated_at=datetime.fromisoformat(cat.get("updated_at").replace("Z", "")) if cat.get("updated_at") else None
+                )
+                self.kb_categories_data.append(cat_obj)
+
+            # 3. Parse KnowledgeBaseAnswer objects with translation titles
+            self.kb_answers_data = []
+            for ans_id, ans in answer_map.items():
+                title = ""
+                translation_ids = ans.get("translation_ids", [])
+                if translation_ids:
+                    translation_id = str(translation_ids[0])
+                    translation = answer_translations.get(translation_id, {})
+                    title = translation.get("title", "")
+                ans_obj = ZammadKBAnswer(
+                    id=ans.get("id"),
+                    category_id=ans.get("category_id"),
+                    title=title,
+                    created_at=datetime.fromisoformat(ans.get("created_at").replace("Z", "")) if ans.get("created_at") else None,
+                    updated_at=datetime.fromisoformat(ans.get("updated_at").replace("Z", "")) if ans.get("updated_at") else None
+                )
+                self.kb_answers_data.append(ans_obj)
+
         except Exception as e:
-            self.logger.error(f"Error fetching Knowledge Base: {e}", exc_info=True)
-            return []
+            self.logger.error(f"Error parsing Knowledge Base from Zammad: {e}", exc_info=True)
+            self.knowledge_base_data = []
+            self.kb_categories_data = []
+            self.kb_answers_data = []
 
     async def __fetch_roles(self) -> List[ZammadRole]:
         """Fetch Zammad Roles"""
@@ -936,6 +1071,275 @@ class ZammadConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error fetching Roles: {e}", exc_info=True)
             return []
+
+    async def __process_knowledge_base(self, org_id: str, app_key: str) -> None:
+        """Process KB categories as RecordGroups and KB answers as WebpageRecords"""
+        try:
+            self.logger.info(f"   PROCESSING KNOWLEDGE BASE")
+            self.logger.info(f"   Categories to process: {len(self.kb_categories_data)}")
+            self.logger.info(f"   Answers to process: {len(self.kb_answers_data)}")
+            self.logger.info(f"   Org ID: {org_id}")
+            self.logger.info(f"   App Key: {app_key}")
+
+            # Step 1: Process KB categories as RecordGroups
+            self.logger.info("STEP 1: Processing KB Categories as RecordGroups...")
+            kb_category_map: Dict[str, str] = await self.__process_kb_categories(org_id, app_key)
+            self.logger.info(f" KB Category Map created with {len(kb_category_map)} entries: {kb_category_map}")
+
+            # Step 2: Process KB answers as WebpageRecords
+            self.logger.info("STEP 2: Processing KB Answers as WebpageRecords...")
+            await self.__process_kb_answers_as_records(org_id, kb_category_map)
+
+            self.logger.info(" Successfully processed Knowledge Base entities")
+
+        except Exception as e:
+            self.logger.error(f"Error processing Knowledge Base: {e}", exc_info=True)
+            raise
+
+    async def __process_kb_categories(self, org_id: str, app_key: str) -> Dict[str, str]:
+        """Process KB categories as RecordGroups. Returns mapping of category_id to record_group_id"""
+        try:
+            self.logger.info(f" Processing {len(self.kb_categories_data)} KB categories as RecordGroups")
+
+            category_map: Dict[str, str] = {}
+            record_groups_with_permissions: List[Tuple[RecordGroup, List[Permission]]] = []
+
+            for category in self.kb_categories_data:
+                external_category_id: str = str(category.id)
+                self.logger.info(f"    Category ID: {external_category_id}, KB ID: {category.knowledge_base_id}")
+
+                # Convert datetime to epoch timestamp in milliseconds
+                created_at: int = int(category.created_at.timestamp() * 1000) if category.created_at else get_epoch_timestamp_in_ms()
+                updated_at: int = int(category.updated_at.timestamp() * 1000) if category.updated_at else get_epoch_timestamp_in_ms()
+
+                # Get category name from translations if available
+                category_name: str = f"KB Category {external_category_id}"
+                # Note: Categories have translations, but we'll use a default name for now
+                # You can enhance this to fetch the translation title if needed
+
+                # Create RecordGroup object
+                record_group = RecordGroup(
+                    org_id=org_id,
+                    name=category_name,
+                    external_group_id=external_category_id,
+                    connector_name=Connectors.ZAMMAD,
+                    group_type=RecordGroupType.KB,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    source_created_at=created_at,
+                    source_updated_at=updated_at
+                )
+                
+                self.logger.info(f"      Created RecordGroup: {category_name}")
+
+                # No specific permissions for categories (permissions are per-article)
+                record_groups_with_permissions.append((record_group, []))
+
+            # Use the data processor to handle deduplication and edge creation
+            if record_groups_with_permissions:
+                self.logger.info(f" Calling on_new_record_groups with {len(record_groups_with_permissions)} categories...")
+                await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
+                self.logger.info(f" Processed {len(record_groups_with_permissions)} KB category RecordGroups")
+
+                # Build the mapping after on_new_record_groups has assigned IDs
+                for record_group, _ in record_groups_with_permissions:
+                    category_map[record_group.external_group_id] = record_group.id
+                    self.logger.info(f"   Mapped category {record_group.external_group_id} → RecordGroup {record_group.id}")
+
+                # Create belongsTo edges from RecordGroups to ZAMMAD app
+                async with self.data_store_provider.transaction() as tx_store:
+                    record_group_app_edges: List[Dict[str, Any]] = []
+                    for record_group, _ in record_groups_with_permissions:
+                        record_group_app_edge: Dict[str, Any] = {
+                            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
+                            "_to": f"{CollectionNames.APPS.value}/{app_key}",
+                            "entityType": "KB",
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+                        }
+                        record_group_app_edges.append(record_group_app_edge)
+
+                    if record_group_app_edges:
+                        await tx_store.batch_create_edges(
+                            record_group_app_edges,
+                            CollectionNames.BELONGS_TO.value
+                        )
+                        self.logger.info(f"Created {len(record_group_app_edges)} KB category-to-App belongsTo edges")
+
+            return category_map
+
+        except Exception as e:
+            self.logger.error(f"Error processing KB categories: {e}", exc_info=True)
+            raise
+
+    async def __process_kb_answers_as_records(self, org_id: str, kb_category_map: Dict[str, str]) -> None:
+        """Process KB answers as WebpageRecords with proper indexing"""
+        try:
+            self.logger.info(f"   Processing {len(self.kb_answers_data)} KB answers as WebpageRecords")
+            self.logger.info(f"   KB Category Map: {kb_category_map}")
+
+            # Build user_id_map from users_data for quick lookups
+            user_id_map: Dict[str, str] = {}
+            async with self.data_store_provider.transaction() as tx_store_users:
+                for user in self.users_data:
+                    user_external_id: str = str(user.id)
+                    db_user = await tx_store_users.get_user_by_email(user.email)
+                    if db_user:
+                        user_id_map[user_external_id] = db_user.id
+            
+            self.logger.info(f" Built user_id_map with {len(user_id_map)} users")
+
+            records_with_permissions: List[Tuple[WebpageRecord, List[Permission]]] = []
+            kb_answer_edges: List[Dict[str, Any]] = []
+            kb_answer_category_edges: List[Dict[str, Any]] = []
+            user_permission_edges: List[Dict[str, Any]] = []  # For PERMISSIONS_TO_KB collection
+
+            # Use a single transaction for all KB answer processing (like tickets)
+            async with self.data_store_provider.transaction() as tx_store:
+                for answer in self.kb_answers_data:
+                    external_answer_id: str = str(answer.id)
+                    self.logger.info(f"\n    Processing KB Answer ID: {external_answer_id}")
+
+                    # Convert datetime to epoch timestamp in milliseconds
+                    created_at: int = int(answer.created_at.timestamp() * 1000) if answer.created_at else get_epoch_timestamp_in_ms()
+                    updated_at: int = int(answer.updated_at.timestamp() * 1000) if answer.updated_at else get_epoch_timestamp_in_ms()
+
+                    # Use answer.title directly, fallback to translation, otherwise default
+                    answer_title: str = answer.title or f"KB Answer {external_answer_id}"
+                    if not answer_title and answer.translations and len(answer.translations) > 0:
+                        first_translation = answer.translations[0]
+                        answer_title = first_translation.get('title', f"KB Answer {external_answer_id}")
+                    
+                    self.logger.info(f"      Title: {answer_title}")
+                    self.logger.info(f"      Category ID: {answer.category_id}")
+
+                    # Get category ID
+                    category_id: str = str(answer.category_id)
+                    external_group_id: Optional[str] = category_id if category_id in kb_category_map else None
+                    
+                    if external_group_id:
+                        self.logger.info(f"    Linked to RecordGroup: {kb_category_map[external_group_id]}")
+                    else:
+                        self.logger.warning(f" Category {category_id} not found in kb_category_map!")
+
+                    # Check if record already exists (for deduplication)
+                    existing_record = await tx_store.get_record_by_external_id(
+                        connector_name=Connectors.ZAMMAD,
+                        external_id=external_answer_id,
+                        record_type="WEBPAGE"
+                    )
+
+                    record_id: str = existing_record.id if existing_record else str(uuid4())
+                    is_new: bool = existing_record is None
+                    
+                    self.logger.info(f"      Record ID: {record_id} (New: {is_new}, Version: {0 if is_new else existing_record.version + 1})")
+
+                    # Create WebpageRecord for records collection (full model)
+                    webpage_record: WebpageRecord = WebpageRecord(
+                        id=record_id,
+                        version=0 if is_new else existing_record.version + 1,
+                        org_id=org_id,
+                        record_name=answer_title,
+                        record_type=RecordType.WEBPAGE,
+                        external_record_id=external_answer_id,
+                        connector_name=Connectors.ZAMMAD,
+                        origin=OriginTypes.CONNECTOR,
+                        mime_type=MimeTypes.HTML.value,
+                        weburl=f"{self.base_url}/help/en-us/{category_id}/{answer.id}" if self.base_url else None,
+                        created_at=created_at,
+                        updated_at=updated_at,
+                        source_created_at=created_at,
+                        source_updated_at=updated_at
+                    )
+
+                    # Build permissions list - KB articles are typically readable by all users
+                    record_permissions: List[Permission] = []
+                    
+                    # Add READ permissions for all users in the organization
+                    for user_external_id, user_id in user_id_map.items():
+                        # Create permission edge from user to KB answer record
+                        user_permission_edge: Dict[str, Any] = {
+                            "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "role": "READER",
+                            "type": "USER",
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+                        }
+                        user_permission_edges.append(user_permission_edge)
+
+                    # Add to records_with_permissions for on_new_records
+                    records_with_permissions.append((webpage_record, record_permissions))
+
+                    # Create isOfType edge (record -> webpage)
+                    kb_answer_edge: Dict[str, Any] = {
+                        "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                        "_to": f"{CollectionNames.WEBPAGES.value}/{record_id}",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+                    }
+                    kb_answer_edges.append(kb_answer_edge)
+
+                    # Create belongsTo edge (record -> KB category RecordGroup)
+                    if external_group_id and external_group_id in kb_category_map:
+                        record_group_id: str = kb_category_map[external_group_id]
+                        kb_answer_category_edge: Dict[str, Any] = {
+                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+                            "entityType": "KB",
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+                        }
+                        kb_answer_category_edges.append(kb_answer_category_edge)
+
+            # Process records through data_entities_processor for storage + Kafka publishing (OUTSIDE transaction)
+            # Only send NEW records to avoid re-indexing existing ones
+            self.logger.info(f"\n Preparing to dispatch KB records...")
+            
+            new_records_with_permissions = [
+                (record, perms) for record, perms in records_with_permissions 
+                if record.version == 0  # version 0 means it's a new record
+            ]
+            
+            self.logger.info(f"   New records (version==0): {len(new_records_with_permissions)}")
+            self.logger.info(f"   Existing records (skipped): {len(records_with_permissions) - len(new_records_with_permissions)}")
+            
+            if new_records_with_permissions:
+                self.logger.info("Indexing the following KB answer records:")
+                for record, perms in new_records_with_permissions:
+                    self.logger.info(f"Record: id={record.id}, title={getattr(record, 'record_name', None)}, external_id={record.external_record_id}")
+                await self.data_entities_processor.on_new_records(new_records_with_permissions)
+                self.logger.info(f"Dispatched {len(new_records_with_permissions)} NEW KB answer records for indexing")
+            else:
+                self.logger.info(f" No new KB records to dispatch - all {len(records_with_permissions)} KB answers already exist")
+
+            # Create isOfType and belongsTo edges in a separate transaction
+            self.logger.info(f"\n Creating edges...")
+            self.logger.info(f"   isOfType edges to create: {len(kb_answer_edges)}")
+            self.logger.info(f"   belongsTo edges to create: {len(kb_answer_category_edges)}")
+            self.logger.info(f"   Permission edges to create: {len(user_permission_edges)}")
+            
+            async with self.data_store_provider.transaction() as tx_store_2:
+                # Create isOfType edges (record -> webpage)
+                if kb_answer_edges:
+                    await tx_store_2.batch_create_edges(kb_answer_edges, CollectionNames.IS_OF_TYPE.value)
+                    self.logger.info(f" Created {len(kb_answer_edges)} KB answer-webpage isOfType edges")
+
+                # Create belongsTo edges (record -> KB category)
+                if kb_answer_category_edges:
+                    await tx_store_2.batch_create_edges(kb_answer_category_edges, CollectionNames.BELONGS_TO.value)
+                    self.logger.info(f" Created {len(kb_answer_category_edges)} KB answer-category belongsTo edges")
+                
+                # Create permission edges (user -> KB answer) for visibility in "All Records"
+                if user_permission_edges:
+                    await tx_store_2.batch_create_edges(user_permission_edges, CollectionNames.PERMISSION.value)
+                    self.logger.info(f" Created {len(user_permission_edges)} user-to-answer permission edges")
+            
+            self.logger.info(" KB Answers processing completed!")
+
+        except Exception as e:
+            self.logger.error(f"Error processing KB answers as records: {e}", exc_info=True)
+            raise
 
     async def __get_ticket_content(self, ticket: ZammadTicket, articles: List[Dict[str, Any]]) -> str:
         """Combine ticket title, description, and article bodies into readable text"""
@@ -962,198 +1366,158 @@ class ZammadConnector(BaseConnector):
 
         return "\n".join(content_parts)
 
-    # ============================================================================
-    # Delta Sync Helper Methods
-    # ============================================================================
+    async def __get_kb_answer_content(self, answer: ZammadKBAnswer, full_response_data: Dict[str, Any]) -> str:
+        """Extract KB answer content from translations in the response assets"""
+        content_parts: List[str] = []
 
-    async def _fetch_delta_tickets(self) -> List[ZammadTicket]:
-        """Fetch tickets changed since last sync using updated_at filter"""
-        try:
-            # Get last sync timestamp
-            sync_state: Dict[str, Any] = await self.tickets_sync_point.read_sync_point("tickets")
-            last_sync: Optional[str] = sync_state.get("last_sync_time")
+        # Extract translations and their content from the full response data
+        assets = full_response_data.get('assets', {})
+        translations = assets.get('KnowledgeBaseAnswerTranslation', {})
+        translation_contents = assets.get('KnowledgeBaseAnswerTranslationContent', {})
 
-            if not last_sync:
-                # No previous sync, use a default timestamp (e.g., 30 days ago)
-                sync_from: datetime = datetime.utcnow() - timedelta(days=30)
-                self.logger.info("No previous sync found, fetching tickets from last 30 days")
-            else:
-                # Parse last sync time and add buffer
-                sync_from_dt: datetime = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
-                sync_from: datetime = sync_from_dt - timedelta(minutes=self.buffer_minutes)
-                self.logger.info(f"Fetching tickets changed since {sync_from.isoformat()}")
+        if translations:
+            for trans_id, translation in translations.items():
+                title: str = translation.get('title', '')
+                # Try to get body from KnowledgeBaseAnswerTranslationContent using translation id
+                trans_id_str = str(trans_id)
+                content_obj = translation_contents.get(trans_id_str, {})
+                content_body: str = content_obj.get('body', '')
+                # Fallback to translation['content']['body'] if not found
+                if not content_body:
+                    content_body = translation.get('content', {}).get('body', '') if isinstance(translation.get('content'), dict) else translation.get('content', '')
 
-            # Fetch changed tickets with pagination
-            changed_tickets: List[ZammadTicket] = await self._fetch_paginated_tickets(sync_from)
+                if title:
+                    content_parts.append(f"<h1>{title}</h1>")
+                if content_body:
+                    self.logger.debug("KB content: running URL absolutization")
+                    content_html = self.__absolutize_html_urls(content_body)
+                    self.logger.debug("KB content: running image inlining")
+                    content_html = await self.__inline_images_as_base64(content_html)
+                    content_parts.append(content_html)
 
-            # Update sync state
-            current_time: str = datetime.utcnow().isoformat() + "Z"
-            await self.tickets_sync_point.update_sync_point("tickets", {"last_sync_time": current_time})
+                # Add a separator if there are multiple translations
+                if len(translations) > 1:
+                    content_parts.append("<hr/>")
+        else:
+            content_parts.append("<p>No content available</p>")
+        self.logger.info(f" KB Answer content parts: {content_parts }")
+        return "\n".join(content_parts)
 
-            return changed_tickets
+    def __absolutize_html_urls(self, html: str) -> str:
+        """Prefix self.base_url to relative src/href URLs (e.g., /api/..., #knowledge_base/...)."""
+        if not html or not self.base_url:
+            return html
 
-        except Exception as e:
-            self.logger.error(f"Error fetching delta tickets: {e}", exc_info=True)
-            return []
+        # Prefix src/href values that start with a root slash
+        def _prefix_root(match: re.Match) -> str:
+            attr = match.group('attr')
+            quote = match.group('q')
+            url = match.group('url')  # starts with '/'
+            return f"{attr}={quote}{self.base_url}{url}{quote}"
 
-    async def _fetch_delta_users(self) -> List[ZammadUser]:
-        """Fetch users changed since last sync using updated_at filter"""
-        try:
-            # Get last sync timestamp
-            sync_state: Dict[str, Any] = await self.users_sync_point.read_sync_point("users")
-            last_sync: Optional[str] = sync_state.get("last_sync_time")
+        before = html
+        html = re.sub(
+            r"(?P<attr>\b(?:src|href))=(?P<q>[\"\']) (?P<url>/[^\"\']+)(?P=q)",
+            _prefix_root,
+            html,
+            flags=re.X,
+        )
 
-            if not last_sync:
-                # No previous sync, use a default timestamp (e.g., 30 days ago)
-                sync_from: datetime = datetime.utcnow() - timedelta(days=30)
-                self.logger.info("No previous sync found, fetching users from last 30 days")
-            else:
-                # Parse last sync time and add buffer
-                sync_from_dt: datetime = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
-                sync_from: datetime = sync_from_dt - timedelta(minutes=self.buffer_minutes)
-                self.logger.info(f"Fetching users changed since {sync_from.isoformat()}")
+        # Prefix href values that are just a hash fragment
+        def _prefix_hash(match: re.Match) -> str:
+            quote = match.group('q')
+            frag = match.group('frag')
+            return f"href={quote}{self.base_url}/#{frag}{quote}"
 
-            # Fetch changed users with pagination
-            changed_users: List[ZammadUser] = await self._fetch_paginated_users(sync_from)
+        html = re.sub(
+            r"href=(?P<q>[\"\'])#(?P<frag>[^\"\']+)(?P=q)",
+            _prefix_hash,
+            html,
+        )
+        if before is not html:
+            self.logger.debug("Absolutized relative URLs in KB HTML")
+        return html
 
-            # Update sync state
-            current_time: str = datetime.utcnow().isoformat() + "Z"
-            await self.users_sync_point.update_sync_point("users", {"last_sync_time": current_time})
+    async def __inline_images_as_base64(self, html: str) -> str:
+        """Inline <img> sources as base64 by fetching with authenticated client.
+        Applies caps to prevent large payloads.
+        """
+        if not html:
+            return html
+        if not self.zammad_datasource:
+            return html
 
-            return changed_users
+        max_images_to_inline = 10
+        max_bytes_per_image = 2 * 1024 * 1024  # 2 MB
+        allowed_content_types = {
+            "image/png",
+            "image/jpeg",
+            "image/jpg",
+            "image/gif",
+            "image/webp",
+        }
 
-        except Exception as e:
-            self.logger.error(f"Error fetching delta users: {e}", exc_info=True)
-            return []
+        img_pattern = re.compile(r"<img\s+[^>]*src=(?P<q>[\"\'])(?P<src>.*?)(?P=q)", re.IGNORECASE)
+        matches = list(img_pattern.finditer(html))
+        if not matches:
+            return html
 
-    async def _fetch_paginated_tickets(self, sync_from: datetime) -> List[ZammadTicket]:
-        """Fetch tickets with pagination using updated_at filter"""
-        try:
-            all_tickets: List[ZammadTicket] = []
-            page: int = 1
-            per_page: int = 100
-            seen_ids: Set[int] = set()
+        zclient: ZammadClient = self.zammad_datasource.get_client()
+        http_client = zclient.get_client()
 
-            # Format query: updated_at:>2024-10-20T10:00:00Z
-            query: str = f"updated_at:>{sync_from.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-            self.logger.info(f"Searching tickets with query: {query}")
+        replacements: List[Tuple[Tuple[int, int], str]] = []
+        inlined = 0
+        self.logger.debug(f"Found {len(matches)} <img> tags; attempting to inline up to {max_images_to_inline}")
+        for m in matches:
+            if inlined >= max_images_to_inline:
+                break
+            src = m.group("src")
+            if not src or src.startswith("data:"):
+                self.logger.debug("Skipping image (empty or already data URI)")
+                continue
 
-            while True:
-                response: ZammadResponse = await self.zammad_datasource.search_tickets(
-                    query=query,
-                    page=page,
-                    per_page=per_page,
-                    expand=True
-                )
+            abs_url = src
+            if self.base_url and src.startswith("/"):
+                abs_url = f"{self.base_url}{src}"
 
-                if not response.success or not response.data:
-                    break
+            if self.base_url and not abs_url.startswith(self.base_url):
+                self.logger.debug(f"Skipping external image: {abs_url}")
+                continue
 
-                # Handle both dict with 'tickets' key or direct list
-                tickets_data: List[Dict[str, Any]] = []
-                if isinstance(response.data, dict):
-                    tickets_data = response.data.get('tickets', [])
-                elif isinstance(response.data, list):
-                    tickets_data = response.data
+            try:
+                request = HTTPRequest(url=abs_url, method="GET", headers={"Accept": "*/*"})
+                response = await http_client.execute(request)
+                if response.status >= 400:
+                    self.logger.debug(f"Image fetch failed {response.status}: {abs_url}")
+                    continue
+                ctype = response.content_type
+                if ctype not in allowed_content_types:
+                    self.logger.debug(f"Skipping non-image or disallowed type {ctype} for {abs_url}")
+                    continue
+                blob = response.bytes()
+                if not blob or len(blob) > max_bytes_per_image:
+                    self.logger.debug(f"Skipping image due to size {len(blob) if blob else 0} bytes: {abs_url}")
+                    continue
+                b64 = base64.b64encode(blob).decode("ascii")
+                data_uri = f"data:{ctype};base64,{b64}"
+                replacements.append(((m.start("src"), m.end("src")), data_uri))
+                inlined += 1
+                self.logger.debug(f"Inlined image as base64 (type {ctype}, size {len(blob)} bytes)")
+            except Exception as e:
+                self.logger.debug(f"Error inlining image {abs_url}: {e}")
+                continue
 
-                if not tickets_data:
-                    break
+        if not replacements:
+            return html
 
-                # Parse and deduplicate tickets
-                for ticket_data in tickets_data:
-                    try:
-                        ticket: ZammadTicket = ZammadTicket(**ticket_data)
-                        if ticket.id not in seen_ids:
-                            seen_ids.add(ticket.id)
-                            all_tickets.append(ticket)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to parse ticket {ticket_data.get('id')}: {e}")
-
-                # Check if there are more pages
-                if len(tickets_data) < per_page:
-                    break
-
-                page += 1
-
-                # Safety limit
-                if page > THRESHOLD_PAGINATION_LIMIT:
-                    self.logger.warning("Hit page limit for ticket search")
-                    break
-
-            self.logger.info(f"Fetched {len(all_tickets)} changed tickets")
-            return all_tickets
-
-        except Exception as e:
-            self.logger.error(f"Error in paginated ticket fetch: {e}", exc_info=True)
-            return []
-
-    async def _fetch_paginated_users(self, sync_from: datetime) -> List[ZammadUser]:
-        """Fetch users with updated_at filter (Note: Zammad user search doesn't support pagination)"""
-        try:
-            all_users: List[ZammadUser] = []
-
-            # Format query: updated_at:>2024-10-20T10:00:00Z
-            query: str = f"updated_at:>{sync_from.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-            self.logger.info(f"Searching users with query: {query}")
-
-            # Note: Zammad's search_users API only accepts query and limit (no pagination)
-            # Using a large limit to get all results
-            response: ZammadResponse = await self.zammad_datasource.search_users(
-                query=query,
-                limit=1000  # Large limit to get all changed users
-            )
-
-            if not response.success:
-                self.logger.warning(f"User search failed: {response.error or response.message}")
-                return []
-
-            if not response.data:
-                self.logger.debug("No user data in response")
-                return []
-
-            # Handle both dict with 'users' key or direct list
-            users_data: List[Dict[str, Any]] = []
-            if isinstance(response.data, dict):
-                users_data = response.data.get('users', [])
-            elif isinstance(response.data, list):
-                users_data = response.data
-
-            if not users_data:
-                self.logger.info("No users found matching the query")
-                return []
-
-            # Parse users
-            for user_data in users_data:
-                try:
-                    user: ZammadUser = ZammadUser(**user_data)
-                    all_users.append(user)
-                except Exception as e:
-                    self.logger.warning(f"Failed to parse user {user_data.get('id')}: {e}")
-
-            self.logger.info(f"Fetched {len(all_users)} changed users")
-            return all_users
-
-        except Exception as e:
-            self.logger.error(f"Error in user fetch: {e}", exc_info=True)
-            return []
-
-    async def _fetch_supporting_entities(self) -> None:
-        """Fetch supporting entities needed for relationships"""
-        try:
-            # Fetch organizations if we don't have them
-            if not self.sub_orgs_data:
-                self.sub_orgs_data = await self.__fetch_sub_organizations()
-
-            # Fetch roles if we don't have them
-            if not self.roles_data:
-                self.roles_data = await self.__fetch_roles()
-
-            # Fetch groups if we don't have them
-            if not self.groups_data:
-                self.groups_data = await self.__fetch_groups()
-
-        except Exception as e:
-            self.logger.error(f"Error fetching supporting entities: {e}", exc_info=True)
+        parts: List[str] = []
+        last = len(html)
+        for (s, e), val in reversed(replacements):
+            parts.append(html[e:last])
+            parts.append(val)
+            last = s
+        parts.append(html[:last])
+        return "".join(reversed(parts))
 
     @classmethod
     async def create_connector(

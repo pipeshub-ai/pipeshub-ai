@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional
+from urllib.parse import urlencode
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.zammad.zammad import ZammadClient, ZammadResponse
@@ -1048,25 +1049,42 @@ class ZammadDataSource:
 
     async def get_kb_answer(
         self,
-        id: int
+        kb_id: int,
+        id: int,
+        full: Optional[bool] = True,
+        include_contents: Optional[bool] = True
     ) -> ZammadResponse:
         """Get KB answer
 
         Args:
-            id: int (required)
+            kb_id: int (required) - Knowledge base ID
+            id: int (required) - Answer ID
+            full: Optional[bool] (optional) - Include full answer data
+            include_contents: Optional[bool] (optional) - Include answer contents
 
         Returns:
             ZammadResponse
         """
-        url = f"{self.base_url}/api/v1/knowledge_bases/answers/{id}"
+        url = f"{self.base_url}/api/v1/knowledge_bases/{kb_id}/answers/{id}"
         request_body = None
-
+        query_params = {}
+        if full is not None:
+            # API expects the answer_id value when requesting full payload
+            query_params["full"] = str(id) if full else "0"
+        if include_contents is not None:
+            # API expects the answer_id value when requesting contents
+            query_params["include_contents"] = str(id) if include_contents else "0"
+        
         try:
+            request_url = url
+            if query_params:
+                request_url = f"{url}?{urlencode(query_params)}"
             request = HTTPRequest(
-                url=url,
+                url=request_url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query_params=query_params
             )
             response = await self.http_client.execute(request)
 

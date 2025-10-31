@@ -1,5 +1,6 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -307,19 +308,38 @@ class WebpageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
             "mimeType": self.mime_type,
+            "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "signedUrl": self.signed_url,
             "signedUrlRoute": self.fetch_signed_url,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
         }
 
     def to_arango_record(self) -> Dict:
+        # Extract domain from weburl if available
+        domain = None
+        if self.weburl:
+            try:
+                parsed_url = urlparse(self.weburl)
+                domain = parsed_url.netloc or None
+            except Exception:
+                domain = None
+        
+        # Return only fields allowed by webpage_record_schema
         return {
             "_key": self.id,
             "orgId": self.org_id,
+            "domain": domain,
         }
 
 class TicketRecord(Record):
