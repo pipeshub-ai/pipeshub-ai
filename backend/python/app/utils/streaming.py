@@ -14,7 +14,7 @@ from app.modules.qna.prompt_templates import AnswerWithMetadata
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
-    count_tokens_in_records,
+    count_tokens,
     get_flattened_results,
     get_message_content_for_tool,
     record_to_message_content,
@@ -30,72 +30,6 @@ MAX_TOKENS_THRESHOLD = 80000
 # Create a logger for this module
 logger = create_logger("streaming")
 
-
-def count_tokens_in_messages(messages: List[Any]) -> int:
-    """
-    Count the total number of tokens in a messages array.
-    Supports both dict messages and LangChain message objects.
-
-    Args:
-        messages: List of message dictionaries or LangChain message objects
-
-    Returns:
-        Total number of tokens across all messages
-    """
-    # Lazy import tiktoken; fall back to a rough heuristic if unavailable
-    enc = None
-    try:
-        import tiktoken  # type: ignore
-        try:
-            enc = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            enc = None
-    except Exception:
-        enc = None
-
-    def count_tokens(text: str) -> int:
-        """Count tokens in text using tiktoken or fallback heuristic"""
-        if not text:
-            return 0
-        if enc is not None:
-            try:
-                return len(enc.encode(text))
-            except Exception:
-                pass
-        # Fallback heuristic: ~4 chars per token
-        return max(1, len(text) // 4)
-
-    total_tokens = 0
-
-    for message in messages:
-        # Handle LangChain message objects (AIMessage, HumanMessage, ToolMessage, etc.)
-        if hasattr(message, "content"):
-            content = getattr(message, "content", "")
-        # Handle dict messages
-        elif isinstance(message, dict):
-            content = message.get("content", "")
-        else:
-            # Skip unknown types
-            continue
-
-        # Handle different content types
-        if isinstance(content, str):
-            total_tokens += count_tokens(content)
-        elif isinstance(content, list):
-            # Handle content as list of content objects (like in get_message_content)
-            for content_item in content:
-                if isinstance(content_item, dict):
-                    if content_item.get("type") == "text":
-                        text_content = content_item.get("text", "")
-                        total_tokens += count_tokens(text_content)
-                    # Skip image_url and other non-text content for token counting
-                elif isinstance(content_item, str):
-                    total_tokens += count_tokens(content_item)
-        else:
-            # Convert other types to string
-            total_tokens += count_tokens(str(content))
-
-    return total_tokens
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
@@ -350,16 +284,10 @@ async def execute_tool_calls(
 
         # Execute tools
         tool_args = []
-        tool_call_ids = {}
-        tool_call_ids_list = []
         for call in ai.tool_calls:
             name = call["name"]
             args = call.get("args", {}) or {}
             call_id = call.get("id")
-            tool_call_ids_list.append(call_id)
-            record_id = args.get("record_id")
-            if record_id:
-                tool_call_ids[record_id] = call_id
             tool = next((t for t in tools if t.name == name), None)
             tool_args.append((args,tool))
 
@@ -462,33 +390,24 @@ async def execute_tool_calls(
         # First, add the AI message with tool calls to messages
         messages.append(ai)
 
-        # Count tokens in current messages (including the AI message with tool calls)
-        # This gives us the baseline before adding tool response content
-        current_message_tokens = count_tokens_in_messages(messages)
-
-        # Count tokens in the new records that will be added
-        new_tokens = count_tokens_in_records(records)
-
-        # Also estimate tokens for the tool message overhead (JSON structure, field names, etc.)
-        # Each ToolMessage has overhead: {"ok": true, "records": [...], "record_count": N}
-        # Rough estimate: ~50 tokens per tool message for JSON overhead
-        # tool_message_overhead = len(tool_results_inner) * 50
-
-        # Calculate total tokens including current messages, new records, and tool message overhead
-        # estimated_total_tokens = current_message_tokens + new_tokens + tool_message_overhead
+        message_contents = []
+        
+        for record in records:
+            message_content = record_to_message_content(record,final_results)
+            message_contents.append(message_content)
+        
+        current_message_tokens, new_tokens = count_tokens(messages,message_contents)
 
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
             current_message_tokens,
             new_tokens,
-            # tool_message_overhead,
-            # estimated_total_tokens,
             MAX_TOKENS_THRESHOLD,
         )
-
-        message_contents = []
-        record_ids = []
+        
         if new_tokens+current_message_tokens > MAX_TOKENS_THRESHOLD:
+
+            message_contents = []
             logger.info(
                 "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
             )
@@ -525,18 +444,11 @@ async def execute_tool_calls(
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
-                message_contents,record_ids = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
+                message_contents = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
                 logger.debug(
-                    "execute_tool_calls: prepared message_contents=%d record_ids=%d",
-                    len(message_contents),
-                    len(record_ids),
+                    "execute_tool_calls: prepared message_contents=%d",
+                    len(message_contents)
                 )
-                logger.debug("execute_tool_calls: tool_call_ids keys=%s", list(tool_call_ids.keys()))
-        else:
-            for record in records:
-                message_content = record_to_message_content(record,final_results)
-                message_contents.append(message_content)
-                record_ids.append(record.get("id"))
 
         # Build tool messages with actual content
         tool_msgs = []

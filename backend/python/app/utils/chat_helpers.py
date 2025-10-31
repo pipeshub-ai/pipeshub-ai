@@ -18,8 +18,12 @@ from app.modules.qna.prompt_templates import (
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.logger import create_logger
 
 group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value]
+
+# Create a logger for this module
+logger = create_logger("chat_helpers")
 
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
     flattened_results = []
@@ -270,7 +274,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             point_id_to_blockIndex_mappings[virtual_record_id] = point_id_to_blockIndex
 
         point_id = meta.get("point_id")
-        point_id_to_blockIndex = point_id_to_blockIndex_mappings[virtual_record_id]
+        point_id_to_blockIndex = point_id_to_blockIndex_mappings.get(virtual_record_id, {})
+        if point_id not in point_id_to_blockIndex:
+            logger.warning("Missing point_id mapping: virtual_record_id=%s point_id=%s", virtual_record_id, str(point_id))
+            continue
         index = point_id_to_blockIndex[point_id]
         chunk_id = f"{virtual_record_id}-{index}"
         if chunk_id in seen_chunks:
@@ -943,7 +950,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
         })
         return content
 
-def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> Tuple[List[str], List[Any]]:
+def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]]) -> List[str]:
     virtual_record_id_to_record_number = {}
     seen_virtual_record_ids = set()
     record_number = 1
@@ -1070,7 +1077,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
     all_contents.append(content)
     all_record_strings.append(record_string)
 
-    return all_record_strings,record_ids
+    return all_record_strings
 
 def block_group_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     content = []
@@ -1132,16 +1139,73 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
     return content
 
 
-def count_tokens_in_records(records: List[Dict[str, Any]]) -> int:
+
+
+def count_tokens_in_messages(messages: List[Any],enc) -> int:
     """
-    Count the total number of tokens in a list of records, excluding image type blocks.
+    Count the total number of tokens in a messages array.
+    Supports both dict messages and LangChain message objects.
 
     Args:
-        records: List of record dictionaries containing block_containers with blocks
+        messages: List of message dictionaries or LangChain message objects
 
     Returns:
-        Total number of tokens across all non-image blocks in all records
+        Total number of tokens across all messages
     """
+    logger.debug(
+        "count_tokens_in_messages: starting token count for %d messages",
+        len(messages) if messages else 0,
+    )
+
+    
+
+    total_tokens = 0
+
+    for message in messages:
+        # Handle LangChain message objects (AIMessage, HumanMessage, ToolMessage, etc.)
+        if hasattr(message, "content"):
+            content = getattr(message, "content", "")
+        # Handle dict messages
+        elif isinstance(message, dict):
+            content = message.get("content", "")
+        else:
+            # Skip unknown types
+            logger.debug("count_tokens_in_messages: skipping unknown message type")
+            continue
+
+        # Handle different content types
+        if isinstance(content, str):
+            total_tokens += count_tokens_text(content,enc)
+        elif isinstance(content, list):
+            # Handle content as list of content objects (like in get_message_content)
+            for content_item in content:
+                if isinstance(content_item, dict):
+                    if content_item.get("type") == "text":
+                        text_content = content_item.get("text", "")
+                        total_tokens += count_tokens_text(text_content,enc)
+                    # Skip image_url and other non-text content for token counting
+                elif isinstance(content_item, str):
+                    total_tokens += count_tokens_text(content_item,enc)
+        else:
+            # Convert other types to string
+            total_tokens += count_tokens_text(str(content),enc)
+
+    return total_tokens
+
+
+def count_tokens_text(text: str,enc) -> int:
+    """Count tokens in text using tiktoken or fallback heuristic"""
+    if not text:
+        return 0
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    # Fallback heuristic: ~4 chars per token
+    return max(1, len(text) // 4)
+
+def count_tokens(messages: List[Any], message_contents: List[str]) -> int:
     # Lazy import tiktoken; fall back to a rough heuristic if unavailable
     enc = None
     try:
@@ -1153,55 +1217,19 @@ def count_tokens_in_records(records: List[Dict[str, Any]]) -> int:
     except Exception:
         enc = None
 
-    def count_tokens(text: str) -> int:
-        """Count tokens in text using tiktoken or fallback heuristic"""
-        if not text:
-            return 0
-        if enc is not None:
-            try:
-                return len(enc.encode(text))
-            except Exception:
-                pass
-        # Fallback heuristic: ~4 chars per token
-        return max(1, len(text) // 4)
+    logger.debug(
+        "Using %s for tokenization",
+        "tiktoken(cl100k_base)" if enc is not None else "heuristic (~4 chars/token)",
+    )
 
-    total_tokens = 0
+    current_message_tokens = count_tokens_in_messages(messages,enc)
+    new_tokens = 0
 
-    for record in records:
-        if not record:
-            continue
+    for message_content in message_contents:
+        new_tokens += count_tokens_text(message_content,enc)
 
-        # Get block containers
-        block_containers = record.get("block_containers", {})
-        blocks = block_containers.get("blocks", [])
-        block_containers.get("block_groups", [])
 
-        # Process individual blocks
-        for block in blocks:
-            block_type = block.get("type")
+    return current_message_tokens, new_tokens
 
-            # Skip image type blocks
-            if block_type == BlockType.IMAGE.value:
-                continue
 
-            # Extract text content based on block type
-            data = block.get("data", "")
-            text_content = ""
 
-            if block_type == BlockType.TEXT.value:
-                text_content = str(data) if data else ""
-            elif block_type == BlockType.TABLE_ROW.value:
-                # For table rows, get the natural language text
-                if isinstance(data, dict):
-                    text_content = data.get("row_natural_language_text", "")
-                else:
-                    text_content = str(data)
-            else:
-                # For any other non-image block type, include the data as text
-                text_content = str(data) if data else ""
-
-            # Count tokens for this block's text content
-            if text_content:
-                total_tokens += count_tokens(text_content)
-
-    return total_tokens
