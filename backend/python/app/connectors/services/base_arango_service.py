@@ -885,14 +885,7 @@ class BaseArangoService:
                 additional_data["webUrl"] = (
                     f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
                 )
-            elif record["recordType"] == RecordTypes.TICKET.value:
-                additional_data = await self.get_document(
-                    record_id, CollectionNames.TICKETS.value
-                )
-            elif record["recordType"] == RecordTypes.WEBPAGE.value:
-                additional_data = await self.get_document(
-                    record_id, CollectionNames.WEBPAGES.value
-                )
+            
 
             metadata_query = f"""
             LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
@@ -1014,16 +1007,6 @@ class BaseArangoService:
                     "mailRecord": (
                         additional_data
                         if record["recordType"] == RecordTypes.MAIL.value
-                        else None
-                    ),
-                    "ticketRecord": (
-                        additional_data
-                        if record["recordType"] == RecordTypes.TICKET.value
-                        else None
-                    ),
-                    "webpageRecord": (
-                        additional_data
-                        if record["recordType"] == RecordTypes.WEBPAGE.value
                         else None
                     ),
                 },
@@ -1389,34 +1372,6 @@ class BaseArangoService:
                     ) : []
                 )
 
-                // Get ticket record for TICKET type records
-                LET ticketRecord = (
-                    record.recordType == "TICKET" ? (
-                        FOR ticketEdge IN @@is_of_type
-                            FILTER ticketEdge._from == record._id
-                            LET ticket = DOCUMENT(ticketEdge._to)
-                            FILTER ticket != null
-                            RETURN {{
-                                id: file._key,
-                            }}
-                    ) : []
-                )
-
-                // Get webpage record for WEBPAGE type records
-                LET webpageRecord = (
-                    record.recordType == "WEBPAGE" ? (
-                        FOR webpageEdge IN @@is_of_type
-                            FILTER webpageEdge._from == record._id
-                            LET webpage = DOCUMENT(webpageEdge._to)
-                            FILTER webpage != null
-                            RETURN {{
-                                id: webpage._key,
-                                title: webpage.title,
-                                url: webpage.url,
-                            }}
-                    ) : []
-                )
-
                 RETURN {{
                     id: record._key,
                     externalRecordId: record.externalRecordId,
@@ -1437,8 +1392,6 @@ class BaseArangoService:
                     isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
                     webUrl: record.webUrl,
                     fileRecord: LENGTH(fileRecord) > 0 ? fileRecord[0] : null,
-                    ticketRecord: LENGTH(ticketRecord) > 0 ? ticketRecord[0] : null,
-                    webpageRecord: LENGTH(webpageRecord) > 0 ? webpageRecord[0] : null,
                     mailRecord: LENGTH(mailRecord) > 0 ? mailRecord[0] : null,
                     permission: {{role: item.permission.role, type: item.permission.type}},
                     kb: {{id: item.kb_id || null, name: item.kb_name || null }}
