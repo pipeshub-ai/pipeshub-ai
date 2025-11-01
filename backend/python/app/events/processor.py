@@ -2,8 +2,8 @@ import io
 import json
 from datetime import datetime
 
-from bs4 import BeautifulSoup
 from backend.python.app.modules.parsers.markdown.markdown_parser import txt_to_markdown
+from bs4 import BeautifulSoup
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -14,7 +14,6 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ExtensionTypes,
-    MimeTypes,
     OriginTypes,
 )
 from app.config.constants.service import config_node_constants
@@ -1356,7 +1355,7 @@ class Processor:
                 raise ValueError(
                     "Unable to decode text file with any supported encoding"
                 )
-            
+
             markdown_content = txt_to_markdown(text_content)
 
             await self.process_md_document(

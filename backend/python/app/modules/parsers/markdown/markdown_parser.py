@@ -1,12 +1,12 @@
 
 import re
 from typing import Dict, List, Tuple
-from pathlib import Path
-from typing import Union, Optional
+
 import markdown
 from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
+
 
 class MarkdownParser:
     def __init__(self) -> None:
@@ -186,7 +186,7 @@ class MarkdownParser:
         modified_content = process_html_images(modified_content)
 
         return modified_content, images
-    
+
 
 
 def txt_to_markdown(
@@ -194,52 +194,37 @@ def txt_to_markdown(
     detect_structure: bool = True,
     preserve_formatting: bool = True
 ) -> str:
-    """
-    Convert text content to Markdown format with optional structure detection.
-    
-    Args:
-        input_content: Either a string of text content or a Path to a .txt file
-        output_path: Optional path to save the markdown file
-        detect_structure: If True, attempts to detect headers, lists, and code blocks
-        preserve_formatting: If True, preserves blank lines and indentation
-    
-    Returns:
-        String containing the Markdown-formatted content
-    
-    Example:
-        >>> content = txt_to_markdown("input.txt", "output.md")
-        >>> content = txt_to_markdown("My Title\\n\\nSome text here")
-    """
-    
     text = str(input_content)
-    
+
     if not detect_structure:
         # Simple conversion: just return as-is in markdown
         markdown = text
     else:
         # Apply structure detection
         markdown = _detect_and_convert_structure(text, preserve_formatting)
-    
-    return markdown
 
+    return markdown
 
 def _detect_and_convert_structure(text: str, preserve_formatting: bool) -> str:
     """
     Detect common text patterns and convert them to Markdown syntax.
     """
+    MAX_HEADER_WORDS = 10
+    MIN_UNDERLINE_LENGTH = 3
+
     lines = text.split('\n')
     markdown_lines = []
     in_code_block = False
-    
+
     for i, line in enumerate(lines):
         stripped = line.strip()
-        
+
         # Skip empty lines but preserve them if needed
         if not stripped:
             if preserve_formatting or (i > 0 and markdown_lines):
                 markdown_lines.append('')
             continue
-        
+
         # Detect code blocks (lines starting with 4+ spaces or tabs)
         if line.startswith('    ') or line.startswith('\t'):
             if not in_code_block:
@@ -250,50 +235,49 @@ def _detect_and_convert_structure(text: str, preserve_formatting: bool) -> str:
         elif in_code_block:
             markdown_lines.append('```')
             in_code_block = False
-        
+
         # Detect headers (ALL CAPS lines, or lines followed by === or ---)
-        if stripped.isupper() and len(stripped.split()) <= 10:
-            markdown_lines.append(f"## {stripped.title()}")
+        if stripped.isupper() and len(stripped.split()) <= MAX_HEADER_WORDS:
+            markdown_lines.append(f"## {stripped}")
             continue
-        
+
         # Check for underlined headers
         if i < len(lines) - 1:
             next_line = lines[i + 1].strip()
-            if next_line and all(c in '=-' for c in next_line) and len(next_line) >= 3:
+            if next_line and all(c in '=-' for c in next_line) and len(next_line) >= MIN_UNDERLINE_LENGTH:
                 level = 1 if '=' in next_line else 2
                 markdown_lines.append(f"{'#' * level} {stripped}")
                 lines[i + 1] = ''  # Skip the underline
                 continue
-        
+
         # Detect numbered lists
         if re.match(r'^\d+[\.\)]\s+', stripped):
             markdown_lines.append(re.sub(r'^(\d+)[\.\)]\s+', r'\1. ', stripped))
             continue
-        
+
         # Detect bullet points
         if re.match(r'^[-*•]\s+', stripped):
             markdown_lines.append(re.sub(r'^[-*•]\s+', '- ', stripped))
             continue
-        
+
         # Detect emphasis (words in *asterisks* or _underscores_)
         line_converted = stripped
-        
-        # Convert *bold* or _bold_ to **bold**
+
         line_converted = re.sub(r'\*([^*]+)\*', r'**\1**', line_converted)
         line_converted = re.sub(r'_([^_]+)_', r'*\1*', line_converted)
-        
+
         # Detect URLs and convert to links
         line_converted = re.sub(
             r'(?<![\(\[])(https?://[^\s\)]+)',
             r'[\1](\1)',
             line_converted
         )
-        
+
         markdown_lines.append(line_converted)
-    
+
     # Close code block if still open
     if in_code_block:
         markdown_lines.append('```')
-    
+
     return '\n'.join(markdown_lines)
 
