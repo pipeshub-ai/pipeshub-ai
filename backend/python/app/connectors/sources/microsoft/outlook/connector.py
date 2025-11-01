@@ -542,7 +542,7 @@ class OutlookConnector(BaseConnector):
             return []
 
     async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: Dict) -> tuple[int, List[Record]]:
-        """Process messages using batch processing."""
+        """Process messages using batch processing with automatic pagination."""
         try:
             user_id = user.source_user_id
             folder_id = self._safe_get_attr(folder, 'id')
@@ -559,9 +559,10 @@ class OutlookConnector(BaseConnector):
             result = await self._get_all_messages_delta_external(user_id, folder_id, delta_link)
             messages = result['messages']
 
-            self.logger.info(f"Retrieved {len(messages)} message changes from folder '{folder_name}' for user {user.email}")
+            self.logger.info(f"Retrieved {len(messages)} total message changes from folder '{folder_name}' for user {user.email}")
 
             if not messages:
+                self.logger.info(f"No messages to process in folder '{folder_name}'")
                 return 0, []
 
             # Collect all updates first for thread processing
@@ -599,7 +600,6 @@ class OutlookConnector(BaseConnector):
             # Update folder-specific sync point only if all batches were processed successfully
             sync_point_data = {
                 'delta_link': result.get('delta_link'),
-                'next_link': result.get('next_link'),
                 'last_sync_timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
                 'folder_id': folder_id,
                 'folder_name': folder_name
@@ -617,42 +617,63 @@ class OutlookConnector(BaseConnector):
             return 0, []
 
     async def _get_all_messages_delta_external(self, user_id: str, folder_id: str, delta_link: Optional[str] = None) -> Dict:
-        """Get folder messages using delta sync from external Outlook API."""
+        """Get folder messages using delta sync with automatic pagination from external Outlook API.
+
+        This method handles both initial sync and incremental sync:
+        - Initial sync (delta_link=None): Retrieves all messages in the folder
+        - Incremental sync (delta_link provided): Retrieves only changes since last sync
+
+        Pagination is handled automatically:
+        - The method follows nextLink URLs to fetch all pages
+        - Returns when deltaLink is received (signals completion)
+        - Maximum page size is 200 messages per request
+
+        Args:
+            user_id: User identifier
+            folder_id: Mail folder identifier
+            delta_link: Previously saved deltaLink for incremental sync (optional)
+
+        Returns:
+            Dict with:
+                - messages: List of all messages across all pages
+                - delta_link: New deltaLink to save for next sync
+        """
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            if delta_link:
-                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_user_mail_folders_mail_folder_messages_delta(
-                    user_id=user_id,
-                    mailFolder_id=folder_id,
-                    delta_link=delta_link
-                )
-            else:
-                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_user_mail_folders_mail_folder_messages_delta(
-                    user_id=user_id,
-                    mailFolder_id=folder_id
-                )
+            # Use the new fetch_all_messages_delta method that handles pagination automatically
+            messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta(
+                user_id=user_id,
+                mailFolder_id=folder_id,
+                saved_delta_link=delta_link,
+                page_size=100,
+                select = [
+                    'id',
+                    'subject',
+                    'hasAttachments',
+                    'createdDateTime',
+                    'lastModifiedDateTime',
+                    'webLink',
+                    'from',
+                    'toRecipients',
+                    'ccRecipients',
+                    'bccRecipients',
+                    'conversationId',
+                    'internetMessageId',
+                    'conversationIndex'
+                ]
+            )
 
-            if not response.success:
-                self.logger.error(f"Failed to get messages delta for folder {folder_id}: {response.error}")
-                return {'messages': [], 'delta_link': None, 'next_link': None}
-
-            data = response.data or {}
-            messages = self._safe_get_attr(data, 'value', [])
-            delta_link = (self._safe_get_attr(data, 'odata_delta_link') or
-                         self._safe_get_attr(data, '@odata.deltaLink'))
-            next_link = (self._safe_get_attr(data, 'odata_next_link') or
-                        self._safe_get_attr(data, '@odata.nextLink'))
+            self.logger.info(f"Delta sync completed for folder {folder_id}: retrieved {len(messages)} total messages across all pages")
 
             return {
                 'messages': messages,
-                'delta_link': delta_link,
-                'next_link': next_link
+                'delta_link': new_delta_link
             }
 
         except Exception as e:
-            self.logger.error(f"Error getting messages delta for folder {folder_id}: {e}")
+            self.logger.error(f"Error getting messages delta for folder {folder_id}: {e}", exc_info=True)
             return {'messages': [], 'delta_link': None, 'next_link': None}
 
     async def _process_single_message(self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str) -> List[RecordUpdate]:
