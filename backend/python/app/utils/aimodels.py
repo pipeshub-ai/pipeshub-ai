@@ -281,6 +281,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
+                max_retries=2,
             )
 
     elif provider == LLMProvider.COHERE.value:
@@ -388,6 +389,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
+                max_retries=2,
             )
 
     raise ValueError(f"Unsupported provider type: {provider}")
