@@ -1,9 +1,10 @@
 import asyncio
 import base64
-from urllib.parse import unquote, urlparse
 from typing import Optional
-from cairosvg import svg2png
+from urllib.parse import unquote, urlparse
+
 import aiohttp
+from cairosvg import svg2png
 
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
@@ -72,7 +73,7 @@ class ImageParser:
         # Extract and validate extension
         extension = content_type.split('/')[-1]
 
-        if extension not in VALID_IMAGE_EXTENSIONS:
+        if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
             return False, ''
 
         return True, extension
@@ -82,7 +83,7 @@ class ImageParser:
         if url.startswith('data:image/'):
             # Skip SVG images - check the MIME type in the data URL
             if url.startswith('data:image/svg+xml'):
-                return self.svg_base64_to_png_base64(url)
+                return f"data:image/png;base64,{self.svg_base64_to_png_base64(url)}"
 
             self.logger.debug("URL is already base64 encoded")
             return url
@@ -141,8 +142,8 @@ class ImageParser:
 
                 base64_encoded = base64.b64encode(content).decode('utf-8')
                 base64_image = f"data:image/{extension};base64,{base64_encoded}"
-                if extension == 'svg':
-                    base64_image = self.svg_base64_to_png_base64(base64_encoded)
+                if 'svg' in extension:
+                    base64_image = f"data:image/png;base64,{self.svg_base64_to_png_base64(base64_encoded)}"
                 self.logger.debug(f"Converted URL to base64 for {extension}: {url}")
                 return base64_image
 
@@ -168,6 +169,7 @@ class ImageParser:
             base64_images = await asyncio.gather(*tasks)
             return list(base64_images)
 
+    @staticmethod
     def svg_base64_to_png_base64(
         svg_base64: str,
         output_width: Optional[int] = None,
@@ -177,17 +179,17 @@ class ImageParser:
     ) -> str:
         """
         Convert SVG base64 string to PNG base64 string.
-        
+
         Args:
             svg_base64: Base64 encoded SVG string (with or without data URI prefix)
             output_width: Desired output width in pixels (optional)
             output_height: Desired output height in pixels (optional)
             scale: Scale factor for the output (default: 1.0)
             background_color: Background color for transparent areas (e.g., 'white', '#FFFFFF')
-        
+
         Returns:
             Base64 encoded PNG string
-            
+
         Raises:
             ValueError: If the input is not valid base64 or SVG
             Exception: If conversion fails
@@ -196,15 +198,15 @@ class ImageParser:
             # Remove data URI prefix if present
             if svg_base64.startswith('data:image/svg+xml;base64,'):
                 svg_base64 = svg_base64.replace('data:image/svg+xml;base64,', '')
-            
+
             # Decode base64 to get SVG content
             svg_data = base64.b64decode(svg_base64)
-            
+
             # Verify it's actually SVG content
             svg_str = svg_data.decode('utf-8')
             if not ('<svg' in svg_str.lower() or '<?xml' in svg_str.lower()):
                 raise ValueError("Decoded content does not appear to be valid SVG")
-            
+
             # Convert SVG to PNG using cairosvg
             png_data = svg2png(
                 bytestring=svg_data,
@@ -213,17 +215,17 @@ class ImageParser:
                 scale=scale,
                 background_color=background_color
             )
-            
+
             # Encode PNG to base64
             png_base64 = base64.b64encode(png_data).decode('utf-8')
-            
+
             return png_base64
-            
+
         except base64.binascii.Error as e:
             raise ValueError(f"Invalid base64 input: {e}")
         except UnicodeDecodeError as e:
             raise ValueError(f"Cannot decode SVG content: {e}")
         except Exception as e:
-            raise Exception(f"SVG to PNG conversion failed: {e}")
+            raise Exception(f"SVG to PNG conversion failed: {e}") from e
 
 
