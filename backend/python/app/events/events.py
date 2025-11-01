@@ -180,9 +180,6 @@ class EventProcessor:
                 )
                 await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
-
-
-
             # Update indexing status to IN_PROGRESS
 
             doc = dict(record)
@@ -241,11 +238,12 @@ class EventProcessor:
 
                     # Add indexingStatus to initial duplicate check to find in-progress files
                     duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get('_key'), md5_checksum, size_in_bytes)
+                    duplicate_files = [f for f in duplicate_files if f is not None]
                     if duplicate_files:
                         # Wait and check for processed duplicates
-                        for attempt in range(60):  # Wait up to 60 seconds
+                        for attempt in range(60):
                             processed_duplicate = next(
-                                (f for f in duplicate_files if f.get("summaryDocumentId") and f.get("virtualRecordId")),
+                                (f for f in duplicate_files if f.get("virtualRecordId")),
                                 None
                             )
 
@@ -279,7 +277,7 @@ class EventProcessor:
                                 self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, waiting...")
                                 self.logger.info(f"Retried {attempt} times")
                                 # TODO: Remove this sleep
-                                await asyncio.sleep(5)
+                                await asyncio.sleep(30)
                                 # Refresh duplicate files list
                                 duplicate_files = await self.arango_service.find_duplicate_files(
                                     file_doc.get('_key'), md5_checksum, size_in_bytes
@@ -455,7 +453,6 @@ class EventProcessor:
                     orgId=org_id,
                     html_binary=file_content,
                     virtual_record_id = virtual_record_id,
-
                 )
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
