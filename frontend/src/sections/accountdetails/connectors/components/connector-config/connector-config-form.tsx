@@ -25,6 +25,7 @@ import AuthSection from './auth-section';
 import SyncSection from './sync-section';
 import ConfigStepper from './config-stepper';
 import { Connector } from '../../types/types';
+import { isNoneAuthType } from '../../utils/auth';
 
 interface ConnectorConfigFormProps {
   connector: Connector;
@@ -73,9 +74,24 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     fileInputRef,
   } = useConnectorConfig({ connector, onClose, onSuccess });
 
-  const steps = ['Authentication', 'Sync Settings'];
+  // Skip auth step if authType is 'NONE'
+  const isNoAuthType = isNoneAuthType(connector.authType);
+  const steps = isNoAuthType ? ['Sync Settings'] : ['Authentication', 'Sync Settings'];
 
   const renderStepContent = () => {
+    if (isNoAuthType) {
+      // For 'NONE' authType, only show sync step
+      return (
+        <SyncSection
+          connectorConfig={connectorConfig}
+          formData={formData.sync}
+          formErrors={formErrors.sync}
+          onFieldChange={handleFieldChange}
+          saving={saving}
+        />
+      );
+    }
+
     switch (activeStep) {
       case 0:
         return (
@@ -201,16 +217,18 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   '& .MuiChip-label': { px: 1 },
                 }}
               />
-              <Chip
-                label={connector.authType.split('_').join(' ')}
-                size="small"
-                variant="outlined"
-                sx={{
-                  fontSize: '0.75rem',
-                  height: 20,
-                  '& .MuiChip-label': { px: 1 },
-                }}
-              />
+              {!isNoneAuthType(connector.authType) && (
+                <Chip
+                  label={connector.authType.split('_').join(' ')}
+                  size="small"
+                  variant="outlined"
+                  sx={{
+                    fontSize: '0.75rem',
+                    height: 20,
+                    '& .MuiChip-label': { px: 1 },
+                  }}
+                />
+              )}
             </Box>
           </Box>
         </Box>
@@ -288,7 +306,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             Cancel
           </Button>
 
-          {activeStep > 0 && (
+          {!isNoAuthType && activeStep > 0 && (
             <Button
               onClick={handleBack}
               disabled={saving}
@@ -312,7 +330,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             </Button>
           )}
 
-          {activeStep < 1 ? (
+          {!isNoAuthType && activeStep < 1 ? (
             <Button
               variant="contained"
               onClick={handleNext}

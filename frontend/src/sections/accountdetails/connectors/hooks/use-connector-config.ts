@@ -5,6 +5,7 @@ import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
 import { buildCronFromSchedule } from '../utils/cron';
 import { shouldShowElement, evaluateConditionalDisplay } from '../utils/conditional-display';
+import { isNoneAuthType } from '../utils/auth';
 
 interface FormData {
   auth: Record<string, any>;
@@ -511,6 +512,8 @@ export const useConnectorConfig = ({
       setSaving(true);
       setSaveError(null);
 
+      const isNoAuthType = isNoneAuthType(connector.authType);
+
       // For business OAuth, validate admin email and JSON file
       if (customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual')) {
         if (!isBusinessGoogleOAuthValid()) {
@@ -519,23 +522,25 @@ export const useConnectorConfig = ({
         }
       }
 
-      // Validate all sections
+      // Validate all sections (skip auth validation for 'NONE' authType)
       let authErrors: Record<string, string> = {};
-      const isBusinessMode = customGoogleBusinessOAuth(
-        connector,
-        isBusiness ? 'business' : 'individual'
-      );
-
-      if (isBusinessMode) {
-        if (!isBusinessGoogleOAuthValid()) {
-          authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
-        }
-      } else {
-        authErrors = validateSection(
-          'auth',
-          connectorConfig.config.auth.schema.fields,
-          formData.auth
+      if (!isNoAuthType) {
+        const isBusinessMode = customGoogleBusinessOAuth(
+          connector,
+          isBusiness ? 'business' : 'individual'
         );
+
+        if (isBusinessMode) {
+          if (!isBusinessGoogleOAuthValid()) {
+            authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+          }
+        } else {
+          authErrors = validateSection(
+            'auth',
+            connectorConfig.config.auth.schema.fields,
+            formData.auth
+          );
+        }
       }
       const syncErrors = validateSection(
         'sync',

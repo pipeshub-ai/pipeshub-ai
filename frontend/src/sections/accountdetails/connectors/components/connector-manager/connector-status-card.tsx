@@ -11,6 +11,7 @@ import {
   useTheme,
 } from '@mui/material';
 import { Connector } from '../../types/types';
+import { isNoneAuthType } from '../../utils/auth';
 
 interface ConnectorStatusCardProps {
   connector: Connector;
@@ -144,20 +145,22 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
               }}
             />
 
-            <Chip
-              label={connector.authType.split('_').join(' ')}
-              size="small"
-              sx={{
-                height: 20,
-                fontSize: '0.6875rem',
-                fontWeight: 500,
-                backgroundColor: isDark
-                  ? alpha(theme.palette.grey[500], 0.9)
-                  : alpha(theme.palette.grey[500], 0.1),
-                color: theme.palette.text.secondary,
-                border: `1px solid ${alpha(theme.palette.grey[500], 0.2)}`,
-              }}
-            />
+            {!isNoneAuthType(connector.authType) && (
+              <Chip
+                label={connector.authType.split('_').join(' ')}
+                size="small"
+                sx={{
+                  height: 20,
+                  fontSize: '0.6875rem',
+                  fontWeight: 500,
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.grey[500], 0.9)
+                    : alpha(theme.palette.grey[500], 0.1),
+                  color: theme.palette.text.secondary,
+                  border: `1px solid ${alpha(theme.palette.grey[500], 0.2)}`,
+                }}
+              />
+            )}
 
             {connector.supportsRealtime && (
               <>
