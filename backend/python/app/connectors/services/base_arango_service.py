@@ -31,6 +31,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    AppRole,
     FileRecord,
     Record,
     RecordGroup,
@@ -49,6 +50,7 @@ from app.schema.arango.documents import (
     team_schema,
     ticket_record_schema,
     user_schema,
+    app_role_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
@@ -75,6 +77,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.PEOPLE.value, None),
     (CollectionNames.USERS.value, user_schema),
     (CollectionNames.GROUPS.value, None),
+    (CollectionNames.ROLES.value, app_role_schema),
     (CollectionNames.ORGS.value, orgs_schema),
     (CollectionNames.ANYONE.value, None),
     (CollectionNames.CHANNEL_HISTORY.value, None),
@@ -725,7 +728,7 @@ class BaseArangoService:
             LET groupAccessPermissionEdge = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 FILTER belongsEdge.type == 'USER'
-                FILTER IS_SAME_COLLECTION("groups", group)
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                 FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
@@ -738,11 +741,11 @@ class BaseArangoService:
                 // Hop 1: User -> Group
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 FILTER userToGroupEdge.type == 'USER'
-                FILTER IS_SAME_COLLECTION("groups", group)
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 // Hop 2: Group -> RecordGroup
                 FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER groupToRecordGroupEdge.type == 'GROUP'
+                FILTER groupToRecordGroupEdge.type == 'GROUP' or groupToRecordGroupEdge.type == 'ROLE'
 
                 // Hop 3: RecordGroup -> Record
                 FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -758,11 +761,11 @@ class BaseArangoService:
                 // Hop 1: User -> Group (permission)
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                     FILTER userToGroupEdge.type == 'USER'
-                    FILTER IS_SAME_COLLECTION("groups", group)
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 // Hop 2: Group -> Parent RecordGroup (permission)
                 FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    FILTER groupToRgEdge.type == 'GROUP'
+                    FILTER groupToRgEdge.type == 'GROUP' or groupToRgEdge.type == 'ROLE'
 
                 // Hop 3: Parent RecordGroup -> Child RecordGroup (belongs_to)
                 FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -1183,10 +1186,10 @@ class BaseArangoService:
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) or IS_SAME_COLLECTION("roles", group)
 
                         FOR record, permissionEdge IN 1..1 ANY group._id @@permission
-                            FILTER permissionEdge.type == "GROUP"
+                            FILTER permissionEdge.type == "GROUP" or permissionEdge.type == "ROLE"
                             {permission_filter}
 
                             FILTER record != null
@@ -1232,11 +1235,11 @@ class BaseArangoService:
                     // First hop: user -> group
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                         // Second hop: group -> recordgroup
                         FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
-                            FILTER groupToRecordGroupEdge.type == "GROUP"
+                            FILTER groupToRecordGroupEdge.type == "GROUP" or groupToRecordGroupEdge.type == "ROLE"
 
                             // Third hop: recordgroup -> record
                             FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
@@ -1267,11 +1270,11 @@ class BaseArangoService:
                     // Hop 1: user -> group
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                     // Hop 2: group -> parent record_group
                     FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
-                        FILTER groupToRgEdge.type == "GROUP"
+                        FILTER groupToRgEdge.type == "GROUP" or groupToRgEdge.type == "ROLE"
 
                     // Hop 3: parent record_group -> child record_group
                     FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
@@ -1464,10 +1467,10 @@ class BaseArangoService:
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                         FOR record, permissionEdge IN 1..1 ANY group._id @@permission
-                            FILTER permissionEdge.type == "GROUP"
+                            FILTER permissionEdge.type == "GROUP" or permissionEdge.type == "ROLE"
                             {permission_filter}
 
                             FILTER record != null
@@ -1506,11 +1509,11 @@ class BaseArangoService:
                     // First hop: user -> group
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                         // Second hop: group -> recordgroup
                         FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
-                            FILTER groupToRecordGroupEdge.type == "GROUP"
+                            FILTER groupToRecordGroupEdge.type == "GROUP" or groupToRecordGroupEdge.type == "ROLE"
 
                             // Third hop: recordgroup -> record
                             FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
@@ -1534,11 +1537,11 @@ class BaseArangoService:
                     // Hop 1: user -> group
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                     // Hop 2: group -> parent record_group
                     FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
-                        FILTER groupToRgEdge.type == "GROUP"
+                        FILTER groupToRgEdge.type == "GROUP" or groupToRgEdge.type == "ROLE"
 
                     // Hop 3: parent record_group -> child record_group (inheritance)
                     FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
@@ -1639,10 +1642,10 @@ class BaseArangoService:
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                         FOR record, permissionEdge IN 1..1 ANY group._id @@permission
-                            FILTER permissionEdge.type == "GROUP"
+                            FILTER permissionEdge.type == "GROUP" or permissionEdge.type == "ROLE"
                             {permission_filter}
 
                             FILTER record != null
@@ -1697,10 +1700,10 @@ class BaseArangoService:
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                         FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
-                            FILTER groupToRecordGroupEdge.type == "GROUP"
+                            FILTER groupToRecordGroupEdge.type == "GROUP" or groupToRecordGroupEdge.type == "ROLE"
 
                             FOR belongsEdge IN @@inherit_permissions
                                 FILTER belongsEdge._to == recordGroup._id
@@ -1728,10 +1731,10 @@ class BaseArangoService:
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                         FILTER userToGroupEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group)
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                     FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
-                        FILTER groupToRgEdge.type == "GROUP"
+                        FILTER groupToRgEdge.type == "GROUP" or groupToRgEdge.type == "ROLE"
 
                     FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
 
@@ -3159,11 +3162,11 @@ class BaseArangoService:
                 // First hop: user -> group
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                     FILTER userToGroupEdge.type == "USER"
-                    FILTER IS_SAME_COLLECTION("groups", group)
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                     // Second hop: group -> recordgroup
                     FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
-                        FILTER groupToRecordGroupEdge.type == "GROUP"
+                        FILTER groupToRecordGroupEdge.type == "GROUP" or groupToRecordGroupEdge.type == "ROLE"
 
                         // Third hop: recordgroup -> record
                         FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
@@ -3176,11 +3179,11 @@ class BaseArangoService:
                 // First hop: user -> group
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                     FILTER userToGroupEdge.type == "USER"
-                    FILTER IS_SAME_COLLECTION("groups", group)
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 // Second hop: group -> recordgroup1
                 FOR recordGroup1, groupToRg1Edge IN 1..1 ANY group._id @@permission
-                    FILTER groupToRg1Edge.type == "GROUP"
+                    FILTER groupToRg1Edge.type == "GROUP" or groupToRg1Edge.type == "ROLE"
 
                 // Third hop: recordgroup1 -> recordgroup2
                 FOR recordGroup2, rg1ToRg2Edge IN 1..1 INBOUND recordGroup1._id @@inherit_permissions
@@ -3887,6 +3890,9 @@ class BaseArangoService:
     ) -> bool | None:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
+
+            if collection == CollectionNames.GROUPS.value:
+                print("\n\n\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting user group:", nodes)
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
 
             batch_query = """
@@ -4287,6 +4293,54 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
+            )
+            return None
+    
+    async def get_app_role_by_external_id(
+        self,
+        connector_name: Connectors,
+        external_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[AppRole]:
+        """
+        Get a user group from the GROUPS collection using its external (source) ID.
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving Role for external ID %s %s", connector_name, external_id
+            )
+
+            # Query the GROUPS collection using the schema fields
+            query = f"""
+            FOR role IN {CollectionNames.ROLES.value}
+                FILTER role.externalRoleId == @external_id AND role.connectorName == @connector_name
+                LIMIT 1
+                RETURN role
+            """
+
+            db = transaction if transaction else self.db
+
+
+            cursor = db.aql.execute(query,
+                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+            )
+
+            result = next(cursor, None)
+
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved Role for external ID %s %s", connector_name, external_id
+                )
+                return AppRole.from_arango_base_role(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No Role found for external ID %s %s", connector_name, external_id
+                )
+                return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve Role for external ID %s %s: %s", connector_name, external_id, str(e)
             )
             return None
 

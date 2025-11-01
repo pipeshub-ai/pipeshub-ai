@@ -16,6 +16,7 @@ from app.models.entities import (
     AnyoneWithLink,
     AppUser,
     AppUserGroup,
+    AppRole,
     Domain,
     FileRecord,
     Org,
@@ -122,6 +123,9 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
         return await self.arango_service.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_app_role_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppRole]:
+        return await self.arango_service.get_app_role_by_external_id(connector_name, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
@@ -312,9 +316,21 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.batch_create_user_app_edges(edges)
 
     async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
+        print("\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting user groups:")
         return await self.arango_service.batch_upsert_nodes(
                             [user_group.to_arango_base_user_group() for user_group in user_groups],
                             collection=CollectionNames.GROUPS.value,
+                            transaction=self.txn
+                        )
+
+    async def batch_upsert_app_roles(self, app_roles: List[AppRole]) -> None:
+        print("\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting app roles:", app_roles)
+
+        for app_role in app_roles:
+            print("\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting app role:", app_role.to_arango_base_role())
+        return await self.arango_service.batch_upsert_nodes(
+                            [app_role.to_arango_base_role() for app_role in app_roles],
+                            collection=CollectionNames.ROLES.value,
                             transaction=self.txn
                         )
 

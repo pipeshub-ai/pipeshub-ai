@@ -88,6 +88,41 @@ user_group_schema = {
     "message": "Document does not match the record group schema.",
 }
 
+app_role_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string"},
+            # should be a uuid
+            "externalRoleId": {"type": "string", "minLength": 1},
+            "connectorName": {
+                "type": "string",
+                "enum": [connector.value for connector in Connectors],
+            },
+            # Arango collection entry
+            "createdAtTimestamp": {"type": "number"},
+            # Arango collection entry
+            "updatedAtTimestamp": {"type": ["number", "null"], "default": None},
+            "lastSyncTimestamp": {"type": "number"},  # Arango collection entry
+            "isDeletedAtSource": {"type": "boolean", "default": False},
+            "deletedAtSourceTimestamp": {"type": ["number", "null"], "default": None},
+            "sourceCreatedAtTimestamp": {"type": ["number", "null"], "default": None},
+            "sourceLastModifiedTimestamp": {"type": ["number", "null"], "default": None},
+        },
+        "required": [
+            "name",
+            "externalRoleId",
+            "connectorName",
+            "createdAtTimestamp",
+        ],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the app role schema.",
+}
+
 app_schema = {
     "rule": {
         "type": "object",

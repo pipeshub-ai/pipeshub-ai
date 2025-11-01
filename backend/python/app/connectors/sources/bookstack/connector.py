@@ -36,6 +36,7 @@ from app.connectors.sources.bookstack.common.apps import BookStackApp
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    AppRole,
     FileRecord,
     Record,
     RecordGroup,
@@ -155,7 +156,7 @@ class BookStackConnector(BaseConnector):
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
-        self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
+        self.app_role_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
 
     async def init(self) -> bool:
         """
@@ -431,7 +432,7 @@ class BookStackConnector(BaseConnector):
 
             # Step 2: Sync all user groups (roles in BookStack)
             self.logger.info("Syncing user groups (roles)...")
-            await self._sync_user_groups()
+            await self._sync_user_roles()
 
             # Step 3: Sync record groups (books and shelves)
             self.logger.info("Syncing record groups (chapters/books/shelves)...")
@@ -683,28 +684,28 @@ class BookStackConnector(BaseConnector):
         self.logger.info("✅ Finished processing user delete events")
 
     #-------------------------------User Groups Sync-----------------------------------#
-    async def _sync_user_groups(self, full_sync:bool = False) -> None:
+    async def _sync_user_roles(self, full_sync:bool = False) -> None:
         current_timestamp = self._get_iso_time()
-        bookstack_user_group_sync_key = generate_record_sync_point_key("bookstack", "user_group_logs", "global")
-        bookstack_user_group_sync_point = await self.user_group_sync_point.read_sync_point(bookstack_user_group_sync_key)
+        bookstack_user_role_sync_key = generate_record_sync_point_key("bookstack", "user_role_logs", "global")
+        bookstack_user_role_sync_point = await self.app_role_sync_point.read_sync_point(bookstack_user_role_sync_key)
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
-        if full_sync or not bookstack_user_group_sync_point.get('timestamp'):
-            await self.user_group_sync_point.update_sync_point(
-                bookstack_user_group_sync_key,
+        if full_sync or not bookstack_user_role_sync_point.get('timestamp'):
+            await self.app_role_sync_point.update_sync_point(
+                bookstack_user_role_sync_key,
                 {"timestamp": current_timestamp}
             )
-            await self._sync_user_groups_full()
+            await self._sync_user_roles_full()
         else:
-            last_sync_timestamp = bookstack_user_group_sync_point.get('timestamp')
-            await self._sync_user_groups_incremental(last_sync_timestamp)
-            await self.user_group_sync_point.update_sync_point(
-                bookstack_user_group_sync_key,
+            last_sync_timestamp = bookstack_user_role_sync_point.get('timestamp')
+            await self._sync_user_roles_incremental(last_sync_timestamp)
+            await self.app_role_sync_point.update_sync_point(
+                bookstack_user_role_sync_key,
                 {"timestamp": current_timestamp}
             )
 
 
-    async def _sync_user_groups_full(self) -> None:
+    async def _sync_user_roles_full(self) -> None:
         """
         Fetches all roles with their detailed user assignments to build and
         upsert user groups with their member users (AppUser objects).
@@ -727,12 +728,12 @@ class BookStackConnector(BaseConnector):
         }
 
         # 3. Build the final batch for the data processor.
-        user_groups_batch = []
+        roles_batch = []
         for role in all_roles_with_details:
-            # Create the AppUserGroup object for the role.
-            app_user_group = AppUserGroup(
+            # Create the AppRole object for the role.
+            app_role = AppRole(
                 app_name=self.connector_name,
-                source_user_group_id=str(role.get("id")),
+                source_role_id=str(role.get("id")),
                 name=role.get("display_name"),
                 org_id=self.data_entities_processor.org_id
             )
@@ -761,15 +762,15 @@ class BookStackConnector(BaseConnector):
                 )
                 app_users.append(app_user)
 
-            user_groups_batch.append((app_user_group, app_users))
+            roles_batch.append((app_role, app_users))
 
         # 4. Send the complete batch to the processor.
-        if user_groups_batch:
-            self.logger.info(f"Submitting {len(user_groups_batch)} groups with their users...")
-            await self.data_entities_processor.on_new_user_groups(user_groups_batch)
-            self.logger.info("✅ Successfully processed user groups and permissions.")
+        if roles_batch:
+            self.logger.info(f"Submitting {len(roles_batch)} roles with their users...")
+            await self.data_entities_processor.on_new_app_roles(roles_batch)
+            self.logger.info("✅ Successfully processed app roles and permissions.")
         else:
-            self.logger.info("No user groups were processed.")
+            self.logger.info("No app roles were processed.")
 
 
     def _parse_timestamp(self, timestamp_str: str) -> Optional[int]:
@@ -913,7 +914,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Successfully fetched details for {len(detailed_users)} users.")
         return detailed_users
 
-    async def _sync_user_groups_incremental(self, last_sync_timestamp: str) -> None:
+    async def _sync_user_roles_incremental(self, last_sync_timestamp: str) -> None:
         """
         Sync user groups and permissions incrementally based on the last sync timestamp.
         """
@@ -955,7 +956,7 @@ class BookStackConnector(BaseConnector):
             for event in role_delete_events.data['data']:
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_delete_event(role_id)
-                await self._sync_user_groups_full()
+                await self._sync_user_roles_full()
 
     async def _handle_role_create_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
         """
@@ -977,10 +978,10 @@ class BookStackConnector(BaseConnector):
 
         role_details = role_details_response.data
 
-        # Create the AppUserGroup object
-        app_user_group = AppUserGroup(
+        # Create the AppRole object
+        app_role = AppRole(
             app_name=self.connector_name,
-            source_user_group_id=str(role_id),
+            source_role_id=str(role_id),
             name=role_details.get("display_name"),
             org_id=self.data_entities_processor.org_id
         )
@@ -1020,8 +1021,8 @@ class BookStackConnector(BaseConnector):
                 app_users.append(app_user)
 
         # Process the new group and its members
-        self.logger.info(f"Processing newly created user group '{app_user_group.name}' with {len(app_users)} members...")
-        await self.data_entities_processor.on_new_user_groups([(app_user_group, app_users)])
+        self.logger.info(f"Processing newly created role '{app_role.name}' with {len(app_users)} members...")
+        await self.data_entities_processor.on_new_app_roles([(app_role, app_users)])
 
     async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
         await self._handle_role_delete_event(role_id)
@@ -1252,12 +1253,13 @@ class BookStackConnector(BaseConnector):
                     perm_type = PermissionType.READ
                 else:
                     continue
-
+                    
+                print("\n\n\n !!!!!!!!!!!!!!!!!!!! role 0 : ", role_id, role_perm)
                 permissions_list.append(
                     Permission(
                         external_id=str(role_id),
                         type=perm_type,
-                        entity_type=EntityType.GROUP
+                        entity_type=EntityType.ROLE
                     )
                 )
         #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group
@@ -1293,7 +1295,7 @@ class BookStackConnector(BaseConnector):
                         Permission(
                             external_id=str(role_id),
                             type=perm_type,
-                            entity_type=EntityType.GROUP
+                            entity_type=EntityType.ROLE
                         )
                     )
 
@@ -1613,11 +1615,11 @@ class BookStackConnector(BaseConnector):
                 content_type="page", content_id=page_id
             )
             if permissions_response.success and permissions_response.data:
-                # new_permissions = await self._parse_bookstack_permissions(
-                #     permissions_response.data, roles_details, "page"
-                # )
+                new_permissions = await self._parse_bookstack_permissions(
+                    permissions_response.data, roles_details, "page"
+                )
 
-                new_permissions = self._parse_bookstack_permissions_all_users(all_users=users)
+                # new_permissions = self._parse_bookstack_permissions_all_users(all_users=users)
 
                 fallback_permissions = permissions_response.data.get("fallback_permissions")
 

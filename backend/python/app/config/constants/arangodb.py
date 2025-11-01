@@ -110,6 +110,7 @@ class CollectionNames(Enum):
     PEOPLE = "people"
     USERS = "users"
     GROUPS = "groups"
+    ROLES = "roles"
     ORGS = "organizations"
     # DOMAINS = "domains"
     ANYONE = "anyone"

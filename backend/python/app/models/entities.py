@@ -725,3 +725,45 @@ class AppUserGroup(BaseModel):
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
+
+class AppRole(BaseModel):
+    id: str = Field(description="Unique identifier for the role", default_factory=lambda: str(uuid4()))
+    app_name: Connectors = Field(description="Name of the app")
+    source_role_id: str = Field(description="Unique identifier for the role in the source system")
+    name: str = Field(description="Name of the role")
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
+    
+    def to_arango_base_role(self) -> Dict[str, Any]:
+        """
+        Converts the AppUserGroup model to a dictionary that matches the ArangoDB schema.
+        """
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.name,
+            "externalRoleId": self.source_role_id,
+            "connectorName": self.app_name.value,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+
+        }
+
+    @staticmethod
+    def from_arango_base_role(arango_doc: Dict[str, Any]) -> "AppRole":
+        return AppRole(
+            id=arango_doc["_key"],
+            org_id=arango_doc.get("orgId", ""),
+            name=arango_doc["name"],
+            source_role_id=arango_doc["externalRoleId"],
+            app_name=Connectors(arango_doc["connectorName"]),
+            created_at=arango_doc["createdAtTimestamp"],
+            updated_at=arango_doc["updatedAtTimestamp"],
+            source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
+        )

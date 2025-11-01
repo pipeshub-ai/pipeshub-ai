@@ -92,7 +92,7 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.PERMISSION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
-        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value],
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value],
+        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value],
     },
 ]
