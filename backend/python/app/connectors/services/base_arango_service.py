@@ -11917,7 +11917,36 @@ class BaseArangoService:
                 RETURN DISTINCT records
             )
 
-            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords, directRecordsPermissionEdge, groupRecordsPermissionEdge, orgRecordsPermissionEdge)
+            //Get inherited permissions here 
+            LET recordGroupRecords = (
+                // Hop 1: User -> Group
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER userToGroupEdge.type == 'USER'
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                // Hop 2: Group -> RecordGroup
+                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER groupToRecordGroupEdge.type == 'GROUP' or groupToRecordGroupEdge.type == 'ROLE'
+
+                // Hop 3: RecordGroup -> Record
+                FOR records, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+            LET inheritedRecordGroupRecords = (
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER userToGroupEdge.type == 'USER'
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    FILTER groupToRgEdge.type == 'GROUP' or groupToRgEdge.type == 'ROLE'
+
+                FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+
+                FOR records, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                RETURN DISTINCT records
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords, directRecordsPermissionEdge, groupRecordsPermissionEdge, orgRecordsPermissionEdge, recordGroupRecords, inheritedRecordGroupRecords)
 
             LET anyoneRecords = (
                 FOR records IN @@anyone
