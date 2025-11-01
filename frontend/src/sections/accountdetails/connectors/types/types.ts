@@ -110,7 +110,7 @@ interface FilterCustomField extends BaseField {
 interface DocumentationLink {
   title: string;
   url: string;
-  type: 'setup' | 'api' | 'connector';
+  type: 'setup' | 'api' | 'connector' | 'pipeshub';
 }
 
 // Conditional display rule interface

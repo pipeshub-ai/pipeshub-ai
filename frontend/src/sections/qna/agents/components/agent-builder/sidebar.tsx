@@ -119,7 +119,7 @@ interface NodeTemplate {
   defaultConfig: Record<string, any>;
   inputs: string[];
   outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'memory' | 'outputs' | 'agent';
+  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
 }
 
 interface FlowBuilderSidebarProps {
@@ -141,7 +141,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     'Input / Output': true,
     Agents: false,
     'LLM Models': false,
-    Memory: false,
+    Knowledge: false,
     Tools: true,
     'Vector Stores': false,
   });
@@ -224,7 +224,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     [filteredTemplates]
   );
 
-  const appMemoryGroupNode = useMemo(
+  const appKnowledgeGroupNode = useMemo(
     () => filteredTemplates.find((t) => t.type === 'app-group'),
     [filteredTemplates]
   );
@@ -232,15 +232,15 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   const individualKBs = useMemo(
     () =>
       filteredTemplates.filter(
-        (t) => t.category === 'memory' && t.type.startsWith('kb-') && t.type !== 'kb-group'
+        (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
       ),
     [filteredTemplates]
   );
 
-  const individualAppMemory = useMemo(
+  const individualAppKnowledge = useMemo(
     () =>
       filteredTemplates.filter(
-        (t) => t.category === 'memory' && t.type.startsWith('app-') && t.type !== 'app-group'
+        (t) => t.category === 'knowledge' && t.type.startsWith('app-') && t.type !== 'app-group'
       ),
     [filteredTemplates]
   );
@@ -270,7 +270,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     let isDynamicIcon = false;
 
     if (sectionType === 'apps' && template.defaultConfig?.appName) {
-      const appIcon = getAppMemoryIcon(template.defaultConfig.appName);
+      const appIcon = getAppKnowledgeIcon(template.defaultConfig.appName);
       if (appIcon === 'dynamic-icon') {
         isDynamicIcon = true;
         // Find the connector for dynamic icon
@@ -505,9 +505,9 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       categories: ['llm'],
     },
     {
-      name: 'Memory',
+      name: 'Knowledge',
       icon: dataIcon,
-      categories: ['memory'],
+      categories: ['knowledge'],
     },
     {
       name: 'Tools',
@@ -559,7 +559,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     return iconMap[appName] || applicationIcon;
   };
 
-  const getAppMemoryIcon = (appName: string) => {
+  const getAppKnowledgeIcon = (appName: string) => {
     // First try to find the connector in our dynamic data
     const connector = allConnectors.find(
       (c) => c.name.toUpperCase() === appName.toUpperCase() || c.name === appName
@@ -987,23 +987,23 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                       <List dense sx={{ py: 0 }}>
                         {categoryTemplates.map((template) => renderDraggableItem(template))}
                       </List>
-                    ) : config.name === 'Memory' ? (
+                    ) : config.name === 'Knowledge' ? (
                       <Box sx={{ pl: 0 }}>
                         {/* App Memory group with dropdown */}
-                        {appMemoryGroupNode && (
+                        {appKnowledgeGroupNode && (
                           <>
                             {renderExpandableGroup(
-                              appMemoryGroupNode.label,
-                              appMemoryGroupNode.icon,
-                              individualAppMemory.length,
+                              appKnowledgeGroupNode.label,
+                              appKnowledgeGroupNode.icon,
+                              individualAppKnowledge.length,
                               expandedApps.app,
                               () => handleAppToggle('app'),
-                              appMemoryGroupNode.type,
+                              appKnowledgeGroupNode.type,
                               theme.palette.info.main
                             )}
                             <Collapse in={expandedApps.app} timeout="auto" unmountOnExit>
                               {renderDropdownContent(
-                                individualAppMemory,
+                                individualAppKnowledge,
                                 theme.palette.info.main,
                                 'apps'
                               )}

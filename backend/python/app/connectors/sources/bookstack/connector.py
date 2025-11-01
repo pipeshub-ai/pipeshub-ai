@@ -74,7 +74,13 @@ class RecordUpdate:
         .with_icon("/assets/icons/connectors/bookstack.svg")\
         .add_documentation_link(DocumentationLink(
             "BookStack API Access",
-            "https://www.bookstackapp.com/docs/admin/api-access/"
+            "https://www.bookstackapp.com/docs/admin/api-access/",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/bookstack/bookstack',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(

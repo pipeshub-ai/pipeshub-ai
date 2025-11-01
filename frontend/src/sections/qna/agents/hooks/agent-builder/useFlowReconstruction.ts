@@ -11,7 +11,7 @@ import replyIcon from '@iconify-icons/mdi/reply';
 import {
   truncateText,
   getAppIcon,
-  getAppMemoryIcon,
+  getAppKnowledgeIcon,
   normalizeAppName,
   normalizeDisplayName,
   formattedProvider,
@@ -32,7 +32,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         // Five distinct layers with proper separation to prevent overlap
         layers: {
           input: { x: 420, baseY: 1250 }, // Layer 1: User Input
-          preprocessing: { x: 100, baseY: 300 }, // Layer 2: Memory & Context
+          preprocessing: { x: 100, baseY: 300 }, // Layer 2: Knowledge & Context
           processing: { x: 400, baseY: 450 }, // Layer 3: LLMs & Tools
           agent: { x: 1000, baseY: 450 }, // Layer 4: Agent Core
           output: { x: 1500, baseY: 850 }, // Layer 5: Response Output
@@ -66,7 +66,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
 
         // Sub-positioning within processing layers - Increased separation
         sections: {
-          memory: {
+          knowledge: {
             baseX: -150, // Further left of preprocessing layer
             priority: 1, // Higher visual priority
           },
@@ -85,13 +85,13 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       const counts = {
         llm: agent.models?.length || (models.length > 0 ? 1 : 0),
         tools: agent.tools?.length || 0,
-        memory: (agent.kb?.length || 0) + (agent.apps?.length || 0),
+        knowledge: (agent.kb?.length || 0) + (agent.apps?.length || 0),
       };
 
       // Smart positioning system with visual balance
       const calculateOptimalPosition = (
         layer: keyof typeof layout.layers,
-        section: 'input' | 'memory' | 'llm' | 'tools' | 'agent' | 'output',
+        section: 'input' | 'knowledge' | 'llm' | 'tools' | 'agent' | 'output',
         index: number,
         totalInSection: number
       ) => {
@@ -118,14 +118,14 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             case 'output':
               return baseLayer.x;
 
-            case 'memory':
-              return layout.layers.preprocessing.x + layout.sections.memory.baseX;
+            case 'knowledge':
+              return layout.layers.preprocessing.x + layout.sections.knowledge.baseX;
 
             case 'llm': {
               // Adjust LLM position based on memory presence
               let llmX = baseLayer.x + layout.sections.llm.baseX;
-              if (counts.memory > 0) {
-                llmX += layout.spacing.typeOffset * 0.5; // More separation from memory
+              if (counts.knowledge > 0) {
+                llmX += layout.spacing.typeOffset * 0.5; // More separation from knowledge
               }
               return llmX;
             }
@@ -156,7 +156,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
 
         // Collect all processing node positions with weights
         const addPositions = (
-          section: 'memory' | 'llm' | 'tools',
+          section: 'knowledge' | 'llm' | 'tools',
           count: number,
           weight: number
         ) => {
@@ -170,7 +170,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         };
 
         // Add positions with different weights for visual balance
-        if (counts.memory > 0) addPositions('memory', counts.memory, 1.2);
+        if (counts.knowledge > 0) addPositions('knowledge', counts.knowledge, 1.2);
         if (counts.llm > 0) addPositions('llm', counts.llm, 2.0); // Higher weight for LLMs
         if (counts.tools > 0) addPositions('tools', counts.tools, 1.5);
 
@@ -211,11 +211,11 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       };
       nodes.push(chatInputNode);
 
-      // 2. Create Memory nodes first (Knowledge Bases + App Memory) - Left side
-      const memoryNodes: Node<NodeData>[] = [];
-      let memoryIndex = 0;
+      // 2. Create Knowledge nodes first (Knowledge Bases + App Knowledge) - Left side
+      const knowledgeNodes: Node<NodeData>[] = [];
+      let knowledgeIndex = 0;
 
-      // Knowledge Base nodes
+      // Knowledge Base nodes (KB)
       if (agent.kb && agent.kb.length > 0) {
         agent.kb.forEach((kbId) => {
           const matchingKB = knowledgeBases.find((kb) => kb.id === kbId);
@@ -225,9 +225,9 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               type: 'flowNode',
               position: calculateOptimalPosition(
                 'preprocessing',
-                'memory',
-                (memoryIndex += 1),
-                counts.memory
+                'knowledge',
+                (knowledgeIndex += 1),
+                counts.knowledge
               ),
               data: {
                 id: `kb-${nodeCounter - 1}`,
@@ -246,29 +246,30 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               },
             };
             nodes.push(kbNode);
-            memoryNodes.push(kbNode);
+            knowledgeNodes.push(kbNode);
           }
         });
       }
 
-      // App Memory nodes
+      // App Knowledge nodes
       if (agent.apps && agent.apps.length > 0) {
         agent.apps.forEach((appType) => {
-          const appMemoryNode: Node<NodeData> = {
-            id: `app-memory-${(nodeCounter += 1)}`,
+          const normalizedAppName = appType.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-').replace(/\s+/g, '-');
+          const appKnowledgeNode: Node<NodeData> = {
+            id: `app-${(nodeCounter += 1)}`,
             type: 'flowNode',
             position: calculateOptimalPosition(
               'preprocessing',
-              'memory',
-              (memoryIndex += 1),
-              counts.memory
+              'knowledge',
+              (knowledgeIndex += 1),
+              counts.knowledge
             ),
             data: {
-              id: `app-memory-${nodeCounter - 1}`,
-              type: `app-memory-${appType.toLowerCase().replace(/_/g, '-')}`,
-              label: normalizeDisplayName(`${appType} Memory`),
-              description: `Access ${normalizeAppName(appType)} data and context`,
-              icon: getAppMemoryIcon(appType),
+              id: `app-${nodeCounter - 1}`,
+              type: `app-${normalizedAppName}`,
+              label: normalizeDisplayName(`${appType}`),
+              description: `Access ${normalizeAppName(appType)} knowledge and context`,
+              icon: getAppKnowledgeIcon(appType),
               config: {
                 appName: appType,
                 appDisplayName: normalizeAppName(appType),
@@ -279,8 +280,8 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               isConfigured: true,
             },
           };
-          nodes.push(appMemoryNode);
-          memoryNodes.push(appMemoryNode);
+          nodes.push(appKnowledgeNode);
+          knowledgeNodes.push(appKnowledgeNode);
         });
       }
 
@@ -413,7 +414,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'actions', 'memory', 'llms'],
+          inputs: ['input', 'actions', 'knowledge', 'llms'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -458,14 +459,14 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         animated: false,
       });
 
-      // Memory to Agent connections - Context flow
-      memoryNodes.forEach((memoryNode) => {
+      // Knowledge to Agent connections - Context flow
+      knowledgeNodes.forEach((knowledgeNode) => {
         edges.push({
-          id: `e-memory-agent-${(edgeCounter += 1)}`,
-          source: memoryNode.id,
+          id: `e-knowledge-agent-${(edgeCounter += 1)}`,
+          source: knowledgeNode.id,
           target: 'agent-core-1',
           sourceHandle: 'context',
-          targetHandle: 'memory',
+          targetHandle: 'knowledge',
           type: 'smoothstep',
           style: {
             stroke: theme.palette.secondary.main,

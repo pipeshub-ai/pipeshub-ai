@@ -113,7 +113,13 @@ class SiteMetadata:
         .with_icon("/assets/icons/connectors/sharepoint.svg")
         .add_documentation_link(DocumentationLink(
             "SharePoint Online API Setup",
-            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
+            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/microsoft-365/sharepoint',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/SharePoint Online", False)
         .add_auth_field(AuthField(

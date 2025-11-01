@@ -81,7 +81,13 @@ class OutlookCredentials:
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(
             "Azure AD App Registration Setup",
-            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
+            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/microsoft-365/outlook',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/Outlook/oauth/callback", False)
         .add_auth_field(AuthField(

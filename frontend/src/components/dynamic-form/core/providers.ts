@@ -369,6 +369,6 @@ export const URL_PROVIDERS: readonly ProviderConfig[] = [
     id: 'urls',
     label: 'Public URLs',
     description: 'Configure the public URLs for your services.',
-    fields: ['frontendUrl', 'connectorUrl'],
+    fields: ['frontendUrl',   { name: 'connectorUrl', required: false, defaultValue: '' }],
   },
 ] as const;

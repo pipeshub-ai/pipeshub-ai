@@ -245,7 +245,7 @@ const InternalServicesSettings = () => {
         <Typography variant="body2">
           Refer to{' '}
           <Link
-            href="https://docs.pipeshub.com/services/internalServices"
+            href="https://docs.pipeshub.com/system-overview/internal-services"
             target="_blank"
             rel="noopener"
             sx={{

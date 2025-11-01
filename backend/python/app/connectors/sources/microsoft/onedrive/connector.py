@@ -67,7 +67,13 @@ class OneDriveCredentials:
         .with_icon("/assets/icons/connectors/onedrive.svg")
         .add_documentation_link(DocumentationLink(
             "Azure AD App Registration Setup",
-            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
+            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/microsoft-365/one-drive',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/OneDrive", False)
         .add_auth_field(AuthField(

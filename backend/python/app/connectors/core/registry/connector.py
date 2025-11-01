@@ -17,7 +17,13 @@ from app.connectors.core.registry.connector_builder import (
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Google Drive API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/drive/drive',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Drive", True)
         .with_oauth_urls(
@@ -66,7 +72,13 @@ class GoogleDriveConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Gmail API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/gmail/gmail',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Gmail", True)
         .with_oauth_urls(
@@ -112,7 +124,13 @@ class GmailConnector:
         .with_icon("/assets/icons/connectors/slack.svg")
         .add_documentation_link(DocumentationLink(
             "Slack Bot Token Setup",
-            "https://api.slack.com/authentication/basics"
+            "https://api.slack.com/authentication/basics",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/slack/slack',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -151,7 +169,13 @@ class SlackConnector:
         .with_icon("/assets/icons/connectors/notion.svg")
         .add_documentation_link(DocumentationLink(
             "Notion Bot Token Setup",
-            "https://api.notion.com/authentication/basics"
+            "https://api.notion.com/authentication/basics",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/notion/notion',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -190,7 +214,13 @@ class  NotionConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Calendar API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/calendar/calendar',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Calendar", True)
         .with_oauth_urls(
@@ -231,7 +261,13 @@ class CalendarConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Meet API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/meet/meet',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Meet", True)
         .with_oauth_urls(
@@ -274,7 +310,13 @@ class MeetConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Docs API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/docs/docs',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Docs", True)
         .with_oauth_urls(
@@ -317,7 +359,13 @@ class DocsConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Sheets API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/sheets/sheets',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Sheets", True)
         .with_oauth_urls(
@@ -356,7 +404,13 @@ class SheetsConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Forms API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/forms/forms',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Forms", True)
         .with_oauth_urls(
@@ -399,7 +453,13 @@ class FormsConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Slides API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview"
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/google-workspace/slides/slides',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Slides", True)
         .with_oauth_urls(
@@ -440,7 +500,13 @@ class SlidesConnector:
         .with_icon("/assets/icons/connectors/airtable.svg")
         .add_documentation_link(DocumentationLink(
             "Airtable API Token Setup",
-            "https://api.airtable.com/authentication/basics"
+            "https://api.airtable.com/authentication/basics",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/airtable/airtable',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -477,7 +543,13 @@ class AirtableConnector:
         .with_icon("/assets/icons/connectors/azureblob.svg")
         .add_documentation_link(DocumentationLink(
             "Azure Blob Storage Connection String Setup",
-            "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal"
+            "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/azure/azureblob',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -546,7 +618,13 @@ class AzureBlobConnector:
         .with_icon("/assets/icons/connectors/bookstack.svg")
         .add_documentation_link(DocumentationLink(
             "BookStack API Token Setup",
-            "https://bookstack.org/docs/admin/authentication/"
+            "https://bookstack.org/docs/admin/authentication/",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/bookstack/bookstack',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -599,7 +677,13 @@ class BookStackConnector:
         .with_icon("/assets/icons/connectors/linear.svg")
         .add_documentation_link(DocumentationLink(
             "Linear API Token Setup",
-            "https://linear.app/developers/docs/authentication"
+            "https://linear.app/developers/docs/authentication",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/linear/linear',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -636,7 +720,13 @@ class LinearConnector:
         .with_icon("/assets/icons/connectors/s3.svg")
         .add_documentation_link(DocumentationLink(
             "S3 Access Key Setup",
-            "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys"
+            "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/s3/s3',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -698,7 +788,13 @@ class S3Connector:
         .with_icon("/assets/icons/connectors/servicenow.svg")
         .add_documentation_link(DocumentationLink(
             "ServiceNow Username Password Setup",
-            "https://docs.servicenow.com/bundle/rome-it-service-management/page/product/integration/reference/r_ITSMIntegrationAPI.html"
+            "https://docs.servicenow.com/bundle/rome-it-service-management/page/product/integration/reference/r_ITSMIntegrationAPI.html",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/servicenow/servicenow',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -750,7 +846,13 @@ class ServiceNowConnector:
         .with_icon("/assets/icons/connectors/zendesk.svg")
         .add_documentation_link(DocumentationLink(
             "Zendesk API Token Setup",
-            "https://developer.zendesk.com/documentation/ticketing/introduction/authentication/"
+            "https://developer.zendesk.com/documentation/ticketing/introduction/authentication/",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/zendesk/zendesk',
+            'pipeshub'
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(

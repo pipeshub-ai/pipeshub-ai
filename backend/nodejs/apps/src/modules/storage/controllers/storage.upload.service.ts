@@ -23,13 +23,13 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   parseBoolean,
   getExtension,
-  hasExtension,
   createPlaceholderDocument,
   generatePresignedUrlForDirectUpload,
   getBaseUrl,
   isValidStorageVendor,
   extractOrgId,
   extractUserId,
+  validateFileAndDocumentName,
 } from '../utils/utils';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
@@ -80,7 +80,9 @@ export class UploadDocumentService {
 
     const extension = getExtension(originalname);
     if (extension === '') {
-      throw new BadRequestError('Invalid file extension');
+      throw new BadRequestError(
+        `File "${originalname}" does not have a valid file extension.`,
+      );
     }
     // Use direct upload api provided by storage vendors for files size > 10MB
     if (
@@ -94,6 +96,7 @@ export class UploadDocumentService {
         next,
         size,
         extension,
+        originalname,
       );
       if (!placeholderDocument || !placeholderDocument.document) {
         throw new InternalServerError('Failed to create placeholder document');
@@ -141,23 +144,16 @@ export class UploadDocumentService {
       );
     }
 
-    const isExtensionPresent = hasExtension(originalname);
-    if (!isExtensionPresent) {
-      throw new BadRequestError(
-        'The name of the document contains some extension',
-      );
-    }
+    // Validate file extension, MIME type, and document name constraints
+    const { documentName } = req.body as Partial<Document>;
+    validateFileAndDocumentName(extension, documentName, originalname);
+
+    // Get MIME type after validation (it's guaranteed to be valid at this point)
+    const mimeType = getMimeType(extension);
 
     if (originalname.includes('/') === true) {
       throw new BadRequestError(
-        'Invalid document name, the name of the document contains forward slash',
-      );
-    }
-
-    const mimeType = getMimeType(extension);
-    if (mimeType === '') {
-      throw new BadRequestError(
-        'Invalid File Extension, do not supported by storage service',
+        `File "${originalname}": The file name cannot contain a forward slash.`,
       );
     }
 

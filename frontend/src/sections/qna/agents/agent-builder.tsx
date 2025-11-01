@@ -228,7 +228,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
               routing: 'auto',
               allowMultipleLLMs: true,
             },
-            inputs: ['input', 'actions', 'memory', 'llms'],
+            inputs: ['input', 'actions', 'knowledge', 'llms'],
             outputs: ['response'],
             isConfigured: true,
           },
