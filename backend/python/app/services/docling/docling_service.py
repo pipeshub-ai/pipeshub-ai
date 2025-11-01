@@ -56,6 +56,7 @@ class DoclingService:
             self.logger.info(f"🚀 Processing PDF: {record_name}")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
+            record_name = "name.pdf"
             result = await self.processor.load_document(record_name, pdf_binary)
 
             if result is False:
