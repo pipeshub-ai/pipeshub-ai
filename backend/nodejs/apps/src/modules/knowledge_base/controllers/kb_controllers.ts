@@ -54,7 +54,12 @@ const handleBackendError = (error: any, operation: string): Error => {
   if (error.response) {
     const { status, data } = error.response;
     const errorDetail =
-      data?.detail || data?.reason || data?.message || 'Unknown error';
+      data?.error?.message ||
+      data?.detail ||
+      data?.reason ||
+      data?.message ||
+      error?.message ||
+      'Unknown error';
 
     logger.error(`Backend error during ${operation}`, {
       status,

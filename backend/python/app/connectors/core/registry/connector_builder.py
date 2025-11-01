@@ -51,7 +51,7 @@ class DocumentationLink:
     """Represents a documentation link"""
     title: str
     url: str
-    doc_type: str = "setup"
+    doc_type: str
 
 
 class ConnectorConfigBuilder:

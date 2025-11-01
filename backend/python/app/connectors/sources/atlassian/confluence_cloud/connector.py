@@ -310,7 +310,13 @@ class ConfluenceClient:
         .with_icon("/assets/icons/connectors/confluence.svg")
         .add_documentation_link(DocumentationLink(
             "Confluence Cloud API Setup",
-            "https://developer.atlassian.com/cloud/confluence/rest/"
+            "https://developer.atlassian.com/cloud/confluence/rest/",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/confluence/confluence',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Confluence", False)
         .add_auth_field(AuthField(

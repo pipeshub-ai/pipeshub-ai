@@ -127,7 +127,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
   const connectedNodesByHandle = React.useMemo(() => {
     if (data.type !== 'agent-core') return {} as Record<string, any[]>;
     const incoming = storeEdges.filter((e) => e.target === data.id);
-    const map: Record<string, any[]> = { input: [], actions: [], memory: [], llms: [] };
+    const map: Record<string, any[]> = { input: [], actions: [], knowledge: [], llms: [] };
     incoming.forEach((e: any) => {
       const sourceNode = storeNodes.find((n) => n.id === e.source) as any;
       if (sourceNode) {
@@ -594,7 +594,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
               )}
             </Box>
           </Box>
-          {/* Memory Section */}
+          {/* Knowledge Section */}
           <Box sx={{ mb: 2.5 }}>
             {' '}
             {/* Keep comfortable margin */}
@@ -609,7 +609,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 letterSpacing: '0.05em',
               }}
             >
-              Memory
+              Knowledge
             </Typography>
             <Box
               sx={{
@@ -628,7 +628,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
               <Handle
                 type="target"
                 position={Position.Left}
-                id="memory"
+                id="knowledge"
                 style={{
                   top: '50%',
                   left: -7,
@@ -641,9 +641,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   zIndex: 10,
                 }}
               />
-              {connectedNodesByHandle.memory?.length > 0 ? (
+              {connectedNodesByHandle.knowledge?.length > 0 ? (
                 <Box>
-                  {connectedNodesByHandle.memory.slice(0, 2).map((memoryNode, index) => (
+                  {connectedNodesByHandle.knowledge.slice(0, 2).map((knowledgeNode, index) => (
                     <Box
                       key={index}
                       sx={{
@@ -676,9 +676,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                         <Typography
                           sx={{ fontSize: '0.85rem', fontWeight: 600, color: colors.text.primary }} // Keep comfortable size
                         >
-                          {memoryNode.config?.kbName ||
-                            memoryNode.config?.appName ||
-                            memoryNode.label}
+                          {knowledgeNode.config?.kbName ||
+                            knowledgeNode.config?.appName ||
+                            knowledgeNode.label}
                         </Typography>
                         <Typography
                           sx={{
@@ -687,18 +687,18 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                             fontWeight: 500,
                           }}
                         >
-                          {memoryNode.type.startsWith('kb-')
+                          {knowledgeNode.type.startsWith('kb-')
                             ? 'Knowledge Base'
-                            : memoryNode.type.startsWith('memory-hub')
-                              ? 'Memory Hub'
-                              : 'Memory'}
+                            : knowledgeNode.type.startsWith('knowledge-hub')
+                              ? 'Knowledge Hub'
+                              : 'Knowledge'}
                         </Typography>
                       </Box>
                     </Box>
                   ))}
-                  {connectedNodesByHandle.memory.length > 2 && (
+                  {connectedNodesByHandle.knowledge.length > 2 && (
                     <Chip
-                      label={`+${connectedNodesByHandle.memory.length - 2} more`}
+                      label={`+${connectedNodesByHandle.knowledge.length - 2} more`}
                       size="small"
                       sx={{
                         height: 22, // Keep comfortable size
@@ -723,7 +723,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 <Typography
                   sx={{ fontSize: '0.85rem', color: colors.text.muted, fontStyle: 'italic' }} // Keep comfortable size
                 >
-                  No memory connected
+                  No knowledge connected
                 </Typography>
               )}
             </Box>

@@ -30,7 +30,7 @@ export const useAgentBuilderNodeTemplates = (
     const allConnectors = [...activeConnectors];
     
     // Create dynamic app memory nodes from connector data
-    const dynamicAppMemoryNodes = allConnectors.map(connector => ({
+    const dynamicAppKnowledgeNodes = allConnectors.map(connector => ({
       type: `app-${connector.name.toLowerCase().replace(/\s+/g, '-')}`,
       label: normalizeDisplayName(connector.name),
       description: `Connect to ${connector.name} data and content`,
@@ -42,7 +42,7 @@ export const useAgentBuilderNodeTemplates = (
       },
       inputs: ['query'],
       outputs: ['context'],
-      category: 'memory' as const,
+      category: 'knowledge' as const,
     }));
     
     const templates: NodeTemplate[] = [
@@ -50,7 +50,7 @@ export const useAgentBuilderNodeTemplates = (
       {
         type: 'agent-core',
         label: normalizeDisplayName('Agent'),
-        description: 'Orchestrates tools, memory, and multiple LLMs',
+        description: 'Orchestrates tools, knowledge, and multiple LLMs',
         icon: sparklesIcon,
         defaultConfig: {
           systemPrompt: 'You are a helpful assistant.',
@@ -58,7 +58,7 @@ export const useAgentBuilderNodeTemplates = (
           routing: 'auto',
           allowMultipleLLMs: true,
         },
-        inputs: ['input', 'actions', 'memory', 'llms'],
+        inputs: ['input', 'actions', 'knowledge', 'llms'],
         outputs: ['response'],
         category: 'agent',
       },
@@ -162,11 +162,11 @@ export const useAgentBuilderNodeTemplates = (
         },
         inputs: ['query'],
         outputs: ['context'],
-        category: 'memory' as const,
+        category: 'knowledge' as const,
       },
 
       // Individual App Memory Nodes - Dynamic from connector data
-      ...dynamicAppMemoryNodes,
+      ...dynamicAppKnowledgeNodes,
 
       // Knowledge Base Group Node
       {
@@ -180,7 +180,7 @@ export const useAgentBuilderNodeTemplates = (
         },
         inputs: ['query'],
         outputs: ['context'],
-        category: 'memory' as const,
+        category: 'knowledge' as const,
       },
 
       // Individual Knowledge Base Nodes (for granular control)
@@ -195,7 +195,7 @@ export const useAgentBuilderNodeTemplates = (
         },
         inputs: ['query'],
         outputs: ['context'],
-        category: 'memory' as const,
+        category: 'knowledge' as const,
       })),
 
       // Output Nodes

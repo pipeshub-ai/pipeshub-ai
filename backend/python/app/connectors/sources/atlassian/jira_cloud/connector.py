@@ -422,7 +422,13 @@ class JiraClient:
         .with_icon("/assets/icons/connectors/jira.svg")
         .add_documentation_link(DocumentationLink(
             "Jira Cloud API Setup",
-            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/"
+            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/jira/jira',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Jira", False)
         .add_auth_field(AuthField(

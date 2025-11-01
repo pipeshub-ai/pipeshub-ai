@@ -32,8 +32,6 @@ import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import databaseIcon from '@iconify-icons/mdi/database';
 
-
-
 import {
   Box,
   Chip,
@@ -1926,7 +1924,7 @@ export default function RecordDetails() {
                   }}
                 />
 
-                <CardContent sx={{ p: 3, flexGrow: 1 }}>
+                <CardContent sx={{ p: 3.5, flexGrow: 1 }}>
                   <Stack spacing={3}>
                     {/* Email specific information */}
                     {isMailRecord &&
@@ -1940,10 +1938,12 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
                             Labels
@@ -1952,7 +1952,7 @@ export default function RecordDetails() {
                             {record.mailRecord.labelIds.map((label) => (
                               <Chip
                                 key={label}
-                                label={label}
+                                label={label.split('_').join(' ')}
                                 size="small"
                                 sx={{
                                   height: 22,
@@ -1997,15 +1997,25 @@ export default function RecordDetails() {
                           gutterBottom
                           sx={{
                             textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
                             display: 'block',
-                            mb: 0.75,
+                            mb: 1.25,
+                            opacity: 0.85,
                           }}
                         >
                           Date
                         </Typography>
-                        <Typography variant="body2">{record.mailRecord.date}</Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 500,
+                            color: 'text.primary',
+                          }}
+                        >
+                          {record.mailRecord.date}
+                        </Typography>
                       </Box>
                     )}
 
@@ -2020,10 +2030,12 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
                             Departments
@@ -2042,10 +2054,12 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
                             Document Category
@@ -2065,13 +2079,15 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
-                            Document Sub-category Level 1
+                            Sub-category Level 1
                           </Typography>
                           {renderChips(metadata.subcategories1)}
                         </Box>
@@ -2088,13 +2104,15 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
-                            Document Sub-category Level 2
+                            Sub-category Level 2
                           </Typography>
                           {renderChips(metadata.subcategories2)}
                         </Box>
@@ -2111,13 +2129,15 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
-                            Document Sub-category Level 3
+                            Sub-category Level 3
                           </Typography>
                           {renderChips(metadata.subcategories3)}
                         </Box>
@@ -2134,10 +2154,12 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
                             Topics
@@ -2157,10 +2179,12 @@ export default function RecordDetails() {
                             gutterBottom
                             sx={{
                               textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
+                              fontWeight: 600,
+                              letterSpacing: '0.8px',
+                              fontSize: '0.6875rem',
                               display: 'block',
-                              mb: 0.75,
+                              mb: 1.25,
+                              opacity: 0.85,
                             }}
                           >
                             Languages
@@ -2169,7 +2193,18 @@ export default function RecordDetails() {
                         </Box>
                       )}
 
-                    {(record.departments || record.appSpecificRecordType) && <Divider />}
+                    {(record.departments || record.appSpecificRecordType) && (
+                      <Divider
+                        sx={{
+                          my: 1,
+                          borderColor: (themeVal) =>
+                            alpha(
+                              themeVal.palette.divider,
+                              themeVal.palette.mode === 'dark' ? 0.15 : 0.1
+                            ),
+                        }}
+                      />
+                    )}
 
                     {/* Original department section from the record */}
                     {record.departments && record.departments.length > 0 && (
@@ -2180,10 +2215,12 @@ export default function RecordDetails() {
                           gutterBottom
                           sx={{
                             textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
                             display: 'block',
-                            mb: 0.75,
+                            mb: 1.25,
+                            opacity: 0.85,
                           }}
                         >
                           Record Departments
@@ -2195,32 +2232,36 @@ export default function RecordDetails() {
                               label={dept.name}
                               size="small"
                               sx={{
-                                height: 22,
-                                fontSize: '0.75rem',
+                                height: 24,
+                                fontSize: '0.8125rem',
                                 fontWeight: 500,
-                                borderRadius: '4px',
-                                // Clean, professional styling for both modes
+                                borderRadius: '6px',
+                                transition: 'all 0.2s ease-in-out',
                                 bgcolor: (themeVal) =>
-                                  themeVal.palette.mode !== 'dark'
-                                    ? alpha(themeVal.palette.grey[800], 0.1)
-                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                  themeVal.palette.mode === 'dark'
+                                    ? alpha(themeVal.palette.primary.main, 0.15)
+                                    : alpha(themeVal.palette.primary.main, 0.08),
                                 color: (themeVal) =>
                                   themeVal.palette.mode === 'dark'
-                                    ? themeVal.palette.grey[100]
-                                    : themeVal.palette.grey[800],
+                                    ? themeVal.palette.primary.light
+                                    : themeVal.palette.primary.dark,
                                 border: (themeVal) =>
-                                  themeVal.palette.mode === 'dark'
-                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
-                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                  `1px solid ${alpha(
+                                    themeVal.palette.primary.main,
+                                    themeVal.palette.mode === 'dark' ? 0.3 : 0.2
+                                  )}`,
                                 '& .MuiChip-label': {
-                                  px: 1,
-                                  py: 0.25,
+                                  px: 1.5,
+                                  py: 0.5,
                                 },
                                 '&:hover': {
                                   bgcolor: (themeVal) =>
-                                    themeVal.palette.mode !== 'dark'
-                                      ? alpha(themeVal.palette.grey[700], 0.1)
-                                      : alpha(themeVal.palette.grey[200], 0.1),
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.primary.main, 0.25)
+                                      : alpha(themeVal.palette.primary.main, 0.12),
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: (themeVal) =>
+                                    `0 2px 8px ${alpha(themeVal.palette.primary.main, 0.2)}`,
                                 },
                               }}
                             />
@@ -2238,10 +2279,12 @@ export default function RecordDetails() {
                           gutterBottom
                           sx={{
                             textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
                             display: 'block',
-                            mb: 0.75,
+                            mb: 1.25,
+                            opacity: 0.85,
                           }}
                         >
                           Record Categories
@@ -2253,32 +2296,36 @@ export default function RecordDetails() {
                               label={type.name}
                               size="small"
                               sx={{
-                                height: 22,
-                                fontSize: '0.75rem',
+                                height: 24,
+                                fontSize: '0.8125rem',
                                 fontWeight: 500,
-                                borderRadius: '4px',
-                                // Clean, professional styling for both modes
+                                borderRadius: '6px',
+                                transition: 'all 0.2s ease-in-out',
                                 bgcolor: (themeVal) =>
-                                  themeVal.palette.mode !== 'dark'
-                                    ? alpha(themeVal.palette.grey[800], 0.1)
-                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                  themeVal.palette.mode === 'dark'
+                                    ? alpha(themeVal.palette.primary.main, 0.15)
+                                    : alpha(themeVal.palette.primary.main, 0.08),
                                 color: (themeVal) =>
                                   themeVal.palette.mode === 'dark'
-                                    ? themeVal.palette.grey[100]
-                                    : themeVal.palette.grey[800],
+                                    ? themeVal.palette.primary.light
+                                    : themeVal.palette.primary.dark,
                                 border: (themeVal) =>
-                                  themeVal.palette.mode === 'dark'
-                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
-                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                  `1px solid ${alpha(
+                                    themeVal.palette.primary.main,
+                                    themeVal.palette.mode === 'dark' ? 0.3 : 0.2
+                                  )}`,
                                 '& .MuiChip-label': {
-                                  px: 1,
-                                  py: 0.25,
+                                  px: 1.5,
+                                  py: 0.5,
                                 },
                                 '&:hover': {
                                   bgcolor: (themeVal) =>
-                                    themeVal.palette.mode !== 'dark'
-                                      ? alpha(themeVal.palette.grey[700], 0.1)
-                                      : alpha(themeVal.palette.grey[200], 0.1),
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.primary.main, 0.25)
+                                      : alpha(themeVal.palette.primary.main, 0.12),
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: (themeVal) =>
+                                    `0 2px 8px ${alpha(themeVal.palette.primary.main, 0.2)}`,
                                 },
                               }}
                             />
@@ -2296,10 +2343,12 @@ export default function RecordDetails() {
                           gutterBottom
                           sx={{
                             textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
                             display: 'block',
-                            mb: 0.75,
+                            mb: 1.25,
+                            opacity: 0.85,
                           }}
                         >
                           Record Modules
@@ -2311,32 +2360,36 @@ export default function RecordDetails() {
                               label={module.name}
                               size="small"
                               sx={{
-                                height: 22,
-                                fontSize: '0.75rem',
+                                height: 24,
+                                fontSize: '0.8125rem',
                                 fontWeight: 500,
-                                borderRadius: '4px',
-                                // Clean, professional styling for both modes
+                                borderRadius: '6px',
+                                transition: 'all 0.2s ease-in-out',
                                 bgcolor: (themeVal) =>
-                                  themeVal.palette.mode !== 'dark'
-                                    ? alpha(themeVal.palette.grey[800], 0.1)
-                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                  themeVal.palette.mode === 'dark'
+                                    ? alpha(themeVal.palette.primary.main, 0.15)
+                                    : alpha(themeVal.palette.primary.main, 0.08),
                                 color: (themeVal) =>
                                   themeVal.palette.mode === 'dark'
-                                    ? themeVal.palette.grey[100]
-                                    : themeVal.palette.grey[800],
+                                    ? themeVal.palette.primary.light
+                                    : themeVal.palette.primary.dark,
                                 border: (themeVal) =>
-                                  themeVal.palette.mode === 'dark'
-                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
-                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                  `1px solid ${alpha(
+                                    themeVal.palette.primary.main,
+                                    themeVal.palette.mode === 'dark' ? 0.3 : 0.2
+                                  )}`,
                                 '& .MuiChip-label': {
-                                  px: 1,
-                                  py: 0.25,
+                                  px: 1.5,
+                                  py: 0.5,
                                 },
                                 '&:hover': {
                                   bgcolor: (themeVal) =>
-                                    themeVal.palette.mode !== 'dark'
-                                      ? alpha(themeVal.palette.grey[700], 0.1)
-                                      : alpha(themeVal.palette.grey[200], 0.1),
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.primary.main, 0.25)
+                                      : alpha(themeVal.palette.primary.main, 0.12),
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: (themeVal) =>
+                                    `0 2px 8px ${alpha(themeVal.palette.primary.main, 0.2)}`,
                                 },
                               }}
                             />
@@ -2353,26 +2406,109 @@ export default function RecordDetails() {
                           gutterBottom
                           sx={{
                             textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
                             display: 'block',
-                            mb: 0.75,
+                            mb: 1.25,
+                            opacity: 0.85,
                           }}
                         >
                           Created By
                         </Typography>
-                        <Typography
-                          variant="body2"
+                        <Box
                           sx={{
                             display: 'flex',
                             alignItems: 'center',
-                            gap: 1,
+                            gap: 1.5,
+                            p: 1.5,
+                            borderRadius: 2,
+                            bgcolor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? alpha(themeVal.palette.background.paper, 0.4)
+                                : alpha(themeVal.palette.grey[100], 0.5),
+                            border: (themeVal) =>
+                              `1px solid ${alpha(themeVal.palette.divider, 0.1)}`,
                           }}
                         >
-                          <Icon icon={accountIcon} style={{ fontSize: '18px', opacity: 0.7 }} />
-                          {(users && users.find((u) => u._id === record.createdBy)?.fullName) ||
-                            'Unknown'}
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 32,
+                              height: 32,
+                              borderRadius: '50%',
+                              bgcolor: (themeVal) =>
+                                themeVal.palette.mode === 'dark'
+                                  ? alpha(themeVal.palette.primary.main, 0.2)
+                                  : alpha(themeVal.palette.primary.main, 0.1),
+                            }}
+                          >
+                            <Icon
+                              icon={accountIcon}
+                              style={{
+                                fontSize: '18px',
+                                color: 'currentColor',
+                                opacity: 0.8,
+                              }}
+                            />
+                          </Box>
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              fontWeight: 500,
+                              color: 'text.primary',
+                            }}
+                          >
+                            {(users && users.find((u) => u._id === record.createdBy)?.fullName) ||
+                              'Unknown User'}
+                          </Typography>
+                        </Box>
+                      </Box>
+                    )}
+
+                    { record.indexingStatus === 'FAILED' && record.reason && record.reason.length > 0 && (
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          color="error"
+                          gutterBottom
+                          sx={{
+                            textTransform: 'uppercase',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
+                            display: 'block',
+                            mb: 1.25,
+                            opacity: 0.9,
+                          }}
+                        >
+                          Fail Reason
                         </Typography>
+                        <Box
+                          sx={{
+                            p: 2,
+                            borderRadius: 2,
+                            bgcolor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? alpha(themeVal.palette.error.main, 0.15)
+                                : alpha(themeVal.palette.error.main, 0.08),
+                            border: (themeVal) =>
+                              `1px solid ${alpha(themeVal.palette.error.main, 0.3)}`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              color: 'error.main',
+                              fontWeight: 500,
+                              lineHeight: 1.6,
+                            }}
+                          >
+                            {record.reason}
+                          </Typography>
+                        </Box>
                       </Box>
                     )}
                   </Stack>

@@ -540,9 +540,17 @@ const Connectors = () => {
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
                       <Typography variant="body2" sx={{ fontWeight: 500 }}>
                         Click any connector to configure settings and start syncing data
-                        automatically.
+                        automatically. Refer to{' '}
+                        <a
+                          href='https://docs.pipeshub.com/connectors/overview'
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: theme.palette.primary.main }}
+                        >
+                          the documentation
+                        </a>{' '}
+                        for more information.
                       </Typography>
-                     
                     </Stack>
                   </Alert>
                 )}

@@ -78,7 +78,7 @@ const CONFIGURATION_STEPS = [
       'Choose your preferred storage solution. Local storage is used by default if skipped.',
     isRequired: false,
     canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/storage/overview',
+    documentationUrl: 'https://docs.pipeshub.com/system-overview/storage',
   },
   {
     id: 'url' as ConfigType,
@@ -90,7 +90,7 @@ const CONFIGURATION_STEPS = [
       'Set up public URLs for external integrations. These are optional but recommended for production.',
     isRequired: false,
     canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/deployment/urls',
+    documentationUrl: 'https://docs.pipeshub.com/system-overview/internal-services',
   },
   {
     id: 'smtp' as ConfigType,
@@ -101,7 +101,7 @@ const CONFIGURATION_STEPS = [
       'Set up email delivery for notifications and alerts. This is optional but recommended.',
     isRequired: false,
     canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/smtp/overview',
+    documentationUrl: 'https://docs.pipeshub.com/smtp',
   },
 ] as const;
 

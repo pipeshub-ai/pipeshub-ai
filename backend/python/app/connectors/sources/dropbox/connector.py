@@ -154,7 +154,13 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Dropbox App Setup",
-            "https://developers.dropbox.com/oauth-guide"
+            "https://developers.dropbox.com/oauth-guide",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/dropbox/dropbox',
+            'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Dropbox", True)
         .with_oauth_urls(

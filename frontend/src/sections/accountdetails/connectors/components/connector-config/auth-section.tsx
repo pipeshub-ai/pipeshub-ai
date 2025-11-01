@@ -72,13 +72,16 @@ const AuthSection: React.FC<AuthSectionProps> = ({
 
   if (!connectorConfig) return null;
   const { auth } = connectorConfig.config;
-  const { documentationLinks } = connectorConfig.config;
+  let { documentationLinks } = connectorConfig.config;
   // Simplified helper function for business OAuth support
   const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean => 
     accountType === 'business' && 
     (connectorParam.appGroup === 'Google Workspace') && 
     connectorParam.authType === 'OAUTH';
+  console.log(connectorConfig);
+  const pipeshubDocumentationUrl = documentationLinks?.find((link) => link.type === 'pipeshub')?.url || `https://docs.pipeshub.com/connectors/overview`;
 
+  documentationLinks = documentationLinks?.filter((link) => link.type !== 'pipeshub');
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       {/* Documentation Alert */}
@@ -93,7 +96,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
         <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.4 }}>
           Refer to{' '}
           <Link
-            href="https://docs.pipeshub.com/connectors"
+            href={pipeshubDocumentationUrl}
             target="_blank"
             rel="noopener"
             sx={{

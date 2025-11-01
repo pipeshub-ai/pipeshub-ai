@@ -56,7 +56,7 @@ interface NodeTemplate {
   defaultConfig: Record<string, any>;
   inputs: string[];
   outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'memory' | 'outputs' | 'agent';
+  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
 }
 
 interface FlowBuilderCanvasProps {

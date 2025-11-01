@@ -143,6 +143,7 @@ export async function createPlaceholderDocument(
   next: NextFunction,
   size: number,
   extension : string,
+  originalname?: string,
 ): Promise<DocumentInfoResponse | undefined> {
   try {
     const {
@@ -155,15 +156,27 @@ export async function createPlaceholderDocument(
     } = req.body as Partial<Document>;
     const orgId = extractOrgId(req);
     const userId = extractUserId(req);
+    
+    // Use originalname or documentName for error messages
+    const fileNameForError = originalname || documentName || 'the file';
+    
+    // Validate MIME type support FIRST - most important check
+    const mimeType = getMimeType(extension);
+    if (mimeType === '') {
+      throw new BadRequestError(
+        `File "${fileNameForError}" has an unsupported file extension "${extension}". Supported file types include: .pdf, .docx, .xlsx, .csv, .md, .txt, .pptx, images, videos, and more.`,
+      );
+    }
+    
     if (hasExtension(documentName)) {
       throw new BadRequestError(
-        'The name of the document cannot have extensions',
+        `File "${fileNameForError}": The document name cannot contain a file extension. Please provide only the name without the extension.`,
       );
     }
 
     if (documentName?.includes('/')) {
       throw new BadRequestError(
-        'The name of the document cannot have forward slash',
+        `File "${fileNameForError}": The document name cannot contain a forward slash.`,
       );
     }
 

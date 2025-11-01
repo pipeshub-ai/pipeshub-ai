@@ -88,6 +88,7 @@ export interface Record {
   createdBy?: string;
   summaryDocumentId?: string;
   webUrl?: string;
+  reason:string
 }
 
 export interface FileRecord {
