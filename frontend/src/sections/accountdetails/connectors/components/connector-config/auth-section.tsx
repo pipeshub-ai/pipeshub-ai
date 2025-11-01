@@ -78,7 +78,6 @@ const AuthSection: React.FC<AuthSectionProps> = ({
     accountType === 'business' && 
     (connectorParam.appGroup === 'Google Workspace') && 
     connectorParam.authType === 'OAUTH';
-  console.log(connectorConfig);
   const pipeshubDocumentationUrl = documentationLinks?.find((link) => link.type === 'pipeshub')?.url || `https://docs.pipeshub.com/connectors/overview`;
 
   documentationLinks = documentationLinks?.filter((link) => link.type !== 'pipeshub');

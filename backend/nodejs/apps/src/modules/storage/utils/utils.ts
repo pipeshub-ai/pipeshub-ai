@@ -138,6 +138,39 @@ export function hasExtension(documentName: string | undefined): boolean {
   return mimeType !== '';
 }
 
+/**
+ * Validates file extension, MIME type, and document name constraints
+ * @param extension - File extension (without leading dot)
+ * @param documentName - Document name to validate (should not contain extension or forward slash)
+ * @param fileNameForError - File name to use in error messages
+ * @throws BadRequestError if validation fails
+ */
+export function validateFileAndDocumentName(
+  extension: string,
+  documentName: string | undefined,
+  fileNameForError: string,
+): void {
+  // Validate MIME type support FIRST - most important check
+  const mimeType = getMimeType(extension);
+  if (mimeType === '') {
+    throw new BadRequestError(
+      `File "${fileNameForError}" has an unsupported file extension "${extension}". Supported file types include: .pdf, .docx, .xlsx, .csv, .md, .txt, .pptx, images, videos, and more.`,
+    );
+  }
+
+  if (hasExtension(documentName)) {
+    throw new BadRequestError(
+      `File "${fileNameForError}": The document name cannot contain a file extension. Please provide only the name without the extension.`,
+    );
+  }
+
+  if (documentName?.includes('/')) {
+    throw new BadRequestError(
+      `File "${fileNameForError}": The document name cannot contain a forward slash.`,
+    );
+  }
+}
+
 export async function createPlaceholderDocument(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
@@ -160,25 +193,8 @@ export async function createPlaceholderDocument(
     // Use originalname or documentName for error messages
     const fileNameForError = originalname || documentName || 'the file';
     
-    // Validate MIME type support FIRST - most important check
-    const mimeType = getMimeType(extension);
-    if (mimeType === '') {
-      throw new BadRequestError(
-        `File "${fileNameForError}" has an unsupported file extension "${extension}". Supported file types include: .pdf, .docx, .xlsx, .csv, .md, .txt, .pptx, images, videos, and more.`,
-      );
-    }
-    
-    if (hasExtension(documentName)) {
-      throw new BadRequestError(
-        `File "${fileNameForError}": The document name cannot contain a file extension. Please provide only the name without the extension.`,
-      );
-    }
-
-    if (documentName?.includes('/')) {
-      throw new BadRequestError(
-        `File "${fileNameForError}": The document name cannot contain a forward slash.`,
-      );
-    }
+    // Validate file extension, MIME type, and document name constraints
+    validateFileAndDocumentName(extension, documentName, fileNameForError);
 
     const documentInfo: Partial<Document> = {
       documentName,

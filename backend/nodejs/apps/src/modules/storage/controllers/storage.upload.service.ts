@@ -23,13 +23,13 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   parseBoolean,
   getExtension,
-  hasExtension,
   createPlaceholderDocument,
   generatePresignedUrlForDirectUpload,
   getBaseUrl,
   isValidStorageVendor,
   extractOrgId,
   extractUserId,
+  validateFileAndDocumentName,
 } from '../utils/utils';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
@@ -144,29 +144,12 @@ export class UploadDocumentService {
       );
     }
 
-    // Check if file extension is supported by MIME type FIRST
-    // This is the most important validation - unsupported file types should fail early with clear error
-    const mimeType = getMimeType(extension);
-    if (mimeType === '') {
-      throw new BadRequestError(
-        `File "${originalname}" has an unsupported file extension "${extension}". Supported file types include: .pdf, .docx, .xlsx, .csv, .md, .txt, .pptx, .png, .jpg, .jpeg, .webp, .svg, .heic, .heif, and more.`,
-      );
-    }
-
-    // Validate that documentName (from req.body) does not contain an extension
-    // The extension should only be in the original filename, not in documentName
+    // Validate file extension, MIME type, and document name constraints
     const { documentName } = req.body as Partial<Document>;
-    if (documentName && hasExtension(documentName)) {
-      throw new BadRequestError(
-        `File "${originalname}": The document name cannot contain a file extension. Please provide only the name without the extension.`,
-      );
-    }
+    validateFileAndDocumentName(extension, documentName, originalname);
 
-    if (documentName && documentName.includes('/')) {
-      throw new BadRequestError(
-        `File "${originalname}": The document name cannot contain a forward slash.`,
-      );
-    }
+    // Get MIME type after validation (it's guaranteed to be valid at this point)
+    const mimeType = getMimeType(extension);
 
     if (originalname.includes('/') === true) {
       throw new BadRequestError(

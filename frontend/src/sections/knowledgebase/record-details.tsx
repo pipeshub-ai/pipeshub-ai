@@ -31,6 +31,8 @@ import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
 import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import databaseIcon from '@iconify-icons/mdi/database';
+import infoIcon from '@iconify-icons/mdi/information-outline';
+
 
 import {
   Box,
@@ -1533,6 +1535,15 @@ export default function RecordDetails() {
                         '& .MuiChip-label': { px: 1 },
                       }}
                     />
+                    {record.indexingStatus === 'FAILED' &&
+                      record.reason &&
+                      record.reason.length > 0 && (
+                        <Tooltip title={record.reason} arrow>
+                          <span style={{ cursor: 'pointer' }}>
+                            <Icon icon={infoIcon} style={{ fontSize: '16px' }} />
+                          </span>
+                        </Tooltip>
+                      )}
                   </Typography>
                 </Grid>
 
@@ -2463,50 +2474,6 @@ export default function RecordDetails() {
                           >
                             {(users && users.find((u) => u._id === record.createdBy)?.fullName) ||
                               'Unknown User'}
-                          </Typography>
-                        </Box>
-                      </Box>
-                    )}
-
-                    { record.indexingStatus === 'FAILED' && record.reason && record.reason.length > 0 && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="error"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 600,
-                            letterSpacing: '0.8px',
-                            fontSize: '0.6875rem',
-                            display: 'block',
-                            mb: 1.25,
-                            opacity: 0.9,
-                          }}
-                        >
-                          Fail Reason
-                        </Typography>
-                        <Box
-                          sx={{
-                            p: 2,
-                            borderRadius: 2,
-                            bgcolor: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? alpha(themeVal.palette.error.main, 0.15)
-                                : alpha(themeVal.palette.error.main, 0.08),
-                            border: (themeVal) =>
-                              `1px solid ${alpha(themeVal.palette.error.main, 0.3)}`,
-                          }}
-                        >
-                          <Typography
-                            variant="body2"
-                            sx={{
-                              color: 'error.main',
-                              fontWeight: 500,
-                              lineHeight: 1.6,
-                            }}
-                          >
-                            {record.reason}
                           </Typography>
                         </Box>
                       </Box>
