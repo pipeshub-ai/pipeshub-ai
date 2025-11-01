@@ -16,10 +16,12 @@ from app.connectors.core.registry.connector import (
     MeetConnector,
     NotionConnector,
     S3Connector,
-    ServiceNowConnector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
+)
+from app.connectors.core.registry.connector import (
+    ServiceNowConnector as ServiceNowConnectorAgent,
 )
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -31,6 +33,9 @@ from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnecto
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
+)
+from app.connectors.sources.servicenow.servicenow.connector import (
+    ServiceNowConnector,
 )
 from app.connectors.sources.web.connector import WebConnector
 from app.services.featureflag.config.config import CONFIG
@@ -48,6 +53,7 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "dropbox": DropboxConnector,
+        "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
     }
@@ -70,7 +76,7 @@ class ConnectorFactory:
                 'forms': FormsConnector,
                 'slides': SlidesConnector,
                 'docs': DocsConnector,
-                'servicenow': ServiceNowConnector,
+                'servicenow': ServiceNowConnectorAgent,
                 'zendesk': ZendeskConnector,
                 'linear': LinearConnector,
                 's3': S3Connector,

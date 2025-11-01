@@ -1,17 +1,6 @@
-<svg version="1.1" id="Layer_1" xmlns:x="ns_extend;" xmlns:i="ns_ai;" xmlns:graph="ns_graphs;" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 71.1 63.6" style="enable-background:new 0 0 71.1 63.6;" xml:space="preserve">
- <style type="text/css">
-  .st0{fill-rule:evenodd;clip-rule:evenodd;}
- </style>
- <metadata>
-  <sfw xmlns="ns_sfw;">
-   <slices>
-   </slices>
-   <sliceSourceBounds bottomLeftOrigin="true" height="63.6" width="71.1" x="-41.9" y="0.4">
-   </sliceSourceBounds>
-  </sfw>
- </metadata>
- <path class="st0" d="M35.8,0C16.1,0,0,15.9,0,35.6c0,9.8,4,19.3,11.2,26c2.5,2.4,6.4,2.6,9.2,0.5c9-6.7,21.4-6.7,30.4,0
-	c2.8,2.1,6.7,1.9,9.2-0.5C74.3,48,74.9,25.4,61.3,11.1C54.7,4.1,45.4,0.1,35.8,0 M35.6,53.5C26,53.8,18,46.2,17.8,36.7
-	c0-0.3,0-0.6,0-0.9c0-9.8,8-17.8,17.8-17.8s17.8,8,17.8,17.8c0.3,9.6-7.3,17.5-16.8,17.8C36.2,53.5,35.9,53.5,35.6,53.5">
- </path>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="256" height="256" viewBox="0 0 256 256" xml:space="preserve">
+<g style="stroke: none; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-linejoin: miter; stroke-miterlimit: 10; fill: none; fill-rule: nonzero; opacity: 1;" transform="translate(1.4065934065934016 1.4065934065934016) scale(2.81 2.81)">
+	<path d="M 72.216 90 H 17.784 C 7.962 90 0 82.038 0 72.216 V 17.784 C 0 7.962 7.962 0 17.784 0 h 54.432 C 82.038 0 90 7.962 90 17.784 v 54.432 C 90 82.038 82.038 90 72.216 90 z" style="stroke: none; stroke-width: 1; stroke-dasharray: none; stroke-linecap: butt; stroke-linejoin: miter; stroke-miterlimit: 10; fill: rgb(3,45,66); fill-rule: evenodd; opacity: 1;" transform=" matrix(1 0 0 1 0 0) " stroke-linecap="round"/>
+	<path d="M 45.191 14.751 c -17.897 -0.037 -32.436 14.441 -32.473 32.338 c -0.019 8.936 3.653 17.483 10.148 23.62 c 2.287 2.178 5.821 2.361 8.322 0.432 c 8.198 -6.101 19.429 -6.101 27.627 0 c 2.525 1.934 6.086 1.726 8.369 -0.488 c 12.982 -12.32 13.52 -32.831 1.2 -45.813 C 62.34 18.471 53.97 14.827 45.191 14.742 M 45.001 63.321 c -8.676 0.235 -15.899 -6.608 -16.134 -15.284 c -0.008 -0.282 -0.008 -0.564 0 -0.845 c 0 -8.91 7.223 -16.134 16.134 -16.134 s 16.134 7.223 16.134 16.134 c 0.232 8.676 -6.613 15.897 -15.289 16.13 C 45.564 63.329 45.282 63.329 45.001 63.321" style="stroke: none; stroke-width: 1; stroke-dasharray: none; stroke-linecap: butt; stroke-linejoin: miter; stroke-miterlimit: 10; fill: rgb(98,216,78); fill-rule: evenodd; opacity: 1;" transform=" matrix(1 0 0 1 0 0) " stroke-linecap="round"/>
+</g>
 </svg>

@@ -3,7 +3,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
@@ -98,7 +103,7 @@ class DataSourceEntitiesProcessor:
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and
                     record.parent_external_record_id and
-                    record.parent_record_type == RecordType.MAIL):
+                    (record.parent_record_type == RecordType.MAIL or record.parent_record_type == RecordType.WEBPAGE)):
                     relation_type = 'ATTACHMENT'
                 else:
                     relation_type = 'PARENT_CHILD'
@@ -139,15 +144,14 @@ class DataSourceEntitiesProcessor:
                          record.record_name, existing_record.version, record.version)
         await tx_store.batch_upsert_records([record])
 
-
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
 
         try:
-
             for permission in permissions:
-                from_collection = None
+                # Permission edges: Entity (User/Group) → Record
                 to_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
+                from_collection = None
 
                 if permission.entity_type == EntityType.USER.value:
                     user = None
@@ -157,31 +161,36 @@ class DataSourceEntitiesProcessor:
                         # If user doesn't exist (external user), create them as inactive
                         if not user and permission.email:
                             user = await self._create_external_user(permission.email, record.connector_name, tx_store)
+
                     if user:
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+
                 elif permission.entity_type == EntityType.GROUP.value:
+                    user_group = None
                     if permission.external_id:
-                        user_group = await tx_store.get_user_group_by_external_id(external_id=permission.external_id, connector_name=record.connector_name)
-                    # else:
-                    #     user_group = await tx_store.get_user_group_by_email(email=permission.email, connector_name=record.connector_name)
+                        # Look up group by external_id
+                        user_group = await tx_store.get_user_group_by_external_id(
+                            external_id=permission.external_id,
+                            connector_name=record.connector_name
+                        )
 
                     if user_group:
                         from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
                     else:
                         self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
                         continue
-                if permission.entity_type == EntityType.ORG.value:
+                elif permission.entity_type == EntityType.ORG.value:
                     from_collection = f"{CollectionNames.ORGS.value}/{self.org_id}"
 
-                # if permission.entity_type == EntityType.DOMAIN.value:
-                #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
+                # elif permission.entity_type == EntityType.DOMAIN.value:
+                #     domain = await tx_store.get_domain_by_external_id(permission.external_id)
                 #     if domain:
                 #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
 
-                # if permission.entity_type == EntityType.ANYONE.value:
+                # elif permission.entity_type == EntityType.ANYONE.value:
                 #     from_collection = f"{CollectionNames.ANYONE.value}"
 
-                # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
+                # elif permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
                 #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
 
                 if from_collection:
@@ -495,16 +504,7 @@ class DataSourceEntitiesProcessor:
     async def on_new_app_users(self, users: List[AppUser]) -> None:
         try:
             async with self.data_store_provider.transaction() as tx_store:
-
-                # Get all users from the database(Active and Inactive)
-                existing_users = await tx_store.get_users(self.org_id, active=False)
-                existing_user_emails = {existing_user.get("email") for existing_user in existing_users if existing_user is not None}
-                for user in users:
-                    self.logger.info(f"Processing user: {user}")
-
-                    if user.email not in existing_user_emails:
-                        await tx_store.batch_upsert_app_users([user])
-
+                await tx_store.batch_upsert_app_users(users)
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
@@ -595,6 +595,11 @@ class DataSourceEntitiesProcessor:
 
             return [User.from_arango_user(user) for user in users if user is not None]
 
+    async def get_all_app_users(self, app_name: Connectors) -> List[AppUser]:
+        async with self.data_store_provider.transaction() as tx_store:
+            app_users = await tx_store.get_app_users(self.org_id, app_name)
+
+            return [AppUser.from_arango_user(app_user) for app_user in app_users if app_user is not None]
 
     async def on_user_group_member_removed(
         self,

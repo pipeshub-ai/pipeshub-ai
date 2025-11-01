@@ -3,6 +3,7 @@
 # pylint: disable=E1101, W0718
 import asyncio
 import datetime
+import hashlib
 import json
 import uuid
 from io import BytesIO
@@ -26,7 +27,14 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import AppUserGroup, FileRecord, Record, RecordGroup, User
+from app.models.entities import (
+    AppUser,
+    AppUserGroup,
+    FileRecord,
+    Record,
+    RecordGroup,
+    User,
+)
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
@@ -4252,6 +4260,86 @@ class BaseArangoService:
             )
             return None
 
+    async def get_or_create_app_by_name(
+        self,
+        app_name: str,
+        app_group: str,
+        auth_type: Optional[str] = None,
+        app_type: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get an existing app by name or create it if it doesn't exist.
+
+        Args:
+            app_name: Name of the application
+            app_group: Group the app belongs to (e.g., "Google Workspace")
+            auth_type: Authentication type (e.g., "oauth", "api_token")
+            app_type: Optional type override (defaults to uppercased app_name)
+
+        Returns:
+            App document if successful
+        """
+        try:
+            # First try to get existing app
+            existing_app = await self.get_app_by_name(app_name)
+            if existing_app:
+                return existing_app
+
+            # If not found, create new app
+            orgs = await self.get_all_documents(CollectionNames.ORGS.value)
+
+            if not orgs or not isinstance(orgs, list):
+                self.logger.warning(f"No organizations found in DB; skipping app creation for {app_name}")
+                return None
+
+            org_id = orgs[0].get("_key")
+            if not org_id:
+                self.logger.warning(f"First organization document missing _key; skipping app creation for {app_name}")
+                return None
+
+            # Generate consistent app group ID
+            app_group_id = hashlib.sha256(app_group.encode()).hexdigest()
+
+            # Create app document
+            doc = {
+                '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
+                'name': app_name,
+                'type': app_type or app_name.upper().replace(' ', '_'),
+                'appGroup': app_group,
+                'appGroupId': app_group_id,
+                'authType': auth_type or 'oauth',
+                'isActive': False,
+                'isConfigured': False,
+                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
+                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
+            }
+
+            # Insert app document
+            app_doc = await self.batch_upsert_nodes([doc], CollectionNames.APPS.value)
+            if not app_doc:
+                raise Exception(f"Failed to create app {app_name} in database")
+
+            # Create org-app edge
+            edge_data = {
+                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
+                "_to": f"{CollectionNames.APPS.value}/{doc['_key']}",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            edge_doc = await self.batch_create_edges(
+                [edge_data],
+                CollectionNames.ORG_APP_RELATION.value,
+            )
+            if not edge_doc:
+                raise Exception(f"Failed to create edge for {app_name} in database")
+
+            self.logger.info(f"Created database entry for {app_name}")
+            return app_doc
+
+        except Exception as e:
+            self.logger.error(f"Error in get_or_create_app_by_name for {app_name}: {e}")
+            return None
+
     async def get_user_by_email(self, email: str, transaction: Optional[TransactionDatabase] = None) -> Optional[User]:
         """
         Get internal user key using the email
@@ -4281,6 +4369,127 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for email %s: %s", email, str(e)
+            )
+            return None
+
+    async def get_app_user_by_email(
+        self,
+        email: str,
+        app_name: Connectors,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[AppUser]:
+        """
+        Get app user by email and app name, including sourceUserId from edge
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving user for email %s and app %s", email, app_name
+            )
+
+            query = """
+                // First find the app
+                LET app = FIRST(
+                    FOR a IN @@apps
+                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        RETURN a
+                )
+
+                // Then find the user by email
+                LET user = FIRST(
+                    FOR u IN @@users
+                        FILTER LOWER(u.email) == LOWER(@email)
+                        RETURN u
+                )
+
+                // Find the edge connecting user to app
+                LET edge = FIRST(
+                    FOR e IN @@user_app_relation
+                        FILTER e._from == user._id
+                        FILTER e._to == app._id
+                        RETURN e
+                )
+
+                // Return user merged with sourceUserId if edge exists
+                RETURN edge != null ? MERGE(user, {
+                    sourceUserId: edge.sourceUserId
+                }) : null
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={
+                "email": email,
+                "app_name": app_name.value,
+                "@apps": CollectionNames.APPS.value,
+                "@users": CollectionNames.USERS.value,
+                "@user_app_relation": CollectionNames.USER_APP_RELATION.value
+            })
+
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully retrieved user for email %s and app %s", email, app_name)
+                return AppUser.from_arango_user(result)
+            else:
+                self.logger.warning("⚠️ No user found for email %s and app %s", email, app_name)
+                return None
+        except Exception as e:
+            self.logger.error("❌ Failed to retrieve user for email %s and app %s: %s", email, app_name, str(e))
+            return None
+
+    async def get_user_by_source_id(
+        self,
+        source_user_id: str,
+        connector_name: Connectors,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[User]:
+        """
+        Get a user by their source system ID (sourceUserId field).
+
+        Args:
+            source_user_id: The user ID from the source system
+            connector_name: Connector enum for scoped lookup
+            org_id: Organization ID for scoping
+            transaction: Optional transaction database
+
+        Returns:
+            User object if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving user by source_id %s for connector %s",
+                source_user_id, connector_name.value
+            )
+
+            user_query = """
+            FOR user IN @@users_collection
+                FILTER user.appName == @app_name
+                FILTER user.sourceUserId == @source_user_id
+                LIMIT 1
+                RETURN user
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                user_query,
+                bind_vars={
+                    "@users_collection": CollectionNames.USERS.value,
+                    "app_name": connector_name.value,
+                    "source_user_id": source_user_id,
+                },
+            )
+            user_doc = next(cursor, None)
+
+            if user_doc:
+                self.logger.info("✅ Successfully retrieved user by source_id %s", source_user_id)
+                return User.from_arango_user(user_doc)
+            else:
+                self.logger.warning("⚠️ No user found for source_id %s", source_user_id)
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to get user by source_id %s: %s",
+                source_user_id, str(e),
+                exc_info=True
             )
             return None
 
@@ -4316,6 +4525,119 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
+            return []
+
+    async def get_app_users(self, org_id, app_name: Connectors) -> List[Dict]:
+        """
+        Fetch all users from the database who belong to the organization
+        and are connected to the specified app via userAppRelation edge.
+
+        Args:
+            org_id (str): Organization ID
+            app_name (Connectors): App connector name
+
+        Returns:
+            List[Dict]: List of user documents with their details and sourceUserId
+        """
+        try:
+            self.logger.info(f"🚀 Fetching users connected to {app_name.value} app")
+
+            query = """
+                // First find the app
+                LET app = FIRST(
+                    FOR a IN @@apps
+                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        RETURN a
+                )
+
+                // Then find users connected via userAppRelation
+                FOR edge IN @@user_app_relation
+                    FILTER edge._to == app._id
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null
+
+                    // Verify user belongs to the organization
+                    LET belongs_to_org = FIRST(
+                        FOR org_edge IN @@belongs_to
+                            FILTER org_edge._from == user._id
+                            FILTER org_edge._to == CONCAT('organizations/', @org_id)
+                            FILTER org_edge.entityType == 'ORGANIZATION'
+                            RETURN true
+                    )
+                    FILTER belongs_to_org == true
+
+                    RETURN MERGE(user, {
+                        sourceUserId: edge.sourceUserId
+                    })
+            """
+
+            cursor = self.db.aql.execute(query, bind_vars={
+                "org_id": org_id,
+                "app_name": app_name.value,
+                "@apps": CollectionNames.APPS.value,
+                "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value
+            })
+
+            user_data_list  = list(cursor)
+            users = [AppUser.from_arango_user(user_data) for user_data in user_data_list]
+            self.logger.info(f"✅ Successfully fetched {len(users)} users for {app_name.value}")
+            return users
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {str(e)}")
+            return []
+
+    async def get_user_groups(
+        self,
+        app_name: Connectors,
+        org_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[AppUserGroup]:
+        """
+        Get all user groups for a specific connector and organization.
+
+        Args:
+            app_name: Connector name
+            org_id: Organization ID
+            transaction: Optional transaction database context
+
+        Returns:
+            List[AppUserGroup]: List of user group entities
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving user groups for connector %s and org %s", app_name.value, org_id
+            )
+
+            query = f"""
+            FOR group IN {CollectionNames.GROUPS.value}
+                FILTER group.connectorName == @connector_name
+                    AND group.orgId == @org_id
+                RETURN group
+            """
+
+            db = transaction if transaction else self.db
+
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "connector_name": app_name.value,
+                    "org_id": org_id
+                }
+            )
+
+            groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in cursor]
+
+            self.logger.info(
+                "✅ Successfully retrieved %d user groups for connector %s", len(groups), app_name.value
+            )
+            return groups
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve user groups for connector %s: %s", app_name.value, str(e)
+            )
             return []
 
     async def upsert_sync_point(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:

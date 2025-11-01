@@ -2258,9 +2258,8 @@ async def get_oauth_authorization_url(
         # Get OAuth configuration from registry metadata
         connector_auth_config = registry_entry.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = connector_auth_config.get('authorizeUrl', '')
-        token_url = connector_auth_config.get('tokenUrl', '')
-        connector_auth_config.get('scopes', [])
+        authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
+        token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
@@ -2410,9 +2409,8 @@ async def handle_oauth_callback(
         # Get OAuth configuration from registry metadata
         connector_auth_config = registry_entry.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = connector_auth_config.get('authorizeUrl', '')
-        token_url = connector_auth_config.get('tokenUrl', '')
-        connector_auth_config.get('scopes', [])
+        authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
+        token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
 
         if not redirect_uri:
             return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
@@ -2979,8 +2977,9 @@ async def update_connector_config(
         auth_meta = connector_config.get('auth', {})
         if 'auth' not in merged_config or not isinstance(merged_config['auth'], dict):
             merged_config['auth'] = {}
-        merged_config['auth']['authorizeUrl'] = auth_meta.get('authorizeUrl', '')
-        merged_config['auth']['tokenUrl'] = auth_meta.get('tokenUrl', '')
+
+        merged_config['auth']['authorizeUrl'] = merged_config['auth'].get('authorizeUrl') or auth_meta.get('authorizeUrl', '')
+        merged_config['auth']['tokenUrl'] = merged_config['auth'].get('tokenUrl') or auth_meta.get('tokenUrl', '')
         merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
         merged_config["auth"]["redirectUri"] = redirect_uri
         merged_config["auth"]["authType"] = auth_type
