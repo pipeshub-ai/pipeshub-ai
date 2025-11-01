@@ -1102,7 +1102,6 @@ class BaseArangoService:
                 f'''(
                     FOR permissionEdge IN @@permissions
                         FILTER permissionEdge._to == user_from
-                        FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
@@ -1123,7 +1122,6 @@ class BaseArangoService:
                 f'''(
                     FOR permissionEdge IN @@permission
                         FILTER permissionEdge._from == user_from
-                        FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._to)
                         FILTER record != null
@@ -1388,7 +1386,6 @@ class BaseArangoService:
                 f'''LENGTH(
                     FOR permissionEdge IN @@permissions
                         FILTER permissionEdge._to == user_from
-                        FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
@@ -1407,7 +1404,6 @@ class BaseArangoService:
                 f'''(
                     FOR permissionEdge IN @@permission
                         FILTER permissionEdge._from == user_from
-                        FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._to)
                         FILTER record != null
@@ -1561,7 +1557,6 @@ class BaseArangoService:
                 f'''(
                     FOR permissionEdge IN @@permissions
                         FILTER permissionEdge._to == user_from
-                        FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
                         FILTER record.recordType != @drive_record_type
@@ -1581,7 +1576,6 @@ class BaseArangoService:
                 f'''(
                     FOR permissionEdge IN @@permission
                         FILTER permissionEdge._from == user_from
-                        FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._to)
                         FILTER record != null
                         FILTER record.recordType != @drive_record_type
@@ -4079,7 +4073,7 @@ class BaseArangoService:
             return None
 
     async def get_record_by_external_id(
-        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None, record_type: Optional[str] = None
     ) -> Optional[Record]:
         """
         Get internal file key using the external file ID
@@ -4087,6 +4081,7 @@ class BaseArangoService:
         Args:
             external_file_id (str): External file ID to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
+            record_type (Optional[str]): Optional record type to filter (e.g., 'ticket', 'webpage')
 
         Returns:
             Optional[str]: Internal file key if found, None otherwise
@@ -4096,16 +4091,23 @@ class BaseArangoService:
                 "🚀 Retrieving internal key for external file ID %s %s", connector_name, external_id
             )
 
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_id AND record.connectorName == @connector_name
-                RETURN record
-            """
+            if record_type:
+                query = f"""
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.externalRecordId == @external_id AND record.connectorName == @connector_name AND record.recordType == @record_type
+                    RETURN record
+                """
+                bind_vars = {"external_id": external_id, "connector_name": connector_name.value, "record_type": record_type}
+            else:
+                query = f"""
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.externalRecordId == @external_id AND record.connectorName == @connector_name
+                    RETURN record
+                """
+                bind_vars = {"external_id": external_id, "connector_name": connector_name.value}
 
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value}
-            )
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
             result = next(cursor, None)
 
             if result:
@@ -9350,7 +9352,6 @@ class BaseArangoService:
                 f'''(
                     FOR permissionEdge IN @@permissions_to_kb
                         FILTER permissionEdge._from == user_from
-                        FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._to)
                         FILTER record != null
@@ -9437,7 +9438,6 @@ class BaseArangoService:
                 f'''LENGTH(
                     FOR permissionEdge IN @@permissions_to_kb
                         FILTER permissionEdge._from == user_from
-                        FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._to)
                         FILTER record != null
@@ -9481,7 +9481,6 @@ class BaseArangoService:
                 '''(
                     FOR permissionEdge IN @@permissions_to_kb
                         FILTER permissionEdge._from == user_from
-                        FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._to)
                         FILTER record != null
                         FILTER record.isDeleted != true

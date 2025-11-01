@@ -1366,7 +1366,10 @@ class Processor:
                 file = await self.arango_service.get_document(
                     recordId, CollectionNames.FILES.value
                 )
-                domain_metadata = {**record, **file}
+                if file:
+                    domain_metadata = {**record, **file}
+                else:
+                    domain_metadata = {**record}
             except Exception as e:
                 self.logger.error(f"❌ Error extracting metadata: {str(e)}")
                 domain_metadata = None

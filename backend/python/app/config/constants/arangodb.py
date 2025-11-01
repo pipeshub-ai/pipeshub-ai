@@ -48,6 +48,7 @@ class Connectors(Enum):
     JIRA = "JIRA"
 
     DROPBOX = "DROPBOX"
+    ZAMMAD = "ZAMMAD"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
@@ -57,6 +58,7 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    ZAMMAD = "Zammad"
     WEB = "Web"
     BOOKSTACK = "BookStack"
 
