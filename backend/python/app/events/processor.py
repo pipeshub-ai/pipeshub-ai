@@ -2,7 +2,6 @@ import io
 import json
 from datetime import datetime
 
-from app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 
@@ -20,6 +19,7 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlockType
 from app.models.entities import Record, RecordStatus, RecordType
+from app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
