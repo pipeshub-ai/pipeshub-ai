@@ -27,10 +27,12 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { UserAccountController } from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
 import { ConfigurationManagerService } from '../services/cm.service';
+import { UserController } from '../../user_management/controller/users.controller';
 
 const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
 };
+
 export function createSamlRouter(container: Container) {
   const router = Router();
 
@@ -39,6 +41,7 @@ export function createSamlRouter(container: Container) {
   const sessionService = container.get<SessionService>('SessionService');
   const iamService = container.get<IamService>('IamService');
   const samlController = container.get<SamlController>('SamlController');
+  const userController = container.get<UserController>('UserController');
   const logger = container.get<Logger>('Logger');
   router.use(attachContainerMiddleware(container));
   router.use(
@@ -146,18 +149,41 @@ export function createSamlRouter(container: Container) {
 
           logger.info('SAML callback email', req.user.email);
         }
+        // Validate orgId is available
+        if (!orgId) {
+          throw new BadRequestError('Organization ID not found in session');
+        }
+
         const authToken = iamJwtGenerator(
           req.user.email,
           config.scopedJwtSecret,
         );
-        let userFindResult = await iamService.getUserByEmail(
-          req.user.email,
-          authToken,
-        );
-        if (!userFindResult) {
-          throw new NotFoundError('User not found');
+
+        // Try to find existing user, if not found, auto-provision via JIT
+        let user;
+        try {
+          const userFindResult = await iamService.getUserByEmail(
+            req.user.email,
+            authToken,
+          );
+          if (!userFindResult) {
+            throw new NotFoundError('User not found');
+          }
+          user = userFindResult.data;
+        } catch (error: any) {
+          if (error instanceof NotFoundError) {
+            // JIT Provisioning: Auto-create user from SAML assertion
+            user = await userController.provisionSamlUser(
+              req.user.email,
+              req.user,
+              orgId,
+              logger,
+            );
+          } else {
+            // For errors other than NotFound, re-throw to be handled by the generic error handler
+            throw error;
+          }
         }
-        const user = userFindResult.data;
         const userId = user._id;
 
         await sessionService.completeAuthentication(req.sessionInfo);

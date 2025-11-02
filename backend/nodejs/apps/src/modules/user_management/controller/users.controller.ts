@@ -25,6 +25,7 @@ import {
   UserAddedEvent,
   UserDeletedEvent,
   UserUpdatedEvent,
+  SyncAction,
 } from '../services/entity_events.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -227,7 +228,7 @@ export class UserController {
           userId: newUser._id,
           fullName: newUser.fullName,
           email: newUser.email,
-          syncAction: 'immediate',
+          syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -238,6 +239,65 @@ export class UserController {
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * Just-In-Time user provisioning from SAML assertion
+   * Creates user, adds to everyone group, and publishes creation event
+   */
+  async provisionSamlUser(
+    email: string,
+    samlUser: any,
+    orgId: string,
+    logger: Logger,
+  ) {
+    logger.info('Auto-provisioning user from SAML', { email, orgId });
+
+    const userDetails = this.extractSamlUserDetails(samlUser, email);
+    const newUser = new Users({
+      email,
+      ...userDetails,
+      orgId,
+      hasLoggedIn: false,
+      isDeleted: false,
+    });
+
+    await newUser.save();
+
+    // Add to everyone group
+    await UserGroups.updateOne(
+      { orgId, type: 'everyone', isDeleted: false },
+      { $addToSet: { users: newUser._id } },
+    );
+
+    // Publish user creation event
+    try {
+      await this.eventService.start();
+      await this.eventService.publishEvent({
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: orgId.toString(),
+          userId: newUser._id,
+          fullName: newUser.fullName,
+          email: newUser.email,
+          syncAction: SyncAction.Immediate,
+        } as UserAddedEvent,
+      });
+      await this.eventService.stop();
+    } catch (eventError) {
+      logger.error('Failed to publish user creation event', {
+        error: eventError,
+        userId: newUser._id,
+      });
+    }
+
+    logger.info('User auto-provisioned successfully', {
+      userId: newUser._id,
+      email,
+    });
+
+    return newUser.toObject();
   }
 
   async updateUser(
@@ -956,7 +1016,7 @@ export class UserController {
             orgId: req.user?.orgId.toString(),
             userId: userId,
             email: email,
-            syncAction: 'immediate',
+            syncAction: SyncAction.Immediate,
           } as UserAddedEvent,
         };
         await this.eventService.publishEvent(event);
@@ -1043,7 +1103,7 @@ export class UserController {
             orgId: req.user?.orgId.toString(),
             userId: userId,
             email: email,
-            syncAction: 'immediate',
+            syncAction: SyncAction.Immediate,
           } as UserAddedEvent,
         };
         await this.eventService.publishEvent(event);
@@ -1221,5 +1281,45 @@ export class UserController {
       });
       next(error);
     }
+  }
+
+  /**
+   * Extract user details from SAML assertion with fallbacks for different IdP formats
+   */
+  private extractSamlUserDetails(samlUser: any, email: string) {
+    // Try multiple SAML attribute names for first name
+    const firstName =
+      samlUser.firstName ||
+      samlUser.givenName ||
+      samlUser['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'] ||
+      samlUser['urn:oid:2.5.4.42'];
+
+    // Try multiple SAML attribute names for last name
+    const lastName =
+      samlUser.lastName ||
+      samlUser.surname ||
+      samlUser.sn ||
+      samlUser['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'] ||
+      samlUser['urn:oid:2.5.4.4'];
+
+    // Try multiple SAML attribute names for display name
+    const displayName =
+      samlUser.displayName ||
+      samlUser.name ||
+      samlUser.fullName ||
+      samlUser['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'] ||
+      samlUser['urn:oid:2.16.840.1.113730.3.1.241'];
+
+    // Construct full name with fallbacks
+    const fullName =
+      displayName ||
+      [firstName, lastName].filter(Boolean).join(' ') ||
+      email.split('@')[0];
+
+    return {
+      firstName: firstName || undefined,
+      lastName: lastName || undefined,
+      fullName,
+    };
   }
 }
