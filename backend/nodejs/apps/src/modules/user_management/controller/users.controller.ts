@@ -284,12 +284,13 @@ export class UserController {
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       });
-      await this.eventService.stop();
     } catch (eventError) {
       logger.error('Failed to publish user creation event', {
         error: eventError,
         userId: newUser._id,
       });
+    } finally {
+      await this.eventService.stop();
     }
 
     logger.info('User auto-provisioned successfully', {
@@ -1287,28 +1288,38 @@ export class UserController {
    * Extract user details from SAML assertion with fallbacks for different IdP formats
    */
   private extractSamlUserDetails(samlUser: any, email: string) {
+    const SAML_CLAIM_GIVENNAME =
+      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname';
+    const SAML_OID_GIVENNAME = 'urn:oid:2.5.4.42';
+    const SAML_CLAIM_SURNAME =
+      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname';
+    const SAML_OID_SURNAME = 'urn:oid:2.5.4.4';
+    const SAML_CLAIM_NAME =
+      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name';
+    const SAML_OID_DISPLAYNAME = 'urn:oid:2.16.840.1.113730.3.1.241';
+
     // Try multiple SAML attribute names for first name
     const firstName =
       samlUser.firstName ||
       samlUser.givenName ||
-      samlUser['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'] ||
-      samlUser['urn:oid:2.5.4.42'];
+      samlUser[SAML_CLAIM_GIVENNAME] ||
+      samlUser[SAML_OID_GIVENNAME];
 
     // Try multiple SAML attribute names for last name
     const lastName =
       samlUser.lastName ||
       samlUser.surname ||
       samlUser.sn ||
-      samlUser['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'] ||
-      samlUser['urn:oid:2.5.4.4'];
+      samlUser[SAML_CLAIM_SURNAME] ||
+      samlUser[SAML_OID_SURNAME];
 
     // Try multiple SAML attribute names for display name
     const displayName =
       samlUser.displayName ||
       samlUser.name ||
       samlUser.fullName ||
-      samlUser['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'] ||
-      samlUser['urn:oid:2.16.840.1.113730.3.1.241'];
+      samlUser[SAML_CLAIM_NAME] ||
+      samlUser[SAML_OID_DISPLAYNAME];
 
     // Construct full name with fallbacks
     const fullName =
