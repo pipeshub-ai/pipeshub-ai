@@ -2,6 +2,7 @@ import io
 import json
 from datetime import datetime
 
+from backend.python.app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 
@@ -13,7 +14,6 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ExtensionTypes,
-    MimeTypes,
     OriginTypes,
 )
 from app.config.constants.service import config_node_constants
@@ -1237,7 +1237,10 @@ class Processor:
 
         try:
             # Convert binary to string
-            md_content = md_binary.decode("utf-8")
+            if isinstance(md_binary, bytes):
+                md_content = md_binary.decode("utf-8")
+            else:
+                md_content = md_binary
 
             markdown = md_content.strip()
 
@@ -1353,110 +1356,19 @@ class Processor:
                     "Unable to decode text file with any supported encoding"
                 )
 
-            # Extract domain metadata
-            self.logger.info("🎯 Extracting domain metadata")
-            domain_metadata = None
-            try:
-                metadata = await self.domain_extractor.extract_metadata(
-                    text_content, orgId
-                )
-                record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, recordId, metadata, virtual_record_id
-                )
-                file = await self.arango_service.get_document(
-                    recordId, CollectionNames.FILES.value
-                )
-                domain_metadata = {**record, **file}
-            except Exception as e:
-                self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                domain_metadata = None
+            markdown_content = txt_to_markdown(text_content)
 
-            # Split content into blocks (paragraphs)
-            blocks = [
-                block.strip() for block in text_content.split("\n\n") if block.strip()
-            ]
-
-            # Format content and create numbered items
-            formatted_content = ""
-            numbered_items = []
-            sentence_data = []
-
-            # Keep track of previous blocks for context
-            context_window = []
-            context_window_size = 3
-
-            for idx, block in enumerate(blocks, 1):
-                # Create numbered item
-                item_entry = {"number": idx, "content": block, "type": "paragraph"}
-                numbered_items.append(item_entry)
-                formatted_content += f"[{idx}] {block}\n\n"
-
-                # Create context from previous blocks
-                previous_context = " ".join([prev for prev in context_window])
-
-                # Current block's context with previous blocks
-                full_context = {"previous": previous_context, "current": block}
-
-                # Add to sentence data for indexing
-                sentence_data.append(
-                    {
-                        "text": block,
-                        "metadata": {
-                            **(domain_metadata or {}),
-                            "recordName": recordName,
-                            "orgId": orgId,
-                            "recordId": recordId,
-                            "blockType": "text",
-                            "blockNum": [idx],
-                            "blockText": json.dumps(full_context),
-                            "virtualRecordId": virtual_record_id,
-                            "recordType": recordType,
-                            "connectorName": connectorName,
-                            "origin": origin,
-                            "mimeType": MimeTypes.PLAIN_TEXT.value,
-                        },
-                    }
-                )
-
-                # Update context window
-                context_window.append(block)
-                if len(context_window) > context_window_size:
-                    context_window.pop(0)
-
-            # Index sentences if available
-            if sentence_data:
-                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-                pipeline = self.indexing_pipeline
-                await pipeline.index_documents(sentence_data)
-
-            # Prepare metadata
-            metadata = {
-                "recordId": recordId,
-                "recordName": recordName,
-                "orgId": orgId,
-                "version": version,
-                "source": source,
-                "domain_metadata": domain_metadata,
-                "document_info": {
-                    "encoding": encoding,
-                    "size": len(text_content),
-                    "line_count": text_content.count("\n") + 1,
-                },
-                "structure_info": {
-                    "paragraph_count": len(blocks),
-                    "character_count": len(text_content),
-                    "word_count": len(text_content.split()),
-                },
-            }
-
+            await self.process_md_document(
+                recordName=recordName,
+                recordId=recordId,
+                version=version,
+                source=source,
+                orgId=orgId,
+                md_binary=markdown_content,
+                virtual_record_id=virtual_record_id
+            )
             self.logger.info("✅ TXT processing completed successfully")
-            return {
-                "txt_result": {"content": text_content, "metadata": domain_metadata},
-                "formatted_content": formatted_content,
-                "numbered_items": numbered_items,
-                "metadata": metadata,
-            }
-
+            return
         except Exception as e:
             self.logger.error(f"❌ Error processing TXT document: {str(e)}")
             raise
