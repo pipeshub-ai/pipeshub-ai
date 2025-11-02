@@ -2,7 +2,7 @@ import io
 import json
 from datetime import datetime
 
-from backend.python.app.modules.parsers.markdown.markdown_parser import txt_to_markdown
+from app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 

@@ -263,7 +263,6 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         return ChatBedrock(
                 model_id=model_name,
                 temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 aws_access_key_id=configuration["awsAccessKeyId"],
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
                 region_name=configuration["region"],
