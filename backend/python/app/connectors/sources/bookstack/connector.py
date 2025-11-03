@@ -192,7 +192,11 @@ class BookStackConnector(BaseConnector):
                 token_id=token_id,
                 token_secret=token_secret
             )
-            client = BookStackClient.build_with_config(token_config) #it was await before
+            try:
+                client = await BookStackClient.build_and_validate(token_config)
+            except ValueError as e:
+                self.logger.error(f"Failed to initialize BookStack client: {e}", exc_info=True)
+                return False
             self.data_source = BookStackDataSource(client)
 
             self.logger.info("BookStack client initialized successfully.")
