@@ -310,12 +310,27 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       const blobPath = this.getBlobPath(blobUrl);
       const blobClient = this.containerClient.getBlockBlobClient(blobPath);
 
+      // Prepare safe content-disposition for non-ASCII filenames
+      const encodeRFC5987 = (str: string) =>
+        encodeURIComponent(str)
+          .replace(/['()]/g, escape)
+          .replace(/\*/g, '%2A');
+      const toSafeAscii = (str: string) =>
+        str
+          .replace(/[\r\n]/g, ' ')
+          .replace(/"/g, '\\"')
+          .replace(/[^\x20-\x7E]/g, '_'); // Replace non-ASCII with underscore instead of removing
+
+      const fullName = fileName ? `${fileName}${document.extension}` : undefined;
+      const safeAscii = fullName ? toSafeAscii(fullName) : undefined;
+      const filenameStar = fullName ? encodeRFC5987(fullName) : undefined;
+
       // Generate SAS token
       const sasUrl = await blobClient.generateSasUrl({
         permissions: { read: true },
         expiresOn: new Date(Date.now() + expirationTimeInSeconds * 1000),
-        ...(fileName && {
-          contentDisposition: `attachment; filename="${fileName}${document.extension}"`,
+        ...(fullName && {
+          contentDisposition: `attachment; filename="${safeAscii}"; filename*=UTF-8''${filenameStar}`,
         }),
       });
 
