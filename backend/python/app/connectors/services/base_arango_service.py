@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import hashlib
 import json
+import unicodedata
 import uuid
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -119,6 +120,26 @@ EDGE_COLLECTIONS = [
 
 class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
+
+    # ========== NAME NORMALIZATION HELPERS ==========
+    def _normalize_name(self, name: Optional[str]) -> Optional[str]:
+        """Normalize a file/folder name to NFC and trim whitespace."""
+        if name is None:
+            return None
+        try:
+            return unicodedata.normalize("NFC", str(name)).strip()
+        except Exception:
+            # Fallback: best-effort string conversion
+            return str(name).strip()
+
+    def _normalized_name_variants_lower(self, name: str) -> List[str]:
+        """Provide lowercase variants for equality comparisons (NFC and NFD)."""
+        nfc = self._normalize_name(name) or ""
+        try:
+            nfd = unicodedata.normalize("NFD", nfc)
+        except Exception:
+            nfd = nfc
+        return [nfc.lower(), nfd.lower()]
 
     def __init__(
         self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: Optional[KafkaService] = None,
@@ -7214,7 +7235,8 @@ class BaseArangoService:
 
         # Step 1: Filter out files with name conflicts
         for file_data in files:
-            file_name = file_data["fileRecord"]["name"]
+            _normalized = self._normalize_name(file_data["fileRecord"].get("name"))
+            file_name = _normalized if _normalized is not None else ""
 
             # Check for name conflicts using the updated validation
             conflict_result = await self._check_name_conflict_in_parent(
@@ -7234,6 +7256,8 @@ class BaseArangoService:
                     "conflicts": conflicts
                 })
             else:
+                # persist normalized name back into payload for consistency
+                file_data["fileRecord"]["name"] = file_name
                 valid_files.append(file_data)
 
         # Log skipping summary
@@ -7966,6 +7990,9 @@ class BaseArangoService:
         try:
             db = transaction if transaction else self.db
 
+            # Prepare normalized lowercase variants for robust comparison (handles Unicode diacritics)
+            name_variants = self._normalized_name_variants_lower(folder_name)
+
             if parent_folder_id:
                 # Look for folder in specific parent folder
                 query = """
@@ -7976,13 +8003,14 @@ class BaseArangoService:
                     FILTER folder != null
                     FILTER folder.isFile == false
                     FILTER folder.recordGroupId == @kb_id
-                    FILTER LOWER(folder.name) == LOWER(@folder_name)
+                    LET folder_name_l = LOWER(folder.name)
+                    FILTER folder_name_l IN @name_variants
                     RETURN folder
                 """
 
                 cursor = db.aql.execute(query, bind_vars={
                     "parent_from": f"files/{parent_folder_id}",
-                    "folder_name": folder_name,
+                    "name_variants": name_variants,
                     "kb_id": kb_id,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 })
@@ -7996,13 +8024,14 @@ class BaseArangoService:
                     FILTER folder != null
                     FILTER folder.isFile == false
                     FILTER folder.recordGroupId == @kb_id
-                    FILTER LOWER(folder.name) == LOWER(@folder_name)
+                    LET folder_name_l = LOWER(folder.name)
+                    FILTER folder_name_l IN @name_variants
                     RETURN folder
                 """
 
                 cursor = db.aql.execute(query, bind_vars={
                     "kb_from": f"recordGroups/{kb_id}",
-                    "folder_name": folder_name,
+                    "name_variants": name_variants,
                     "kb_id": kb_id,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 })
@@ -8519,7 +8548,7 @@ class BaseArangoService:
                     })
 
                     # Set record name from file if provided
-                    original_name = file_metadata.get("originalname", "")
+                    original_name = self._normalize_name(file_metadata.get("originalname", ""))
                     if original_name and "." in original_name:
                         last_dot = original_name.rfind(".")
                         if last_dot > 0:
@@ -8558,7 +8587,7 @@ class BaseArangoService:
                     file_updates = {}
 
                     if "originalname" in file_metadata:
-                        file_updates["name"] = file_metadata["originalname"]
+                        file_updates["name"] = self._normalize_name(file_metadata["originalname"])
 
                     if "size" in file_metadata:
                         file_updates["sizeInBytes"] = file_metadata["size"]
@@ -11233,6 +11262,9 @@ class BaseArangoService:
         try:
             db = transaction if transaction else self.db
 
+            # Prepare normalized lowercase variants (NFC/NFD) to catch visually-identical names
+            name_variants = self._normalized_name_variants_lower(item_name)
+
             if parent_folder_id:
                 # Check siblings in folder
                 query = """
@@ -11243,7 +11275,8 @@ class BaseArangoService:
                     FILTER child != null
                     // Get the appropriate name field based on document type
                     LET child_name = child.isFile == false ? child.name : child.recordName
-                    FILTER LOWER(child_name) == LOWER(@item_name)
+                    LET child_name_l = LOWER(child_name)
+                    FILTER child_name_l IN @name_variants
                     RETURN {
                         id: child._key,
                         name: child_name,
@@ -11254,7 +11287,7 @@ class BaseArangoService:
 
                 cursor = db.aql.execute(query, bind_vars={
                     "parent_from": f"files/{parent_folder_id}",
-                    "item_name": item_name,
+                    "name_variants": name_variants,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 })
             else:
@@ -11267,7 +11300,8 @@ class BaseArangoService:
                     FILTER child != null
                     // Get the appropriate name field based on document type
                     LET child_name = child.isFile == false ? child.name : child.recordName
-                    FILTER LOWER(child_name) == LOWER(@item_name)
+                    LET child_name_l = LOWER(child_name)
+                    FILTER child_name_l IN @name_variants
                     RETURN {
                         id: child._key,
                         name: child_name,
@@ -11278,7 +11312,7 @@ class BaseArangoService:
 
                 cursor = db.aql.execute(query, bind_vars={
                     "kb_from": f"recordGroups/{kb_id}",
-                    "item_name": item_name,
+                    "name_variants": name_variants,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 })
 

@@ -21,6 +21,7 @@ import {
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { AzureBlobStorageConfig } from '../config/storage.config';
+import { encodeRFC5987 } from '../utils/utils';
 
 @injectable()
 class AzureBlobStorageAdapter implements StorageServiceInterface {
@@ -310,12 +311,16 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       const blobPath = this.getBlobPath(blobUrl);
       const blobClient = this.containerClient.getBlockBlobClient(blobPath);
 
+      // Prepare safe content-disposition for non-ASCII filenames
+      const fullName = fileName ? `${fileName}${document.extension}` : undefined;
+      const filenameStar = fullName ? encodeRFC5987(fullName) : undefined;
+
       // Generate SAS token
       const sasUrl = await blobClient.generateSasUrl({
         permissions: { read: true },
         expiresOn: new Date(Date.now() + expirationTimeInSeconds * 1000),
-        ...(fileName && {
-          contentDisposition: `attachment; filename="${fileName}${document.extension}"`,
+        ...(fullName && {
+          contentDisposition: `attachment; filename*=UTF-8''${filenameStar}`,
         }),
       });
 
