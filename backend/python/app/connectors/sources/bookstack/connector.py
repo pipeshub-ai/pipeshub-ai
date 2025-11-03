@@ -1599,7 +1599,7 @@ class BookStackConnector(BaseConnector):
                 updated_at=timestamp_ms,
                 version=0 if is_new else existing_record.version + 1,
                 external_revision_id=str(page.get("revision_count")),
-                weburl=f"{self.bookstack_base_url}books/{page.get('book_slug')}/page/{page.get('slug')}",
+                weburl=f"{self.bookstack_base_url.rstrip('/')}/books/{page.get('book_slug')}/page/{page.get('slug')}",
                 mime_type=MimeTypes.MARKDOWN,
                 extension="md",
                 is_file=True,
