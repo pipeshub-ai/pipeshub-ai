@@ -131,6 +131,7 @@ user_app_relation_schema = {
                 "enum": ["NOT_STARTED", "IN_PROGRESS", "PAUSED", "COMPLETED", "FAILED"],
             },
             "lastSyncUpdate": {"type": "number"},
+            "sourceUserId": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },

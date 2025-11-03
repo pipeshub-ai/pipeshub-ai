@@ -74,11 +74,31 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def create_user_group_hierarchy(self, child_external_id: str, parent_external_id: str, connector_name: Connectors) -> bool:
+        pass
+
+    @abstractmethod
+    async def create_user_group_membership(self, user_source_id: str, group_external_id: str, connector_name: Connectors, org_id: str) -> bool:
+        pass
+
+    @abstractmethod
     async def get_user_by_email(self, email: str) -> Optional[User]:
         pass
 
     @abstractmethod
+    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
+        pass
+
+    @abstractmethod
+    async def get_app_user_by_email(self, email: str) -> Optional[AppUser]:
+        pass
+
+    @abstractmethod
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+        pass
+
+    @abstractmethod
+    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[UserGroup]:
         pass
 
     @abstractmethod
@@ -118,7 +138,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission]) -> None:
+    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission], connector_name: Connectors) -> None:
         pass
 
     @abstractmethod

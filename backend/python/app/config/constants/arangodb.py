@@ -51,12 +51,17 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
+    SERVICENOW = "SERVICENOW"
+
+    UNKNOWN = "UNKNOWN"
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
 
