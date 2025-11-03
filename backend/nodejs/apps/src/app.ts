@@ -126,11 +126,10 @@ export class Application {
       this.notificationContainer =
         await NotificationContainer.initialize(appConfig);
 
-      this.crawlingManagerContainer =
-        await CrawlingManagerContainer.initialize(
-          configurationManagerConfig,
-          appConfig,
-        );
+      this.crawlingManagerContainer = await CrawlingManagerContainer.initialize(
+        configurationManagerConfig,
+        appConfig,
+      );
 
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
@@ -206,56 +205,92 @@ export class Application {
   }
 
   private configureMiddleware(appConfig: AppConfig): void {
-    const isDev = process.env.NODE_ENV !== 'production';
-    // Security middleware - configure helmet once with all options
-    const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
+    // Siempre en dev/HTTP
+    const isDev = true;
+    this.app.set('trust proxy', false);
+    this.app.disable('x-powered-by');
+
+    // Fuentes extra para connect-src (si se pasan por env)
+    const envConnectSrcs = (process.env.CSP_CONNECT_SRCS?.split(',') ?? [])
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     const connectSrc = [
-      ...new Set([
-        "'self'",
-        'https://login.microsoftonline.com',
-        'https://graph.microsoft.com',
-        ...envConnectSrcs,
-        appConfig.connectorPublicUrl,
-      ]),
+      "'self'",
+      'https://login.microsoftonline.com',
+      'https://graph.microsoft.com',
+      'http:', // permitir cualquier host http
+      'https:', // permitir cualquier host https
+      ...envConnectSrcs,
+      appConfig.connectorPublicUrl,
     ].filter(Boolean);
 
-    this.app.use(helmet({
-      crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: [
-            "'self'",
-            ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-              "https://cdnjs.cloudflare.com",
-              "https://login.microsoftonline.com",
-              "https://graph.microsoft.com",
-            ]),
-            ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
-          ],
-          connectSrc: connectSrc,
-          objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-          frameSrc: ["'self'", "blob:"], // PDF rendering in frames
-          workerSrc: ["'self'", "blob:"], // PDF.js workers
-          childSrc: ["'self'", "blob:"], // PDF rendering
-          imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
-          fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-          mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
-        }
-      }
-    }));
+    // Helmet SIN HSTS y SIN 'upgrade-insecure-requests'
+    this.app.use(
+      helmet({
+        hsts: false,
+        crossOriginOpenerPolicy: { policy: 'unsafe-none' },
+        contentSecurityPolicy: {
+          useDefaults: false,
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: [
+              "'self'",
+              ...(process.env.CSP_SCRIPT_SRCS?.split(',')
+                .map((s) => s.trim())
+                .filter(Boolean) ?? [
+                'https://cdnjs.cloudflare.com',
+                'https://login.microsoftonline.com',
+                'https://graph.microsoft.com',
+              ]),
+              "'unsafe-inline'",
+              "'unsafe-eval'",
+            ],
+            connectSrc,
+            objectSrc: ["'self'", 'data:', 'blob:'],
+            frameSrc: ["'self'", 'blob:'],
+            workerSrc: ["'self'", 'blob:'],
+            childSrc: ["'self'", 'blob:'],
+            imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+            fontSrc: ["'self'", 'data:', 'https:'],
+            mediaSrc: ["'self'", 'blob:', 'data:'],
+            baseUri: ["'self'"],
+            formAction: ["'self'"],
+            frameAncestors: ["'self'"],
+            scriptSrcAttr: ["'none'"],
+            styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
+            // (no añadimos 'upgrade-insecure-requests')
+          },
+        },
+      }),
+    );
 
-    // Request context middleware
+    // Cinturón y tirantes: elimina cualquier HSTS / upgrade-insecure-requests que se cuele
+    this.app.use((req, res, next) => {
+      res.removeHeader('Strict-Transport-Security');
+      const csp = res.getHeader('Content-Security-Policy');
+      if (typeof csp === 'string') {
+        res.setHeader(
+          'Content-Security-Policy',
+          csp
+            .replace(/(^|;)\s*upgrade-insecure-requests\s*(;|$)/i, '$1')
+            .replace(/;;+/g, ';'),
+        );
+      }
+      next();
+    });
+
+    // Contexto de petición
     this.app.use(requestContextMiddleware);
 
-    // CORS - ensure this matches your frontend domain
+    // CORS: permitir TODOS los orígenes (refleja Origin) con credenciales
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
+        origin: true,
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token'],
       }),
     );
 
@@ -414,7 +449,9 @@ export class Application {
       this.logger.info('Running migration...');
       //  migrate ai models configurations
       this.logger.info('Migrating ai models configurations');
-      await this.configurationManagerContainer.get(MigrationService).runMigration();
+      await this.configurationManagerContainer
+        .get(MigrationService)
+        .runMigration();
       this.logger.info('✅ Ai models configurations migrated');
 
       this.logger.info('Migration completed successfully');
