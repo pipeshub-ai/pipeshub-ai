@@ -143,9 +143,10 @@ class BookStackClient(IClient):
             # If no 'error' key, assume success
             return client_instance
 
+        except ValueError:
+            # Re-raise the ValueError from our API error check
+            raise
         except Exception as e:
-            if isinstance(e, ValueError):
-                 raise # Re-raise our custom ValueError
             # This will catch network errors or if response.json() fails
             raise ValueError(f"Failed to connect to BookStack for validation: {str(e)}") from e
 
