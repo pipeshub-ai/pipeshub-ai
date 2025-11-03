@@ -41,17 +41,30 @@ export class KnowledgeBaseAPI {
     const text = await textPromise;
 
     let downloadUrl;
-    // Use the provided fileName instead of extracting it from headers or URL
-    // Get filename from Content-Disposition header if available
-    let filename = fileName;
+    // Determine filename: prefer Content-Disposition, then provided fileName, then fallback
+    let filename: string | undefined;
     const contentDisposition = response.headers['content-disposition'];
     if (contentDisposition) {
-      const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
-      if (filenameMatch && filenameMatch[1]) {
-        filename = filenameMatch[1];
+      // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
+      const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+      if (filenameStarMatch && filenameStarMatch[1]) {
+        // Decode the percent-encoded UTF-8 filename
+        try {
+          filename = decodeURIComponent(filenameStarMatch[1]);
+        } catch (e) {
+          console.error('Failed to decode UTF-8 filename', e);
+        }
+      }
+      
+      // Fallback to basic filename="..." format if filename* not found
+      if (!filename) {
+        const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1];
+        }
       }
     }
-    if (fileName) {
+    if (!filename) {
       filename = fileName || `document-${externalRecordId}`;
     }
 
@@ -79,7 +92,7 @@ export class KnowledgeBaseAPI {
       // Create a temporary anchor element for download of binary data
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.setAttribute('download', filename); // Use provided filename
+      link.setAttribute('download', filename); // Use resolved filename
 
       // Append to the document, trigger click, and then remove
       document.body.appendChild(link);
@@ -128,6 +141,10 @@ export class KnowledgeBaseAPI {
         if (filenameMatch && filenameMatch[1]) {
           filename = decodeURIComponent(filenameMatch[1]);
         }
+      }
+
+      if(!filename && fileName) {
+        filename = fileName;
       }
 
       // Get the blob data directly

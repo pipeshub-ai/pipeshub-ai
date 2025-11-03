@@ -6913,7 +6913,8 @@ class BaseArangoService:
 
         # Step 1: Filter out files with name conflicts
         for file_data in files:
-            file_name = self._normalize_name(file_data["fileRecord"]["name"]) or file_data["fileRecord"]["name"]
+            _normalized = self._normalize_name(file_data["fileRecord"].get("name"))
+            file_name = _normalized if _normalized is not None else ""
 
             # Check for name conflicts using the updated validation
             conflict_result = await self._check_name_conflict_in_parent(
@@ -8225,7 +8226,7 @@ class BaseArangoService:
                     })
 
                     # Set record name from file if provided
-                    original_name = self._normalize_name(file_metadata.get("originalname", "")) or file_metadata.get("originalname", "")
+                    original_name = self._normalize_name(file_metadata.get("originalname", ""))
                     if original_name and "." in original_name:
                         last_dot = original_name.rfind(".")
                         if last_dot > 0:
@@ -8264,7 +8265,7 @@ class BaseArangoService:
                     file_updates = {}
 
                     if "originalname" in file_metadata:
-                        file_updates["name"] = self._normalize_name(file_metadata["originalname"]) or file_metadata["originalname"]
+                        file_updates["name"] = self._normalize_name(file_metadata["originalname"])
 
                     if "size" in file_metadata:
                         file_updates["sizeInBytes"] = file_metadata["size"]

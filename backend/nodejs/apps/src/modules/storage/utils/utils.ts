@@ -28,6 +28,14 @@ export interface DocumentInfoResponse {
   document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel;
 }
 
+export function encodeRFC5987(str: string): string {
+  return encodeURIComponent(str)
+    .replace(/'/g, '%27')
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\*/g, '%2A');
+}
+
 async function getDocumentInfoFromDb(
   documentId: string,
   orgId: mongoose.Types.ObjectId,
@@ -295,25 +303,13 @@ export function serveFileFromLocalStorage(document: Document, res: Response) {
 
     // convert the document.mimeType to a valid mime type
     const mimeType = getMimeType(document.extension);
-    // Helper to safely encode Content-Disposition with UTF-8 filename support
-    const encodeRFC5987 = (str: string) =>
-      encodeURIComponent(str)
-        .replace(/['()]/g, escape)
-        .replace(/\*/g, '%2A');
-
-    const toSafeAscii = (str: string) =>
-      str
-        .replace(/[\r\n]/g, ' ')
-        .replace(/"/g, '\\"')
-        .replace(/[^\x20-\x7E]/g, '_'); // Replace non-ASCII with underscore instead of removing
-
+    // Helper to safely encode Content-Disposition with UTF-8 filename support 
     const fullName = `${document.documentName}${document.extension}`;
-    const safeAscii = toSafeAscii(fullName) || 'download';
     const filenameStar = encodeRFC5987(fullName);
 
     // Set appropriate headers - use UTF-8 filename* as primary, ASCII as fallback
     res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeAscii}"; filename*=UTF-8''${filenameStar}`);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filenameStar}`);
 
     // Stream the file directly to the response
     const fileStream = createReadStream(filePath);

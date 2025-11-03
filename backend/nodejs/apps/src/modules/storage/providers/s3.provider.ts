@@ -16,6 +16,7 @@ import {
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { Logger } from '../../../libs/services/logger.service';
+import { encodeRFC5987 } from '../utils/utils';
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
@@ -418,19 +419,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
       };
 
       if (fileName) {
-        const encodeRFC5987 = (str: string) =>
-          encodeURIComponent(str)
-            .replace(/['()]/g, escape)
-            .replace(/\*/g, '%2A');
-        const toSafeAscii = (str: string) =>
-          str
-            .replace(/[\r\n]/g, ' ')
-            .replace(/"/g, '\\"')
-            .replace(/[^\x20-\x7E]/g, '_'); // Replace non-ASCII with underscore instead of removing
         const fullName = `${fileName}${document.extension ?? ''}`;
-        const safeAscii = toSafeAscii(fullName) || 'download';
         const filenameStar = encodeRFC5987(fullName);
-        params.ResponseContentDisposition = `attachment; filename="${safeAscii}"; filename*=UTF-8''${filenameStar}`;
+        params.ResponseContentDisposition = `attachment; filename*=UTF-8''${filenameStar}`;
       }
 
       const signedUrl = await this.s3.getSignedUrlPromise('getObject', {

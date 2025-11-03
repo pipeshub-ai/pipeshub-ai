@@ -237,7 +237,6 @@ export default function KnowledgeBaseSearch() {
 
   const handleLargePPTFile = (record: any) => {
     if (record.sizeInBytes / 1048576 > 5) {
-      console.log('PPT with large file size');
       throw new Error('Large file size, redirecting to web page');
     }
   };
@@ -317,14 +316,28 @@ export default function KnowledgeBaseSearch() {
 
           let filename;
           const contentDisposition = response.headers['content-disposition'];
+
           if (contentDisposition) {
-            const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
-            if (filenameMatch && filenameMatch[1]) {
-              filename = filenameMatch[1];
+            // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
+            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (filenameStarMatch && filenameStarMatch[1]) {
+              // Decode the percent-encoded UTF-8 filename
+              try {
+                filename = decodeURIComponent(filenameStarMatch[1]);
+              } catch (e) {
+                console.error('Failed to decode UTF-8 filename', e);
+              }
+            }
+            
+            // Fallback to basic filename="..." format if filename* not found
+            if (!filename) {
+              const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
+              if (filenameMatch && filenameMatch[1]) {
+                filename = filenameMatch[1];
+              }
             }
           }
-
-          if(record.recordName) {
+          if (!filename && record.recordName) {
             filename = record.recordName;
           }
 
@@ -369,7 +382,6 @@ export default function KnowledgeBaseSearch() {
             if (webUrl) {
               try {
                 window.open(webUrl, '_blank', 'noopener,noreferrer');
-                console.log('Opened document in new tab');
               } catch (openError) {
                 console.error('Error opening new tab:', openError);
                 setSnackbar({
@@ -422,13 +434,29 @@ export default function KnowledgeBaseSearch() {
 
           let filename;
           const contentDisposition = response.headers['content-disposition'];
+
           if (contentDisposition) {
-            const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
-            if (filenameMatch && filenameMatch[1]) {
-              filename = filenameMatch[1];
+            // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
+            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (filenameStarMatch && filenameStarMatch[1]) {
+              // Decode the percent-encoded UTF-8 filename
+              try {
+                filename = decodeURIComponent(filenameStarMatch[1]);
+              } catch (e) {
+                console.error('Failed to decode UTF-8 filename', e);
+              }
+            }
+            
+            // Fallback to basic filename="..." format if filename* not found
+            if (!filename) {
+              const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
+              if (filenameMatch && filenameMatch[1]) {
+                filename = filenameMatch[1];
+              }
             }
           }
-          if(record.recordName) {
+
+          if(!filename && record.recordName) {
             filename = record.recordName;
           }
 
@@ -467,13 +495,10 @@ export default function KnowledgeBaseSearch() {
             webUrl = baseUrl + webUrl;
           }
 
-          console.log(`Attempting to redirect to webUrl: ${webUrl}`);
-
           setTimeout(() => {
             if (webUrl) {
               try {
                 window.open(webUrl, '_blank', 'noopener,noreferrer');
-                console.log('Opened document in new tab');
               } catch (openError) {
                 console.error('Error opening new tab:', openError);
                 setSnackbar({
