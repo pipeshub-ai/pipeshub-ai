@@ -192,7 +192,11 @@ class BookStackConnector(BaseConnector):
                 token_id=token_id,
                 token_secret=token_secret
             )
-            client = BookStackClient.build_with_config(token_config) #it was await before
+            try:
+                client = await BookStackClient.build_and_validate(token_config)
+            except ValueError as e:
+                self.logger.error(f"Failed to initialize BookStack client: {e}", exc_info=True)
+                return False
             self.data_source = BookStackDataSource(client)
 
             self.logger.info("BookStack client initialized successfully.")
@@ -1595,7 +1599,7 @@ class BookStackConnector(BaseConnector):
                 updated_at=timestamp_ms,
                 version=0 if is_new else existing_record.version + 1,
                 external_revision_id=str(page.get("revision_count")),
-                weburl=f"{self.bookstack_base_url}books/{page.get('book_slug')}/page/{page.get('slug')}",
+                weburl=f"{self.bookstack_base_url.rstrip('/')}/books/{page.get('book_slug')}/page/{page.get('slug')}",
                 mime_type=MimeTypes.MARKDOWN,
                 extension="md",
                 is_file=True,

@@ -38,7 +38,12 @@ async def main() -> None:
         token_id=TOKEN_ID,
         token_secret=TOKEN_SECRET
     )
-    client = BookStackClient.build_with_config(config)
+    try:
+        client = await BookStackClient.build_and_validate(config)
+    except ValueError as e:
+        print(f"Error: Failed to initialize BookStack client.")
+        print(f"Details: {e}")
+        return # Exit the main function
 
     # Create the data source
     data_source = BookStackDataSource(client)
