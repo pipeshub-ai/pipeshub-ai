@@ -130,7 +130,6 @@ class BookStackClient(IClient):
         try:
             response = await http_client.execute(request)
             data = response.json() # Get the response data
-            print("Validation response:", data)
             
             # Check for BookStack's error format in the JSON response
             if isinstance(data, dict) and 'error' in data:
