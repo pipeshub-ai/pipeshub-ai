@@ -4,6 +4,7 @@
 import asyncio
 import datetime
 import json
+import unicodedata
 import uuid
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -54,7 +55,6 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-import unicodedata
 
 # Collection definitions with their schemas
 NODE_COLLECTIONS = [
