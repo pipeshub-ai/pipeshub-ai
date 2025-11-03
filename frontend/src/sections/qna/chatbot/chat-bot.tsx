@@ -1278,13 +1278,17 @@ const ChatInterface = () => {
           reader.readAsText(downloadResponse.data);
           const text = await textPromise;
 
-          let filename = fileName || `document-${externalRecordId}`;
+          let filename;
           const contentDisposition = downloadResponse.headers['content-disposition'];
           if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
             if (filenameMatch && filenameMatch[1]) {
               filename = filenameMatch[1];
             }
+          }
+
+          if(fileName) {
+            filename = fileName;
           }
 
           try {
@@ -1378,13 +1382,17 @@ const ChatInterface = () => {
           }
           if (!connectorResponse) return;
 
-          let filename = record.recordName || `document-${recordId}`;
+          let filename;
           const contentDisposition = connectorResponse.headers['content-disposition'];
           if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
             if (filenameMatch && filenameMatch[1]) {
               filename = filenameMatch[1];
             }
+          }
+
+          if(record.recordName) {
+            filename = record.recordName;
           }
 
           const bufferReader = new FileReader();

@@ -64,33 +64,36 @@ const EnhancedPdfLoader = ({
     const loadPdf = async () => {
       try {
         let loadingTask;
-
+    
+        const pdfOptions = {
+          isEvalSupported: false,
+          cMapUrl: '/cmaps/', // Relative to your public folder
+          cMapPacked: true,
+        };
+    
         if (pdfBuffer) {
-          // Create a copy of the buffer to prevent detachment issues
           const bufferCopy = pdfBuffer.slice(0);
-
           loadingTask = pdfjsLib.getDocument({
             data: bufferCopy,
-            isEvalSupported: false,
-            cMapUrl: `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/cmaps/`,
-            cMapPacked: true,
+            ...pdfOptions,
           });
         } else if (url) {
-          // URL-based loading remains unchanged
           loadingTask = pdfjsLib.getDocument({
             url,
-            isEvalSupported: false,
-            cMapUrl: `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/cmaps/`,
-            cMapPacked: true,
+            ...pdfOptions,
           });
         } else {
           throw new Error('Either url or pdfBuffer must be provided');
         }
-
+    
         const document = await loadingTask.promise;
         setPdfDocument(document);
         setLoading(false);
-      } catch (err) {
+      } catch (err: any) {
+        if (err.name === 'RenderingCancelledException') {
+          console.log('Rendering cancelled - this is normal during navigation');
+          return;
+        }
         console.error('Error loading PDF:', err);
         setError(err);
         if (onError) onError(err);

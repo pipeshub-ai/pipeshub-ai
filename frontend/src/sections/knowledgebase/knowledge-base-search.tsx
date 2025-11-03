@@ -315,13 +315,17 @@ export default function KnowledgeBaseSearch() {
           reader.readAsText(response.data);
           const text = await textPromise;
 
-          let filename = record.recordName || `document-${record.recordId}`;
+          let filename;
           const contentDisposition = response.headers['content-disposition'];
           if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
             if (filenameMatch && filenameMatch[1]) {
               filename = filenameMatch[1];
             }
+          }
+
+          if(record.recordName) {
+            filename = record.recordName;
           }
 
           try {
@@ -416,13 +420,16 @@ export default function KnowledgeBaseSearch() {
           
           if (!response) return;
 
-          let filename = record.recordName || `document-${recordId}`;
+          let filename;
           const contentDisposition = response.headers['content-disposition'];
           if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
             if (filenameMatch && filenameMatch[1]) {
               filename = filenameMatch[1];
             }
+          }
+          if(record.recordName) {
+            filename = record.recordName;
           }
 
           const bufferReader = new FileReader();

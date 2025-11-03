@@ -43,7 +43,7 @@ export class KnowledgeBaseAPI {
     let downloadUrl;
     // Use the provided fileName instead of extracting it from headers or URL
     // Get filename from Content-Disposition header if available
-    let filename;
+    let filename = fileName;
     const contentDisposition = response.headers['content-disposition'];
     if (contentDisposition) {
       const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
@@ -51,8 +51,7 @@ export class KnowledgeBaseAPI {
         filename = filenameMatch[1];
       }
     }
-
-    if (!filename) {
+    if (fileName) {
       filename = fileName || `document-${externalRecordId}`;
     }
 
