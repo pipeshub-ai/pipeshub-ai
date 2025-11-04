@@ -564,49 +564,49 @@ def checkForLargeTable(markdown: str) -> bool:
 
 def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children: List[Dict[str, Any]]) -> int | None:
     """Recursively search through the first child to find the first block_index.
-    
+
     Args:
         block_groups: List of block groups
         children: List of child container indices (BlockContainerIndex)
-        
+
     Returns:
         First block_index found in the first child, or None if not found
     """
     if not children:
         return None
-    
+
     first_child = children[0]
     block_index = first_child.get("block_index")
     if block_index is not None:
         return block_index
-    
+
     block_group_index = first_child.get("block_group_index")
     if block_group_index is not None and 0 <= block_group_index < len(block_groups):
         nested_group = block_groups[block_group_index]
         nested_children = nested_group.get("children", [])
         if nested_children:
             return _find_first_block_index_recursive(block_groups, nested_children)
-    
+
     return None
 
 
 def _extract_text_content_recursive(
-    block_groups: List[Dict[str, Any]], 
-    blocks: List[Dict[str, Any]], 
-    children: List[Dict[str, Any]], 
-    virtual_record_id: str = None, 
+    block_groups: List[Dict[str, Any]],
+    blocks: List[Dict[str, Any]],
+    children: List[Dict[str, Any]],
+    virtual_record_id: str = None,
     seen_chunks: set = None,
     depth: int = 0,
 ) -> str:
     """Recursively extract text content from children and nested children.
-    
+
     Args:
         block_groups: List of block groups
         blocks: List of blocks
         children: List of child container indices (BlockContainerIndex)
         virtual_record_id: Optional virtual record ID for tracking seen chunks
         seen_chunks: Optional set to track seen chunks
-        
+
     Returns:
         Concatenated text content from all children and nested children
     """
@@ -615,7 +615,7 @@ def _extract_text_content_recursive(
     for child in children:
         block_index = child.get("block_index")
         block_group_index = child.get("block_group_index")
-        
+
         # Track seen chunks if virtual_record_id is provided
         if virtual_record_id is not None and seen_chunks is not None:
             if block_index is not None:
@@ -624,13 +624,13 @@ def _extract_text_content_recursive(
             elif block_group_index is not None:
                 child_id = f"{virtual_record_id}-{block_group_index}-block_group"
                 seen_chunks.add(child_id)
-        
+
         # If child has a direct block_index, extract text from that block
         if block_index is not None and 0 <= block_index < len(blocks):
             child_block = blocks[block_index]
             if child_block.get("type") == BlockType.TEXT.value:
                 content += f"{indent}{child_block.get('data', '')}\n"
-        
+
         # If child has a block_group_index, recursively process nested children
         elif block_group_index is not None and 0 <= block_group_index < len(block_groups):
             nested_group = block_groups[block_group_index]
@@ -639,7 +639,7 @@ def _extract_text_content_recursive(
                 content += _extract_text_content_recursive(
                     block_groups, blocks, nested_children, virtual_record_id, seen_chunks, depth + 1
                 )
-    
+
     return content
 
 
