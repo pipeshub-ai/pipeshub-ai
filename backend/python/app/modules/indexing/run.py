@@ -550,9 +550,14 @@ class IndexingPipeline:
                 await self.vector_store.aadd_documents(chunks)
 
                 elapsed_time = time.perf_counter() - start_time
-                self.logger.info(
-                    f"✅ Successfully added {len(chunks)} documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(chunks)*1000:.2f}ms per document)"
-                )
+                if len(chunks) > 0:
+                    self.logger.info(
+                        f"✅ Successfully added {len(chunks)} documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(chunks)*1000:.2f}ms per document)"
+                    )
+                else:
+                    self.logger.info(
+                        f"✅ Successfully added 0 documents to vector store in {elapsed_time:.2f}s"
+                    )
             except Exception as e:
                 raise VectorStoreError(
                     "Failed to store documents in vector store: " + str(e),
