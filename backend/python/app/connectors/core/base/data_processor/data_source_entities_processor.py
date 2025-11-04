@@ -305,7 +305,6 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
-            self.logger.info(f"on_new_records for: {records_with_permissions}")
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:

@@ -4466,62 +4466,72 @@ class BaseArangoService:
             return None
 
     async def get_user_by_source_id(
-        self,
-        source_user_id: str,
-        connector_name: Connectors,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[User]:
-        """
-        Get a user by their source system ID (sourceUserId field).
-
-        Args:
-            source_user_id: The user ID from the source system
-            connector_name: Connector enum for scoped lookup
-            org_id: Organization ID for scoping
-            transaction: Optional transaction database
-
-        Returns:
-            User object if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving user by source_id %s for connector %s",
-                source_user_id, connector_name.value
-            )
-
-            user_query = """
-            FOR user IN @@users_collection
-                FILTER user.appName == @app_name
-                FILTER user.sourceUserId == @source_user_id
-                LIMIT 1
-                RETURN user
+            self,
+            source_user_id: str,
+            connector_name: Connectors,
+            transaction: Optional[TransactionDatabase] = None
+        ) -> Optional[User]:
             """
+            Get a user by their source system ID (sourceUserId field in userAppRelation edge).
 
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                user_query,
-                bind_vars={
-                    "@users_collection": CollectionNames.USERS.value,
-                    "app_name": connector_name.value,
-                    "source_user_id": source_user_id,
-                },
-            )
-            user_doc = next(cursor, None)
+            Args:
+                source_user_id: The user ID from the source system
+                connector_name: Connector enum for scoped lookup
+                transaction: Optional transaction database
 
-            if user_doc:
-                self.logger.info("✅ Successfully retrieved user by source_id %s", source_user_id)
-                return User.from_arango_user(user_doc)
-            else:
-                self.logger.warning("⚠️ No user found for source_id %s", source_user_id)
+            Returns:
+                User object if found, None otherwise
+            """
+            try:
+                self.logger.info(
+                    "🚀 Retrieving user by source_id %s for connector %s",
+                    source_user_id, connector_name.value
+                )
+
+                user_query = """
+                // First find the app
+                LET app = FIRST(
+                    FOR a IN @@apps
+                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        RETURN a
+                )
+
+                // Then find user connected via userAppRelation with matching sourceUserId
+                FOR edge IN @@user_app_relation
+                    FILTER edge._to == app._id
+                    FILTER edge.sourceUserId == @source_user_id
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null
+                    LIMIT 1
+                    RETURN user
+                """
+
+                db = transaction if transaction else self.db
+                cursor = db.aql.execute(
+                    user_query,
+                    bind_vars={
+                        "@apps": CollectionNames.APPS.value,
+                        "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
+                        "app_name": connector_name.value,
+                        "source_user_id": source_user_id,
+                    },
+                )
+                user_doc = next(cursor, None)
+
+                if user_doc:
+                    self.logger.info("✅ Successfully retrieved user by source_id %s", source_user_id)
+                    return User.from_arango_user(user_doc)
+                else:
+                    self.logger.warning("⚠️ No user found for source_id %s", source_user_id)
+                    return None
+
+            except Exception as e:
+                self.logger.error(
+                    "❌ Failed to get user by source_id %s: %s",
+                    source_user_id, str(e),
+                    exc_info=True
+                )
                 return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to get user by source_id %s: %s",
-                source_user_id, str(e),
-                exc_info=True
-            )
-            return None
 
     async def get_users(self, org_id, active=True) -> List[Dict]:
         """
