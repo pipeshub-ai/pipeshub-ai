@@ -736,7 +736,7 @@ class AppRole(BaseModel):
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
-    
+
     def to_arango_base_role(self) -> Dict[str, Any]:
         """
         Converts the AppUserGroup model to a dictionary that matches the ArangoDB schema.

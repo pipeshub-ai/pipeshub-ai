@@ -14,9 +14,9 @@ from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
     AnyoneWithLink,
+    AppRole,
     AppUser,
     AppUserGroup,
-    AppRole,
     Domain,
     FileRecord,
     Org,
@@ -117,7 +117,7 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
-    
+
     async def delete_edges_between_collections(self, from_key: str, edge_collection: str, to_collection: str) -> None:
         return await self.arango_service.delete_edges_between_collections(from_key, edge_collection, to_collection, transaction=self.txn)
 
@@ -319,7 +319,6 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.batch_create_user_app_edges(edges)
 
     async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
-        print("\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting user groups:")
         return await self.arango_service.batch_upsert_nodes(
                             [user_group.to_arango_base_user_group() for user_group in user_groups],
                             collection=CollectionNames.GROUPS.value,
@@ -327,10 +326,7 @@ class ArangoTransactionStore(TransactionStore):
                         )
 
     async def batch_upsert_app_roles(self, app_roles: List[AppRole]) -> None:
-        print("\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting app roles:", app_roles)
 
-        for app_role in app_roles:
-            print("\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting app role:", app_role.to_arango_base_role())
         return await self.arango_service.batch_upsert_nodes(
                             [app_role.to_arango_base_role() for app_role in app_roles],
                             collection=CollectionNames.ROLES.value,

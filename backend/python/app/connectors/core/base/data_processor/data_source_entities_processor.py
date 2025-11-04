@@ -16,9 +16,9 @@ from app.connectors.core.base.data_store.data_store import (
 )
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
+    AppRole,
     AppUser,
     AppUserGroup,
-    AppRole,
     FileRecord,
     Record,
     RecordGroup,
@@ -876,7 +876,7 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
-    
+
     async def on_app_role_deleted(
         self,
         external_role_id: str,

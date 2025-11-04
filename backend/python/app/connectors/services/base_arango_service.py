@@ -29,9 +29,9 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
+    AppRole,
     AppUser,
     AppUserGroup,
-    AppRole,
     FileRecord,
     Record,
     RecordGroup,
@@ -40,6 +40,7 @@ from app.models.entities import (
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
+    app_role_schema,
     app_schema,
     department_schema,
     file_record_schema,
@@ -50,7 +51,6 @@ from app.schema.arango.documents import (
     team_schema,
     ticket_record_schema,
     user_schema,
-    app_role_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
@@ -3891,8 +3891,6 @@ class BaseArangoService:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
 
-            if collection == CollectionNames.GROUPS.value:
-                print("\n\n\n\n !!!!!!!!!!!!!!!!!!!!!!!! upserting user group:", nodes)
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
 
             batch_query = """
@@ -4295,7 +4293,7 @@ class BaseArangoService:
                 "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
             )
             return None
-    
+
     async def get_app_role_by_external_id(
         self,
         connector_name: Connectors,
@@ -5064,6 +5062,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges to target: %s in collection: %s: %s", to_key, collection, str(e))
             return 0
 
+    # This has been replaced by the next fucntion: delete_edges_between_collections
     async def delete_edges_to_groups(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
         """
         Delete all edges from the given node if those edges are pointing to nodes in the groups collection
@@ -5108,30 +5107,30 @@ class BaseArangoService:
             return 0
 
     async def delete_edges_between_collections(
-        self, 
-        from_key: str, 
+        self,
+        from_key: str,
         edge_collection: str,
         to_collection: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> int:
         """
         Delete all edges from a specific node to any nodes in the target collection.
-        
+
         Args:
             from_key: The source node key (e.g., "users/12345")
             edge_collection: The edge collection name to search in
             to_collection: The target collection name (edges pointing to nodes in this collection will be deleted)
             transaction: Optional transaction database
-        
+
         Returns:
             int: Number of edges deleted
         """
         try:
             self.logger.info(
-                "🚀 Deleting edges from %s to %s collection in %s", 
+                "🚀 Deleting edges from %s to %s collection in %s",
                 from_key, to_collection, edge_collection
             )
-            
+
             query = """
             FOR edge IN @@edge_collection
                 FILTER edge._from == @from_key
@@ -5139,33 +5138,33 @@ class BaseArangoService:
                 REMOVE edge IN @@edge_collection
                 RETURN OLD
             """
-            
+
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={
                 "from_key": from_key,
                 "@edge_collection": edge_collection,
                 "to_collection": to_collection
             })
-            
+
             deleted_edges = list(cursor)
             count = len(deleted_edges)
-            
+
             if count > 0:
                 self.logger.info(
-                    "✅ Successfully deleted %d edges from %s to %s", 
+                    "✅ Successfully deleted %d edges from %s to %s",
                     count, from_key, to_collection
                 )
             else:
                 self.logger.warning(
-                    "⚠️ No edges found from %s to %s in collection: %s", 
+                    "⚠️ No edges found from %s to %s in collection: %s",
                     from_key, to_collection, edge_collection
                 )
-            
+
             return count
-            
+
         except Exception as e:
             self.logger.error(
-                "❌ Failed to delete edges from %s to %s in %s: %s", 
+                "❌ Failed to delete edges from %s to %s in %s: %s",
                 from_key, to_collection, edge_collection, str(e)
             )
             return 0
@@ -11980,7 +11979,7 @@ class BaseArangoService:
                 RETURN DISTINCT records
             )
 
-            //Get inherited permissions here 
+            //Get inherited permissions here
             LET recordGroupRecords = (
                 // Hop 1: User -> Group
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}

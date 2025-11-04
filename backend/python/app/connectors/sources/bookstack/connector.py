@@ -34,9 +34,8 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
     AppRole,
+    AppUser,
     FileRecord,
     Record,
     RecordGroup,
@@ -1253,8 +1252,7 @@ class BookStackConnector(BaseConnector):
                     perm_type = PermissionType.READ
                 else:
                     continue
-                    
-                print("\n\n\n !!!!!!!!!!!!!!!!!!!! role 0 : ", role_id, role_perm)
+
                 permissions_list.append(
                     Permission(
                         external_id=str(role_id),
