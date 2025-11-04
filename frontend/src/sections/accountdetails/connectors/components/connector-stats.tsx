@@ -66,6 +66,7 @@ interface ConnectorStatisticsProps {
   connectorNames?: string[] | string; // Can be a single connector name or an array of names
   showUploadTab?: boolean; // Control whether to show the upload tab
   refreshInterval?: number; // Interval in milliseconds for auto-refresh
+  showActions?: boolean; // Whether to show action buttons in cards
 }
 
 // Ultra-minimalistic SaaS color palette - monochromatic with a single accent
@@ -98,6 +99,7 @@ const ConnectorStatistics = ({
   connectorNames = [],
   showUploadTab = true,
   refreshInterval = 0, // Default to no auto-refresh
+  showActions = true,
 }: ConnectorStatisticsProps): JSX.Element => {
   const theme = useTheme();
   const [loading, setLoading] = useState<boolean>(true);
@@ -339,7 +341,7 @@ const ConnectorStatistics = ({
         <Grid container spacing={1.5}>
           {connectorStats.map((stat, index) => (
             <Grid item xs={12} sm={6} md={6} lg={4} key={`${stat.connector}-${index}`}>
-              <ConnectorStatsCard connector={stat} />
+              <ConnectorStatsCard connector={stat} showActions={showActions} />
             </Grid>
           ))}
         </Grid>

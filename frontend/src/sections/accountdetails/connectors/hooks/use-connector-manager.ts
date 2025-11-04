@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { Connector, ConnectorConfig } from '../types/types';
 import { ConnectorApiService } from '../services/api';
+import { CrawlingManagerApi } from '../services/crawling-manager';
+import { buildCronFromSchedule } from '../utils/cron';
 
 interface UseConnectorManagerReturn {
   // State
@@ -121,6 +123,13 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     //     }
     //   }
 
+      // Capture pre-toggle state
+      const wasActive = !!connector.isActive;
+      const selectedStrategy = String(
+        connectorConfig?.config?.sync?.selectedStrategy || ''
+      ).toUpperCase();
+      const scheduledCfg = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
+
       // Proceed with toggle
       const successResponse = await ConnectorApiService.toggleConnector(connector.name);
 
@@ -134,11 +143,47 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
         // Clear success message after 4 seconds
         setTimeout(() => setSuccess(false), 4000);
+
+        // Scheduling behavior tied to enabling/active transitions
+        try {
+          if (enabled && !wasActive) {
+            // First-time enable (or enabling from inactive): if strategy is SCHEDULED, schedule now
+            const hasRequiredSchedule =
+              scheduledCfg && (scheduledCfg.intervalMinutes || scheduledCfg.cronExpression);
+            if (selectedStrategy === 'SCHEDULED' && hasRequiredSchedule) {
+              const cron = buildCronFromSchedule({
+                startTime: scheduledCfg.startTime,
+                intervalMinutes: scheduledCfg.intervalMinutes,
+                timezone: (scheduledCfg.timezone || 'UTC').toUpperCase(),
+              });
+              await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
+                scheduleConfig: {
+                  scheduleType: 'custom',
+                  isEnabled: true,
+                  timezone: (scheduledCfg.timezone || 'UTC').toUpperCase(),
+                  cronExpression: cron,
+                },
+                priority: 5,
+                maxRetries: 3,
+                timeout: 300000,
+              });
+            }
+          } else if (!enabled && wasActive) {
+            // Disabling: remove any existing schedule
+            try {
+              await CrawlingManagerApi.remove(connector.name.toLowerCase());
+            } catch (removeError) {
+              console.error('Failed to remove schedule on disable:', removeError);
+            }
+          }
+        } catch (scheduleError) {
+          console.error('Scheduling operation failed:', scheduleError);
+        }
       } else {
         setError(`Failed to ${enabled ? 'enable' : 'disable'} connector`);
       }
     },
-    [connector]
+    [connector, connectorConfig]
   );
 
   // Handle configuration dialog

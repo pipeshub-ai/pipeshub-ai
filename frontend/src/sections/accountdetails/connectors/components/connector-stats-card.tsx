@@ -83,8 +83,10 @@ const getConnectorData = (connectorName: string, allConnectors: any[]) => {
 
 export const ConnectorStatsCard = ({
   connector,
+  showActions = true,
 }: {
   connector: ConnectorStatsData;
+  showActions?: boolean;
 }): JSX.Element => {
   const theme = useTheme();
   const [isReindexing, setIsReindexing] = useState<boolean>(false);
@@ -110,6 +112,9 @@ export const ConnectorStatsCard = ({
   const percentComplete =
     total > 0 ? Math.round(((indexing_status.COMPLETED || 0) / total) * 100) : 0;
   const isComplete = percentComplete === 100;
+  const failedCount = indexing_status.FAILED || 0;
+  const canShowSync = showActions;
+  const canShowReindex = failedCount > 0;
 
   const handleReindex = async (): Promise<void> => {
     try {
@@ -500,95 +505,101 @@ export const ConnectorStatsCard = ({
             ))}
           </Grid>
 
-          <Box
-            sx={{
-              mt: 'auto',
-              display: 'flex',
-              justifyContent: 'center',
-              width: '100%',
-              gap: 1.5,
-              pt: 1.5,
-              borderTop: '1px solid',
-              borderColor,
-            }}
-          >
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
-              onClick={handleResync}
-              disabled={isResyncing}
+          {(canShowSync || canShowReindex) && (
+            <Box
               sx={{
-                borderRadius: '6px',
-                textTransform: 'none',
-                height: '30px',
-                fontSize: '0.75rem',
-                fontWeight: 500,
-                color: primaryColor,
-                borderColor: alpha(primaryColor, 0.5),
-                backgroundColor: 'transparent',
-                letterSpacing: '-0.01em',
-                boxShadow: 'none',
-                minWidth: '90px',
-                px: 1.5,
-                '&:hover': {
-                  backgroundColor: alpha(primaryColor, 0.04),
-                  borderColor: primaryColor,
-                },
-                '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
-                '&:disabled': {
-                  color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
-                  borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
-                },
+                mt: 'auto',
+                display: 'flex',
+                justifyContent: 'center',
+                width: '100%',
+                gap: 1.5,
+                pt: 1.5,
+                borderTop: '1px solid',
+                borderColor,
               }}
             >
-              {isResyncing ? (
-                <>
-                  <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
-                  Syncing
-                </>
-              ) : (
-                'Sync'
+              {canShowSync && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
+                  onClick={handleResync}
+                  disabled={isResyncing}
+                  sx={{
+                    borderRadius: '6px',
+                    textTransform: 'none',
+                    height: '30px',
+                    fontSize: '0.75rem',
+                    fontWeight: 500,
+                    color: primaryColor,
+                    borderColor: alpha(primaryColor, 0.5),
+                    backgroundColor: 'transparent',
+                    letterSpacing: '-0.01em',
+                    boxShadow: 'none',
+                    minWidth: '90px',
+                    px: 1.5,
+                    '&:hover': {
+                      backgroundColor: alpha(primaryColor, 0.04),
+                      borderColor: primaryColor,
+                    },
+                    '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
+                    '&:disabled': {
+                      color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+                      borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
+                    },
+                  }}
+                >
+                  {isResyncing ? (
+                    <>
+                      <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
+                      Syncing
+                    </>
+                  ) : (
+                    'Sync'
+                  )}
+                </Button>
               )}
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<Iconify icon={refreshIcon} width={14} height={14} />}
-              onClick={handleReindex}
-              disabled={isReindexing}
-              sx={{
-                borderRadius: '6px',
-                textTransform: 'none',
-                height: '30px',
-                fontSize: '0.75rem',
-                fontWeight: 500,
-                color: primaryColor,
-                borderColor: alpha(primaryColor, 0.5),
-                letterSpacing: '-0.01em',
-                minWidth: '120px',
-                px: 1.5,
-                '&:hover': {
-                  backgroundColor: alpha(primaryColor, 0.04),
-                  borderColor: primaryColor,
-                },
-                '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
-                '&:disabled': {
-                  color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
-                  borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
-                },
-              }}
-            >
-              {isReindexing ? (
-                <>
-                  <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
-                  Indexing
-                </>
-              ) : (
-                'Reindex Failed'
+              {canShowReindex && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Iconify icon={refreshIcon} width={14} height={14} />}
+                  onClick={handleReindex}
+                  disabled={isReindexing}
+                  sx={{
+                    borderRadius: '6px',
+                    textTransform: 'none',
+                    height: '30px',
+                    fontSize: '0.75rem',
+                    fontWeight: 500,
+                    color: primaryColor,
+                    borderColor: alpha(primaryColor, 0.5),
+                    letterSpacing: '-0.01em',
+                    minWidth: '120px',
+                    px: 1.5,
+                    '&:hover': {
+                      backgroundColor: alpha(primaryColor, 0.04),
+                      borderColor: primaryColor,
+                    },
+                    '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
+                    '&:disabled': {
+                      color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+                      borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
+                    },
+                  }}
+                >
+                  {isReindexing ? (
+                    <>
+                      <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
+                      Indexing
+                    </>
+                  ) : (
+                    'Reindex Failed'
+                  )}
+                </Button>
               )}
-            </Button>
-          </Box>
+            </Box>
+          )}
         </Box>
       </Paper>
       <Snackbar
