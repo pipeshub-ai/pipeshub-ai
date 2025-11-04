@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import re
+import time
 import uuid
 from typing import List, Optional
 
@@ -751,11 +752,16 @@ class VectorStore(Transformer):
 
                 if points:
                     # upsert_points is a synchronous interface; do not await
+                    start_time = time.perf_counter()
+                    self.logger.info(f"⏱️ Starting image embeddings insertion for {len(points)} points")
+
                     self.vector_db_service.upsert_points(
                             collection_name=self.collection_name, points=points
                         )
+
+                    elapsed_time = time.perf_counter() - start_time
                     self.logger.info(
-                                    "✅ Successfully added image embeddings to vector store"
+                                    f"✅ Successfully added {len(points)} image embeddings to vector store in {elapsed_time:.2f}s"
                                 )
                 else:
                     self.logger.info(
@@ -764,9 +770,14 @@ class VectorStore(Transformer):
 
             if langchain_document_chunks:
                 try:
+                        start_time = time.perf_counter()
+                        self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
+
                         await self.vector_store.aadd_documents(langchain_document_chunks)
+
+                        elapsed_time = time.perf_counter() - start_time
                         self.logger.info(
-                            f"✅ Successfully added {len(langchain_document_chunks)} langchain documents to vector store"
+                            f"✅ Successfully added {len(langchain_document_chunks)} langchain documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(langchain_document_chunks)*1000:.2f}ms per document)"
                         )
                 except Exception as e:
                     raise VectorStoreError(

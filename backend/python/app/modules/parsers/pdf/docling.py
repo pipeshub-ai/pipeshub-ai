@@ -1,6 +1,7 @@
 import asyncio
 from io import BytesIO
 
+from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.document import ConversionResult
 from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -25,7 +26,7 @@ class DoclingProcessor():
         pipeline_options.do_ocr = False
 
         self.converter = DocumentConverter(format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
              InputFormat.DOCX: WordFormatOption(),
                  InputFormat.MD: MarkdownFormatOption(),
         })
