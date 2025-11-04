@@ -739,7 +739,7 @@ class AppRole(BaseModel):
 
     def to_arango_base_role(self) -> Dict[str, Any]:
         """
-        Converts the AppUserGroup model to a dictionary that matches the ArangoDB schema.
+        Converts the AppRole model to a dictionary that matches the ArangoDB schema.
         """
         return {
             "_key": self.id,

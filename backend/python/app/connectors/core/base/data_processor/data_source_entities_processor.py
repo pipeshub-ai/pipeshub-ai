@@ -181,10 +181,9 @@ class DataSourceEntitiesProcessor:
                         self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
                         continue
                 elif permission.entity_type == EntityType.ROLE.value:
-                    print("\n\n\n Role type permission ! " )
+                    user_role = None
                     if permission.external_id:
                         user_role = await tx_store.get_app_role_by_external_id(external_id=permission.external_id, connector_name=record.connector_name)
-                        print("for role: ", user_role)
                     if user_role:
                         from_collection = f"{CollectionNames.ROLES.value}/{user_role.id}"
                     else:
@@ -657,7 +656,7 @@ class DataSourceEntitiesProcessor:
                         permission = Permission(
                             external_id=member.id,
                             email=member.email,
-                            type=PermissionType.READ, # Or a more suitable type like 'MEMBER'
+                            type=PermissionType.READ,
                             entity_type=EntityType.USER
                         )
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"

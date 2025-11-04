@@ -4301,7 +4301,7 @@ class BaseArangoService:
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[AppRole]:
         """
-        Get a user group from the GROUPS collection using its external (source) ID.
+        Get an app role from the ROLES collection using its external (source) ID.
         """
         try:
             self.logger.info(
@@ -11953,7 +11953,7 @@ class BaseArangoService:
 
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'GROUP' or edge.type == 'ROLE'
+                FILTER edge.entityType == 'GROUP'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
                 RETURN DISTINCT records
             )
