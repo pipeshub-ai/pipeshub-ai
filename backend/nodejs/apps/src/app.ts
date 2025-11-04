@@ -298,7 +298,7 @@ export class Application {
     );
     this.app.use('/api/v1/org', createOrgRouter(this.entityManagerContainer));
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
+    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer, this.entityManagerContainer));
 
     this.app.use(
       '/api/v1/userAccount',
