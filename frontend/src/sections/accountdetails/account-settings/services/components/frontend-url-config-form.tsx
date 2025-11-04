@@ -27,7 +27,7 @@ import {
 } from '../utils/services-configuration-service';
 
 // Constants
-const URL_REGEX = /^(https?:\/\/)?([\w.-]+)+(:\d+)?(\/[\w./?%&=-]*)?$/;
+const URL_REGEX = /^(?:https?:\/\/)?(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{2,5})?(?:\/\S*)?$/;
 const HELPER_TEXT = 'The URL of your Frontend DNS server';
 const ERROR_MESSAGES = {
   REQUIRED: 'Frontend DNS is required',

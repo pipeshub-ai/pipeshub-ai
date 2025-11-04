@@ -247,8 +247,6 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         const normalizedFrontend = normalizeUrl(frontendUrl);
         const normalizedConnector = normalizeUrl(connectorUrl);
         const apiCalls = [];
-        console.log('normalizedFrontend', normalizedFrontend);
-        console.log('normalizedConnector', normalizedConnector);
 
         // Only save URLs that have values
         if (normalizedFrontend) {
