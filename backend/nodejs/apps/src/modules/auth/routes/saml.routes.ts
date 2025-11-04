@@ -33,7 +33,7 @@ const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
 };
 
-export function createSamlRouter(container: Container) {
+export function createSamlRouter(container: Container, userManagerContainer: Container) {
   const router = Router();
 
   let config = container.get<AppConfig>('AppConfig');
@@ -41,7 +41,7 @@ export function createSamlRouter(container: Container) {
   const sessionService = container.get<SessionService>('SessionService');
   const iamService = container.get<IamService>('IamService');
   const samlController = container.get<SamlController>('SamlController');
-  const userController = container.get<UserController>('UserController');
+  const userController = userManagerContainer.get<UserController>('UserController');
   const logger = container.get<Logger>('Logger');
   router.use(attachContainerMiddleware(container));
   router.use(
