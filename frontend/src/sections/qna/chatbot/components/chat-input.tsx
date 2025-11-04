@@ -673,7 +673,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                       variant="body2"
                       sx={{ fontSize: '0.8rem', fontWeight: 500, minWidth: '60px' }}
                     >
-                      {selectedModel?.modelName || ''}
+                      {selectedModel?.modelName?.slice(0, 16) || ''}
                     </Typography>
                     <Icon icon={chevronDownIcon} width={12} height={12} />
                   </Box>

@@ -556,13 +556,22 @@ export const useConnectorConfig = ({
       }
 
       // Prepare config for API - store values directly in etcd
+      // Ensure scheduledConfig is only present when strategy is SCHEDULED
+      const syncToSave: any = {
+        selectedStrategy: formData.sync.selectedStrategy,
+        ...formData.sync,
+      };
+      const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+      if (normalizedStrategy === 'SCHEDULED') {
+        syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
+      } else if (syncToSave.scheduledConfig !== undefined) {
+        // Remove lingering schedule when not scheduled
+        delete syncToSave.scheduledConfig;
+      }
+
       const configToSave: any = {
         auth: formData.auth,
-        sync: {
-          selectedStrategy: formData.sync.selectedStrategy,
-          scheduledConfig: formData.sync.scheduledConfig || {},
-          ...formData.sync,
-        },
+        sync: syncToSave,
         filters: formData.filters || {},
       };
 
@@ -582,34 +591,78 @@ export const useConnectorConfig = ({
         connector.name,
         configToSave as any
       );
+      
+      // Scheduling logic moved to enable/active changes.
+      // Here: only trigger scheduling updates when the connector is already active.
+      const wasActive = !!connector.isActive;
+      if (wasActive) {
+        const prevStrategy = String(
+          connectorConfig?.config?.sync?.selectedStrategy || ''
+        ).toUpperCase();
+        const newStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
 
-      // After saving config, only schedule crawling when strategy is SCHEDULED
-      const syncStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-      if (syncStrategy === 'SCHEDULED') {
-        const scheduled = (formData.sync.scheduledConfig || {}) as any;
-        const cron = buildCronFromSchedule({
-          startTime: scheduled.startTime,
-          intervalMinutes: scheduled.intervalMinutes,
-          timezone: scheduled.timezone.toUpperCase() || 'UTC',
-        });
-        await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
-          scheduleConfig: {
-            scheduleType: 'custom',
-            isEnabled: true,
-            timezone: scheduled.timezone.toUpperCase() || 'UTC',
-            cronExpression: cron,
-          },
-          priority: 5,
-          maxRetries: 3,
-          timeout: 300000,
-        });
-      } else {
-        // Remove any existing scheduled jobs if strategy is not SCHEDULED
+        const prevScheduled = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
+        const newScheduled = (formData.sync.scheduledConfig || {}) as any;
+
+        const strategyChanged = prevStrategy !== newStrategy;
+        const scheduleChanged =
+          JSON.stringify({
+            startTime: prevScheduled.startTime,
+            intervalMinutes: prevScheduled.intervalMinutes,
+            timezone: (prevScheduled.timezone || '').toUpperCase(),
+          }) !==
+          JSON.stringify({
+            startTime: newScheduled.startTime,
+            intervalMinutes: newScheduled.intervalMinutes,
+            timezone: (newScheduled.timezone || '').toUpperCase(),
+          });
+
         try {
-          await CrawlingManagerApi.remove(connector.name.toLowerCase());
-        } catch (removeError) {
-          console.error('Error removing scheduled jobs:', removeError);
-          // Continue execution - removal failure shouldn't block the save operation
+          if (strategyChanged) {
+            if (prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
+              // Turn off existing schedule
+              await CrawlingManagerApi.remove(connector.name.toLowerCase());
+            } else if (newStrategy === 'SCHEDULED') {
+              // Apply (or re-apply) schedule with new settings
+              const cron = buildCronFromSchedule({
+                startTime: newScheduled.startTime,
+                intervalMinutes: newScheduled.intervalMinutes,
+                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+              });
+              await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
+                scheduleConfig: {
+                  scheduleType: 'custom',
+                  isEnabled: true,
+                  timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+                  cronExpression: cron,
+                },
+                priority: 5,
+                maxRetries: 3,
+                timeout: 300000,
+              });
+            }
+          } else if (newStrategy === 'SCHEDULED' && scheduleChanged) {
+            // Re-apply schedule when only the schedule parameters changed
+            const cron = buildCronFromSchedule({
+              startTime: newScheduled.startTime,
+              intervalMinutes: newScheduled.intervalMinutes,
+              timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+            });
+            await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
+              scheduleConfig: {
+                scheduleType: 'custom',
+                isEnabled: true,
+                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+                cronExpression: cron,
+              },
+              priority: 5,
+              maxRetries: 3,
+              timeout: 300000,
+            });
+          }
+        } catch (scheduleError) {
+          console.error('Scheduling update failed:', scheduleError);
+          // Do not block saving on scheduling issues
         }
       }
 

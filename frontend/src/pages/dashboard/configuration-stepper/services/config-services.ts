@@ -239,15 +239,22 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
 
       case 'url': {
         const { providerType, _provider, frontendUrl, connectorUrl, ...rest } = config;
+        const normalizeUrl = (url?: string) => {
+          if (!url) return '';
+          const trimmed = String(url).trim();
+          return (trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed)
+        };
+        const normalizedFrontend = normalizeUrl(frontendUrl);
+        const normalizedConnector = normalizeUrl(connectorUrl);
         const apiCalls = [];
 
         // Only save URLs that have values
-        if (frontendUrl && frontendUrl.trim() !== '') {
-          apiCalls.push(axios.post(`${API_BASE}/frontendPublicUrl`, { url: frontendUrl }));
+        if (normalizedFrontend) {
+          apiCalls.push(axios.post(`${API_BASE}/frontendPublicUrl`, { url: normalizedFrontend }));
         }
 
-        if (connectorUrl && connectorUrl.trim() !== '') {
-          apiCalls.push(axios.post(`${API_BASE}/connectorPublicUrl`, { url: connectorUrl }));
+        if (normalizedConnector) {
+          apiCalls.push(axios.post(`${API_BASE}/connectorPublicUrl`, { url: normalizedConnector }));
         }
 
         // Execute all API calls

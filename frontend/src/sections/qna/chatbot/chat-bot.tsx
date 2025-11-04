@@ -405,7 +405,16 @@ class StreamingManager {
     if (state.controller && !state.controller.signal.aborted) {
       state.controller.abort();
     }
+    // Reset streaming state only; preserve existing messages/history
     this.conversationStates[conversationKey] = StreamingManager.initializeStreamingState();
+    this.notifyUpdates();
+  }
+
+  // Reset the draft ("new") conversation completely
+  resetNewConversation() {
+    const draftKey = 'new';
+    this.conversationStates[draftKey] = StreamingManager.initializeStreamingState();
+    this.conversationMessages[draftKey] = [];
     this.notifyUpdates();
   }
 
@@ -528,6 +537,7 @@ const ChatInterface = () => {
   const [selectedChat, setSelectedChat] = useState<Conversation | null>(null);
   const [shouldRefreshSidebar, setShouldRefreshSidebar] = useState<boolean>(false);
   const [isNavigationBlocked, setIsNavigationBlocked] = useState<boolean>(false);
+  const currentOpenDocumentRef = useRef<string | null>(null);
 
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<{
@@ -1032,10 +1042,12 @@ const ChatInterface = () => {
     resetViewerStates();
     setFileBuffer(null);
     setHighlightedCitation(null);
+    currentOpenDocumentRef.current = null;
   }, []);
 
   const handleNewChat = useCallback(() => {
-    streamingManager.clearStreaming(getConversationKey(currentConversationId));
+    // Do not clear the current conversation's messages; just reset the draft ("new") state
+    streamingManager.resetNewConversation();
     streamingManager.resetNavigationTracking();
 
     setCurrentConversationId(null);
@@ -1048,7 +1060,7 @@ const ChatInterface = () => {
     // Reset filters for a fresh chat
     setSelectedApps([]);
     setSelectedKbIds([]);
-  }, [navigate, streamingManager, currentConversationId, getConversationKey]);
+  }, [navigate, streamingManager]);
 
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
@@ -1245,6 +1257,18 @@ const ChatInterface = () => {
     bufferData?: ArrayBuffer
   ): Promise<void> => {
     const citationMeta = citation.metadata;
+    const recordId = citationMeta?.recordId;
+
+    if (
+      currentOpenDocumentRef.current === recordId
+    ) {
+      setHighlightedCitation(citation || null);
+      return;
+    }
+  
+
+    currentOpenDocumentRef.current = recordId;
+
     setTransitioning(true);
     setIsViewerReady(false);
     setDrawerOpen(false);
@@ -1255,7 +1279,6 @@ const ChatInterface = () => {
     setHighlightedCitation(citation || null);
 
     try {
-      const recordId = citationMeta?.recordId;
       const response = await axios.get(`/api/v1/knowledgebase/record/${recordId}`);
       const { record } = response.data;
       const { externalRecordId } = record;
@@ -1281,18 +1304,15 @@ const ChatInterface = () => {
           let filename;
           const contentDisposition = downloadResponse.headers['content-disposition'];
           if (contentDisposition) {
-            // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
             const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
             if (filenameStarMatch && filenameStarMatch[1]) {
-              // Decode the percent-encoded UTF-8 filename
               try {
                 filename = decodeURIComponent(filenameStarMatch[1]);
               } catch (e) {
                 console.error('Failed to decode UTF-8 filename', e);
               }
             }
-            
-            // Fallback to basic filename="..." format if filename* not found
+
             if (!filename) {
               const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
               if (filenameMatch && filenameMatch[1]) {
@@ -1301,7 +1321,7 @@ const ChatInterface = () => {
             }
           }
 
-          if(!filename && fileName) {
+          if (!filename && fileName) {
             filename = fileName;
           }
 
@@ -1399,18 +1419,15 @@ const ChatInterface = () => {
           let filename;
           const contentDisposition = connectorResponse.headers['content-disposition'];
           if (contentDisposition) {
-            // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
             const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
             if (filenameStarMatch && filenameStarMatch[1]) {
-              // Decode the percent-encoded UTF-8 filename
               try {
                 filename = decodeURIComponent(filenameStarMatch[1]);
               } catch (e) {
                 console.error('Failed to decode UTF-8 filename', e);
               }
             }
-            
-            // Fallback to basic filename="..." format if filename* not found
+
             if (!filename) {
               const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
               if (filenameMatch && filenameMatch[1]) {
@@ -1419,7 +1436,7 @@ const ChatInterface = () => {
             }
           }
 
-          if(!filename && record.recordName) {
+          if (!filename && record.recordName) {
             filename = record.recordName;
           }
 
@@ -1503,10 +1520,9 @@ const ChatInterface = () => {
     setTimeout(() => {
       setIsViewerReady(true);
       setTransitioning(false);
+      currentOpenDocumentRef.current = recordId;
     }, 100);
   };
-
-
 
   const handleRegenerateMessage = useCallback(
     async (messageId: string): Promise<void> => {
