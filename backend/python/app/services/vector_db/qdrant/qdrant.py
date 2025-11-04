@@ -1,3 +1,4 @@
+import time
 from typing import Dict, List, Optional, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
@@ -377,4 +378,11 @@ class QdrantService(IVectorDBService):
         """Upsert points"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
+
+        start_time = time.perf_counter()
+        logger.info(f"⏱️ Starting upsert of {len(points)} points to collection '{collection_name}'")
+
         self.client.upsert(collection_name, points)
+
+        elapsed_time = time.perf_counter() - start_time
+        logger.info(f"⏱️ Completed upsert of {len(points)} points in {elapsed_time:.2f}s (avg: {elapsed_time/len(points)*1000:.2f}ms per point)")

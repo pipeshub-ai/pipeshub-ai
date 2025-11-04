@@ -1,3 +1,4 @@
+import time
 from typing import Any, Dict, List
 
 from langchain.schema import Document
@@ -543,16 +544,25 @@ class IndexingPipeline:
 
             # Store in vector store
             try:
+                start_time = time.perf_counter()
+                self.logger.info(f"⏱️ Starting embeddings insertion for {len(chunks)} chunks into vector store")
+
                 await self.vector_store.aadd_documents(chunks)
+
+                elapsed_time = time.perf_counter() - start_time
+                if len(chunks) > 0:
+                    self.logger.info(
+                        f"✅ Successfully added {len(chunks)} documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(chunks)*1000:.2f}ms per document)"
+                    )
+                else:
+                    self.logger.info(
+                        f"✅ Successfully added 0 documents to vector store in {elapsed_time:.2f}s"
+                    )
             except Exception as e:
                 raise VectorStoreError(
                     "Failed to store documents in vector store: " + str(e),
                     details={"error": str(e)},
                 )
-
-            self.logger.info(
-                f"✅ Successfully added {len(chunks)} documents to vector store"
-            )
 
             # Update record with indexing status
             try:

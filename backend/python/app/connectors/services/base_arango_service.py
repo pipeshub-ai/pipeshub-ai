@@ -222,6 +222,7 @@ class BaseArangoService:
             self.logger.info("🚀 Initializing collections...")
             # Initialize all collections (both nodes and edges)
             for collection_name, schema in NODE_COLLECTIONS + EDGE_COLLECTIONS:
+                self.logger.debug(f"Processing collection: {collection_name}")
                 is_edge = (collection_name, schema) in EDGE_COLLECTIONS
 
                 collection = self._collections[collection_name] = (
@@ -240,9 +241,17 @@ class BaseArangoService:
                         self.logger.info(f"Updating schema for collection {collection_name}")
                         collection.configure(schema=schema)
                     except Exception as e:
-                        self.logger.warning(
-                            f"Failed to update schema for {collection_name}: {str(e)}"
-                        )
+                        error_msg = str(e)
+                        if "1207" in error_msg or "duplicate" in error_msg.lower():
+                            # Schema already applied - this is expected on restarts
+                            self.logger.info(
+                                f"✅ Schema for '{collection_name}' already configured, skipping"
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Failed to update schema for {collection_name}: {error_msg}"
+                            )
+
             self.logger.info("✅ Collections initialized successfully")
 
         except Exception as e:

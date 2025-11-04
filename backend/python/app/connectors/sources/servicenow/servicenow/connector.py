@@ -100,6 +100,7 @@ ORGANIZATIONAL_ENTITIES = {
             DocumentationLink(
                 "ServiceNow OAuth Setup",
                 "https://docs.servicenow.com/bundle/latest/page/administer/security/concept/c_OAuthApplications.html",
+                "setup"
             )
         )
         .with_redirect_uri("connectors/oauth/callback/ServiceNow", True)
