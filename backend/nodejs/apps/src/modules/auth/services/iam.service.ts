@@ -47,6 +47,40 @@ export class IamService {
       );
     }
   }
+
+  //Create a new user via IAM backend
+  //Note: Currently not used for SAML JIT provisioning as it requires admin authentication and doesn't handle group assignment.
+  //SAML JIT uses direct DB access via userController.provisionSamlUser()
+  async createUser(userData: any, authServiceToken: string) {
+    try {
+      const config = {
+        method: 'post',
+        url: `${this.authConfig.iamBackend}/api/v1/users/`,
+        headers: {
+          Authorization: `Bearer ${authServiceToken}`,
+          'Content-Type': 'application/json',
+        },
+        data: { ...userData },
+      };
+
+      const response = await axios(config);
+      return { statusCode: response.status, data: response.data };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        throw new AxiosError(
+          error.response?.data?.message || 'Failed to create user',
+          error.code,
+          error.config,
+          error.request,
+          error.response,
+        );
+      }
+      throw new InternalServerError(
+        error instanceof Error ? error.message : 'Unexpected error occurred',
+      );
+    }
+  }
+
   async getUserByEmail(email: string, authServiceToken: string) {
     try {
       const config = {
