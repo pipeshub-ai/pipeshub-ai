@@ -596,7 +596,7 @@ class BookStackConnector(BaseConnector):
                         self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
                         continue
                     user_key = f"{CollectionNames.USERS.value}/{user.id}"
-                    await tx_store.delete_edges_to_groups(user_key, CollectionNames.PERMISSION.value)
+                    await tx_store.delete_edges_between_collections(user_key, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value)
 
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
@@ -1039,8 +1039,8 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Processing deletion for user group (External ID: {role_id})")
 
         # Call the data processor to delete the group from the database
-        await self.data_entities_processor.on_user_group_deleted(
-            external_group_id=str(role_id),
+        await self.data_entities_processor.on_app_role_deleted(
+            external_role_id=str(role_id),
             connector_name=self.connector_name
         )
 

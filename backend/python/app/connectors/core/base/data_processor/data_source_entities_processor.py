@@ -374,6 +374,7 @@ class DataSourceEntitiesProcessor:
                         self.logger.info(f"Updating existing record group with id: {record_group.id}")
                         # Ensure update timestamp is fresh for the edge
                         record_group.updated_at = get_epoch_timestamp_in_ms()
+                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}", collection=CollectionNames.PERMISSION.value)
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
