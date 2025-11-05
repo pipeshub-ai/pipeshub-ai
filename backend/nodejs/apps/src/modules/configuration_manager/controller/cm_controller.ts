@@ -107,8 +107,8 @@ const handleBackendError = (error: any, operation: string): Error => {
   return new InternalServerError(`${operation} failed: ${error.message}`);
 };
 
-const normalizeUrl = (url: string): string => {
-  if (!url) return '';
+const normalizeUrl = (url: unknown): string => {
+  if (!url || typeof url !== 'string') return '';
   const trimmed = String(url).trim();
   return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
 };
@@ -1811,6 +1811,13 @@ export const setFrontendUrl =
       if (!normalizedUrl) {
         throw new BadRequestError('Invalid URL');
       }
+      try {
+        new URL(normalizedUrl);
+      } catch (e) {
+        throw new BadRequestError(
+          'Invalid URL format. A protocol (e.g., http://) is required.',
+        );
+      }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
       let parsedUrls = JSON.parse(urls);
@@ -1878,6 +1885,13 @@ export const setConnectorPublicUrl =
       const normalizedUrl = normalizeUrl(url);
       if (!normalizedUrl) {
         throw new BadRequestError('Invalid URL');
+      }
+      try {
+        new URL(normalizedUrl);
+      } catch (e) {
+        throw new BadRequestError(
+          'Invalid URL format. A protocol (e.g., http://) is required.',
+        );
       }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
