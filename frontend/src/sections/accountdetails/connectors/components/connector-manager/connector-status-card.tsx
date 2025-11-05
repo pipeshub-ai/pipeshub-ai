@@ -19,6 +19,7 @@ interface ConnectorStatusCardProps {
   isEnablingWithFilters: boolean;
   onToggle: (enabled: boolean) => void;
   hideAuthenticate?: boolean;
+  supportsSync?: boolean;
 }
 
 const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
@@ -27,6 +28,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   isEnablingWithFilters,
   onToggle,
   hideAuthenticate,
+  supportsSync = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -36,9 +38,11 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   const isOauth = authType === 'OAUTH';
   const canEnable = isActive
     ? true
-    : (isOauth
-        ? (hideAuthenticate ? isConfigured : isAuthenticated)
-        : isConfigured);
+    : isOauth
+      ? hideAuthenticate
+        ? isConfigured
+        : isAuthenticated
+      : isConfigured;
   const enableBlocked = !isActive && !canEnable;
 
   const getTooltipMessage = () => {
@@ -192,78 +196,77 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
         </Box>
       </Stack>
 
-      {/* Status Control */}
-      <Box
-        sx={{
-          p: 2,
-          borderRadius: 1,
-          bgcolor:
-            theme.palette.mode === 'dark'
-              ? isDark
-                ? alpha(theme.palette.background.default, 0.3)
-                : alpha(theme.palette.background.default, 0.3)
-              : alpha(theme.palette.grey[50], 0.5),
-          border: `1px solid ${theme.palette.divider}`,
-        }}
-      >
-        <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <Box>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-              Connector Status
-            </Typography>
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{ fontSize: '0.8125rem' }}
-            >
-              {isActive
-                ? 'Active and syncing data'
-                : isEnablingWithFilters
-                  ? 'Setting up filters...'
-                  : isConfigured
-                    ? 'Configured but inactive'
-                    : 'Needs configuration'}
-            </Typography>
-          </Box>
+      {supportsSync && (
+        <Box
+          sx={{
+            p: 2,
+            borderRadius: 1,
+            bgcolor:
+              theme.palette.mode === 'dark'
+                ? isDark
+                  ? alpha(theme.palette.background.default, 0.3)
+                  : alpha(theme.palette.background.default, 0.3)
+                : alpha(theme.palette.grey[50], 0.5),
+            border: `1px solid ${theme.palette.divider}`,
+          }}
+        >
+          <Stack direction="row" alignItems="center" justifyContent="space-between">
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                Connector Status
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+                {isActive
+                  ? 'Active and syncing data'
+                  : isEnablingWithFilters
+                    ? 'Setting up filters...'
+                    : isConfigured
+                      ? 'Configured but inactive'
+                      : 'Needs configuration'}
+              </Typography>
+            </Box>
 
-          <Tooltip
-            title={getTooltipMessage()}
-            placement="top"
-            arrow
-            disableHoverListener={!enableBlocked}
-          >
-            <div>
-              <Switch
-                checked={isActive}
-                onChange={(e) => {
-                  const next = e.target.checked;
-                  if (next && !canEnable) {
-                    // Block enabling if prerequisites not met
-                    return;
-                  }
-                  onToggle(next);
-                }}
-                disabled={!isActive && !canEnable}
-                color="primary"
-                size="medium"
-                sx={{
-                  '& .MuiSwitch-switchBase.Mui-checked': {
-                    color: theme.palette.primary.main,
-                    '&:hover': {
-                      backgroundColor: isDark
-                        ? alpha(theme.palette.primary.main, 0.9)
-                        : alpha(theme.palette.primary.main, 0.1),
+            <Tooltip
+              title={getTooltipMessage()}
+              placement="top"
+              arrow
+              disableHoverListener={!enableBlocked}
+            >
+              <div>
+                <Switch
+                  checked={isActive}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    if (next && !canEnable) {
+                      // Block enabling if prerequisites not met
+                      return;
+                    }
+                    onToggle(next);
+                  }}
+                  disabled={!isActive && !canEnable}
+                  color="primary"
+                  size="medium"
+                  sx={{
+                    '& .MuiSwitch-switchBase.Mui-checked': {
+                      color: theme.palette.primary.main,
+                      '&:hover': {
+                        backgroundColor: isDark
+                          ? alpha(theme.palette.primary.main, 0.9)
+                          : alpha(theme.palette.primary.main, 0.1),
+                      },
                     },
-                  },
-                  '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                    backgroundColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
-                  },
-                }}
-              />
-            </div>
-          </Tooltip>
-        </Stack>
-      </Box>
+                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                      backgroundColor: isDark
+                        ? theme.palette.primary.main
+                        : theme.palette.primary.main,
+                    },
+                  }}
+                />
+              </div>
+            </Tooltip>
+          </Stack>
+        </Box>
+      )}
     </Paper>
   );
 };

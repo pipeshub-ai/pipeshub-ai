@@ -1,6 +1,5 @@
 // es_schema.ts
 import { z } from 'zod';
-import { APP_TYPES } from '../connectors/connectors';
 
 // Regular expression for MongoDB ObjectId validation
 const objectIdRegex = /^[0-9a-fA-F]{24}$/;
@@ -29,7 +28,7 @@ export const enterpriseSearchCreateSchema = z.object({
       .optional(),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
+        apps: z.array(z.string().uuid()).optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
@@ -74,7 +73,7 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
+        apps: z.array(z.string().uuid()).optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
@@ -104,7 +103,7 @@ export const regenerateAnswersParamsSchema = z.object({
   body: z.object({
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
+        apps: z.array(z.string().uuid()).optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
@@ -161,7 +160,7 @@ export const enterpriseSearchSearchSchema = z.object({
     filters: z
       .object({
         apps: z
-          .array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL]))
+          .array(z.string().uuid())
           .optional(),
         kb: z.array(z.string().uuid()).optional(),
       })

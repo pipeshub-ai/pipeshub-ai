@@ -29,6 +29,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
     FilterField,
 )
@@ -77,6 +78,7 @@ class OutlookCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(

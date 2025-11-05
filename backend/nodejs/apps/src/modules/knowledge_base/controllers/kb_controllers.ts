@@ -139,7 +139,7 @@ const handleConnectorResponse = (
 
 // Types and helpers for active connector validation
 interface ConnectorInfo {
-  name: string;
+  _key: string;
 }
 
 interface ActiveConnectorsResponse {
@@ -149,7 +149,7 @@ interface ActiveConnectorsResponse {
 const normalizeAppName = (value: string): string => value.replace(' ', '').toLowerCase();
 
 const validateActiveConnector = async (
-  appName: string,
+  connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
@@ -165,10 +165,10 @@ const validateActiveConnector = async (
 
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
-  const allowedApps = connectors.map((connector) => normalizeAppName(connector.name));
+  const isAllowed = connectors.some((connector) => connector._key === connectorId);
 
-  if (!allowedApps.includes(normalizeAppName(appName))) {
-    throw new BadRequestError(`Connector ${appName} not allowed`);
+  if (!isAllowed) {
+    throw new BadRequestError(`Connector ${connectorId} not allowed`);
   }
 };
 
@@ -2260,7 +2260,7 @@ export const getConnectorStats =
           {
             params: {
               org_id: orgId,
-              connector: req.params.connector,
+              connector_id: req.params.connectorId,
             },
           },
         );
@@ -2392,19 +2392,20 @@ export const getRecordBuffer =
     }
   };
 
-export const reindexAllRecords =
+export const reindexFailedRecords =
   (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const app = req.body.app;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        app,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2413,10 +2414,11 @@ export const reindexAllRecords =
         userId,
         orgId,
         app: normalizeAppName(app),
+        connectorId,
       };
 
       const reindexResponse =
-        await recordRelationService.reindexAllRecords(reindexPayload);
+        await recordRelationService.reindexFailedRecords(reindexPayload);
 
       res.status(200).json({
         reindexResponse,
@@ -2424,7 +2426,7 @@ export const reindexAllRecords =
 
       return; // Added return statement
     } catch (error: any) {
-      logger.error('Error re indexing all records', {
+      logger.error('Error re indexing failed records', {
         error,
       });
       next(error);
@@ -2439,12 +2441,13 @@ export const resyncConnectorRecords =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        connectorName,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2453,6 +2456,7 @@ export const resyncConnectorRecords =
         userId,
         orgId,
         connectorName: normalizeAppName(connectorName),
+        connectorId,
       };
 
       const resyncConnectorResponse =

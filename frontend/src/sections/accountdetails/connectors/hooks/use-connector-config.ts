@@ -1,12 +1,28 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+/**
+ * useConnectorConfig Hook
+ *
+ * Custom hook for managing connector instance configuration.
+ * Handles form state, validation, OAuth flows, and saving configuration.
+ *
+ * Features:
+ * - Multi-step form management
+ * - Field validation with conditional display
+ * - Business OAuth support for Google Workspace
+ * - Create and edit modes
+ * - Optimized re-renders with useCallback
+ */
+
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector, ConnectorConfig } from '../types/types';
 import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
 import { buildCronFromSchedule } from '../utils/cron';
-import { shouldShowElement, evaluateConditionalDisplay } from '../utils/conditional-display';
+import { evaluateConditionalDisplay } from '../utils/conditional-display';
 import { isNoneAuthType } from '../utils/auth';
 
+// Types
 interface FormData {
   auth: Record<string, any>;
   sync: Record<string, any>;
@@ -20,9 +36,10 @@ interface FormErrors {
 }
 
 interface UseConnectorConfigProps {
-  connector: Connector;
+  connector: Connector | any; // supports both Connector and ConnectorRegistry shape
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
 }
 
 interface UseConnectorConfigReturn {
@@ -44,6 +61,11 @@ interface UseConnectorConfigReturn {
   fileError: string | null;
   jsonData: Record<string, any> | null;
 
+  // Create mode state
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+
   // Actions
   handleFieldChange: (section: string, fieldName: string, value: any) => void;
   handleNext: () => void;
@@ -56,20 +78,37 @@ interface UseConnectorConfigReturn {
   validateAdminEmail: (email: string) => boolean;
   isBusinessGoogleOAuthValid: () => boolean;
   fileInputRef: React.RefObject<HTMLInputElement>;
+  setInstanceName: (name: string) => void;
 }
 
+// Constants
+const MIN_INSTANCE_NAME_LENGTH = 3;
+const REQUIRED_SERVICE_ACCOUNT_FIELDS = ['client_id', 'project_id', 'type'];
+const SERVICE_ACCOUNT_TYPE = 'service_account';
+
+/**
+ * Main hook for connector configuration
+ */
 export const useConnectorConfig = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName = '',
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
-  const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
+  // Hooks
+  const { isBusiness } = useAccountType();
+  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // State
-  const [connectorConfig, setConnectorConfig] = useState<ConnectorConfig | null>(null);
+  // Determine if we're in create mode (no _key means new instance)
+  const isCreateMode = !connector?._key;
+
+  // State - Loading
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // State - Form
+  const [connectorConfig, setConnectorConfig] = useState<ConnectorConfig | null>(null);
   const [activeStep, setActiveStep] = useState(0);
   const [formData, setFormData] = useState<FormData>({
     auth: {},
@@ -84,7 +123,11 @@ export const useConnectorConfig = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conditionalDisplay, setConditionalDisplay] = useState<Record<string, boolean>>({});
 
-  // Business OAuth specific state
+  // State - Create mode
+  const [instanceName, setInstanceName] = useState(initialInstanceName);
+  const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
+
+  // State - Business OAuth
   const [adminEmail, setAdminEmail] = useState('');
   const [adminEmailError, setAdminEmailError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -92,16 +135,18 @@ export const useConnectorConfig = ({
   const [fileError, setFileError] = useState<string | null>(null);
   const [jsonData, setJsonData] = useState<Record<string, any> | null>(null);
 
-  // Simplified helper functions - replaces complex nested conditions with readable functions
-  const customGoogleBusinessOAuth = useCallback(
-    (connectorParam: Connector, accountType: string): boolean =>
-        accountType === 'business' &&
-        connectorParam.appGroup === 'Google Workspace' &&
-        connectorParam.authType === 'OAUTH',
-    []
+  /**
+   * Check if business OAuth mode applies
+   */
+  const isBusinessGoogleOAuth = useMemo(
+    () =>
+      isBusiness && connector?.appGroup === 'Google Workspace' && connector?.authType === 'OAUTH',
+    [isBusiness, connector?.appGroup, connector?.authType]
   );
 
-  // Business OAuth validation
+  /**
+   * Validate email format
+   */
   const validateAdminEmail = useCallback((email: string): boolean => {
     if (!email.trim()) {
       setAdminEmailError('Admin email is required for business OAuth');
@@ -118,31 +163,132 @@ export const useConnectorConfig = ({
     return true;
   }, []);
 
-  const validateBusinessGoogleOAuth = useCallback(
-    (adminEmailParam: string, jsonDataParam: any): boolean =>
-      validateAdminEmail(adminEmailParam) &&
-      !!jsonDataParam &&
-      jsonDataParam.type === 'service_account',
+  /**
+   * Validate JSON file format and required fields
+   */
+  const validateJsonFile = useCallback((file: File): boolean => {
+    if (!file) {
+      setFileError('JSON file is required for business OAuth');
+      return false;
+    }
+
+    if (!file.name.endsWith('.json') && file.type !== 'application/json') {
+      setFileError('Only JSON files are allowed');
+      return false;
+    }
+
+    setFileError(null);
+    return true;
+  }, []);
+
+  /**
+   * Parse and validate JSON file content
+   */
+  const parseJsonFile = useCallback(async (file: File): Promise<Record<string, any> | null> => {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+
+      // Check for required fields
+      const missingFields = REQUIRED_SERVICE_ACCOUNT_FIELDS.filter((field) => !parsed[field]);
+
+      if (missingFields.length > 0) {
+        setFileError(`Missing required fields: ${missingFields.join(', ')}`);
+        return null;
+      }
+
+      if (parsed.type !== SERVICE_ACCOUNT_TYPE) {
+        setFileError('This is not a Google Cloud Service Account JSON file');
+        return null;
+      }
+
+      return parsed;
+    } catch (error) {
+      setFileError('Invalid JSON file format');
+      return null;
+    }
+  }, []);
+
+  /**
+   * Handle file selection
+   */
+  const handleFileSelect = useCallback(
+    async (file: File | null) => {
+      setSelectedFile(file);
+      setFileName(file?.name || null);
+      setFileError(null);
+
+      if (file && validateJsonFile(file)) {
+        const parsed = await parseJsonFile(file);
+        if (parsed) {
+          setJsonData(parsed);
+        }
+      } else {
+        setJsonData(null);
+      }
+    },
+    [validateJsonFile, parseJsonFile]
+  );
+
+  /**
+   * Trigger file input click
+   */
+  const handleFileUpload = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  /**
+   * Handle file input change
+   */
+  const handleFileChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0] || null;
+      handleFileSelect(file);
+    },
+    [handleFileSelect]
+  );
+
+  /**
+   * Handle admin email change
+   */
+  const handleAdminEmailChange = useCallback(
+    (email: string) => {
+      setAdminEmail(email);
+      validateAdminEmail(email);
+    },
     [validateAdminEmail]
   );
 
-  const getBusinessOAuthData = useCallback((config: any) => {
+  /**
+   * Check if business OAuth is valid
+   */
+  const isBusinessGoogleOAuthValid = useCallback(
+    () => validateAdminEmail(adminEmail) && !!jsonData && jsonData.type === SERVICE_ACCOUNT_TYPE,
+    [adminEmail, jsonData, validateAdminEmail]
+  );
+
+  /**
+   * Extract business OAuth data from config
+   */
+  const extractBusinessOAuthData = useCallback((config: any) => {
     const authValues = config?.config?.auth?.values || config?.config?.auth || {};
+
     return {
       adminEmail: authValues.adminEmail || '',
       jsonData:
-        authValues.client_id && authValues.project_id && authValues.type === 'service_account'
+        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
           ? authValues
           : null,
       fileName:
-        authValues.client_id && authValues.project_id && authValues.type === 'service_account'
+        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
           ? 'existing-credentials.json'
           : null,
     };
   }, []);
 
-  // Simplified config merger - eliminates complex nested field access patterns
-  // This centralizes the config merging logic in one place for easier maintenance
+  /**
+   * Merge config with schema
+   */
   const mergeConfigWithSchema = useCallback(
     (configResponse: any, schemaResponse: any) => ({
       ...configResponse,
@@ -173,142 +319,93 @@ export const useConnectorConfig = ({
     []
   );
 
-  const validateJsonFile = useCallback((file: File): boolean => {
-    if (!file) {
-      setFileError('JSON file is required for business OAuth');
-      return false;
-    }
+  /**
+   * Initialize form data from config
+   */
+  const initializeFormData = useCallback((config: any): FormData => {
+    const authData = { ...(config.config.auth?.values || config.config.auth || {}) };
 
-    if (!file.name.endsWith('.json') && file.type !== 'application/json') {
-      setFileError('Only JSON files are allowed');
-      return false;
-    }
-
-    setFileError(null);
-    return true;
-  }, []);
-
-  const parseJsonFile = useCallback(async (file: File): Promise<Record<string, any> | null> => {
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-
-      // Validate required fields for Google Cloud Service Account JSON
-      const requiredFields = ['client_id', 'project_id', 'type'];
-      const missingFields = requiredFields.filter((field) => !parsed[field]);
-
-      if (missingFields.length > 0) {
-        setFileError(`Missing required fields: ${missingFields.join(', ')}`);
-        return null;
-      }
-
-      // Validate that it's a service account JSON
-      if (parsed.type !== 'service_account') {
-        setFileError('This is not a Google Cloud Service Account JSON file');
-        return null;
-      }
-
-      return parsed;
-    } catch (error) {
-      setFileError('Invalid JSON file format');
-      return null;
-    }
-  }, []);
-
-  const handleFileSelect = useCallback(
-    async (file: File | null) => {
-      setSelectedFile(file);
-      setFileName(file?.name || null);
-      setFileError(null);
-
-      if (file && validateJsonFile(file)) {
-        const parsed = await parseJsonFile(file);
-        if (parsed) {
-          setJsonData(parsed);
+    // Set default values from field definitions
+    if (config.config.auth?.schema?.fields) {
+      config.config.auth.schema.fields.forEach((field: any) => {
+        if (field.defaultValue !== undefined && authData[field.name] === undefined) {
+          authData[field.name] = field.defaultValue;
         }
-      } else {
-        setJsonData(null);
-      }
-    },
-    [validateJsonFile, parseJsonFile]
-  );
-
-  const handleFileUpload = useCallback(() => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
+      });
     }
+
+    return {
+      auth: authData,
+      sync: {
+        selectedStrategy:
+          config.config.sync?.selectedStrategy ||
+          config.config.sync?.supportedStrategies?.[0] ||
+          'MANUAL',
+        scheduledConfig: config.config.sync?.scheduledConfig || {},
+        ...(config.config.sync?.values || config.config.sync || {}),
+      },
+      filters: config.config.filters?.values || config.config.filters || {},
+    };
   }, []);
 
-  const handleFileChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0] || null;
-      handleFileSelect(file);
-    },
-    [handleFileSelect]
-  );
-
-  const isBusinessGoogleOAuthValid = useCallback(
-    () => validateBusinessGoogleOAuth(adminEmail, jsonData),
-    [adminEmail, jsonData, validateBusinessGoogleOAuth]
-  );
-
-  // Load connector configuration
+  /**
+   * Load connector configuration
+   */
   useEffect(() => {
     const fetchConnectorConfig = async () => {
       try {
         setLoading(true);
+        let mergedConfig: any = null;
 
-        // Fetch both config and schema
-        const [configResponse, schemaResponse] = await Promise.all([
-          ConnectorApiService.getConnectorConfig(connector.name),
-          ConnectorApiService.getConnectorSchema(connector.name),
-        ]);
+        if (isCreateMode) {
+          // Create mode: load schema only
+          const schemaResponse = await ConnectorApiService.getConnectorSchema(connector.type);
 
-        // Use simplified config merger
-        const mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
+          const emptyConfigResponse = {
+            name: connector.name,
+            type: connector.type,
+            appGroup: connector.appGroup,
+            appGroupId: connector.appGroupId || '',
+            authType: connector.authType,
+            isActive: false,
+            isConfigured: false,
+            supportsRealtime: !!connector.supportsRealtime,
+            appDescription: connector.appDescription || '',
+            appCategories: connector.appCategories || [],
+            iconPath: connector.iconPath,
+            config: {
+              auth: {},
+              sync: {},
+              filters: {},
+            },
+          };
+
+          mergedConfig = mergeConfigWithSchema(emptyConfigResponse, schemaResponse);
+        } else {
+          // Edit mode: load both config and schema
+          const [configResponse, schemaResponse] = await Promise.all([
+            ConnectorApiService.getConnectorInstanceConfig(connector._key),
+            ConnectorApiService.getConnectorSchema(connector.type),
+          ]);
+
+          mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
+        }
 
         setConnectorConfig(mergedConfig);
 
-        // Initialize form data with existing values and default values from field definitions
-        const initializeFormData = (config: any) => {
-          const authData = { ...(config.config.auth?.values || config.config.auth || {}) };
-
-          // Set default values from field definitions
-          if (config.config.auth?.schema?.fields) {
-            config.config.auth.schema.fields.forEach((field: any) => {
-              if (field.defaultValue !== undefined && authData[field.name] === undefined) {
-                authData[field.name] = field.defaultValue;
-              }
-            });
-          }
-
-          return {
-            auth: authData,
-            sync: {
-              selectedStrategy:
-                config.config.sync?.selectedStrategy ||
-                config.config.sync?.supportedStrategies?.[0] ||
-                'MANUAL',
-              scheduledConfig: config.config.sync?.scheduledConfig || {},
-              ...(config.config.sync?.values || config.config.sync || {}),
-            },
-            filters: config.config.filters?.values || config.config.filters || {},
-          };
-        };
-
+        // Initialize form data
         const initialFormData = initializeFormData(mergedConfig);
+        setFormData(initialFormData);
 
-        // For business OAuth, load admin email and JSON data from existing config
-        if (customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual')) {
-          const businessData = getBusinessOAuthData(mergedConfig);
+        // For business OAuth, load existing credentials
+        if (isBusinessGoogleOAuth) {
+          const businessData = extractBusinessOAuthData(mergedConfig);
           setAdminEmail(businessData.adminEmail);
           setJsonData(businessData.jsonData);
           setFileName(businessData.fileName);
         }
 
-        setFormData(initialFormData);
-
-        // Evaluate conditional display rules with proper default values
+        // Evaluate conditional display rules
         if (mergedConfig.config.auth.conditionalDisplay) {
           const displayRules = evaluateConditionalDisplay(
             mergedConfig.config.auth.conditionalDisplay,
@@ -316,7 +413,6 @@ export const useConnectorConfig = ({
           );
           setConditionalDisplay(displayRules);
         } else {
-          // Initialize with empty conditional display if no rules exist
           setConditionalDisplay({});
         }
       } catch (error) {
@@ -330,13 +426,16 @@ export const useConnectorConfig = ({
     fetchConnectorConfig();
   }, [
     connector,
-    isBusiness,
+    isCreateMode,
+    isBusinessGoogleOAuth,
     mergeConfigWithSchema,
-    customGoogleBusinessOAuth,
-    getBusinessOAuthData,
+    initializeFormData,
+    extractBusinessOAuthData,
   ]);
 
-  // Recalculate conditional display when form data changes
+  /**
+   * Recalculate conditional display when auth form data changes
+   */
   useEffect(() => {
     if (connectorConfig?.config?.auth?.conditionalDisplay) {
       const displayRules = evaluateConditionalDisplay(
@@ -347,13 +446,16 @@ export const useConnectorConfig = ({
     }
   }, [formData.auth, connectorConfig?.config?.auth?.conditionalDisplay]);
 
+  /**
+   * Validate a single field
+   */
   const validateField = useCallback((field: any, value: any): string => {
     if (field.required && (!value || (typeof value === 'string' && !value.trim()))) {
       return `${field.displayName} is required`;
     }
 
     if (field.validation) {
-      const { minLength, maxLength, pattern, format } = field.validation;
+      const { minLength, maxLength, format } = field.validation;
 
       if (minLength && value && value.length < minLength) {
         return `${field.displayName} must be at least ${minLength} characters`;
@@ -364,7 +466,6 @@ export const useConnectorConfig = ({
       }
 
       if (format && value) {
-        // Handle specific format validations
         switch (format) {
           case 'email': {
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -374,10 +475,15 @@ export const useConnectorConfig = ({
             break;
           }
           case 'url': {
-            try {
-              // eslint-disable-next-line no-new
-              new URL(value);
-            } catch {
+            const canParse =
+              typeof URL !== 'undefined' && (URL as any).canParse
+                ? (URL as any).canParse(value)
+                : (() => {
+                    // Fallback regex when URL.canParse is unavailable
+                    const urlRegex = /^(https?:\/\/)[^\s/$.?#].[^\s]*$/i;
+                    return urlRegex.test(value);
+                  })();
+            if (!canParse) {
               return `${field.displayName} must be a valid URL`;
             }
             break;
@@ -391,6 +497,9 @@ export const useConnectorConfig = ({
     return '';
   }, []);
 
+  /**
+   * Validate a section of the form
+   */
   const validateSection = useCallback(
     (section: string, fields: any[], values: Record<string, any>): Record<string, string> => {
       const errors: Record<string, string> = {};
@@ -407,41 +516,31 @@ export const useConnectorConfig = ({
     [validateField]
   );
 
-  const handleFieldChange = useCallback(
-    (section: string, fieldName: string, value: any) => {
-      setFormData((prev) => {
-        const newFormData = {
-          ...prev,
-          [section]: {
-            ...prev[section as keyof FormData],
-            [fieldName]: value,
-          },
-        };
+  /**
+   * Handle field value change
+   */
+  const handleFieldChange = useCallback((section: string, fieldName: string, value: any) => {
+    setFormData((prev) => ({
+      ...prev,
+      [section]: {
+        ...prev[section as keyof FormData],
+        [fieldName]: value,
+      },
+    }));
 
-        // Re-evaluate conditional display rules for auth section
-        if (section === 'auth' && connectorConfig?.config.auth.conditionalDisplay) {
-          const displayRules = evaluateConditionalDisplay(
-            connectorConfig.config.auth.conditionalDisplay,
-            newFormData.auth
-          );
-          setConditionalDisplay(displayRules);
-        }
+    // Clear error for this field
+    setFormErrors((prev) => ({
+      ...prev,
+      [section]: {
+        ...prev[section as keyof FormErrors],
+        [fieldName]: '',
+      },
+    }));
+  }, []);
 
-        return newFormData;
-      });
-
-      // Clear error for this field
-      setFormErrors((prev) => ({
-        ...prev,
-        [section]: {
-          ...prev[section as keyof FormErrors],
-          [fieldName]: '',
-        },
-      }));
-    },
-    [connectorConfig]
-  );
-
+  /**
+   * Handle next step
+   */
   const handleNext = useCallback(() => {
     if (!connectorConfig) return;
 
@@ -449,31 +548,21 @@ export const useConnectorConfig = ({
 
     // Validate current step
     switch (activeStep) {
-      case 0: // Auth
-        {
-          // For business OAuth (service account), skip validating client fields and instead
-          // require adminEmail + valid JSON credentials
-          const isBusinessMode = customGoogleBusinessOAuth(
-            connector,
-            isBusiness ? 'business' : 'individual'
-          );
-
-          if (isBusinessMode) {
-            if (!isBusinessGoogleOAuthValid()) {
-              errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
-            }
-          } else {
-            errors = validateSection(
-              'auth',
-              connectorConfig.config.auth.schema.fields,
-              formData.auth
-            );
+      case 0: // Auth step
+        if (isBusinessGoogleOAuth) {
+          if (!isBusinessGoogleOAuthValid()) {
+            errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
           }
+        } else {
+          errors = validateSection(
+            'auth',
+            connectorConfig.config.auth.schema.fields,
+            formData.auth
+          );
         }
         break;
-      case 1: // Sync
+      case 1: // Sync step
         errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
-        // Note: Start time and max repetitions are not supported currently; no validation required
         break;
       default:
         break;
@@ -492,19 +581,61 @@ export const useConnectorConfig = ({
     connectorConfig,
     formData,
     validateSection,
-    customGoogleBusinessOAuth,
-    connector,
-    isBusiness,
+    isBusinessGoogleOAuth,
     isBusinessGoogleOAuthValid,
     adminEmailError,
   ]);
 
+  /**
+   * Handle back step
+   */
   const handleBack = useCallback(() => {
     if (activeStep > 0) {
       setActiveStep((prev) => prev - 1);
     }
   }, [activeStep]);
 
+  /**
+   * Schedule crawling job
+   */
+  const scheduleCrawlingJob = useCallback(
+    async (connectorType: string, connectorId: string, scheduledConfig: any) => {
+      const cron = buildCronFromSchedule({
+        startTime: scheduledConfig.startTime,
+        intervalMinutes: scheduledConfig.intervalMinutes,
+        timezone: scheduledConfig.timezone?.toUpperCase() || 'UTC',
+      });
+
+      await CrawlingManagerApi.schedule(connectorType.toLowerCase(), connectorId, {
+        scheduleConfig: {
+          scheduleType: 'custom',
+          isEnabled: true,
+          timezone: scheduledConfig.timezone?.toUpperCase() || 'UTC',
+          cronExpression: cron,
+        },
+        priority: 5,
+        maxRetries: 3,
+        timeout: 300000,
+      });
+    },
+    []
+  );
+
+  /**
+   * Remove crawling job
+   */
+  const removeCrawlingJob = useCallback(async (connectorType: string, connectorId: string) => {
+    try {
+      await CrawlingManagerApi.remove(connectorType.toLowerCase(), connectorId);
+    } catch (error) {
+      console.error('Error removing scheduled jobs:', error);
+      // Don't throw - removal failure shouldn't block save
+    }
+  }, []);
+
+  /**
+   * Handle save configuration
+   */
   const handleSave = useCallback(async () => {
     if (!connectorConfig) return;
 
@@ -512,25 +643,28 @@ export const useConnectorConfig = ({
       setSaving(true);
       setSaveError(null);
 
-      const isNoAuthType = isNoneAuthType(connector.authType);
-
-      // For business OAuth, validate admin email and JSON file
-      if (customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual')) {
-        if (!isBusinessGoogleOAuthValid()) {
-          setSaveError('Please provide valid admin email and JSON credentials file');
+      // Validate instance name in create mode
+      if (isCreateMode) {
+        const trimmedName = instanceName.trim();
+        if (!trimmedName) {
+          setInstanceNameError('Instance name is required');
           return;
         }
+        if (trimmedName.length < MIN_INSTANCE_NAME_LENGTH) {
+          setInstanceNameError(
+            `Instance name must be at least ${MIN_INSTANCE_NAME_LENGTH} characters`
+          );
+          return;
+        }
+        setInstanceNameError(null);
       }
 
-      // Validate all sections (skip auth validation for 'NONE' authType)
-      let authErrors: Record<string, string> = {};
-      if (!isNoAuthType) {
-        const isBusinessMode = customGoogleBusinessOAuth(
-          connector,
-          isBusiness ? 'business' : 'individual'
-        );
+      const skipAuthValidation = isNoneAuthType(connector.authType);
 
-        if (isBusinessMode) {
+      // Validate sections
+      let authErrors: Record<string, string> = {};
+      if (!skipAuthValidation) {
+        if (isBusinessGoogleOAuth) {
           if (!isBusinessGoogleOAuthValid()) {
             authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
           }
@@ -542,6 +676,7 @@ export const useConnectorConfig = ({
           );
         }
       }
+
       const syncErrors = validateSection(
         'sync',
         connectorConfig.config.sync.customFields,
@@ -550,24 +685,19 @@ export const useConnectorConfig = ({
 
       const allErrors = { auth: authErrors, sync: syncErrors, filters: {} };
       setFormErrors(allErrors);
-
       if (Object.values(allErrors).some((section) => Object.keys(section).length > 0)) {
         return;
       }
 
       // Prepare config for API - store values directly in etcd
-      // Ensure scheduledConfig is only present when strategy is SCHEDULED
-      const syncToSave: any = {
-        selectedStrategy: formData.sync.selectedStrategy,
-        ...formData.sync,
-      };
       const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-      if (normalizedStrategy === 'SCHEDULED') {
-        syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
-      } else if (syncToSave.scheduledConfig !== undefined) {
-        // Remove lingering schedule when not scheduled
-        delete syncToSave.scheduledConfig;
-      }
+      const syncToSave: any = {
+        ...formData.sync,
+        selectedStrategy: formData.sync.selectedStrategy,
+        ...(normalizedStrategy === 'SCHEDULED'
+          ? { scheduledConfig: formData.sync.scheduledConfig || {} }
+          : {}),
+      };
 
       const configToSave: any = {
         auth: formData.auth,
@@ -575,23 +705,39 @@ export const useConnectorConfig = ({
         filters: formData.filters || {},
       };
 
-      // For business OAuth, merge JSON data and admin email into auth config
-      if (
-        customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
-        jsonData
-      ) {
+      // For business OAuth, merge JSON data and admin email
+      if (isBusinessGoogleOAuth && jsonData) {
         configToSave.auth = {
           ...configToSave.auth,
-          ...jsonData, // Spread all JSON fields
+          ...jsonData,
           adminEmail,
         };
       }
 
-      await ConnectorApiService.updateConnectorConfig(
-        connector.name,
-        configToSave as any
-      );
-      
+      if (isCreateMode) {
+        // Create new instance
+        const scope = connector.scope || 'personal';
+        const created = await ConnectorApiService.createConnectorInstance(
+          connector.type,
+          instanceName.trim(),
+          scope,
+          configToSave
+        );
+
+        onSuccess?.();
+        onClose();
+
+        // Navigate to the new connector
+        const basePath = isBusiness
+          ? '/account/company-settings/settings/connector'
+          : '/account/individual/settings/connector';
+        navigate(`${basePath}/${created.connectorId}`);
+        return;
+      }
+
+      // Update existing instance
+      await ConnectorApiService.updateConnectorInstanceConfig(connector._key, configToSave);
+
       // Scheduling logic moved to enable/active changes.
       // Here: only trigger scheduling updates when the connector is already active.
       const wasActive = !!connector.isActive;
@@ -599,7 +745,7 @@ export const useConnectorConfig = ({
         const prevStrategy = String(
           connectorConfig?.config?.sync?.selectedStrategy || ''
         ).toUpperCase();
-        const newStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+        const newStrategy = normalizedStrategy;
 
         const prevScheduled = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
         const newScheduled = (formData.sync.scheduledConfig || {}) as any;
@@ -617,52 +763,13 @@ export const useConnectorConfig = ({
             timezone: (newScheduled.timezone || '').toUpperCase(),
           });
 
-        try {
-          if (strategyChanged) {
-            if (prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
-              // Turn off existing schedule
-              await CrawlingManagerApi.remove(connector.name.toLowerCase());
-            } else if (newStrategy === 'SCHEDULED') {
-              // Apply (or re-apply) schedule with new settings
-              const cron = buildCronFromSchedule({
-                startTime: newScheduled.startTime,
-                intervalMinutes: newScheduled.intervalMinutes,
-                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-              });
-              await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
-                scheduleConfig: {
-                  scheduleType: 'custom',
-                  isEnabled: true,
-                  timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-                  cronExpression: cron,
-                },
-                priority: 5,
-                maxRetries: 3,
-                timeout: 300000,
-              });
-            }
-          } else if (newStrategy === 'SCHEDULED' && scheduleChanged) {
-            // Re-apply schedule when only the schedule parameters changed
-            const cron = buildCronFromSchedule({
-              startTime: newScheduled.startTime,
-              intervalMinutes: newScheduled.intervalMinutes,
-              timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-            });
-            await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
-              scheduleConfig: {
-                scheduleType: 'custom',
-                isEnabled: true,
-                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-                cronExpression: cron,
-              },
-              priority: 5,
-              maxRetries: 3,
-              timeout: 300000,
-            });
+        if (strategyChanged || (newStrategy === 'SCHEDULED' && scheduleChanged)) {
+          if (prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
+            await removeCrawlingJob(connector.type, connector._key);
+          } else if (newStrategy === 'SCHEDULED') {
+            // Apply (or re-apply) schedule with new settings
+            await scheduleCrawlingJob(connector.type, connector._key, newScheduled);
           }
-        } catch (scheduleError) {
-          console.error('Scheduling update failed:', scheduleError);
-          // Do not block saving on scheduling issues
         }
       }
 
@@ -676,27 +783,23 @@ export const useConnectorConfig = ({
     }
   }, [
     connectorConfig,
-    formData,
-    validateSection,
-    onClose,
-    onSuccess,
     connector,
-    isBusiness,
-    adminEmail,
+    formData,
+    isCreateMode,
+    instanceName,
+    isBusinessGoogleOAuth,
     jsonData,
+    adminEmail,
+    adminEmailError,
+    isBusiness,
+    validateSection,
     isBusinessGoogleOAuthValid,
-    customGoogleBusinessOAuth,
-    adminEmailError
+    scheduleCrawlingJob,
+    removeCrawlingJob,
+    onSuccess,
+    onClose,
+    navigate,
   ]);
-
-  // Admin email change handler
-  const handleAdminEmailChange = useCallback(
-    (email: string) => {
-      setAdminEmail(email);
-      validateAdminEmail(email);
-    },
-    [validateAdminEmail]
-  );
 
   return {
     // State
@@ -708,6 +811,11 @@ export const useConnectorConfig = ({
     formErrors,
     saveError,
     conditionalDisplay,
+
+    // Create mode
+    isCreateMode,
+    instanceName,
+    instanceNameError,
 
     // Business OAuth state
     adminEmail,
@@ -729,5 +837,6 @@ export const useConnectorConfig = ({
     validateAdminEmail,
     isBusinessGoogleOAuthValid,
     fileInputRef,
+    setInstanceName,
   };
 };

@@ -2,6 +2,7 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
     FilterField,
 )
@@ -12,6 +13,7 @@ from app.connectors.core.registry.connector_builder import (
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/drive.svg")
         .with_realtime_support(True)
@@ -67,6 +69,7 @@ class GoogleDriveConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/gmail.svg")
         .with_realtime_support(True)
@@ -120,6 +123,7 @@ class GmailConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync messages and channels from Slack")\
     .with_categories(["Messaging"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/slack.svg")
         .add_documentation_link(DocumentationLink(
@@ -146,6 +150,7 @@ class GmailConnector:
         .with_scheduled_config(True, 60)
         .add_filter_field(CommonFields.channels_filter(),
                           "https://slack.com/api/conversations.list")
+        .with_sync_support(False)
     )\
     .build_decorator()
 class SlackConnector:
@@ -165,6 +170,7 @@ class SlackConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync messages and channels from Notion")\
     .with_categories(["Messaging"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/notion.svg")
         .add_documentation_link(DocumentationLink(
@@ -209,6 +215,7 @@ class  NotionConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Calendar")\
     .with_categories(["Calendar"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/calendar.svg")
         .with_realtime_support(True)
@@ -256,6 +263,7 @@ class CalendarConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Meet")\
     .with_categories(["Meet"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/meet.svg")
         .with_realtime_support(True)
@@ -305,6 +313,7 @@ class MeetConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Docs")\
     .with_categories(["Docs"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/docs.svg")
         .with_realtime_support(True)
@@ -354,6 +363,7 @@ class DocsConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Sheets")\
     .with_categories(["Sheets"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/sheets.svg")
         .with_realtime_support(True)
@@ -399,6 +409,7 @@ class SheetsConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Forms")\
     .with_categories(["Forms"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/forms.svg")
         .with_realtime_support(True)
@@ -448,6 +459,7 @@ class FormsConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Sheets")\
     .with_categories(["Slides"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/slides.svg")
         .with_realtime_support(True)
@@ -496,6 +508,7 @@ class SlidesConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync messages, tables and views from Airtable")\
     .with_categories(["Database"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/airtable.svg")
         .add_documentation_link(DocumentationLink(
@@ -539,6 +552,7 @@ class AirtableConnector:
     .with_auth_type("ACCOUNT_KEY")\
     .with_description("Sync files and folders from Azure Blob Storage")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/azureblob.svg")
         .add_documentation_link(DocumentationLink(
@@ -614,6 +628,7 @@ class AzureBlobConnector:
     .with_auth_type("BEARER_TOKEN")\
     .with_description("Sync books and pages from BookStack")\
     .with_categories(["Documentation"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/bookstack.svg")
         .add_documentation_link(DocumentationLink(
@@ -673,6 +688,7 @@ class BookStackConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync issues and projects from Linear")\
     .with_categories(["Issue Tracking"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/linear.svg")
         .add_documentation_link(DocumentationLink(
@@ -716,6 +732,7 @@ class LinearConnector:
     .with_auth_type("ACCESS_KEY")\
     .with_description("Sync files and folders from S3")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/s3.svg")
         .add_documentation_link(DocumentationLink(
@@ -784,6 +801,7 @@ class S3Connector:
     .with_auth_type("USERNAME_PASSWORD")\
     .with_description("Sync issues and projects from ServiceNow")\
     .with_categories(["Issue Tracking"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/servicenow.svg")
         .add_documentation_link(DocumentationLink(
@@ -842,6 +860,7 @@ class ServiceNowConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync tickets and users from Zendesk")\
     .with_categories(["Issue Tracking"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/zendesk.svg")
         .add_documentation_link(DocumentationLink(

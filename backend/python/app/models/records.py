@@ -28,6 +28,7 @@ class Record(Node):
     version: int = 0
     origin: str = ""  # UPLOAD or CONNECTOR
     connector_name: Optional[str] = None
+    connector_id: Optional[str] = None
     created_at_timestamp: Optional[float] = None
     updated_at_timestamp: Optional[float] = None
     last_sync_timestamp: Optional[float] = None
@@ -61,6 +62,7 @@ class Record(Node):
         record.version = data.get("version", 0)
         record.origin = data.get("origin", "UPLOAD")
         record.connector_name = data.get("connectorName", None)
+        record.connector_id = data.get("connectorId", None)
         record.created_at_timestamp = data.get("createdAtTimestamp", None)
         record.updated_at_timestamp = data.get("updatedAtTimestamp", None)
         record.last_sync_timestamp = data.get("lastSyncTimestamp", None)
@@ -118,6 +120,7 @@ class Record(Node):
             "version": self.version,
             "origin": self.origin,
             "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at_timestamp,
             "updatedAtTimestamp": self.updated_at_timestamp,
             "indexingStatus": self.indexing_status,

@@ -1,5 +1,13 @@
+/**
+ * useConnectorManager Hook
+ *
+ * Hook for managing a specific connector instance.
+ * Handles fetching instance data, authentication, toggling, and configuration.
+ */
+
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
+import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector, ConnectorConfig } from '../types/types';
 import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
@@ -14,10 +22,10 @@ interface UseConnectorManagerReturn {
   success: boolean;
   successMessage: string;
   isAuthenticated: boolean;
-  filterOptions: any;
+  configDialogOpen: boolean;
+  filterOptions: any | null;
   showFilterDialog: boolean;
   isEnablingWithFilters: boolean;
-  configDialogOpen: boolean;
 
   // Actions
   handleToggleConnector: (enabled: boolean) => Promise<void>;
@@ -26,7 +34,9 @@ interface UseConnectorManagerReturn {
   handleConfigClose: () => void;
   handleConfigSuccess: () => void;
   handleRefresh: () => void;
-  handleFilterSelection: (selectedFilters: any) => Promise<void>;
+  handleDeleteInstance: () => Promise<void>;
+  handleRenameInstance: (newName: string) => Promise<void>;
+  handleFilterSelection: (filters: any) => Promise<void>;
   handleFilterDialogClose: () => void;
   setError: (error: string | null) => void;
   setSuccess: (success: boolean) => void;
@@ -34,7 +44,7 @@ interface UseConnectorManagerReturn {
 }
 
 export const useConnectorManager = (): UseConnectorManagerReturn => {
-  const { connectorName } = useParams<{ connectorName: string }>();
+  const { connectorId } = useParams<{ connectorId: string }>();
 
   // State
   const [connector, setConnector] = useState<Connector | null>(null);
@@ -44,26 +54,29 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   const [success, setSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [filterOptions, setFilterOptions] = useState<any>(null);
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [filterOptions, setFilterOptions] = useState<any | null>(null);
   const [showFilterDialog, setShowFilterDialog] = useState(false);
   const [isEnablingWithFilters, setIsEnablingWithFilters] = useState(false);
-  const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const { isBusiness } = useAccountType();
+  // Check authentication status
+  const isConnectorAuthenticated = useCallback(
+    (connectorParam: Connector, config: any): boolean => {
+      const authType = (connectorParam.authType || '').toUpperCase();
 
-  // Simplified helper function to check authentication status
-  const isConnectorAuthenticated = useCallback((connectorParam: Connector, config: any): boolean => {
-    const authType = (connectorParam.authType || '').toUpperCase();
-    
-    if (authType === 'OAUTH') {
-      const authFlag = config?.isAuthenticated || false;
-      return authFlag ;
-    }
-
-    return !!connectorParam.isConfigured;
-  }, []);
+      if (authType === 'OAUTH') {
+        return config?.isAuthenticated || false;
+      }
+      return !!connectorParam.isConfigured;
+    },
+    []
+  );
 
   // Fetch connector data
   const fetchConnectorData = useCallback(async () => {
-    if (!connectorName) {
+    if (!connectorId) {
+      setError('Connector key is missing');
+      setLoading(false);
       return;
     }
 
@@ -71,26 +84,21 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       setLoading(true);
       setError(null);
 
-      // Fetch connector info
-      const connectors = await ConnectorApiService.getConnectors();
-      const foundConnector = connectors.find(
-        (c) => c.name.toLowerCase() === connectorName.toLowerCase()
-      );
+      // Fetch connector instance by connectorId
+      const instance = await ConnectorApiService.getConnectorInstance(connectorId);
 
-      if (!foundConnector) {
-        setError(`Connector "${connectorName}" not found`);
+      if (!instance) {
+        setError(`Connector instance not found`);
         return;
       }
 
-      setConnector(foundConnector);
+      setConnector(instance);
 
       // Fetch connector configuration
       try {
-        const config = await ConnectorApiService.getConnectorConfig(connectorName);
+        const config = await ConnectorApiService.getConnectorInstanceConfig(connectorId);
         setConnectorConfig(config);
-
-        // Use simplified authentication check
-        setIsAuthenticated(isConnectorAuthenticated(foundConnector, config));
+        setIsAuthenticated(isConnectorAuthenticated(instance, config));
       } catch (configError) {
         console.warn('Could not fetch connector config:', configError);
         // Continue without config - connector might not be configured yet
@@ -101,90 +109,133 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     } finally {
       setLoading(false);
     }
-  }, [connectorName, isConnectorAuthenticated]);
+  }, [connectorId, isConnectorAuthenticated]);
 
   // Handle connector toggle (enable/disable)
   const handleToggleConnector = useCallback(
     async (enabled: boolean) => {
-      if (!connector) return;
+      if (!connector || !connectorId) return;
 
-      // TODO: Re-enable filter dialog functionality in the future
-      // For now, skip filter dialog and enable/disable directly
-      
-      // If enabling, fetch filter options in background (for future use)
-    //   if (enabled) {
-    //     try {
-    //       const { filterOptions: fetchedFilterOptions } = await ConnectorApiService.getConnectorFilterOptions(connector.name);
-    //       setFilterOptions(fetchedFilterOptions);
-    //       // Note: Not showing dialog for now, but keeping the data for future use
-    //     } catch (err) {
-    //       console.error('Failed to fetch filter options:', err);
-    //       // Continue with enable flow even if filter fetching fails
-    //     }
-    //   }
+      try {
+        // When enabling, check if there are filter options to present first
+        // if (enabled) {
+        //   try {
+        //     const response = await ConnectorApiService.getConnectorInstanceFilterOptions(connectorId);
+        //     const options = response?.filterOptions;
+        //     const hasAnyOptions =
+        //       !!options &&
+        //       Object.values(options).some((v: any) => (Array.isArray(v) ? v.length > 0 : !!v));
+        //     if (hasAnyOptions) {
+        //       setFilterOptions(options);
+        //       setIsEnablingWithFilters(true);
+        //       setShowFilterDialog(true);
+        //       return; // show dialog instead of immediate toggle
+        //     }
+        //   } catch (fetchFiltersError) {
+        //     // If fetching filter options fails, proceed to toggle without filters
+        //     console.warn(
+        //       'Could not fetch filter options, proceeding to toggle:',
+        //       fetchFiltersError
+        //     );
+        //   }
+        // }
 
-      // Capture pre-toggle state
-      const wasActive = !!connector.isActive;
-      const selectedStrategy = String(
-        connectorConfig?.config?.sync?.selectedStrategy || ''
-      ).toUpperCase();
-      const scheduledCfg = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
+        const wasActive = !!connector.isActive;
+        const selectedStrategy = String(
+          connectorConfig?.config?.sync?.selectedStrategy || ''
+        ).toUpperCase();
+        const scheduledCfg = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
 
-      // Proceed with toggle
-      const successResponse = await ConnectorApiService.toggleConnector(connector.name);
+        setLoading(true);
+        const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId);
 
-      if (successResponse) {
-        // Update local state
-        setConnector((prev) => (prev ? { ...prev, isActive: enabled } : null));
+        if (successResponse) {
+          setConnector((prev) => (prev ? { ...prev, isActive: enabled } : null));
+          const action = enabled ? 'enabled' : 'disabled';
+          setSuccessMessage(`${connector.name} ${action} successfully`);
+          setSuccess(true);
+          setTimeout(() => setSuccess(false), 4000);
 
-        const action = enabled ? 'enabled' : 'disabled';
-        setSuccessMessage(`${connector.name} ${action} successfully`);
-        setSuccess(true);
-
-        // Clear success message after 4 seconds
-        setTimeout(() => setSuccess(false), 4000);
-
-        // Scheduling behavior tied to enabling/active transitions
-        try {
-          if (enabled && !wasActive) {
-            // First-time enable (or enabling from inactive): if strategy is SCHEDULED, schedule now
-            const hasRequiredSchedule =
-              scheduledCfg && (scheduledCfg.intervalMinutes || scheduledCfg.cronExpression);
-            if (selectedStrategy === 'SCHEDULED' && hasRequiredSchedule) {
-              const cron = buildCronFromSchedule({
-                startTime: scheduledCfg.startTime,
-                intervalMinutes: scheduledCfg.intervalMinutes,
-                timezone: (scheduledCfg.timezone || 'UTC').toUpperCase(),
-              });
-              await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
-                scheduleConfig: {
-                  scheduleType: 'custom',
-                  isEnabled: true,
+          // Scheduling behavior tied to enabling/active transitions
+          try {
+            if (enabled && !wasActive) {
+              // First-time enable (or enabling from inactive): if strategy is SCHEDULED, schedule now
+              const hasRequiredSchedule =
+                scheduledCfg && (scheduledCfg.intervalMinutes || scheduledCfg.cronExpression);
+              if (selectedStrategy === 'SCHEDULED' && hasRequiredSchedule) {
+                const cron = buildCronFromSchedule({
+                  startTime: scheduledCfg.startTime,
+                  intervalMinutes: scheduledCfg.intervalMinutes,
                   timezone: (scheduledCfg.timezone || 'UTC').toUpperCase(),
-                  cronExpression: cron,
-                },
-                priority: 5,
-                maxRetries: 3,
-                timeout: 300000,
-              });
+                });
+                await CrawlingManagerApi.schedule(connector.type.toLowerCase(), connectorId, {
+                  scheduleConfig: {
+                    scheduleType: 'custom',
+                    isEnabled: true,
+                    timezone: (scheduledCfg.timezone || 'UTC').toUpperCase(),
+                    cronExpression: cron,
+                  },
+                  priority: 5,
+                  maxRetries: 3,
+                  timeout: 300000,
+                });
+              }
+            } else if (!enabled && wasActive) {
+              // Disabling: remove any existing schedule
+              try {
+                await CrawlingManagerApi.remove(connector.type.toLowerCase(), connectorId);
+              } catch (removeError) {
+                console.error('Failed to remove schedule on disable:', removeError);
+              }
             }
-          } else if (!enabled && wasActive) {
-            // Disabling: remove any existing schedule
-            try {
-              await CrawlingManagerApi.remove(connector.name.toLowerCase());
-            } catch (removeError) {
-              console.error('Failed to remove schedule on disable:', removeError);
-            }
+          } catch (scheduleError) {
+            console.error('Scheduling operation failed:', scheduleError);
           }
-        } catch (scheduleError) {
-          console.error('Scheduling operation failed:', scheduleError);
+        } else {
+          setError(`Failed to ${enabled ? 'enable' : 'disable'} connector`);
         }
-      } else {
+      } catch (err) {
+        console.error('Error toggling connector:', err);
         setError(`Failed to ${enabled ? 'enable' : 'disable'} connector`);
+      } finally {
+        setLoading(false);
       }
     },
-    [connector, connectorConfig]
+    [connector, connectorId, connectorConfig, setSuccess, setSuccessMessage, setError]
   );
+
+  const handleFilterSelection = useCallback(
+    async (filters: any) => {
+      if (!connectorId || !connector) return;
+      try {
+        setLoading(true);
+        await ConnectorApiService.saveConnectorInstanceFilters(connectorId, filters);
+        // After saving filters, enable the connector
+        const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId);
+        if (successResponse) {
+          setConnector((prev) => (prev ? { ...prev, isActive: true } : null));
+          setSuccessMessage(`${connector.name} enabled successfully`);
+          setSuccess(true);
+          setTimeout(() => setSuccess(false), 4000);
+        } else {
+          setError('Failed to enable connector');
+        }
+      } catch (err) {
+        console.error('Error saving filters / enabling connector:', err);
+        setError('Failed to save filters or enable connector');
+      } finally {
+        setShowFilterDialog(false);
+        setIsEnablingWithFilters(false);
+        setLoading(false);
+      }
+    },
+    [connectorId, connector]
+  );
+
+  const handleFilterDialogClose = useCallback(() => {
+    setShowFilterDialog(false);
+    setIsEnablingWithFilters(false);
+  }, []);
 
   // Handle configuration dialog
   const handleConfigureClick = useCallback(() => {
@@ -214,16 +265,17 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
   // Handle authentication (only for OAuth)
   const handleAuthenticate = useCallback(async () => {
-    if (!connector) return;
+    if (!connector || !connectorId) return;
 
     try {
       setLoading(true);
-      
+
       // Check if it's OAuth connector
       if ((connector.authType || '').toUpperCase() === 'OAUTH') {
-        // Get OAuth authorization URL
-        const { authorizationUrl } = await ConnectorApiService.getOAuthAuthorizationUrl(connector.name);
-        
+        // Get OAuth authorization URL using connectorId
+        const { authorizationUrl } =
+          await ConnectorApiService.getOAuthAuthorizationUrl(connectorId);
+
         // Open OAuth in a new tab and focus it
         const oauthTab = window.open(authorizationUrl, '_blank');
         oauthTab?.focus();
@@ -231,29 +283,19 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
         // Listen for OAuth success message from callback page
         const handleOAuthMessage = async (event: MessageEvent) => {
           if (event.origin !== window.location.origin) return;
-          
-          if (event.data.type === 'OAUTH_SUCCESS' && event.data.connector === connector.name) {
+
+          if (event.data.type === 'OAUTH_SUCCESS' && event.data.connectorId === connectorId) {
             try {
               // OAuth completed successfully
-              const refreshed = await ConnectorApiService.getConnectorConfig(connector.name);
+              const refreshed = await ConnectorApiService.getConnectorInstanceConfig(connectorId);
               setConnectorConfig(refreshed);
               setIsAuthenticated(true);
-              
-            //   // Get filter options in background (for future use)
-            //   try {
-            //     const { filterOptions: fetchedFilterOptions } = await ConnectorApiService.getConnectorFilterOptions(connector.name);
-            //     setFilterOptions(fetchedFilterOptions);
-            //     // Note: Not showing dialog for now, but keeping the data for future use
-            //   } catch (filterError) {
-            //     console.error('Failed to get filter options:', filterError);
-            //     // Continue with success flow even if filter options fail
-            //   }
-              
+
               // Show success message
               setSuccessMessage('Authentication successful');
               setSuccess(true);
               setTimeout(() => setSuccess(false), 4000);
-              
+
               // Clean up
               window.removeEventListener('message', handleOAuthMessage);
             } catch (oauthError) {
@@ -264,7 +306,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
         };
 
         window.addEventListener('message', handleOAuthMessage);
-        
+
         // Clean up listener if window is closed manually
         const checkClosed = setInterval(() => {
           if (oauthTab && oauthTab.closed) {
@@ -272,72 +314,69 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
             clearInterval(checkClosed);
           }
         }, 1000);
-        
+
         // Clean up after 5 minutes
         setTimeout(() => {
           window.removeEventListener('message', handleOAuthMessage);
           clearInterval(checkClosed);
         }, 300000);
-        
       }
-      
     } catch (authError) {
       console.error('Authentication error:', authError);
       setError('Authentication failed');
     } finally {
       setLoading(false);
     }
-  }, [connector]);
+  }, [connector, connectorId]);
 
-  // Handle filter selection
-  const handleFilterSelection = useCallback(async (selectedFilters: any) => {
-    // Update connector config with selected filters
-    if (connectorConfig) {
-      const updatedConfig = {
-        ...connectorConfig,
-        config: {
-          ...connectorConfig.config,
-          filters: {
-            ...connectorConfig.config.filters,
-            values: selectedFilters
-          }
-        }
-      };
-      
-      try {
-        // Save the updated config
-        await ConnectorApiService.updateConnectorConfig(connector!.name, updatedConfig.config);
-        setConnectorConfig(updatedConfig);
-        
-        // Now enable the connector
-        const successResponse = await ConnectorApiService.toggleConnector(connector!.name);
-        
-        if (successResponse) {
-          // Update local state
-          setConnector((prev) => (prev ? { ...prev, isActive: true } : null));
-          setShowFilterDialog(false);
-          setIsEnablingWithFilters(false);
-          setSuccessMessage(`${connector!.name} enabled and filters configured successfully`);
-          setSuccess(true);
-          setTimeout(() => setSuccess(false), 4000);
-        } else {
-          setError('Failed to enable connector after configuring filters');
-          setIsEnablingWithFilters(false);
-        }
-      } catch (saveError) {
-        console.error('Error saving filters or enabling connector:', saveError);
-        setError('Failed to save filter configuration or enable connector');
-        setIsEnablingWithFilters(false);
-      }
+  // Handle delete instance
+  const handleDeleteInstance = useCallback(async () => {
+    if (!connectorId) return;
+
+    try {
+      setLoading(true);
+      await ConnectorApiService.deleteConnectorInstance(connectorId);
+      setLoading(false);
+      setSuccessMessage('Connector instance deleted successfully');
+      setSuccess(true);
+
+      // Navigate back to connectors list after a short delay
+      setTimeout(() => {
+        window.location.href = isBusiness
+          ? '/account/company-settings/settings/connector'
+          : '/account/individual/settings/connector';
+      }, 1500);
+    } catch (err) {
+      console.error('Error deleting connector instance:', err);
+      setError('Failed to delete connector instance');
+    } finally {
+      setLoading(false);
     }
-  }, [connector, connectorConfig]);
+  }, [connectorId, isBusiness]);
 
-  // Handle filter dialog close
-  const handleFilterDialogClose = useCallback(() => {
-    setShowFilterDialog(false);
-    setFilterOptions(null);
-    setIsEnablingWithFilters(false);
-  }, []);
+  // Handle rename instance
+  const handleRenameInstance = useCallback(
+    async (newName: string) => {
+      if (!connectorId || !newName.trim()) return;
+      try {
+        setLoading(true);
+        const { connector: updated } = await ConnectorApiService.updateConnectorInstanceName(
+          connectorId,
+          newName.trim()
+        );
+        setConnector((prev) => (prev ? { ...prev, name: updated.name } : prev));
+        setSuccessMessage('Instance name updated');
+        setSuccess(true);
+        setTimeout(() => setSuccess(false), 3000);
+      } catch (err) {
+        console.error('Error renaming connector instance:', err);
+        setError('Failed to update instance name');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [connectorId]
+  );
 
   // Initialize
   useEffect(() => {
@@ -349,34 +388,14 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     const urlParams = new URLSearchParams(window.location.search);
     const oauthSuccess = urlParams.get('oauth_success');
     const oauthError = urlParams.get('oauth_error');
- 
-    // Get connector name from URL path (e.g., /account/company-settings/settings/connector/gmail)
-    const pathParts = window.location.pathname.split('/');
-    const connectorIndex = pathParts.findIndex(part => part === 'connector');
-    const urlConnectorName = connectorIndex !== -1 && connectorIndex + 1 < pathParts.length 
-      ? pathParts[connectorIndex + 1] 
-      : null;
 
-
-    if (oauthSuccess === 'true' && urlConnectorName) {
-      // OAuth was successful, refresh the connector data and show filter dialog
+    if (oauthSuccess === 'true' && connectorId) {
       const handleOAuthSuccess = async () => {
         try {
-          const refreshed = await ConnectorApiService.getConnectorConfig(urlConnectorName);
+          const refreshed = await ConnectorApiService.getConnectorInstanceConfig(connectorId);
           setConnectorConfig(refreshed);
           setIsAuthenticated(true);
-          
-          // Get filter options in background (for future use)
-        //   try {
-        //     const { filterOptions: fetchedFilterOptions } = await ConnectorApiService.getConnectorFilterOptions(urlConnectorName);
-        //     setFilterOptions(fetchedFilterOptions);
-        //     // Note: Not showing dialog for now, but keeping the data for future use
-        //   } catch (filterError) {
-        //     console.error('Failed to get filter options:', filterError);
-        //     // Continue with success flow even if filter options fail
-        //   }
-          
-          // Show success message
+
           setSuccessMessage('Authentication successful');
           setSuccess(true);
           setTimeout(() => setSuccess(false), 4000);
@@ -387,14 +406,13 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       };
 
       handleOAuthSuccess();
-      
+
       // Clean up URL parameters
       const newUrl = window.location.pathname;
       window.history.replaceState({}, document.title, newUrl);
     } else if (oauthError && connector) {
-      // OAuth failed, show error
       setError(`OAuth authentication failed: ${oauthError}`);
-      
+
       // Clean up URL parameters
       const newUrl = window.location.pathname;
       window.history.replaceState({}, document.title, newUrl);
@@ -410,10 +428,10 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     success,
     successMessage,
     isAuthenticated,
+    configDialogOpen,
     filterOptions,
     showFilterDialog,
     isEnablingWithFilters,
-    configDialogOpen,
 
     // Actions
     handleToggleConnector,
@@ -422,6 +440,8 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     handleConfigClose,
     handleConfigSuccess,
     handleRefresh,
+    handleDeleteInstance,
+    handleRenameInstance,
     handleFilterSelection,
     handleFilterDialogClose,
     setError,

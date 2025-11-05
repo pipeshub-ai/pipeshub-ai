@@ -1,5 +1,5 @@
 /**
- * Connectors Page - Complete Rewrite
+ * Connector Registry Page - Complete Rewrite
  *
  * Features:
  * - Zero flickering during any operation
@@ -28,50 +28,36 @@ import {
   Chip,
   Fade,
   Stack,
-  Divider,
   IconButton,
   Tabs,
   Tab,
   CircularProgress,
 } from '@mui/material';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
-import infoIcon from '@iconify-icons/mdi/info-circle';
-import magniferIcon from '@iconify-icons/mdi/magnify';
-import linkBrokenIcon from '@iconify-icons/mdi/link-off';
-import linkIcon from '@iconify-icons/mdi/link-variant';
-import listIcon from '@iconify-icons/mdi/format-list-bulleted';
-import checkCircleIcon from '@iconify-icons/mdi/check-circle';
-import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
-import clearIcon from '@iconify-icons/mdi/close-circle';
 import appsIcon from '@iconify-icons/mdi/apps';
+import magniferIcon from '@iconify-icons/mdi/magnify';
+import clearIcon from '@iconify-icons/mdi/close-circle';
+import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
 import accountIcon from '@iconify-icons/mdi/account';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import { SnackbarState } from 'src/types/chat-sidebar';
 import { useAccountType } from 'src/hooks/use-account-type';
-import { ConnectorApiService } from './services/api';
-import { Connector } from './types/types';
-import ConnectorCard from './components/connector-card';
+import { ConnectorApiService } from '../services/api';
+import { ConnectorRegistry as ConnectorRegistryType } from '../types/types';
+import ConnectorRegistryCard from '../components/connector-registry-card';
 
 // Constants
 const ITEMS_PER_PAGE = 20;
 const SEARCH_DEBOUNCE_MS = 500;
 const INITIAL_PAGE = 1;
-const SKELETON_COUNT = 8;
+const SKELETON_COUNT = 12;
 
 // Types
-type FilterType = 'all' | 'active' | 'configured' | 'not-configured';
-
 interface PageState {
   personal: number;
   team: number;
-}
-
-interface FilterCounts {
-  all: number;
-  active: number;
-  configured: number;
-  'not-configured': number;
 }
 
 interface PaginationInfo {
@@ -81,39 +67,44 @@ interface PaginationInfo {
 }
 
 /**
- * Main Connectors Component
+ * Main Connector Registry Component
  */
-const Connectors: React.FC = () => {
+const ConnectorRegistry: React.FC = () => {
   // Hooks
+  const [searchParams] = useSearchParams();
   const theme = useTheme();
   const navigate = useNavigate();
   const { isBusiness } = useAccountType();
   const isDark = theme.palette.mode === 'dark';
 
+  const initialScope = (searchParams.get('scope') as 'personal' | 'team') || 'personal';
+
   // ============================================================================
-  // STATE MANAGEMENT - Organized by concern
+  // STATE MANAGEMENT
   // ============================================================================
 
   // Data State
-  const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [connectors, setConnectors] = useState<ConnectorRegistryType[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>({
     currentPage: INITIAL_PAGE,
     totalPages: undefined,
     totalItems: undefined,
   });
 
-  // Loading States - Separate and clear
-  const [isFirstLoad, setIsFirstLoad] = useState(true); // Only true on very first load
-  const [isLoadingData, setIsLoadingData] = useState(false); // Data fetching in progress
-  const [isLoadingMore, setIsLoadingMore] = useState(false); // Infinite scroll loading
-  const [isSwitchingScope, setIsSwitchingScope] = useState(false); // Tab switch in progress
+  // Loading States
+  const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isSwitchingScope, setIsSwitchingScope] = useState(false);
   const [hasMorePages, setHasMorePages] = useState(true);
 
   // Filter State
   const [searchInput, setSearchInput] = useState('');
-  const [activeSearchQuery, setActiveSearchQuery] = useState(''); // What's actually being searched
-  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>('personal');
-  const [selectedFilter, setSelectedFilter] = useState<FilterType>('all');
+  const [activeSearchQuery, setActiveSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>(
+    isBusiness ? initialScope : 'personal'
+  );
   const [pageByScope, setPageByScope] = useState<PageState>({
     personal: INITIAL_PAGE,
     team: INITIAL_PAGE,
@@ -147,69 +138,27 @@ const Connectors: React.FC = () => {
     [pageByScope, effectiveScope]
   );
 
-  // Filter connectors by scope
-  const currentScopeConnectors = useMemo(
-    () =>
-      connectors.filter((c) =>
-        effectiveScope === 'personal' ? c.scope === 'personal' || !c.scope : c.scope === 'team'
-      ),
-    [connectors, effectiveScope]
-  );
-
-  // Calculate filter counts
-  const filterCounts = useMemo<FilterCounts>(() => {
-    const counts: FilterCounts = {
-      all: currentScopeConnectors.length,
-      active: 0,
-      configured: 0,
-      'not-configured': 0,
-    };
-
-    currentScopeConnectors.forEach((connector) => {
-      if (connector.isConfigured && connector.isActive) {
-        counts.active += 1;
-      } else if (connector.isConfigured && !connector.isActive) {
-        counts.configured += 1;
-      } else if (!connector.isConfigured) {
-        counts['not-configured'] += 1;
-      }
+  // Extract unique categories
+  const categories = useMemo(() => {
+    const categorySet = new Set<string>();
+    connectors.forEach((connector) => {
+      connector.appCategories?.forEach((category) => {
+        if (category) categorySet.add(category);
+      });
     });
+    return ['all', ...Array.from(categorySet).sort()];
+  }, [connectors]);
 
-    return counts;
-  }, [currentScopeConnectors]);
-
-  // Filter by status
+  // Filter by category (client-side)
   const filteredConnectors = useMemo(() => {
-    if (selectedFilter === 'all') return currentScopeConnectors;
-
-    return currentScopeConnectors.filter((connector) => {
-      switch (selectedFilter) {
-        case 'active':
-          return connector.isConfigured && connector.isActive;
-        case 'configured':
-          return connector.isConfigured && !connector.isActive;
-        case 'not-configured':
-          return !connector.isConfigured;
-        default:
-          return true;
-      }
-    });
-  }, [currentScopeConnectors, selectedFilter]);
-
-  // Filter options
-  const filterOptions = useMemo(
-    () => [
-      { key: 'all' as FilterType, label: 'All', icon: listIcon },
-      { key: 'active' as FilterType, label: 'Active', icon: checkCircleIcon },
-      { key: 'configured' as FilterType, label: 'Configured', icon: clockCircleIcon },
-    ],
-    []
-  );
+    if (selectedCategory === 'all') return connectors;
+    return connectors.filter((c) => c.appCategories?.includes(selectedCategory));
+  }, [connectors, selectedCategory]);
 
   const loadingSkeletons = useMemo(() => Array.from({ length: SKELETON_COUNT }, (_, i) => i), []);
 
   // ============================================================================
-  // DEBOUNCED SEARCH - Updates activeSearchQuery after delay
+  // DEBOUNCED SEARCH
   // ============================================================================
 
   useEffect(() => {
@@ -232,7 +181,7 @@ const Connectors: React.FC = () => {
   }, [searchInput, activeSearchQuery]);
 
   // ============================================================================
-  // RESET PAGINATION - When filters change
+  // RESET PAGINATION
   // ============================================================================
 
   useEffect(() => {
@@ -247,15 +196,14 @@ const Connectors: React.FC = () => {
       totalPages: undefined,
       totalItems: undefined,
     });
-  }, [effectiveScope, activeSearchQuery]);
+  }, [effectiveScope, activeSearchQuery, selectedCategory]);
 
   // ============================================================================
-  // DATA FETCHING - Clean and organized
+  // DATA FETCHING
   // ============================================================================
 
-  const fetchConnectors = useCallback(
+  const fetchConnectorRegistry = useCallback(
     async (page: number, isLoadMore = false) => {
-      // Prevent duplicate requests
       if (isRequestInProgressRef.current) {
         return;
       }
@@ -265,7 +213,6 @@ const Connectors: React.FC = () => {
       isRequestInProgressRef.current = true;
 
       try {
-        // Set appropriate loading state
         if (isLoadMore) {
           setIsLoadingMore(true);
         } else if (isFirstLoad) {
@@ -274,14 +221,13 @@ const Connectors: React.FC = () => {
           setIsLoadingData(true);
         }
 
-        const result = await ConnectorApiService.getConnectorInstances(
+        const result = await ConnectorApiService.getConnectorRegistry(
           effectiveScope,
           page,
           ITEMS_PER_PAGE,
           activeSearchQuery || undefined
         );
 
-        // Check if this request is still valid
         if (currentRequestId !== requestIdRef.current) {
           return;
         }
@@ -289,28 +235,22 @@ const Connectors: React.FC = () => {
         const newConnectors = result.connectors || [];
         const paginationData = result.pagination || {};
 
-        // Update connectors
         setConnectors((prev) => {
           if (page === INITIAL_PAGE) {
             return newConnectors;
           }
 
-          // Prevent duplicates
-          const existingIds = new Set(prev.map((c) => c._key || `${c.type}:${c.name}`));
-          const uniqueNew = newConnectors.filter(
-            (c) => !existingIds.has(c._key || `${c.type}:${c.name}`)
-          );
+          const existingIds = new Set(prev.map((c) => c.type));
+          const uniqueNew = newConnectors.filter((c) => !existingIds.has(c.type));
           return [...prev, ...uniqueNew];
         });
 
-        // Update pagination
         setPagination({
           currentPage: page,
           totalPages: paginationData.totalPages,
           totalItems: paginationData.totalItems,
         });
 
-        // Check if more pages exist
         const hasMore =
           paginationData.hasNext === true ||
           (typeof paginationData.totalPages === 'number'
@@ -319,12 +259,12 @@ const Connectors: React.FC = () => {
 
         setHasMorePages(hasMore);
       } catch (error) {
-        console.error('Error fetching connectors:', error);
+        console.error('Error fetching connector registry:', error);
 
         if (page === INITIAL_PAGE || connectors.length === 0) {
           setSnackbar({
             open: true,
-            message: 'Failed to fetch connectors. Please try again.',
+            message: 'Failed to fetch connector registry. Please try again.',
             severity: 'error',
           });
         }
@@ -338,14 +278,13 @@ const Connectors: React.FC = () => {
     [effectiveScope, activeSearchQuery, connectors.length, isFirstLoad]
   );
 
-  // Fetch when page changes
   useEffect(() => {
     const isLoadMore = currentPage > INITIAL_PAGE;
-    fetchConnectors(currentPage, isLoadMore);
-  }, [currentPage, fetchConnectors]);
+    fetchConnectorRegistry(currentPage, isLoadMore);
+  }, [currentPage, fetchConnectorRegistry]);
 
   // ============================================================================
-  // INFINITE SCROLL - Clean observer setup
+  // INFINITE SCROLL
   // ============================================================================
 
   useEffect(() => {
@@ -407,9 +346,8 @@ const Connectors: React.FC = () => {
       setSelectedScope(newScope);
       setSearchInput('');
       setActiveSearchQuery('');
-      setSelectedFilter('all');
+      setSelectedCategory('all');
 
-      // Clear switching state after transition
       setTimeout(() => {
         setIsSwitchingScope(false);
       }, 400);
@@ -417,8 +355,8 @@ const Connectors: React.FC = () => {
     [isBusiness]
   );
 
-  const handleFilterChange = useCallback((filter: FilterType) => {
-    setSelectedFilter(filter);
+  const handleCategoryChange = useCallback((category: string) => {
+    setSelectedCategory(category);
   }, []);
 
   const handleClearSearch = useCallback(() => {
@@ -426,12 +364,16 @@ const Connectors: React.FC = () => {
     setActiveSearchQuery('');
   }, []);
 
-  const handleBrowseRegistry = useCallback(() => {
+  const handleSearchSubmit = useCallback(() => {
+    setActiveSearchQuery(searchInput.trim());
+  }, [searchInput]);
+
+  const handleBackToInstances = useCallback(() => {
     const basePath = isBusiness
-      ? '/account/company-settings/settings/connector/registry'
-      : '/account/individual/settings/connector/registry';
-    navigate(`${basePath}?scope=${effectiveScope}`);
-  }, [isBusiness, effectiveScope, navigate]);
+      ? '/account/company-settings/settings/connector'
+      : '/account/individual/settings/connector';
+    navigate(basePath);
+  }, [isBusiness, navigate]);
 
   const handleCloseSnackbar = useCallback(() => {
     setSnackbar((prev) => ({ ...prev, open: false }));
@@ -451,7 +393,7 @@ const Connectors: React.FC = () => {
           overflow: 'hidden',
         }}
       >
-        {/* Header Section - Always Visible */}
+        {/* Header Section */}
         <Box
           sx={{
             p: 3,
@@ -477,7 +419,7 @@ const Connectors: React.FC = () => {
                   }}
                 >
                   <Iconify
-                    icon={linkIcon}
+                    icon={appsIcon}
                     width={20}
                     height={20}
                     sx={{ color: theme.palette.primary.main }}
@@ -493,7 +435,7 @@ const Connectors: React.FC = () => {
                       mb: 0.5,
                     }}
                   >
-                    My Connectors
+                    Available Connectors
                   </Typography>
                   <Typography
                     variant="body2"
@@ -502,30 +444,15 @@ const Connectors: React.FC = () => {
                       fontSize: '0.875rem',
                     }}
                   >
-                    Manage your configured connector instances
-                    {filterCounts.active > 0 && (
-                      <Chip
-                        label={`${filterCounts.active} active`}
-                        size="small"
-                        sx={{
-                          ml: 1,
-                          height: 20,
-                          fontSize: '0.6875rem',
-                          fontWeight: 600,
-                          backgroundColor: isDark ? alpha(theme.palette.common.white, 0.48) : alpha(theme.palette.success.main, 0.1),
-                          color: isDark ? alpha(theme.palette.primary.main, 0.6) : theme.palette.success.main,
-                          border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
-                        }}
-                      />
-                    )}
+                    Browse and configure new connector instances
                   </Typography>
                 </Box>
               </Stack>
 
               <Button
                 variant="outlined"
-                startIcon={<Iconify icon={appsIcon} width={18} height={18} />}
-                onClick={handleBrowseRegistry}
+                startIcon={<Iconify icon={arrowLeftIcon} width={18} height={18} />}
+                onClick={handleBackToInstances}
                 sx={{
                   textTransform: 'none',
                   fontWeight: 600,
@@ -534,12 +461,12 @@ const Connectors: React.FC = () => {
                   height: 40,
                 }}
               >
-                Available Connectors
+                Back to My Connectors
               </Button>
             </Stack>
 
             {/* Scope Tabs */}
-            <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Box sx={{ borderBottom: 1, borderColor: 'divider', mt: 2 }}>
               <Tabs
                 value={effectiveScope}
                 onChange={handleScopeChange}
@@ -554,7 +481,7 @@ const Connectors: React.FC = () => {
                 <Tab
                   icon={<Iconify icon={accountIcon} width={18} height={18} />}
                   iconPosition="start"
-                  label="Personal"
+                  label="Personal Connectors"
                   value="personal"
                   sx={{ mr: 1 }}
                 />
@@ -562,7 +489,7 @@ const Connectors: React.FC = () => {
                   <Tab
                     icon={<Iconify icon={accountGroupIcon} width={18} height={18} />}
                     iconPosition="start"
-                    label="Team"
+                    label="Team Connectors"
                     value="team"
                   />
                 )}
@@ -573,13 +500,18 @@ const Connectors: React.FC = () => {
 
         {/* Content Section */}
         <Box sx={{ p: 3 }}>
-          {/* Search and Filters - Always Visible, Never Disappear */}
+          {/* Search and Filters - Always Visible */}
           <Stack spacing={2} sx={{ mb: 3 }}>
             {/* Search Bar */}
             <TextField
-              placeholder="Search connectors by name, type, or category..."
+              placeholder="Search connectors by name, category, or description..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSearchSubmit();
+                }
+              }}
               size="small"
               fullWidth
               InputProps={{
@@ -597,20 +529,37 @@ const Connectors: React.FC = () => {
                     )}
                   </InputAdornment>
                 ),
-                endAdornment: searchInput && (
+                endAdornment: (
                   <InputAdornment position="end">
-                    <IconButton
+                    {searchInput && (
+                      <IconButton
+                        size="small"
+                        onClick={handleClearSearch}
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          mr: 0.5,
+                          '&:hover': {
+                            backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                          },
+                        }}
+                      >
+                        <Iconify icon={clearIcon} width={16} height={16} />
+                      </IconButton>
+                    )}
+                    <Button
+                      onClick={handleSearchSubmit}
+                      variant="contained"
                       size="small"
-                      onClick={handleClearSearch}
                       sx={{
-                        color: theme.palette.text.secondary,
-                        '&:hover': {
-                          backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-                        },
+                        ml: 1,
+                        borderRadius: 1,
+                        textTransform: 'none',
+                        fontWeight: 700,
+                        minWidth: 80,
                       }}
                     >
-                      <Iconify icon={clearIcon} width={16} height={16} />
-                    </IconButton>
+                      Search
+                    </Button>
                   </InputAdornment>
                 ),
               }}
@@ -632,7 +581,7 @@ const Connectors: React.FC = () => {
               }}
             />
 
-            {/* Filter Buttons */}
+            {/* Category Chips */}
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Typography
                 variant="body2"
@@ -642,25 +591,20 @@ const Connectors: React.FC = () => {
                   mr: 1,
                 }}
               >
-                Filter:
+                Category:
               </Typography>
-              {filterOptions.map((option) => {
-                const isSelected = selectedFilter === option.key;
-                const count = filterCounts[option.key];
-
+              {categories.map((category) => {
+                const isSelected = selectedCategory === category;
                 return (
-                  <Button
-                    key={option.key}
-                    variant={isSelected ? 'contained' : 'outlined'}
-                    size="small"
-                    onClick={() => handleFilterChange(option.key)}
-                    startIcon={<Iconify icon={option.icon} width={16} height={16} />}
+                  <Chip
+                    key={category}
+                    label={category === 'all' ? 'All' : category}
+                    onClick={() => handleCategoryChange(category)}
                     sx={{
-                      textTransform: 'none',
-                      borderRadius: 1.5,
+                      textTransform: 'capitalize',
                       fontWeight: 600,
                       fontSize: '0.8125rem',
-                      height: 32,
+                      cursor: 'pointer',
                       transition: theme.transitions.create(['background-color', 'border-color']),
                       ...(isSelected
                         ? {
@@ -671,63 +615,23 @@ const Connectors: React.FC = () => {
                             },
                           }
                         : {
+                            backgroundColor: 'transparent',
                             borderColor: theme.palette.divider,
                             color: theme.palette.text.primary,
-                            backgroundColor: 'transparent',
                             '&:hover': {
                               borderColor: theme.palette.primary.main,
                               backgroundColor: alpha(theme.palette.primary.main, 0.04),
                             },
                           }),
                     }}
-                  >
-                    {option.label}
-                    {count > 0 && (
-                      <Chip
-                        label={count}
-                        size="small"
-                        sx={{
-                          ml: 1,
-                          height: 18,
-                          fontSize: '0.6875rem',
-                          fontWeight: 700,
-                          '& .MuiChip-label': {
-                            px: 0.75,
-                          },
-                          ...(isSelected
-                            ? {
-                                backgroundColor: isDark ? alpha(theme.palette.common.black, 0.3) : alpha(theme.palette.primary.contrastText, 0.4),
-                                color: isDark ? alpha(theme.palette.primary.main, 0.6) : alpha(theme.palette.primary.contrastText, 0.8),
-                              }
-                            : {
-                                backgroundColor: isDark ? alpha(theme.palette.common.white, 0.48) : alpha(theme.palette.primary.main, 0.1),
-                                color: isDark ? alpha(theme.palette.primary.main, 0.6) : theme.palette.primary.main,
-                              }),
-                        }}
-                      />
-                    )}
-                  </Button>
+                    variant={isSelected ? 'filled' : 'outlined'}
+                  />
                 );
               })}
-
-              {activeSearchQuery && (
-                <>
-                  <Divider orientation="vertical" sx={{ height: 24, mx: 1 }} />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontWeight: 500,
-                    }}
-                  >
-                    {filteredConnectors.length} result{filteredConnectors.length !== 1 ? 's' : ''}
-                  </Typography>
-                </>
-              )}
             </Stack>
           </Stack>
 
-          {/* Results Area with Overlay for Scope Switching */}
+          {/* Results Area */}
           <Box sx={{ position: 'relative', minHeight: 400 }}>
             {/* Scope Switch Overlay */}
             {isSwitchingScope && (
@@ -768,7 +672,7 @@ const Connectors: React.FC = () => {
               </Fade>
             )}
 
-            {/* Content Area */}
+            {/* Content */}
             <Box
               sx={{
                 opacity: isSwitchingScope ? 0.3 : 1,
@@ -816,82 +720,27 @@ const Connectors: React.FC = () => {
                       ),
                     }}
                   >
-                    <Box
-                      sx={{
-                        width: 80,
-                        height: 80,
-                        borderRadius: 2,
-                        backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        mx: 'auto',
-                        mb: 3,
-                      }}
-                    >
-                      <Iconify
-                        icon={activeSearchQuery ? magniferIcon : linkBrokenIcon}
-                        width={32}
-                        height={32}
-                        sx={{ color: theme.palette.text.disabled }}
-                      />
-                    </Box>
-                    <Typography
-                      variant="h6"
-                      sx={{
-                        mb: 1,
-                        fontWeight: 600,
-                        color: theme.palette.text.primary,
-                      }}
-                    >
-                      {activeSearchQuery
-                        ? 'No connectors found'
-                        : 'No connector instances configured'}
+                    <Typography variant="h6" sx={{ mb: 1, fontWeight: 600 }}>
+                      No connectors found
                     </Typography>
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        color: theme.palette.text.secondary,
-                        maxWidth: 400,
-                        mx: 'auto',
-                        mb: 3,
-                      }}
-                    >
-                      {activeSearchQuery ? (
-                        <>
-                          No connectors match &quot;{activeSearchQuery}&quot;. Try adjusting your
-                          search terms or{' '}
-                          <Button
-                            variant="text"
-                            size="small"
-                            onClick={handleClearSearch}
-                            sx={{
-                              textTransform: 'none',
-                              p: 0,
-                              minWidth: 'auto',
-                              fontWeight: 600,
-                              verticalAlign: 'baseline',
-                            }}
-                          >
-                            clear the search
-                          </Button>
-                        </>
-                      ) : (
-                        'Get started by browsing available connectors and creating your first instance.'
-                      )}
+                    <Typography variant="body2" sx={{ color: theme.palette.text.secondary, mb: 2 }}>
+                      Try adjusting your search or category filter
                     </Typography>
-                    {!activeSearchQuery && (
+                    {(activeSearchQuery || selectedCategory !== 'all') && (
                       <Button
                         variant="outlined"
-                        startIcon={<Iconify icon={appsIcon} width={20} height={20} />}
-                        onClick={handleBrowseRegistry}
+                        size="small"
+                        onClick={() => {
+                          handleClearSearch();
+                          setSelectedCategory('all');
+                        }}
                         sx={{
                           textTransform: 'none',
                           fontWeight: 600,
-                          borderRadius: 1.5,
+                          borderRadius: 1,
                         }}
                       >
-                        Browse Available Connectors
+                        Clear Filters
                       </Button>
                     )}
                   </Paper>
@@ -899,7 +748,6 @@ const Connectors: React.FC = () => {
               ) : (
                 /* Results Grid */
                 <Stack spacing={2}>
-                  {/* Results Header */}
                   <Stack direction="row" alignItems="center" justifyContent="space-between">
                     <Typography
                       variant="h6"
@@ -911,13 +759,9 @@ const Connectors: React.FC = () => {
                     >
                       {activeSearchQuery
                         ? `Search Results (${filteredConnectors.length})`
-                        : selectedFilter === 'all'
-                          ? `All Instances (${filteredConnectors.length})`
-                          : selectedFilter === 'active'
-                            ? `Active Instances (${filteredConnectors.length})`
-                            : selectedFilter === 'configured'
-                              ? `Ready Instances (${filteredConnectors.length})`
-                              : `Setup Required (${filteredConnectors.length})`}
+                        : selectedCategory === 'all'
+                          ? `All Connectors`
+                          : `${selectedCategory} (${filteredConnectors.length})`}
                     </Typography>
                     {pagination.totalItems !== undefined && pagination.totalItems > 0 && (
                       <Typography
@@ -935,24 +779,24 @@ const Connectors: React.FC = () => {
                   {/* Connectors Grid */}
                   <Grid container spacing={2.5}>
                     {filteredConnectors.map((connector, index) => (
-                      <Grid item xs={12} sm={6} md={4} lg={3} key={connector._key}>
+                      <Grid item xs={12} sm={6} md={4} lg={3} key={connector.type}>
                         <Fade
                           in
                           timeout={300}
                           style={{ transitionDelay: `${Math.min(index * 30, 300)}ms` }}
                         >
                           <Box>
-                            <ConnectorCard connector={connector} isBusiness={isBusiness} />
+                            <ConnectorRegistryCard connector={connector} scope={selectedScope} />
                           </Box>
                         </Fade>
                       </Grid>
                     ))}
                   </Grid>
 
-                  {/* Infinite Scroll Sentinel */}
+                  {/* Sentinel */}
                   <Box ref={sentinelRef} sx={{ height: 1 }} />
 
-                  {/* Loading More Indicator */}
+                  {/* Loading More */}
                   {isLoadingMore && (
                     <Fade in>
                       <Paper
@@ -1030,41 +874,6 @@ const Connectors: React.FC = () => {
               )}
             </Box>
           </Box>
-
-          {/* Info Alert */}
-          {!isFirstLoad && !isSwitchingScope && connectors.length > 0 && (
-            <Fade in timeout={600}>
-              <Alert
-                variant="outlined"
-                severity="info"
-                icon={<Iconify icon={infoIcon} width={20} height={20} />}
-                sx={{
-                  mt: 3,
-                  borderRadius: 1.5,
-                  borderColor: alpha(theme.palette.info.main, 0.2),
-                  backgroundColor: alpha(theme.palette.info.main, 0.04),
-                }}
-              >
-                <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                  Click any connector to configure settings and start syncing data automatically.
-                  Refer to{' '}
-                  <a
-                    href="https://docs.pipeshub.com/connectors/overview"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      color: theme.palette.primary.main,
-                      textDecoration: 'none',
-                      fontWeight: 600,
-                    }}
-                  >
-                    the documentation
-                  </a>{' '}
-                  for more information.
-                </Typography>
-              </Alert>
-            </Fade>
-          )}
         </Box>
       </Box>
 
@@ -1080,10 +889,7 @@ const Connectors: React.FC = () => {
           onClose={handleCloseSnackbar}
           severity={snackbar.severity}
           variant="filled"
-          sx={{
-            borderRadius: 1.5,
-            fontWeight: 600,
-          }}
+          sx={{ borderRadius: 1.5, fontWeight: 600 }}
         >
           {snackbar.message}
         </Alert>
@@ -1092,4 +898,4 @@ const Connectors: React.FC = () => {
   );
 };
 
-export default Connectors;
+export default ConnectorRegistry;

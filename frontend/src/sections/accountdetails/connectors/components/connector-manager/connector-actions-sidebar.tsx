@@ -1,19 +1,13 @@
 import React from 'react';
-import {
-  Paper,
-  Typography,
-  Button,
-  Stack,
-  Box,
-  alpha,
-  useTheme,
-} from '@mui/material';
+import { Paper, Typography, Button, Stack, Box, alpha, useTheme } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import settingsIcon from '@iconify-icons/eva/settings-2-outline';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import pauseIcon from '@iconify-icons/mdi/pause';
 import playIcon from '@iconify-icons/mdi/play';
 import keyIcon from '@iconify-icons/mdi/key';
+import deleteIcon from '@iconify-icons/mdi/delete';
+import editIcon from '@iconify-icons/mdi/pencil';
 import { Connector } from '../../types/types';
 
 interface ConnectorActionsSidebarProps {
@@ -24,7 +18,10 @@ interface ConnectorActionsSidebarProps {
   onConfigure: () => void;
   onRefresh: () => void;
   onToggle: (enabled: boolean) => void;
+  onDelete: () => void;
+  onRename: () => void;
   hideAuthenticate?: boolean;
+  supportsSync?: boolean;
 }
 
 const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
@@ -35,7 +32,10 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   onConfigure,
   onRefresh,
   onToggle,
+  onDelete,
+  onRename,
   hideAuthenticate,
+  supportsSync = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -47,9 +47,11 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   // If authenticate is hidden (admin consent or business service-account flow), enabling should rely on configuration
   const canEnable = isActive
     ? true
-    : (isOauth
-        ? (hideAuthenticate ? isConfigured : isAuthenticated)
-        : isConfigured);
+    : isOauth
+      ? hideAuthenticate
+        ? isConfigured
+        : isAuthenticated
+      : isConfigured;
 
   return (
     <Stack spacing={1.5}>
@@ -82,9 +84,11 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                 fontWeight: 500,
                 justifyContent: 'flex-start',
                 borderRadius: 1,
-                backgroundColor: isAuthenticated ? theme.palette.success.main : theme.palette.secondary.main,
+                backgroundColor: isAuthenticated
+                  ? theme.palette.success.main
+                  : theme.palette.secondary.main,
                 '&:hover': {
-                  backgroundColor: isAuthenticated 
+                  backgroundColor: isAuthenticated
                     ? alpha(theme.palette.success.main, 0.8)
                     : alpha(theme.palette.secondary.main, 0.8),
                 },
@@ -118,35 +122,12 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
             {!isConfigured ? 'Configure Now' : 'Configure Settings'}
           </Button>
 
-          <Button
-            variant="outlined"
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={refreshIcon} width={14} height={14} />}
-            onClick={onRefresh}
-            disabled={loading}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-            }}
-          >
-            {loading ? 'Refreshing...' : 'Refresh Status'}
-          </Button>
-
-          {isConfigured && (
+          {isConfigured && supportsSync && (
             <Button
               variant="outlined"
               fullWidth
               size="small"
-              startIcon={
-                <Iconify
-                  icon={isActive ? pauseIcon : playIcon}
-                  width={14}
-                  height={14}
-                />
-              }
+              startIcon={<Iconify icon={isActive ? pauseIcon : playIcon} width={14} height={14} />}
               onClick={() => onToggle(!isActive)}
               disabled={!isActive && !canEnable}
               sx={{
@@ -154,12 +135,8 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                 fontWeight: 500,
                 justifyContent: 'flex-start',
                 borderRadius: 1,
-                color: isActive
-                  ? theme.palette.warning.main
-                  : theme.palette.success.main,
-                borderColor: isActive
-                  ? theme.palette.warning.main
-                  : theme.palette.success.main,
+                color: isActive ? theme.palette.warning.main : theme.palette.success.main,
+                borderColor: isActive ? theme.palette.warning.main : theme.palette.success.main,
                 '&:hover': {
                   backgroundColor: isActive
                     ? isDark
@@ -172,6 +149,38 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
               {isActive ? 'Disable' : 'Enable'}
             </Button>
           )}
+          <Button
+            variant="outlined"
+            fullWidth
+            size="small"
+            startIcon={<Iconify icon={editIcon} width={14} height={14} />}
+            onClick={onRename}
+            sx={{
+              textTransform: 'none',
+              fontWeight: 500,
+              justifyContent: 'flex-start',
+              borderRadius: 1,
+            }}
+          >
+            Rename Instance
+          </Button>
+
+          <Button
+            variant="outlined"
+            color="error"
+            fullWidth
+            size="small"
+            startIcon={<Iconify icon={deleteIcon} width={14} height={14} />}
+            onClick={onDelete}
+            sx={{
+              textTransform: 'none',
+              fontWeight: 500,
+              justifyContent: 'flex-start',
+              borderRadius: 1,
+            }}
+          >
+            Delete Instance
+          </Button>
         </Stack>
       </Paper>
 
@@ -198,16 +207,10 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  bgcolor: isConfigured
-                    ? theme.palette.warning.main
-                    : theme.palette.text.disabled,
+                  bgcolor: isConfigured ? theme.palette.warning.main : theme.palette.text.disabled,
                 }}
               />
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                sx={{ fontSize: '0.8125rem' }}
-              >
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
                 Configuration
               </Typography>
             </Stack>
@@ -227,41 +230,37 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
             </Typography>
           </Stack>
 
-          <Stack direction="row" alignItems="center" justifyContent="space-between">
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Box
-                sx={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  bgcolor: isActive
-                    ? theme.palette.success.main
-                    : theme.palette.text.disabled,
-                }}
-              />
+          {supportsSync && (
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box
+                  sx={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    bgcolor: isActive ? theme.palette.success.main : theme.palette.text.disabled,
+                  }}
+                />
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+                  Connection
+                </Typography>
+              </Stack>
               <Typography
                 variant="body2"
-                color="text.secondary"
-                sx={{ fontSize: '0.8125rem' }}
+                sx={{
+                  fontWeight: 500,
+                  fontSize: '0.8125rem',
+                  color: isActive
+                    ? isDark
+                      ? theme.palette.success.main
+                      : theme.palette.success.main
+                    : theme.palette.text.disabled,
+                }}
               >
-                Connection
+                {isActive ? 'Active' : 'Inactive'}
               </Typography>
             </Stack>
-            <Typography
-              variant="body2"
-              sx={{
-                fontWeight: 500,
-                fontSize: '0.8125rem',
-                color: isActive
-                  ? isDark
-                    ? theme.palette.success.main
-                    : theme.palette.success.main
-                  : theme.palette.text.disabled,
-              }}
-            >
-              {isActive ? 'Active' : 'Inactive'}
-            </Typography>
-          </Stack>
+          )}
         </Stack>
       </Paper>
     </Stack>

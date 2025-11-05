@@ -30,6 +30,7 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
@@ -63,6 +64,7 @@ class OneDriveCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/onedrive.svg")
         .add_documentation_link(DocumentationLink(
@@ -123,8 +125,8 @@ class OneDriveCredentials:
     .build_decorator()
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(OneDriveApp(), logger, data_entities_processor, data_store_provider, config_service)
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
+        super().__init__(OneDriveApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
@@ -137,6 +139,7 @@ class OneDriveConnector(BaseConnector):
         self.drive_delta_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
+        self.connector_id = connector_id
 
         # Batch processing configuration
         self.batch_size = 100
@@ -145,7 +148,7 @@ class OneDriveConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
     async def init(self) -> bool:
-        config = await self.config_service.get_config("/services/connectors/onedrive/config") or await self.config_service.get_config(f"/services/connectors/onedrive/config/{self.data_entities_processor.org_id}")
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
         if not config:
             self.logger.error("OneDrive config not found")
             return False
@@ -252,6 +255,7 @@ class OneDriveConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=int(item.created_date_time.timestamp() * 1000),
                 updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 source_created_at=int(item.created_date_time.timestamp() * 1000),
@@ -829,11 +833,11 @@ class OneDriveConnector(BaseConnector):
 
     @classmethod
     async def create_connector(cls, logger: Logger,
-                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
+                               data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> BaseConnector:
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
 
 # Additional helper class for managing OneDrive subscriptions
