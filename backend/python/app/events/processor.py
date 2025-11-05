@@ -739,7 +739,7 @@ class Processor:
                     ocr_result["metadata"] = {**record, **file}
                 except Exception as e:
                     self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                    raise e
+                    raise
 
             # Use the OCR-processed PDF for highlighting if available
 
