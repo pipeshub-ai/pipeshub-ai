@@ -45,7 +45,7 @@ class GoogleCloudRESTClientViaServiceAccount:
         """
         return self.client
 
-    def list_buckets(self) -> List[Bucket]:
+    def list_buckets(self) -> list[Bucket]:
         """
         Lists all buckets the service account has access to.
         """
