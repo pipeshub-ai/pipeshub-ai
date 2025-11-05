@@ -5,6 +5,7 @@ from typing import List, Literal
 
 import aiohttp
 import jwt
+from app.utils.chat_helpers import count_tokens_text
 import numpy as np
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
@@ -37,6 +38,35 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Update the Literal types
 SentimentType = Literal["Positive", "Neutral", "Negative"]
+
+def get_first_n_tokens(text: str, n: int) -> str:
+    """Return the first n tokens of text.
+
+    Uses tiktoken with cl100k_base when available; otherwise falls back to a
+    simple character heuristic (~4 chars per token).
+    """
+    if not text or n <= 0:
+        return ""
+    # Try tiktoken if available
+    try:
+        import tiktoken  # type: ignore
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            enc = None
+        if enc is not None:
+            try:
+                token_ids = enc.encode(text)
+                return enc.decode(token_ids[:n])
+            except Exception:
+                pass
+    except Exception:
+        # tiktoken not available; fall back to heuristic
+        pass
+
+    # Heuristic fallback: assume ~4 chars per token
+    approx_chars = max(0, n * 4)
+    return text[:approx_chars]
 
 class SubCategories(BaseModel):
     level1: str = Field(description="Level 1 subcategory")
@@ -202,6 +232,10 @@ class DomainExtractor:
                 "{department_list}", department_list
             ).replace("{sentiment_list}", sentiment_list)
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
+            token_count = count_tokens_text(content,None)
+            if token_count > 30000:
+                self.logger.info("🎯 Prompt exceeds 30000 tokens, truncating content")
+                content = get_first_n_tokens(content,30000)
 
             formatted_prompt = self.prompt_template.format(content=content)
             self.logger.info("🎯 Prompt formatted successfully")
