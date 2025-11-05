@@ -1282,8 +1282,19 @@ def count_tokens_text(text: str,enc) -> int:
         except Exception:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
             pass
+    else:
+        try:
+            import tiktoken  # type: ignore
+            try:
+                enc = tiktoken.get_encoding("cl100k_base")
+                return len(enc.encode(text))
+            except Exception:
+                logger.warning("tiktoken encoding failed, falling back to heuristic.")
+                pass
+        except Exception:
+            logger.warning("tiktoken encoding failed, falling back to heuristic.")
+            pass
 
-    # Fallback heuristic: ~4 chars per token
     return max(1, len(text) // 4)
 
 def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int, int]:
