@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.zendesk.zendesk import ZendeskClient, ZendeskResponse
@@ -48,25 +48,25 @@ class ZendeskDataSource:
         self._client = client
         self.http = client.get_client()
         if self.http is None:
-            raise ValueError('HTTP client is not initialized')
+            raise ValueError("HTTP client is not initialized")
         try:
-            self.base_url = self.http.get_base_url().rstrip('/')
+            self.base_url = self.http.get_base_url().rstrip("/")
         except AttributeError as exc:
-            raise ValueError('HTTP client does not have get_base_url method') from exc
+            raise ValueError("HTTP client does not have get_base_url method") from exc
 
-    def get_data_source(self) -> 'ZendeskDataSource':
+    def get_data_source(self) -> "ZendeskDataSource":
         return self
 
 
     async def list_tickets(
         self,
-        sort_by: Optional[Literal["assignee", "assignee.name", "created_at", "group_id", "id", "locale_id", "requester", "requester.name", "status", "subject", "updated_at"]] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        external_id: Optional[str] = None,
-        include: Optional[str] = None,
-        page: Optional[int] = None,
-        per_page: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        sort_by: Literal["assignee", "assignee.name", "created_at", "group_id", "id", "locale_id", "requester", "requester.name", "status", "subject", "updated_at"] | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        external_id: str | None = None,
+        include: str | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all tickets with pagination support
 
@@ -80,6 +80,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -104,31 +105,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_ticket(
         self,
         ticket_id: int,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show details of a specific ticket
 
@@ -138,6 +139,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -152,57 +154,57 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_ticket(
         self,
         subject: str,
-        comment: Dict[str, Any],
-        requester_id: Optional[int] = None,
-        requester: Optional[Dict[str, Any]] = None,
-        submitter_id: Optional[int] = None,
-        assignee_id: Optional[int] = None,
-        group_id: Optional[int] = None,
-        collaborator_ids: Optional[List[int]] = None,
-        follower_ids: Optional[List[int]] = None,
-        email_ccs: Optional[List[Dict[str, str]]] = None,
-        organization_id: Optional[int] = None,
-        external_id: Optional[str] = None,
-        type: Optional[Literal["problem", "incident", "question", "task"]] = None,
-        priority: Optional[Literal["urgent", "high", "normal", "low"]] = None,
-        status: Optional[Literal["new", "open", "pending", "hold", "solved", "closed"]] = None,
-        recipient: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None,
-        due_at: Optional[str] = None,
-        ticket_form_id: Optional[int] = None,
-        brand_id: Optional[int] = None,
-        forum_topic_id: Optional[int] = None,
-        problem_id: Optional[int] = None,
-        via: Optional[Dict[str, Any]] = None,
-        macro_ids: Optional[List[int]] = None,
-        safe_update: Optional[bool] = None,
-        updated_stamp: Optional[str] = None,
-        sharing_agreement_ids: Optional[List[int]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        comment: dict[str, Any],
+        requester_id: int | None = None,
+        requester: dict[str, Any] | None = None,
+        submitter_id: int | None = None,
+        assignee_id: int | None = None,
+        group_id: int | None = None,
+        collaborator_ids: list[int] | None = None,
+        follower_ids: list[int] | None = None,
+        email_ccs: list[dict[str, str]] | None = None,
+        organization_id: int | None = None,
+        external_id: str | None = None,
+        type: Literal["problem", "incident", "question", "task"] | None = None,
+        priority: Literal["urgent", "high", "normal", "low"] | None = None,
+        status: Literal["new", "open", "pending", "hold", "solved", "closed"] | None = None,
+        recipient: str | None = None,
+        tags: list[str] | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
+        due_at: str | None = None,
+        ticket_form_id: int | None = None,
+        brand_id: int | None = None,
+        forum_topic_id: int | None = None,
+        problem_id: int | None = None,
+        via: dict[str, Any] | None = None,
+        macro_ids: list[int] | None = None,
+        safe_update: bool | None = None,
+        updated_stamp: str | None = None,
+        sharing_agreement_ids: list[int] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new ticket
 
@@ -238,6 +240,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -308,51 +311,51 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_ticket(
         self,
         ticket_id: int,
-        subject: Optional[str] = None,
-        comment: Optional[Dict[str, Any]] = None,
-        requester_id: Optional[int] = None,
-        submitter_id: Optional[int] = None,
-        assignee_id: Optional[int] = None,
-        group_id: Optional[int] = None,
-        collaborator_ids: Optional[List[int]] = None,
-        follower_ids: Optional[List[int]] = None,
-        organization_id: Optional[int] = None,
-        external_id: Optional[str] = None,
-        type: Optional[Literal["problem", "incident", "question", "task"]] = None,
-        priority: Optional[Literal["urgent", "high", "normal", "low"]] = None,
-        status: Optional[Literal["new", "open", "pending", "hold", "solved", "closed"]] = None,
-        tags: Optional[List[str]] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None,
-        due_at: Optional[str] = None,
-        additional_tags: Optional[List[str]] = None,
-        remove_tags: Optional[List[str]] = None,
-        safe_update: Optional[bool] = None,
-        updated_stamp: Optional[str] = None,
-        macro_ids: Optional[List[int]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        subject: str | None = None,
+        comment: dict[str, Any] | None = None,
+        requester_id: int | None = None,
+        submitter_id: int | None = None,
+        assignee_id: int | None = None,
+        group_id: int | None = None,
+        collaborator_ids: list[int] | None = None,
+        follower_ids: list[int] | None = None,
+        organization_id: int | None = None,
+        external_id: str | None = None,
+        type: Literal["problem", "incident", "question", "task"] | None = None,
+        priority: Literal["urgent", "high", "normal", "low"] | None = None,
+        status: Literal["new", "open", "pending", "hold", "solved", "closed"] | None = None,
+        tags: list[str] | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
+        due_at: str | None = None,
+        additional_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+        safe_update: bool | None = None,
+        updated_stamp: str | None = None,
+        macro_ids: list[int] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing ticket
 
@@ -382,6 +385,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -440,30 +444,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_ticket(
         self,
         ticket_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a ticket
 
@@ -472,6 +476,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -483,30 +488,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_many_tickets(
         self,
-        tickets: List[Dict[str, Any]],
-        headers: Optional[Dict[str, Any]] = None
+        tickets: list[dict[str, Any]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create multiple tickets (up to 100)
 
@@ -515,6 +520,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -532,31 +538,31 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_many_tickets(
         self,
-        tickets: List[Dict[str, Any]],
-        ids: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        tickets: list[dict[str, Any]],
+        ids: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update multiple tickets
 
@@ -566,6 +572,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -586,30 +593,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def destroy_many_tickets(
         self,
         ids: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete multiple tickets
 
@@ -618,6 +625,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -631,31 +639,31 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_multiple_tickets(
         self,
         ids: str,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show details of multiple tickets
 
@@ -665,6 +673,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -680,33 +689,33 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def merge_tickets(
         self,
         ticket_id: int,
-        ids: List[int],
-        target_comment: Optional[str] = None,
-        source_comment: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        ids: list[int],
+        target_comment: str | None = None,
+        source_comment: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Merge tickets into target ticket
 
@@ -718,6 +727,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -739,45 +749,45 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def import_ticket(
         self,
         subject: str,
-        comments: List[Dict[str, Any]],
+        comments: list[dict[str, Any]],
         requester_id: int,
         created_at: str,
         updated_at: str,
         status: Literal["solved", "closed"],
-        submitter_id: Optional[int] = None,
-        assignee_id: Optional[int] = None,
-        group_id: Optional[int] = None,
-        organization_id: Optional[int] = None,
-        solved_at: Optional[str] = None,
-        priority: Optional[Literal["urgent", "high", "normal", "low"]] = None,
-        type: Optional[Literal["problem", "incident", "question", "task"]] = None,
-        tags: Optional[List[str]] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None,
-        external_id: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        submitter_id: int | None = None,
+        assignee_id: int | None = None,
+        group_id: int | None = None,
+        organization_id: int | None = None,
+        solved_at: str | None = None,
+        priority: Literal["urgent", "high", "normal", "low"] | None = None,
+        type: Literal["problem", "incident", "question", "task"] | None = None,
+        tags: list[str] | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
+        external_id: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Import a ticket with historical data
 
@@ -801,6 +811,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -843,32 +854,32 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_comments(
         self,
         ticket_id: int,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List comments for a ticket
 
@@ -879,6 +890,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -895,23 +907,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -920,7 +932,7 @@ class ZendeskDataSource:
         ticket_id: int,
         comment_id: int,
         text: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Redact a comment
 
@@ -931,6 +943,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -948,34 +961,34 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_users(
         self,
-        role: Optional[Literal["end-user", "agent", "admin"]] = None,
-        roles_: Optional[List[str]] = None,
-        permission_set: Optional[int] = None,
-        external_id: Optional[str] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        role: Literal["end-user", "agent", "admin"] | None = None,
+        roles_: list[str] | None = None,
+        permission_set: int | None = None,
+        external_id: str | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all users
 
@@ -988,6 +1001,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1010,31 +1024,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_user(
         self,
         user_id: int,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific user
 
@@ -1044,6 +1058,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1058,56 +1073,56 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_user(
         self,
         name: str,
-        email: Optional[str] = None,
-        role: Optional[Literal["end-user", "agent", "admin"]] = None,
-        custom_role_id: Optional[int] = None,
-        external_id: Optional[str] = None,
-        alias: Optional[str] = None,
-        details: Optional[str] = None,
-        notes: Optional[str] = None,
-        organization_id: Optional[int] = None,
-        phone: Optional[str] = None,
-        shared_phone_number: Optional[bool] = None,
-        signature: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        time_zone: Optional[str] = None,
-        locale: Optional[str] = None,
-        locale_id: Optional[int] = None,
-        user_fields: Optional[Dict[str, Any]] = None,
-        verified: Optional[bool] = None,
-        restricted_agent: Optional[bool] = None,
-        suspended: Optional[bool] = None,
-        shared: Optional[bool] = None,
-        shared_agent: Optional[bool] = None,
-        only_private_comments: Optional[bool] = None,
-        default_group_id: Optional[int] = None,
-        photo: Optional[Dict[str, Any]] = None,
-        identities: Optional[List[Dict[str, Any]]] = None,
-        skip_verify_email: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        email: str | None = None,
+        role: Literal["end-user", "agent", "admin"] | None = None,
+        custom_role_id: int | None = None,
+        external_id: str | None = None,
+        alias: str | None = None,
+        details: str | None = None,
+        notes: str | None = None,
+        organization_id: int | None = None,
+        phone: str | None = None,
+        shared_phone_number: bool | None = None,
+        signature: str | None = None,
+        tags: list[str] | None = None,
+        time_zone: str | None = None,
+        locale: str | None = None,
+        locale_id: int | None = None,
+        user_fields: dict[str, Any] | None = None,
+        verified: bool | None = None,
+        restricted_agent: bool | None = None,
+        suspended: bool | None = None,
+        shared: bool | None = None,
+        shared_agent: bool | None = None,
+        only_private_comments: bool | None = None,
+        default_group_id: int | None = None,
+        photo: dict[str, Any] | None = None,
+        identities: list[dict[str, Any]] | None = None,
+        skip_verify_email: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new user
 
@@ -1142,6 +1157,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1211,55 +1227,55 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_user(
         self,
         user_id: int,
-        name: Optional[str] = None,
-        email: Optional[str] = None,
-        role: Optional[Literal["end-user", "agent", "admin"]] = None,
-        custom_role_id: Optional[int] = None,
-        external_id: Optional[str] = None,
-        alias: Optional[str] = None,
-        details: Optional[str] = None,
-        notes: Optional[str] = None,
-        organization_id: Optional[int] = None,
-        phone: Optional[str] = None,
-        shared_phone_number: Optional[bool] = None,
-        signature: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        time_zone: Optional[str] = None,
-        locale: Optional[str] = None,
-        locale_id: Optional[int] = None,
-        user_fields: Optional[Dict[str, Any]] = None,
-        verified: Optional[bool] = None,
-        restricted_agent: Optional[bool] = None,
-        suspended: Optional[bool] = None,
-        shared: Optional[bool] = None,
-        shared_agent: Optional[bool] = None,
-        only_private_comments: Optional[bool] = None,
-        default_group_id: Optional[int] = None,
-        photo: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        email: str | None = None,
+        role: Literal["end-user", "agent", "admin"] | None = None,
+        custom_role_id: int | None = None,
+        external_id: str | None = None,
+        alias: str | None = None,
+        details: str | None = None,
+        notes: str | None = None,
+        organization_id: int | None = None,
+        phone: str | None = None,
+        shared_phone_number: bool | None = None,
+        signature: str | None = None,
+        tags: list[str] | None = None,
+        time_zone: str | None = None,
+        locale: str | None = None,
+        locale_id: int | None = None,
+        user_fields: dict[str, Any] | None = None,
+        verified: bool | None = None,
+        restricted_agent: bool | None = None,
+        suspended: bool | None = None,
+        shared: bool | None = None,
+        shared_agent: bool | None = None,
+        only_private_comments: bool | None = None,
+        default_group_id: int | None = None,
+        photo: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing user
 
@@ -1293,6 +1309,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1359,30 +1376,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_user(
         self,
         user_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a user
 
@@ -1391,6 +1408,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1402,31 +1420,31 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def search_users(
         self,
         query: str,
-        external_id: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_id: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Search for users
 
@@ -1436,6 +1454,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1451,30 +1470,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def autocomplete_users(
         self,
         name: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Autocomplete user names
 
@@ -1483,6 +1502,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1496,34 +1516,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_current_user(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show the current authenticated user
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1535,30 +1556,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_many_users(
         self,
-        users: List[Dict[str, Any]],
-        headers: Optional[Dict[str, Any]] = None
+        users: list[dict[str, Any]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create multiple users (up to 100)
 
@@ -1567,6 +1588,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1584,32 +1606,32 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_many_users(
         self,
-        users: List[Dict[str, Any]],
-        ids: Optional[str] = None,
-        external_ids: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        users: list[dict[str, Any]],
+        ids: str | None = None,
+        external_ids: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update multiple users
 
@@ -1620,6 +1642,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1642,30 +1665,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_or_update_many_users(
         self,
-        users: List[Dict[str, Any]],
-        headers: Optional[Dict[str, Any]] = None
+        users: list[dict[str, Any]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create or update multiple users
 
@@ -1674,6 +1697,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1691,31 +1715,31 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def destroy_many_users(
         self,
         ids: str,
-        external_ids: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_ids: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete multiple users
 
@@ -1725,6 +1749,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1740,32 +1765,32 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_multiple_users(
         self,
         ids: str,
-        external_ids: Optional[str] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_ids: str | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show details of multiple users
 
@@ -1776,6 +1801,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1793,30 +1819,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_user_related_information(
         self,
         user_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show user related ticket and organization information
 
@@ -1825,6 +1851,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1836,23 +1863,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -1860,7 +1887,7 @@ class ZendeskDataSource:
         self,
         user_id: int,
         password: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Set user password
 
@@ -1870,6 +1897,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1887,23 +1915,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -1912,7 +1940,7 @@ class ZendeskDataSource:
         user_id: int,
         previous_password: str,
         password: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Change user password
 
@@ -1923,6 +1951,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1941,30 +1970,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_user_identities(
         self,
         user_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List user identities
 
@@ -1973,6 +2002,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -1984,23 +2014,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2008,7 +2038,7 @@ class ZendeskDataSource:
         self,
         user_id: int,
         identity_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific user identity
 
@@ -2018,6 +2048,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2029,23 +2060,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2054,8 +2085,8 @@ class ZendeskDataSource:
         user_id: int,
         type: Literal["email", "twitter", "facebook", "google", "phone_number", "agent_forwarding", "sdk"],
         value: str,
-        verified: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        verified: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a user identity
 
@@ -2067,6 +2098,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2087,23 +2119,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2111,8 +2143,8 @@ class ZendeskDataSource:
         self,
         user_id: int,
         identity_id: int,
-        verified: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        verified: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update a user identity
 
@@ -2123,6 +2155,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2141,23 +2174,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2165,7 +2198,7 @@ class ZendeskDataSource:
         self,
         user_id: int,
         identity_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Make an identity the primary identity
 
@@ -2175,6 +2208,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2188,23 +2222,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2212,7 +2246,7 @@ class ZendeskDataSource:
         self,
         user_id: int,
         identity_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Verify a user identity
 
@@ -2222,6 +2256,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2235,23 +2270,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2259,7 +2294,7 @@ class ZendeskDataSource:
         self,
         user_id: int,
         identity_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Request identity verification
 
@@ -2269,6 +2304,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2282,23 +2318,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -2306,7 +2342,7 @@ class ZendeskDataSource:
         self,
         user_id: int,
         identity_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a user identity
 
@@ -2316,6 +2352,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2327,30 +2364,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_organizations(
         self,
-        external_id: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_id: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all organizations
 
@@ -2359,6 +2396,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2373,30 +2411,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_organization(
         self,
         organization_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific organization
 
@@ -2405,6 +2443,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2416,39 +2455,39 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_organization(
         self,
         name: str,
-        details: Optional[str] = None,
-        notes: Optional[str] = None,
-        external_id: Optional[str] = None,
-        domain_names: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
-        shared_tickets: Optional[bool] = None,
-        shared_comments: Optional[bool] = None,
-        group_id: Optional[int] = None,
-        organization_fields: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        details: str | None = None,
+        notes: str | None = None,
+        external_id: str | None = None,
+        domain_names: list[str] | None = None,
+        tags: list[str] | None = None,
+        shared_tickets: bool | None = None,
+        shared_comments: bool | None = None,
+        group_id: int | None = None,
+        organization_fields: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new organization
 
@@ -2466,6 +2505,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2501,40 +2541,40 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_organization(
         self,
         organization_id: int,
-        name: Optional[str] = None,
-        details: Optional[str] = None,
-        notes: Optional[str] = None,
-        external_id: Optional[str] = None,
-        domain_names: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
-        shared_tickets: Optional[bool] = None,
-        shared_comments: Optional[bool] = None,
-        group_id: Optional[int] = None,
-        organization_fields: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        details: str | None = None,
+        notes: str | None = None,
+        external_id: str | None = None,
+        domain_names: list[str] | None = None,
+        tags: list[str] | None = None,
+        shared_tickets: bool | None = None,
+        shared_comments: bool | None = None,
+        group_id: int | None = None,
+        organization_fields: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing organization
 
@@ -2553,6 +2593,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2589,30 +2630,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_organization(
         self,
         organization_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete an organization
 
@@ -2621,6 +2662,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2632,31 +2674,31 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def search_organizations(
         self,
-        external_id: Optional[str] = None,
-        name: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_id: str | None = None,
+        name: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Search for organizations
 
@@ -2666,6 +2708,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2682,32 +2725,32 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def autocomplete_organizations(
         self,
         name: str,
-        field_id: Optional[str] = None,
-        source: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        field_id: str | None = None,
+        source: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Autocomplete organization names
 
@@ -2718,6 +2761,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2735,30 +2779,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_many_organizations(
         self,
-        organizations: List[Dict[str, Any]],
-        headers: Optional[Dict[str, Any]] = None
+        organizations: list[dict[str, Any]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create multiple organizations (up to 100)
 
@@ -2767,6 +2811,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2784,32 +2829,32 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_many_organizations(
         self,
-        organizations: List[Dict[str, Any]],
-        ids: Optional[str] = None,
-        external_ids: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        organizations: list[dict[str, Any]],
+        ids: str | None = None,
+        external_ids: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update multiple organizations
 
@@ -2820,6 +2865,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2842,30 +2888,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_or_update_many_organizations(
         self,
-        organizations: List[Dict[str, Any]],
-        headers: Optional[Dict[str, Any]] = None
+        organizations: list[dict[str, Any]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create or update multiple organizations
 
@@ -2874,6 +2920,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2891,31 +2938,31 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def destroy_many_organizations(
         self,
         ids: str,
-        external_ids: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_ids: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete multiple organizations
 
@@ -2925,6 +2972,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2940,31 +2988,31 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_multiple_organizations(
         self,
         ids: str,
-        external_ids: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_ids: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show details of multiple organizations
 
@@ -2974,6 +3022,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -2989,30 +3038,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_groups(
         self,
-        exclude_deleted: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        exclude_deleted: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all groups
 
@@ -3021,6 +3070,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3035,30 +3085,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_group(
         self,
         group_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific group
 
@@ -3067,6 +3117,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3078,33 +3129,33 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_group(
         self,
         name: str,
-        description: Optional[str] = None,
-        default: Optional[bool] = None,
-        is_public: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        default: bool | None = None,
+        is_public: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new group
 
@@ -3116,6 +3167,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3139,34 +3191,34 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_group(
         self,
         group_id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        default: Optional[bool] = None,
-        is_public: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        description: str | None = None,
+        default: bool | None = None,
+        is_public: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing group
 
@@ -3179,6 +3231,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3203,30 +3256,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_group(
         self,
         group_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a group
 
@@ -3235,6 +3288,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3246,34 +3300,35 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_group_memberships(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all group memberships
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3285,30 +3340,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_group_memberships_by_group(
         self,
         group_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List memberships for a specific group
 
@@ -3317,6 +3372,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3328,30 +3384,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_group_memberships_by_user(
         self,
         user_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List memberships for a specific user
 
@@ -3360,6 +3416,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3371,30 +3428,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_group_membership(
         self,
         membership_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific group membership
 
@@ -3403,6 +3460,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3414,23 +3472,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -3438,8 +3496,8 @@ class ZendeskDataSource:
         self,
         user_id: int,
         group_id: int,
-        default: Optional[bool] = None,
-        headers: Optional[Dict[str, Any]] = None
+        default: bool | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new group membership
 
@@ -3450,6 +3508,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3470,30 +3529,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_group_membership(
         self,
         membership_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a group membership
 
@@ -3502,6 +3561,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3513,30 +3573,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def destroy_many_group_memberships(
         self,
         ids: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete multiple group memberships
 
@@ -3545,6 +3605,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3558,30 +3619,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_many_group_memberships(
         self,
-        group_memberships: List[Dict[str, Any]],
-        headers: Optional[Dict[str, Any]] = None
+        group_memberships: list[dict[str, Any]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create multiple group memberships
 
@@ -3590,6 +3651,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3607,33 +3669,33 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def search(
         self,
         query: str,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        sort_by: str | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Search for tickets, users, organizations, and groups
 
@@ -3645,6 +3707,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3664,31 +3727,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def search_export(
         self,
         query: str,
-        filter: Optional[Dict[str, str]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        filter: dict[str, str] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Export search results for large datasets
 
@@ -3698,6 +3761,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3713,30 +3777,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def count_search_results(
         self,
         query: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Get count of search results
 
@@ -3745,6 +3809,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3758,31 +3823,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_requests(
         self,
-        status: Optional[str] = None,
-        organization_id: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        status: str | None = None,
+        organization_id: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List requests from the end-user perspective
 
@@ -3792,6 +3857,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3808,30 +3874,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_request(
         self,
         request_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific request
 
@@ -3840,6 +3906,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3851,38 +3918,38 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_request(
         self,
         subject: str,
-        comment: Dict[str, Any],
-        priority: Optional[Literal["urgent", "high", "normal", "low"]] = None,
-        type: Optional[Literal["problem", "incident", "question", "task"]] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None,
-        fields: Optional[List[Dict[str, Any]]] = None,
-        recipient: Optional[str] = None,
-        collaborator_ids: Optional[List[int]] = None,
-        email_ccs: Optional[List[Dict[str, str]]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        comment: dict[str, Any],
+        priority: Literal["urgent", "high", "normal", "low"] | None = None,
+        type: Literal["problem", "incident", "question", "task"] | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
+        fields: list[dict[str, Any]] | None = None,
+        recipient: str | None = None,
+        collaborator_ids: list[int] | None = None,
+        email_ccs: list[dict[str, str]] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new request (end-user creates ticket)
 
@@ -3899,6 +3966,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3931,33 +3999,33 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_request(
         self,
         request_id: int,
-        comment: Optional[Dict[str, Any]] = None,
-        solved: Optional[bool] = None,
-        additional_collaborators: Optional[List[Dict[str, str]]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        comment: dict[str, Any] | None = None,
+        solved: bool | None = None,
+        additional_collaborators: list[dict[str, str]] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update a request (add comment or solve)
 
@@ -3969,6 +4037,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -3991,31 +4060,31 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_request_comments(
         self,
         request_id: int,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        sort_order: Literal["asc", "desc"] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List comments for a request
 
@@ -4025,6 +4094,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4039,23 +4109,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -4063,7 +4133,7 @@ class ZendeskDataSource:
         self,
         request_id: int,
         comment_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific request comment
 
@@ -4073,6 +4143,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4084,33 +4155,33 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_automations(
         self,
-        active: Optional[bool] = None,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        active: bool | None = None,
+        sort_by: str | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all automations
 
@@ -4122,6 +4193,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4142,34 +4214,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_active_automations(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List active automations
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4181,30 +4254,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_automation(
         self,
         automation_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific automation
 
@@ -4213,6 +4286,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4224,34 +4298,34 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_automation(
         self,
         title: str,
-        conditions: Dict[str, Any],
-        actions: List[Dict[str, Any]],
-        active: Optional[bool] = None,
-        position: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        conditions: dict[str, Any],
+        actions: list[dict[str, Any]],
+        active: bool | None = None,
+        position: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new automation
 
@@ -4264,6 +4338,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4287,35 +4362,35 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_automation(
         self,
         automation_id: int,
-        title: Optional[str] = None,
-        active: Optional[bool] = None,
-        conditions: Optional[Dict[str, Any]] = None,
-        actions: Optional[List[Dict[str, Any]]] = None,
-        position: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        active: bool | None = None,
+        conditions: dict[str, Any] | None = None,
+        actions: list[dict[str, Any]] | None = None,
+        position: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing automation
 
@@ -4329,6 +4404,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4355,30 +4431,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_automation(
         self,
         automation_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete an automation
 
@@ -4387,6 +4463,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4398,30 +4475,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_many_automations(
         self,
-        automations: Dict[str, List[Dict[str, Any]]],
-        headers: Optional[Dict[str, Any]] = None
+        automations: dict[str, list[dict[str, Any]]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update multiple automations
 
@@ -4430,6 +4507,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4447,34 +4525,34 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_triggers(
         self,
-        active: Optional[bool] = None,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        category_id: Optional[str] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        active: bool | None = None,
+        sort_by: str | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        category_id: str | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all triggers
 
@@ -4487,6 +4565,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4509,34 +4588,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_active_triggers(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List active triggers
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4548,30 +4628,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_trigger(
         self,
         trigger_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific trigger
 
@@ -4580,6 +4660,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4591,36 +4672,36 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_trigger(
         self,
         title: str,
-        conditions: Dict[str, Any],
-        actions: List[Dict[str, Any]],
-        active: Optional[bool] = None,
-        position: Optional[int] = None,
-        category_id: Optional[str] = None,
-        description: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        conditions: dict[str, Any],
+        actions: list[dict[str, Any]],
+        active: bool | None = None,
+        position: int | None = None,
+        category_id: str | None = None,
+        description: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new trigger
 
@@ -4635,6 +4716,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4662,37 +4744,37 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_trigger(
         self,
         trigger_id: int,
-        title: Optional[str] = None,
-        active: Optional[bool] = None,
-        conditions: Optional[Dict[str, Any]] = None,
-        actions: Optional[List[Dict[str, Any]]] = None,
-        position: Optional[int] = None,
-        category_id: Optional[str] = None,
-        description: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        active: bool | None = None,
+        conditions: dict[str, Any] | None = None,
+        actions: list[dict[str, Any]] | None = None,
+        position: int | None = None,
+        category_id: str | None = None,
+        description: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing trigger
 
@@ -4708,6 +4790,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4738,30 +4821,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_trigger(
         self,
         trigger_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a trigger
 
@@ -4770,6 +4853,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4781,30 +4865,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def reorder_triggers(
         self,
-        trigger_ids: List[int],
-        headers: Optional[Dict[str, Any]] = None
+        trigger_ids: list[int],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Reorder triggers
 
@@ -4813,6 +4897,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4830,30 +4915,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_many_triggers(
         self,
-        triggers: Dict[str, List[Dict[str, Any]]],
-        headers: Optional[Dict[str, Any]] = None
+        triggers: dict[str, list[dict[str, Any]]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update multiple triggers
 
@@ -4862,6 +4947,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4879,30 +4965,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def destroy_many_triggers(
         self,
         ids: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete multiple triggers
 
@@ -4911,6 +4997,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4924,37 +5011,37 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_macros(
         self,
-        active: Optional[bool] = None,
-        access: Optional[Literal["personal", "shared"]] = None,
-        group_id: Optional[int] = None,
-        category: Optional[int] = None,
-        include: Optional[str] = None,
-        only_viewable: Optional[bool] = None,
-        sort_by: Optional[Literal["alphabetical", "created_at", "updated_at", "usage_1h", "usage_24h", "usage_7d", "usage_30d", "position"]] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        active: bool | None = None,
+        access: Literal["personal", "shared"] | None = None,
+        group_id: int | None = None,
+        category: int | None = None,
+        include: str | None = None,
+        only_viewable: bool | None = None,
+        sort_by: Literal["alphabetical", "created_at", "updated_at", "usage_1h", "usage_24h", "usage_7d", "usage_30d", "position"] | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all macros
 
@@ -4970,6 +5057,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -4998,34 +5086,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_active_macros(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List active macros
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5037,30 +5126,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_macro(
         self,
         macro_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific macro
 
@@ -5069,6 +5158,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5080,34 +5170,34 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_macro(
         self,
         title: str,
-        actions: List[Dict[str, Any]],
-        active: Optional[bool] = None,
-        description: Optional[str] = None,
-        restriction: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        actions: list[dict[str, Any]],
+        active: bool | None = None,
+        description: str | None = None,
+        restriction: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new macro
 
@@ -5120,6 +5210,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5144,35 +5235,35 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_macro(
         self,
         macro_id: int,
-        title: Optional[str] = None,
-        actions: Optional[List[Dict[str, Any]]] = None,
-        active: Optional[bool] = None,
-        description: Optional[str] = None,
-        restriction: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        actions: list[dict[str, Any]] | None = None,
+        active: bool | None = None,
+        description: str | None = None,
+        restriction: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing macro
 
@@ -5186,6 +5277,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5212,30 +5304,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_macro(
         self,
         macro_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a macro
 
@@ -5244,6 +5336,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5255,23 +5348,23 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -5279,7 +5372,7 @@ class ZendeskDataSource:
         self,
         ticket_id: int,
         macro_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Apply a macro to a ticket
 
@@ -5289,6 +5382,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5302,30 +5396,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_macro_application_result(
         self,
         macro_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show the result of applying a macro
 
@@ -5334,6 +5428,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5345,23 +5440,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -5369,7 +5464,7 @@ class ZendeskDataSource:
         self,
         ticket_id: int,
         macro_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show how a ticket would look after applying a macro
 
@@ -5379,6 +5474,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5390,30 +5486,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_many_macros(
         self,
-        macros: Dict[str, List[Dict[str, Any]]],
-        headers: Optional[Dict[str, Any]] = None
+        macros: dict[str, list[dict[str, Any]]],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update multiple macros
 
@@ -5422,6 +5518,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5439,30 +5536,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def destroy_many_macros(
         self,
         ids: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete multiple macros
 
@@ -5471,6 +5568,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5484,30 +5582,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_webhooks(
         self,
-        filter: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        filter: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all webhooks
 
@@ -5516,6 +5614,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5530,30 +5629,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_webhook(
         self,
         webhook_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific webhook
 
@@ -5562,6 +5661,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5573,23 +5673,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -5600,11 +5700,11 @@ class ZendeskDataSource:
         http_method: Literal["POST", "PUT", "PATCH", "GET", "DELETE"],
         request_format: Literal["json", "xml", "form_encoded"],
         status: Literal["active", "inactive"],
-        subscriptions: List[str],
-        authentication: Optional[Dict[str, Any]] = None,
-        custom_headers: Optional[Dict[str, str]] = None,
-        description: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        subscriptions: list[str],
+        authentication: dict[str, Any] | None = None,
+        custom_headers: dict[str, str] | None = None,
+        description: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new webhook
 
@@ -5621,6 +5721,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5649,39 +5750,39 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_webhook(
         self,
         webhook_id: str,
-        name: Optional[str] = None,
-        endpoint: Optional[str] = None,
-        http_method: Optional[Literal["POST", "PUT", "PATCH", "GET", "DELETE"]] = None,
-        request_format: Optional[Literal["json", "xml", "form_encoded"]] = None,
-        status: Optional[Literal["active", "inactive"]] = None,
-        subscriptions: Optional[List[str]] = None,
-        authentication: Optional[Dict[str, Any]] = None,
-        custom_headers: Optional[Dict[str, str]] = None,
-        description: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        endpoint: str | None = None,
+        http_method: Literal["POST", "PUT", "PATCH", "GET", "DELETE"] | None = None,
+        request_format: Literal["json", "xml", "form_encoded"] | None = None,
+        status: Literal["active", "inactive"] | None = None,
+        subscriptions: list[str] | None = None,
+        authentication: dict[str, Any] | None = None,
+        custom_headers: dict[str, str] | None = None,
+        description: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing webhook
 
@@ -5699,6 +5800,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5733,30 +5835,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_webhook(
         self,
         webhook_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a webhook
 
@@ -5765,6 +5867,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5776,31 +5879,31 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def test_webhook(
         self,
-        request: Dict[str, Any],
-        webhook_id: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        request: dict[str, Any],
+        webhook_id: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Test a webhook configuration
 
@@ -5810,6 +5913,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5830,23 +5934,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -5854,7 +5958,7 @@ class ZendeskDataSource:
         self,
         clone_webhook_id: str,
         name: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Clone an existing webhook
 
@@ -5864,6 +5968,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5883,30 +5988,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_webhook_signing_secret(
         self,
         webhook_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show webhook signing secret
 
@@ -5915,6 +6020,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5926,30 +6032,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def reset_webhook_signing_secret(
         self,
         webhook_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Reset webhook signing secret
 
@@ -5958,6 +6064,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -5971,23 +6078,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -5995,8 +6102,8 @@ class ZendeskDataSource:
         self,
         filename: str,
         file: bytes,
-        token: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        token: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Upload an attachment
 
@@ -6007,6 +6114,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6028,30 +6136,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_attachment(
         self,
         attachment_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show attachment details
 
@@ -6060,6 +6168,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6071,30 +6180,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_upload(
         self,
         upload_token: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete an uploaded file before it is used
 
@@ -6103,6 +6212,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6114,31 +6224,31 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_ticket_fields(
         self,
-        locale: Optional[str] = None,
-        creator_id: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        locale: str | None = None,
+        creator_id: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all ticket fields
 
@@ -6148,6 +6258,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6164,30 +6275,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_ticket_field(
         self,
         field_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific ticket field
 
@@ -6196,6 +6307,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6207,23 +6319,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -6231,23 +6343,23 @@ class ZendeskDataSource:
         self,
         type: Literal["text", "textarea", "checkbox", "date", "integer", "decimal", "regexp", "partialcreditcard", "multiselect", "tagger", "subject", "description", "status", "priority", "group", "assignee", "custom_status", "tickettype"],
         title: str,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        active: Optional[bool] = None,
-        required: Optional[bool] = None,
-        collapsed_for_agents: Optional[bool] = None,
-        regexp_for_validation: Optional[str] = None,
-        title_in_portal: Optional[str] = None,
-        visible_in_portal: Optional[bool] = None,
-        editable_in_portal: Optional[bool] = None,
-        required_in_portal: Optional[bool] = None,
-        tag: Optional[str] = None,
-        custom_field_options: Optional[List[Dict[str, Any]]] = None,
-        system_field_options: Optional[List[Dict[str, Any]]] = None,
-        sub_type_id: Optional[int] = None,
-        removable: Optional[bool] = None,
-        agent_description: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        position: int | None = None,
+        active: bool | None = None,
+        required: bool | None = None,
+        collapsed_for_agents: bool | None = None,
+        regexp_for_validation: str | None = None,
+        title_in_portal: str | None = None,
+        visible_in_portal: bool | None = None,
+        editable_in_portal: bool | None = None,
+        required_in_portal: bool | None = None,
+        tag: str | None = None,
+        custom_field_options: list[dict[str, Any]] | None = None,
+        system_field_options: list[dict[str, Any]] | None = None,
+        sub_type_id: int | None = None,
+        removable: bool | None = None,
+        agent_description: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new ticket field
 
@@ -6273,6 +6385,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6323,47 +6436,47 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_ticket_field(
         self,
         field_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        active: Optional[bool] = None,
-        required: Optional[bool] = None,
-        collapsed_for_agents: Optional[bool] = None,
-        regexp_for_validation: Optional[str] = None,
-        title_in_portal: Optional[str] = None,
-        visible_in_portal: Optional[bool] = None,
-        editable_in_portal: Optional[bool] = None,
-        required_in_portal: Optional[bool] = None,
-        tag: Optional[str] = None,
-        custom_field_options: Optional[List[Dict[str, Any]]] = None,
-        system_field_options: Optional[List[Dict[str, Any]]] = None,
-        sub_type_id: Optional[int] = None,
-        removable: Optional[bool] = None,
-        agent_description: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+        active: bool | None = None,
+        required: bool | None = None,
+        collapsed_for_agents: bool | None = None,
+        regexp_for_validation: str | None = None,
+        title_in_portal: str | None = None,
+        visible_in_portal: bool | None = None,
+        editable_in_portal: bool | None = None,
+        required_in_portal: bool | None = None,
+        tag: str | None = None,
+        custom_field_options: list[dict[str, Any]] | None = None,
+        system_field_options: list[dict[str, Any]] | None = None,
+        sub_type_id: int | None = None,
+        removable: bool | None = None,
+        agent_description: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing ticket field
 
@@ -6389,6 +6502,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6439,30 +6553,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_ticket_field(
         self,
         field_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a ticket field
 
@@ -6471,6 +6585,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6482,34 +6597,35 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_user_fields(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all user fields
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6521,30 +6637,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_user_field(
         self,
         field_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific user field
 
@@ -6553,6 +6669,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6564,23 +6681,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -6589,15 +6706,15 @@ class ZendeskDataSource:
         type: Literal["text", "textarea", "checkbox", "date", "integer", "decimal", "regexp", "dropdown", "tagger", "multiselect", "lookup"],
         key: str,
         title: str,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        active: Optional[bool] = None,
-        required: Optional[bool] = None,
-        collapsed_for_agents: Optional[bool] = None,
-        regexp_for_validation: Optional[str] = None,
-        custom_field_options: Optional[List[Dict[str, Any]]] = None,
-        tag: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        position: int | None = None,
+        active: bool | None = None,
+        required: bool | None = None,
+        collapsed_for_agents: bool | None = None,
+        regexp_for_validation: str | None = None,
+        custom_field_options: list[dict[str, Any]] | None = None,
+        tag: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new user field
 
@@ -6616,6 +6733,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6651,39 +6769,39 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_user_field(
         self,
         field_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        active: Optional[bool] = None,
-        required: Optional[bool] = None,
-        collapsed_for_agents: Optional[bool] = None,
-        regexp_for_validation: Optional[str] = None,
-        custom_field_options: Optional[List[Dict[str, Any]]] = None,
-        tag: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+        active: bool | None = None,
+        required: bool | None = None,
+        collapsed_for_agents: bool | None = None,
+        regexp_for_validation: str | None = None,
+        custom_field_options: list[dict[str, Any]] | None = None,
+        tag: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing user field
 
@@ -6701,6 +6819,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6735,30 +6854,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_user_field(
         self,
         field_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a user field
 
@@ -6767,6 +6886,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6778,34 +6898,35 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_organization_fields(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all organization fields
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6817,30 +6938,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_organization_field(
         self,
         field_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific organization field
 
@@ -6849,6 +6970,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6860,23 +6982,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -6885,15 +7007,15 @@ class ZendeskDataSource:
         type: Literal["text", "textarea", "checkbox", "date", "integer", "decimal", "regexp", "dropdown", "tagger", "multiselect", "lookup"],
         key: str,
         title: str,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        active: Optional[bool] = None,
-        required: Optional[bool] = None,
-        collapsed_for_agents: Optional[bool] = None,
-        regexp_for_validation: Optional[str] = None,
-        custom_field_options: Optional[List[Dict[str, Any]]] = None,
-        tag: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        position: int | None = None,
+        active: bool | None = None,
+        required: bool | None = None,
+        collapsed_for_agents: bool | None = None,
+        regexp_for_validation: str | None = None,
+        custom_field_options: list[dict[str, Any]] | None = None,
+        tag: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new organization field
 
@@ -6912,6 +7034,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -6947,39 +7070,39 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_organization_field(
         self,
         field_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        active: Optional[bool] = None,
-        required: Optional[bool] = None,
-        collapsed_for_agents: Optional[bool] = None,
-        regexp_for_validation: Optional[str] = None,
-        custom_field_options: Optional[List[Dict[str, Any]]] = None,
-        tag: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+        active: bool | None = None,
+        required: bool | None = None,
+        collapsed_for_agents: bool | None = None,
+        regexp_for_validation: str | None = None,
+        custom_field_options: list[dict[str, Any]] | None = None,
+        tag: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing organization field
 
@@ -6997,6 +7120,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7031,30 +7155,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_organization_field(
         self,
         field_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete an organization field
 
@@ -7063,6 +7187,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7074,34 +7199,35 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_tags(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all tags
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7113,34 +7239,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_tags_count(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show count of all tags
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7152,30 +7279,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def autocomplete_tags(
         self,
         name: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Autocomplete tag names
 
@@ -7184,6 +7311,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7197,34 +7325,34 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_views(
         self,
-        active: Optional[bool] = None,
-        access: Optional[Literal["personal", "shared"]] = None,
-        group_id: Optional[int] = None,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        active: bool | None = None,
+        access: Literal["personal", "shared"] | None = None,
+        group_id: int | None = None,
+        sort_by: str | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all views
 
@@ -7237,6 +7365,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7259,34 +7388,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_active_views(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List active views
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7298,34 +7428,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_compact_views(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List views in compact format
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7337,30 +7468,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_view(
         self,
         view_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific view
 
@@ -7369,6 +7500,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7380,34 +7512,34 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_view(
         self,
         title: str,
-        conditions: Dict[str, Any],
-        execution: Dict[str, Any],
-        active: Optional[bool] = None,
-        restriction: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        conditions: dict[str, Any],
+        execution: dict[str, Any],
+        active: bool | None = None,
+        restriction: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new view
 
@@ -7420,6 +7552,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7443,35 +7576,35 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_view(
         self,
         view_id: int,
-        title: Optional[str] = None,
-        active: Optional[bool] = None,
-        conditions: Optional[Dict[str, Any]] = None,
-        execution: Optional[Dict[str, Any]] = None,
-        restriction: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        active: bool | None = None,
+        conditions: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        restriction: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing view
 
@@ -7485,6 +7618,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7511,30 +7645,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_view(
         self,
         view_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a view
 
@@ -7543,6 +7677,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7554,33 +7689,33 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def execute_view(
         self,
         view_id: int,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        sort_by: str | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Execute a view to get tickets
 
@@ -7592,6 +7727,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7610,31 +7746,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def get_view_tickets(
         self,
         view_id: int,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Get tickets from a view
 
@@ -7644,6 +7780,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7658,30 +7795,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def count_view_tickets(
         self,
         view_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Count tickets in a view
 
@@ -7690,6 +7827,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7701,30 +7839,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def export_view(
         self,
         view_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Export view results
 
@@ -7733,6 +7871,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7744,38 +7883,38 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_articles(
         self,
-        locale: Optional[str] = None,
-        category: Optional[int] = None,
-        section: Optional[int] = None,
-        label_names: Optional[str] = None,
-        created_at: Optional[str] = None,
-        updated_at: Optional[str] = None,
-        sort_by: Optional[Literal["created_at", "updated_at", "position", "title", "vote_sum", "vote_count"]] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        locale: str | None = None,
+        category: int | None = None,
+        section: int | None = None,
+        label_names: str | None = None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+        sort_by: Literal["created_at", "updated_at", "position", "title", "vote_sum", "vote_count"] | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all articles
 
@@ -7792,6 +7931,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7822,31 +7962,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_article(
         self,
         article_id: int,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific article
 
@@ -7856,6 +7996,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7870,23 +8011,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -7896,15 +8037,15 @@ class ZendeskDataSource:
         title: str,
         body: str,
         locale: str,
-        author_id: Optional[int] = None,
-        comments_disabled: Optional[bool] = None,
-        draft: Optional[bool] = None,
-        promoted: Optional[bool] = None,
-        position: Optional[int] = None,
-        label_names: Optional[List[str]] = None,
-        user_segment_id: Optional[int] = None,
-        permission_group_id: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        author_id: int | None = None,
+        comments_disabled: bool | None = None,
+        draft: bool | None = None,
+        promoted: bool | None = None,
+        position: int | None = None,
+        label_names: list[str] | None = None,
+        user_segment_id: int | None = None,
+        permission_group_id: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new article
 
@@ -7924,6 +8065,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -7959,41 +8101,41 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_article(
         self,
         article_id: int,
-        title: Optional[str] = None,
-        body: Optional[str] = None,
-        author_id: Optional[int] = None,
-        comments_disabled: Optional[bool] = None,
-        draft: Optional[bool] = None,
-        promoted: Optional[bool] = None,
-        position: Optional[int] = None,
-        section_id: Optional[int] = None,
-        label_names: Optional[List[str]] = None,
-        user_segment_id: Optional[int] = None,
-        permission_group_id: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        body: str | None = None,
+        author_id: int | None = None,
+        comments_disabled: bool | None = None,
+        draft: bool | None = None,
+        promoted: bool | None = None,
+        position: int | None = None,
+        section_id: int | None = None,
+        label_names: list[str] | None = None,
+        user_segment_id: int | None = None,
+        permission_group_id: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing article
 
@@ -8013,6 +8155,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8051,30 +8194,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_article(
         self,
         article_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete an article
 
@@ -8083,6 +8226,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8094,36 +8238,36 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def search_articles(
         self,
         query: str,
-        locale: Optional[str] = None,
-        category: Optional[int] = None,
-        section: Optional[int] = None,
-        label_names: Optional[str] = None,
-        snippet: Optional[Literal["true", "false"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        locale: str | None = None,
+        category: int | None = None,
+        section: int | None = None,
+        label_names: str | None = None,
+        snippet: Literal["true", "false"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Search articles
 
@@ -8138,6 +8282,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8163,34 +8308,34 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_sections(
         self,
-        category_id: Optional[int] = None,
-        locale: Optional[str] = None,
-        sort_by: Optional[Literal["position", "created_at", "updated_at", "name"]] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        category_id: int | None = None,
+        locale: str | None = None,
+        sort_by: Literal["position", "created_at", "updated_at", "name"] | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all sections
 
@@ -8203,6 +8348,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8225,30 +8371,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_section(
         self,
         section_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific section
 
@@ -8257,6 +8403,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8268,23 +8415,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -8293,12 +8440,12 @@ class ZendeskDataSource:
         category_id: int,
         name: str,
         locale: str,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        sorting: Optional[Literal["manual", "created_at", "updated_at", "name", "title"]] = None,
-        theme_template: Optional[str] = None,
-        manageable_by: Optional[Literal["managers", "managers_and_agents"]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        position: int | None = None,
+        sorting: Literal["manual", "created_at", "updated_at", "name", "title"] | None = None,
+        theme_template: str | None = None,
+        manageable_by: Literal["managers", "managers_and_agents"] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new section
 
@@ -8314,6 +8461,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8342,37 +8490,37 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_section(
         self,
         section_id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        sorting: Optional[Literal["manual", "created_at", "updated_at", "name", "title"]] = None,
-        category_id: Optional[int] = None,
-        theme_template: Optional[str] = None,
-        manageable_by: Optional[Literal["managers", "managers_and_agents"]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+        sorting: Literal["manual", "created_at", "updated_at", "name", "title"] | None = None,
+        category_id: int | None = None,
+        theme_template: str | None = None,
+        manageable_by: Literal["managers", "managers_and_agents"] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing section
 
@@ -8388,6 +8536,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8418,30 +8567,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_section(
         self,
         section_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a section
 
@@ -8450,6 +8599,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8461,33 +8611,33 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_categories(
         self,
-        locale: Optional[str] = None,
-        sort_by: Optional[Literal["position", "created_at", "updated_at", "name"]] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        locale: str | None = None,
+        sort_by: Literal["position", "created_at", "updated_at", "name"] | None = None,
+        sort_order: Literal["asc", "desc"] | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all categories
 
@@ -8499,6 +8649,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8519,31 +8670,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_category(
         self,
         category_id: int,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific category
 
@@ -8553,6 +8704,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8567,23 +8719,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -8591,9 +8743,9 @@ class ZendeskDataSource:
         self,
         name: str,
         locale: str,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        position: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new category
 
@@ -8605,6 +8757,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8627,33 +8780,33 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_category(
         self,
         category_id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing category
 
@@ -8665,6 +8818,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8687,30 +8841,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_category(
         self,
         category_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a category
 
@@ -8719,6 +8873,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8730,34 +8885,35 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_custom_objects(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all custom objects
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8769,30 +8925,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_custom_object(
         self,
         custom_object_key: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific custom object
 
@@ -8801,6 +8957,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8812,23 +8969,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -8837,9 +8994,9 @@ class ZendeskDataSource:
         key: str,
         title: str,
         title_pluralized: str,
-        description: Optional[str] = None,
-        configuration: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        configuration: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new custom object
 
@@ -8852,6 +9009,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8875,34 +9033,34 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_custom_object(
         self,
         custom_object_key: str,
-        title: Optional[str] = None,
-        title_pluralized: Optional[str] = None,
-        description: Optional[str] = None,
-        configuration: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        title_pluralized: str | None = None,
+        description: str | None = None,
+        configuration: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing custom object
 
@@ -8915,6 +9073,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8939,30 +9098,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_custom_object(
         self,
         custom_object_key: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a custom object
 
@@ -8971,6 +9130,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -8982,33 +9142,33 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_custom_object_records(
         self,
         custom_object_key: str,
-        external_id: Optional[str] = None,
-        external_ids: Optional[str] = None,
-        sort: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        external_id: str | None = None,
+        external_ids: str | None = None,
+        sort: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List records for a custom object
 
@@ -9020,6 +9180,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9038,23 +9199,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -9062,7 +9223,7 @@ class ZendeskDataSource:
         self,
         custom_object_key: str,
         custom_object_record_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific custom object record
 
@@ -9072,6 +9233,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9083,23 +9245,23 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -9107,9 +9269,9 @@ class ZendeskDataSource:
         self,
         custom_object_key: str,
         name: str,
-        custom_object_fields: Dict[str, Any],
-        external_id: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        custom_object_fields: dict[str, Any],
+        external_id: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new custom object record
 
@@ -9121,6 +9283,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9141,23 +9304,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -9165,10 +9328,10 @@ class ZendeskDataSource:
         self,
         custom_object_key: str,
         custom_object_record_id: str,
-        name: Optional[str] = None,
-        external_id: Optional[str] = None,
-        custom_object_fields: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        external_id: str | None = None,
+        custom_object_fields: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update a custom object record
 
@@ -9181,6 +9344,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9203,23 +9367,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -9227,7 +9391,7 @@ class ZendeskDataSource:
         self,
         custom_object_key: str,
         custom_object_record_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete a custom object record
 
@@ -9237,6 +9401,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9248,30 +9413,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_job_status(
         self,
         job_id: str,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show the status of a background job
 
@@ -9280,6 +9445,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9291,34 +9457,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_job_statuses(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List recent job statuses
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9330,32 +9497,32 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def incremental_tickets(
         self,
         start_time: int,
-        cursor: Optional[str] = None,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        cursor: str | None = None,
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Incremental export of tickets
 
@@ -9366,6 +9533,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9383,31 +9551,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def incremental_users(
         self,
         start_time: int,
-        cursor: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        cursor: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Incremental export of users
 
@@ -9417,6 +9585,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9432,31 +9601,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def incremental_organizations(
         self,
         start_time: int,
-        cursor: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        cursor: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Incremental export of organizations
 
@@ -9466,6 +9635,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9481,31 +9651,31 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def incremental_ticket_events(
         self,
         start_time: int,
-        include: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        include: str | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Incremental export of ticket events
 
@@ -9515,6 +9685,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9530,34 +9701,35 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def list_sla_policies(
         self,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """List all SLA policies
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9569,30 +9741,30 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def show_sla_policy(
         self,
         policy_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Show a specific SLA policy
 
@@ -9601,6 +9773,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9612,34 +9785,34 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def create_sla_policy(
         self,
         title: str,
-        filter: Dict[str, Any],
-        policy_metrics: List[Dict[str, Any]],
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
+        filter: dict[str, Any],
+        policy_metrics: list[dict[str, Any]],
+        description: str | None = None,
+        position: int | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Create a new SLA policy
 
@@ -9652,6 +9825,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9675,35 +9849,35 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def update_sla_policy(
         self,
         policy_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        position: Optional[int] = None,
-        filter: Optional[Dict[str, Any]] = None,
-        policy_metrics: Optional[List[Dict[str, Any]]] = None,
-        headers: Optional[Dict[str, Any]] = None
+        title: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+        filter: dict[str, Any] | None = None,
+        policy_metrics: list[dict[str, Any]] | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Update an existing SLA policy
 
@@ -9717,6 +9891,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9743,30 +9918,30 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def delete_sla_policy(
         self,
         policy_id: int,
-        headers: Optional[Dict[str, Any]] = None
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Delete an SLA policy
 
@@ -9775,6 +9950,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9786,30 +9962,30 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query_params=_params,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
     async def reorder_sla_policies(
         self,
-        sla_policy_ids: List[int],
-        headers: Optional[Dict[str, Any]] = None
+        sla_policy_ids: list[int],
+        headers: dict[str, Any] | None = None,
     ) -> ZendeskResponse:
         """Reorder SLA policies
 
@@ -9818,6 +9994,7 @@ class ZendeskDataSource:
 
         Returns:
             ZendeskResponse: Standardized response object
+
         """
         try:
             _headers = dict(headers or {})
@@ -9835,23 +10012,23 @@ class ZendeskDataSource:
                 headers=_headers,
                 query_params=_params
 ,
-                json=_data if _data else None
+                json=_data if _data else None,
             )
             response = await self.http.execute(
-                request=request
+                request=request,
             )
 
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
                 error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
-                status_code=response.status
+                status_code=response.status,
             )
 
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -9859,24 +10036,24 @@ class ZendeskDataSource:
         """Get information about available API methods."""
         try:
             info = {
-                'total_methods': 177,
-                'api_coverage': [
-                    'Support API (Tickets, Users, Organizations, Groups)',
-                    'Business Rules (Automations, Triggers, Macros, Views)',
-                    'Webhooks (Management, Events, Security)',
-                    'Help Center (Articles, Sections, Categories)',
-                    'Custom Data (Objects, Records, Fields)',
-                    'Administrative (Jobs, Exports, Bulk Operations)'
+                "total_methods": 177,
+                "api_coverage": [
+                    "Support API (Tickets, Users, Organizations, Groups)",
+                    "Business Rules (Automations, Triggers, Macros, Views)",
+                    "Webhooks (Management, Events, Security)",
+                    "Help Center (Articles, Sections, Categories)",
+                    "Custom Data (Objects, Records, Fields)",
+                    "Administrative (Jobs, Exports, Bulk Operations)",
                 ],
-                'authentication': 'Basic Auth with API Token',
-                'base_url_pattern': 'https://{subdomain}.zendesk.com'
+                "authentication": "Basic Auth with API Token",
+                "base_url_pattern": "https://{subdomain}.zendesk.com",
             }
             return ZendeskResponse(
                 success=True,
-                data=info
+                data=info,
             )
         except Exception as e:
             return ZendeskResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )

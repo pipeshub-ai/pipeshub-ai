@@ -5,7 +5,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import urlencode
 
 from aiohttp import ClientSession
@@ -16,6 +16,7 @@ from app.config.key_value_store import KeyValueStore
 
 class GrantType(Enum):
     """OAuth 2.0 Grant Types"""
+
     AUTHORIZATION_CODE = "authorization_code"
     CLIENT_CREDENTIALS = "client_credentials"
     REFRESH_TOKEN = "refresh_token"
@@ -24,6 +25,7 @@ class GrantType(Enum):
 
 class TokenType(Enum):
     """Token Types"""
+
     BEARER = "Bearer"
     MAC = "MAC"
 
@@ -31,18 +33,19 @@ class TokenType(Enum):
 @dataclass
 class OAuthConfig:
     """OAuth Configuration"""
+
     client_id: str
     client_secret: str
     redirect_uri: str
     authorize_url: str
     token_url: str
-    tenant_id: Optional[str] = None
-    scope: Optional[str] = None
-    state: Optional[str] = None
+    tenant_id: str | None = None
+    scope: str | None = None
+    state: str | None = None
     response_type: str = "code"
     grant_type: GrantType = GrantType.AUTHORIZATION_CODE
-    additional_params: Dict[str, Any] = field(default_factory=dict)
-    token_access_type: Optional[str] = None
+    additional_params: dict[str, Any] = field(default_factory=dict)
+    token_access_type: str | None = None
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -53,16 +56,17 @@ class OAuthConfig:
 @dataclass
 class OAuthToken:
     """OAuth Token representation"""
+
     access_token: str
     token_type: str = "Bearer"
-    expires_in: Optional[int] = None
-    refresh_token: Optional[str] = None
-    scope: Optional[str] = None
-    id_token: Optional[str] = None
+    expires_in: int | None = None
+    refresh_token: str | None = None
+    scope: str | None = None
+    id_token: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
-    uid: Optional[str] = None   # used for dropbox
-    account_id: Optional[str] = None
-    team_id: Optional[str] = None
+    uid: str | None = None   # used for dropbox
+    account_id: str | None = None
+    team_id: str | None = None
 
     @property
     def is_expired(self) -> bool:
@@ -73,13 +77,13 @@ class OAuthToken:
         return datetime.now() >= expiry_time
 
     @property
-    def expires_at_epoch(self) -> Optional[int]:
+    def expires_at_epoch(self) -> int | None:
         """Get token expiration time"""
         if not self.expires_in:
             return None
         return int((self.created_at + timedelta(seconds=self.expires_in)).timestamp())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert token to dictionary"""
         return {
             "access_token": self.access_token,
@@ -90,24 +94,24 @@ class OAuthToken:
             "id_token": self.id_token,
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
-            "account_id": self.account_id
+            "account_id": self.account_id,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
+    def from_dict(cls, data: dict[str, Any]) -> "OAuthToken":
         """Create token from dictionary"""
-        if 'created_at' in data and isinstance(data['created_at'], str):
-            data['created_at'] = datetime.fromisoformat(data['created_at'])
+        if "created_at" in data and isinstance(data["created_at"], str):
+            data["created_at"] = datetime.fromisoformat(data["created_at"])
         return cls(**data)
 
 
 class OAuthProvider:
     """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str, connector_name: Optional[str] = None) -> None:
+    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str, connector_name: str | None = None) -> None:
         self.config = config
         self.key_value_store = key_value_store
-        self._session: Optional[ClientSession] = None
+        self._session: ClientSession | None = None
         self.credentials_path = credentials_path
         self.token = None
         self.connector_name = connector_name
@@ -139,7 +143,7 @@ class OAuthProvider:
             "redirect_uri": self.config.redirect_uri,
             "response_type": self.config.response_type,
             "token_access_type": self.config.token_access_type,
-            "state": state
+            "state": state,
         }
 
         if self.config.scope:
@@ -151,7 +155,7 @@ class OAuthProvider:
 
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
-    async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
+    async def exchange_code_for_token(self, code: str, state: str | None = None, code_verifier: str | None = None) -> OAuthToken:
         # Note: State validation is handled in handle_callback, not here
         # This method only exchanges the code for a token
 
@@ -179,7 +183,7 @@ class OAuthProvider:
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
             "client_id": self.config.client_id,
-            "client_secret": self.config.client_secret
+            "client_secret": self.config.client_secret,
         }
 
         session = await self.session
@@ -210,7 +214,7 @@ class OAuthProvider:
             config = {}
 
         # Store the new token (which includes the new refresh_token if provided)
-        config['credentials'] = token.to_dict()
+        config["credentials"] = token.to_dict()
         await self.key_value_store.create_key(self.credentials_path, config)
 
         return token
@@ -234,7 +238,7 @@ class OAuthProvider:
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
-        config['credentials'] = None
+        config["credentials"] = None
         await self.key_value_store.create_key(self.credentials_path, config)
         return True
 
@@ -247,11 +251,11 @@ class OAuthProvider:
         s256 = hashlib.sha256(verifier.encode()).digest()
         return base64.urlsafe_b64encode(s256).decode().rstrip("=")
 
-    async def start_authorization(self, *, return_to: Optional[str] = None, use_pkce: bool = True, **extra) -> str:
+    async def start_authorization(self, *, return_to: str | None = None, use_pkce: bool = True, **extra) -> str:
         state = self.config.generate_state()
-        session_data: Dict[str, Any] = {
+        session_data: dict[str, Any] = {
             "created_at": datetime.utcnow().isoformat(),
-            "state": state
+            "state": state,
         }
         if use_pkce:
             code_verifier = self._gen_code_verifier()
@@ -259,16 +263,16 @@ class OAuthProvider:
             session_data.update({
                 "code_verifier": code_verifier,
                 "pkce": True,
-                "return_to": return_to
+                "return_to": return_to,
             })
             extra.update({
                 "code_challenge": code_challenge,
-                "code_challenge_method": "S256"
+                "code_challenge_method": "S256",
             })
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
-        config['oauth'] = session_data
+        config["oauth"] = session_data
         await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
@@ -277,14 +281,14 @@ class OAuthProvider:
         if not isinstance(config, dict):
             config = {}
 
-        oauth_data = config.get('oauth', {}) or {}
+        oauth_data = config.get("oauth", {}) or {}
         stored_state = oauth_data.get("state")
 
         # Validate state
         if not stored_state or stored_state != state:
             # Idempotent handling: if credentials already exist, treat as success
-            existing_creds = config.get('credentials')
-            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+            existing_creds = config.get("credentials")
+            if isinstance(existing_creds, dict) and existing_creds.get("access_token"):
                 try:
                     token = OAuthToken.from_dict(existing_creds)
                 except (TypeError, ValueError, KeyError):
@@ -299,10 +303,10 @@ class OAuthProvider:
         self.token = token
 
         # Clean up OAuth state and store credentials
-        config['oauth'] = None  # remove transient state after successful exchange
+        config["oauth"] = None  # remove transient state after successful exchange
 
         # Store the new token (use the refresh_token from the response if available)
-        config['credentials'] = token.to_dict()
+        config["credentials"] = token.to_dict()
         await self.key_value_store.create_key(self.credentials_path, config)
 
         return token

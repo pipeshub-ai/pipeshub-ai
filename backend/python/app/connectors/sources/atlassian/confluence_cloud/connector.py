@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 from fastapi.responses import StreamingResponse
@@ -46,11 +46,12 @@ TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 @dataclass
 class AtlassianCloudResource:
     """Represents an Atlassian Cloud resource (site)"""
+
     id: str
     name: str
     url: str
-    scopes: List[str]
-    avatar_url: Optional[str] = None
+    scopes: list[str]
+    avatar_url: str | None = None
 
 class ConfluenceClient:
     def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
@@ -95,8 +96,8 @@ class ConfluenceClient:
         self,
         method: str,
         url: str,
-        **kwargs
-    ) -> Dict[str, Any]:
+        **kwargs,
+    ) -> dict[str, Any]:
         """Make authenticated API request and return JSON response"""
         config = await self.config_service.get_config(f"{OAUTH_CONFLUENCE_CONFIG_PATH}")
         token = None
@@ -111,7 +112,7 @@ class ConfluenceClient:
 
         token = {
             "token_type": credentials_config.get("token_type"),
-            "access_token": credentials_config.get("access_token")
+            "access_token": credentials_config.get("access_token"),
         }
 
         headers = kwargs.pop("headers", {})
@@ -122,18 +123,16 @@ class ConfluenceClient:
             response.raise_for_status()
             return await response.json()
 
-    async def get_accessible_resources(self) -> List[AtlassianCloudResource]:
-        """
-        Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
+    async def get_accessible_resources(self) -> list[AtlassianCloudResource]:
+        """Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
         Args:
             None
         Returns:
             List of accessible Atlassian Cloud resources
         """
-
         response = await self.make_authenticated_json_request(
             "GET",
-            RESOURCE_URL
+            RESOURCE_URL,
         )
 
         return [
@@ -142,7 +141,7 @@ class ConfluenceClient:
                 name=resource.get("name", ""),
                 url=resource["url"],
                 scopes=resource.get("scopes", []),
-                avatar_url=resource.get("avatarUrl")
+                avatar_url=resource.get("avatarUrl"),
             )
             for resource in response
         ]
@@ -150,9 +149,8 @@ class ConfluenceClient:
 
     async def fetch_spaces_with_permissions(
         self,
-    ) -> Dict[str, Any]:
-        """
-        Get all Confluence spaces
+    ) -> dict[str, Any]:
+        """Get all Confluence spaces
         Args:
             None
         Returns:
@@ -180,7 +178,7 @@ class ConfluenceClient:
     async def _fetch_space_permission(
         self,
         space_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         permissions = []
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/wiki/api/v2/spaces/{space_id}/permissions"
@@ -197,7 +195,7 @@ class ConfluenceClient:
     async def fetch_page_content(
         self,
         page_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/wiki/api/v2/pages/{page_id}"
         page_details = await self.make_authenticated_json_request("GET", url, params={"body-format": "storage"})
@@ -222,7 +220,7 @@ class ConfluenceClient:
     async def _fetch_page_details(
         self,
         page_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/wiki/api/v2/pages/{page_id}"
         return await self.make_authenticated_json_request("GET", url)
@@ -230,8 +228,8 @@ class ConfluenceClient:
     async def fetch_pages_with_permissions(
         self,
         space_id: str,
-        users: List[AppUser],
-    ) -> List[WebpageRecord]:
+        users: list[AppUser],
+    ) -> list[WebpageRecord]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         limit = 25
         pages_url = f"{base_url}/wiki/api/v2/spaces/{space_id}/pages"
@@ -243,7 +241,7 @@ class ConfluenceClient:
             permissions.append(Permission(
                 email=user.email,
                 entity_type=EntityType.USER,
-                type=PermissionType.READ
+                type=PermissionType.READ,
             ))
         while True:
             pages_batch = await self.make_authenticated_json_request("GET", pages_url, params={"limit": limit})
@@ -273,7 +271,7 @@ class ConfluenceClient:
                     record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                     external_record_group_id=space_id,
                     parent_record_type=RecordType.WEBPAGE,
-                    parent_external_record_id=page.get('parentId'),
+                    parent_external_record_id=page.get("parentId"),
                     weburl=web_url,
                     mime_type=MimeTypes.HTML.value,
                     source_created_at=int(created_at.timestamp() * 1000),
@@ -287,7 +285,7 @@ class ConfluenceClient:
 
         return records
 
-    async def fetch_users(self) -> List[AppUser]:
+    async def fetch_users(self) -> list[AppUser]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/users/search"
         users = []
         base_url = f"{BASE_URL}/{self.cloud_id}"
@@ -311,19 +309,19 @@ class ConfluenceClient:
         .add_documentation_link(DocumentationLink(
             "Confluence Cloud API Setup",
             "https://developer.atlassian.com/cloud/confluence/rest/",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/confluence/confluence',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/confluence/confluence",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Confluence", False)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",
             placeholder="Enter your Atlassian Cloud Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
+            description="The Application (Client) ID from Azure AD App Registration",
         ))
         .add_auth_field(AuthField(
             name="clientSecret",
@@ -331,16 +329,16 @@ class ConfluenceClient:
             placeholder="Enter your Atlassian Cloud Client Secret",
             description="The Client Secret from Azure AD App Registration",
             field_type="PASSWORD",
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="domain",
             display_name="Atlassian Domain",
-            description="https://your-domain.atlassian.net"
+            description="https://your-domain.atlassian.net",
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
+        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access()),
 
     )\
     .build_decorator()
@@ -365,8 +363,8 @@ class ConfluenceConnector(BaseConnector):
             content,
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+                "Content-Disposition": f"attachment; filename={record.record_name}",
+            },
         )
 
     async def test_connection_and_access(self) -> bool:
@@ -378,7 +376,7 @@ class ConfluenceConnector(BaseConnector):
     async def cleanup(self) -> None:
         pass
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         pass
 
     async def run_sync(self) -> None:

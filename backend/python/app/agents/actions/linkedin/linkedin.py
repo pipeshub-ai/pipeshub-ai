@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from collections.abc import Coroutine
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -25,13 +25,14 @@ class LinkedIn:
 
         Args:
             client: An initialized `LinkedInClient` instance
+
         """
         self.client = LinkedInDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -60,26 +61,25 @@ class LinkedIn:
     def _handle_response(
         self,
         response,
-        success_message: str
-    ) -> Tuple[bool, str]:
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Handle LinkedIn response and return standardized format."""
         try:
             # LinkedIn SDK returns native response objects
-            if hasattr(response, 'entity') or hasattr(response, 'elements'):
+            if hasattr(response, "entity") or hasattr(response, "elements"):
                 return True, json.dumps({
                     "message": success_message,
-                    "data": getattr(response, 'entity', getattr(response, 'elements', {}))
+                    "data": getattr(response, "entity", getattr(response, "elements", {})),
                 })
-            elif hasattr(response, 'entity_id'):
+            if hasattr(response, "entity_id"):
                 return True, json.dumps({
                     "message": success_message,
-                    "data": {"entity_id": response.entity_id}
+                    "data": {"entity_id": response.entity_id},
                 })
-            else:
-                return True, json.dumps({
-                    "message": success_message,
-                    "data": response
-                })
+            return True, json.dumps({
+                "message": success_message,
+                "data": response,
+            })
         except Exception as e:
             logger.error(f"Error handling response: {e}")
             return False, json.dumps({"error": str(e)})
@@ -89,9 +89,9 @@ class LinkedIn:
         tool_name="get_userinfo",
         description="Get current user information using OpenID Connect",
         parameters=[],
-        returns="JSON with user information"
+        returns="JSON with user information",
     )
-    def get_userinfo(self) -> Tuple[bool, str]:
+    def get_userinfo(self) -> tuple[bool, str]:
         """Get current user information using OpenID Connect."""
         try:
             response = self.client.get_userinfo()
@@ -108,42 +108,42 @@ class LinkedIn:
             ToolParameter(
                 name="author",
                 type=ParameterType.STRING,
-                description="Author URN (e.g., 'urn:li:person:AbCdEfG')"
+                description="Author URN (e.g., 'urn:li:person:AbCdEfG')",
             ),
             ToolParameter(
                 name="commentary",
                 type=ParameterType.STRING,
-                description="Post text content"
+                description="Post text content",
             ),
             ToolParameter(
                 name="visibility",
                 type=ParameterType.STRING,
                 description="Post visibility ('PUBLIC', 'CONNECTIONS', etc.)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="lifecycle_state",
                 type=ParameterType.STRING,
                 description="Post lifecycle state ('PUBLISHED' or 'DRAFT')",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with post creation result"
+        returns="JSON with post creation result",
     )
     def create_post(
         self,
         author: str,
         commentary: str,
-        visibility: Optional[str] = "PUBLIC",
-        lifecycle_state: Optional[str] = "PUBLISHED"
-    ) -> Tuple[bool, str]:
+        visibility: str | None = "PUBLIC",
+        lifecycle_state: str | None = "PUBLISHED",
+    ) -> tuple[bool, str]:
         """Create a new post on LinkedIn."""
         try:
             response = self.client.create_post(
                 author=author,
                 commentary=commentary,
                 visibility=visibility,
-                lifecycle_state=lifecycle_state
+                lifecycle_state=lifecycle_state,
             )
             return self._handle_response(response, "Post created successfully")
         except Exception as e:
@@ -158,12 +158,12 @@ class LinkedIn:
             ToolParameter(
                 name="post_id",
                 type=ParameterType.STRING,
-                description="Post URN or ID"
-            )
+                description="Post URN or ID",
+            ),
         ],
-        returns="JSON with post data"
+        returns="JSON with post data",
     )
-    def get_post(self, post_id: str) -> Tuple[bool, str]:
+    def get_post(self, post_id: str) -> tuple[bool, str]:
         """Get a post by ID from LinkedIn."""
         try:
             response = self.client.get_post(post_id=post_id)
@@ -180,21 +180,21 @@ class LinkedIn:
             ToolParameter(
                 name="post_id",
                 type=ParameterType.STRING,
-                description="Post URN or ID"
+                description="Post URN or ID",
             ),
             ToolParameter(
                 name="patch_data",
                 type=ParameterType.STRING,
-                description="JSON object with patch operations (e.g., {'$set': {'commentary': 'New text'}})"
-            )
+                description="JSON object with patch operations (e.g., {'$set': {'commentary': 'New text'}})",
+            ),
         ],
-        returns="JSON with post update result"
+        returns="JSON with post update result",
     )
     def update_post(
         self,
         post_id: str,
-        patch_data: str
-    ) -> Tuple[bool, str]:
+        patch_data: str,
+    ) -> tuple[bool, str]:
         """Update an existing post on LinkedIn."""
         try:
             # Parse patch data
@@ -207,7 +207,7 @@ class LinkedIn:
 
             response = self.client.update_post(
                 post_id=post_id,
-                patch_data=patch_dict
+                patch_data=patch_dict,
             )
             return self._handle_response(response, "Post updated successfully")
         except Exception as e:
@@ -222,12 +222,12 @@ class LinkedIn:
             ToolParameter(
                 name="post_id",
                 type=ParameterType.STRING,
-                description="Post URN or ID to delete"
-            )
+                description="Post URN or ID to delete",
+            ),
         ],
-        returns="JSON with deletion result"
+        returns="JSON with deletion result",
     )
-    def delete_post(self, post_id: str) -> Tuple[bool, str]:
+    def delete_post(self, post_id: str) -> tuple[bool, str]:
         """Delete a post from LinkedIn."""
         try:
             response = self.client.delete_post(post_id=post_id)
@@ -244,22 +244,22 @@ class LinkedIn:
             ToolParameter(
                 name="keywords",
                 type=ParameterType.STRING,
-                description="Search keywords"
+                description="Search keywords",
             ),
             ToolParameter(
                 name="query_params",
                 type=ParameterType.STRING,
                 description="JSON object with additional search parameters (e.g., {'start': 0, 'count': 25})",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
     def search_people(
         self,
         keywords: str,
-        query_params: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        query_params: str | None = None,
+    ) -> tuple[bool, str]:
         """Search for people on LinkedIn."""
         try:
             # Parse query parameters if provided
@@ -274,7 +274,7 @@ class LinkedIn:
 
             response = self.client.search_people(
                 keywords=keywords,
-                query_params=params_dict
+                query_params=params_dict,
             )
             return self._handle_response(response, "People search completed successfully")
         except Exception as e:

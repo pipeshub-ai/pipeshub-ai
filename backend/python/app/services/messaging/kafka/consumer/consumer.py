@@ -1,7 +1,8 @@
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from logging import Logger
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any
 
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
@@ -19,29 +20,29 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     def __init__(self,
                 logger: Logger,
                 kafka_config: KafkaConsumerConfig,
-                rate_limiter: Optional[RateLimiter] = None) -> None:
+                rate_limiter: RateLimiter | None = None) -> None:
         self.logger = logger
-        self.consumer: Optional[AIOKafkaConsumer] = None
+        self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
-        self.processed_messages: Dict[str, List[int]] = {}
+        self.processed_messages: dict[str, list[int]] = {}
         self.consume_task = None
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self.message_handler = None
         self.rate_limiter = rate_limiter
-        self.active_tasks: Set[asyncio.Task] = set()
+        self.active_tasks: set[asyncio.Task] = set()
         self.max_concurrent_tasks = MAX_CONCURRENT_TASKS
 
     @staticmethod
-    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
+    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
         """Convert KafkaConsumerConfig dataclass to dictionary format for aiokafka consumer"""
         return {
-            'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
-            'group_id': kafka_config.group_id,
-            'auto_offset_reset': kafka_config.auto_offset_reset,
-            'enable_auto_commit': kafka_config.enable_auto_commit,
-            'client_id': kafka_config.client_id,
-            'topics': kafka_config.topics  # Include topics in the dictionary
+            "bootstrap_servers": ",".join(kafka_config.bootstrap_servers),
+            "group_id": kafka_config.group_id,
+            "auto_offset_reset": kafka_config.auto_offset_reset,
+            "enable_auto_commit": kafka_config.enable_auto_commit,
+            "client_id": kafka_config.client_id,
+            "topics": kafka_config.topics,  # Include topics in the dictionary
         }
 
     # implementing abstract methods from IMessagingConsumer
@@ -53,12 +54,12 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
             # Convert KafkaConsumerConfig to dictionary format for aiokafka
             kafka_dict = KafkaMessagingConsumer.kafka_config_to_dict(self.kafka_config)
-            topics = kafka_dict.pop('topics')
+            topics = kafka_dict.pop("topics")
 
             # Initialize consumer with aiokafka
             self.consumer = AIOKafkaConsumer(
                 *topics,
-                **kafka_dict
+                **kafka_dict,
             )
 
             await self.consumer.start() # type: ignore
@@ -80,7 +81,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     # implementing abstract methods from IMessagingConsumer
     async def start(
         self,
-        message_handler: Callable[[Dict[str, Any]], Awaitable[bool]]
+        message_handler: Callable[[dict[str, Any]], Awaitable[bool]],
     ) -> None:
         """Start consuming messages with the provided handler"""
         try:
@@ -95,11 +96,11 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.consume_task = asyncio.create_task(self.__consume_loop())
             self.logger.info("Started Kafka consumer task")
         except Exception as e:
-            self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
+            self.logger.error(f"Failed to start Kafka consumer: {e!s}")
             raise
 
     # implementing abstract methods from IMessagingConsumer
-    async def stop(self, message_handler: Optional[Callable[[Dict[str, Any]], Awaitable[bool]]] = None) -> None:
+    async def stop(self, message_handler: Callable[[dict[str, Any]], Awaitable[bool]] | None = None) -> None:
         """Stop consuming messages"""
         self.running = False
         # run the message handler
@@ -151,24 +152,24 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                             self.logger.debug("Handled double-encoded JSON message")
 
                         self.logger.debug(
-                            f"Parsed message {message_id}: type={type(parsed_message)}"
+                            f"Parsed message {message_id}: type={type(parsed_message)}",
                         )
                     except json.JSONDecodeError as e:
                         self.logger.error(
-                            f"JSON parsing failed for message {message_id}: {str(e)}\n"
-                            f"Raw message: {message_value[:1000]}..."
+                            f"JSON parsing failed for message {message_id}: {e!s}\n"
+                            f"Raw message: {message_value[:1000]}...",
                         )
                         return False
                 else:
                     self.logger.error(
-                        f"Unexpected message value type for {message_id}: {type(message_value)}"
+                        f"Unexpected message value type for {message_id}: {type(message_value)}",
                     )
                     return False
 
             except UnicodeDecodeError as e:
                 self.logger.error(
-                    f"Failed to decode message {message_id}: {str(e)}\n"
-                    f"Raw bytes: {message_value[:100]}..."
+                    f"Failed to decode message {message_id}: {e!s}\n"
+                    f"Raw bytes: {message_value[:100]}...",
                 )
                 return False
 
@@ -178,7 +179,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                     return await self.message_handler(parsed_message)
                 except Exception as e:
                     self.logger.error(
-                        f"Error in message handler for {message_id}: {str(e)}",
+                        f"Error in message handler for {message_id}: {e!s}",
                         exc_info=True,
                     )
                     return False
@@ -188,7 +189,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
         except Exception as e:
             self.logger.error(
-                f"Unexpected error processing message {message_id if message_id else 'unknown'}: {str(e)}",
+                f"Unexpected error processing message {message_id if message_id else 'unknown'}: {e!s}",
                 exc_info=True,
             )
             return False
@@ -224,7 +225,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                         # Tells Kafka that this message has been successfully processed
                                         await self.consumer.commit({topic_partition: message.offset + 1}) # type: ignore
                                         self.logger.info(
-                                            f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
+                                            f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}",
                                         )
                                     else:
                                         self.logger.warning(f"Failed to process message at offset {message.offset}")
@@ -279,7 +280,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
         # Log current task count
         self.logger.debug(
-            f"Active tasks: {len(self.active_tasks)}/{self.max_concurrent_tasks}"
+            f"Active tasks: {len(self.active_tasks)}/{self.max_concurrent_tasks}",
         )
 
     async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
@@ -295,11 +296,11 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                 if self.consumer:
                     await self.consumer.commit({topic_partition: message.offset + 1})
                     self.logger.info(
-                        f"Committed offset for {message_id} in background task."
+                        f"Committed offset for {message_id} in background task.",
                     )
             else:
                 self.logger.warning(
-                    f"Processing failed for {message_id}, offset will not be committed."
+                    f"Processing failed for {message_id}, offset will not be committed.",
                 )
         except Exception as e:
             self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")

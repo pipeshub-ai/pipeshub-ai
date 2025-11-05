@@ -3,7 +3,6 @@ import base64
 import re
 import time
 import uuid
-from typing import List, Optional
 
 import httpx
 import spacy
@@ -36,7 +35,7 @@ from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
-_SHARED_NLP: Optional[Language] = None
+_SHARED_NLP: Language | None = None
 
 def _get_shared_nlp() -> Language:
     # Avoid global mutation; attach cache to function attribute
@@ -50,7 +49,7 @@ def _get_shared_nlp() -> Language:
                 nlp.add_pipe("custom_sentence_boundary", after="sentencizer")
             except Exception:
                 pass
-        setattr(_get_shared_nlp, "_cached_nlp", nlp)
+        _get_shared_nlp._cached_nlp = nlp
         return nlp
     return cached
 
@@ -109,8 +108,7 @@ class VectorStore(Transformer):
             )
 
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
-        """
-        Normalize an image reference into a raw base64-encoded string (no data: prefix).
+        """Normalize an image reference into a raw base64-encoded string (no data: prefix).
         - data URLs (data:image/...;base64,xxxxx) -> returns the part after the comma
         - http/https URLs -> downloads bytes then base64-encodes
         - raw base64 strings -> returns as-is (after trimming/padding)
@@ -172,10 +170,7 @@ class VectorStore(Transformer):
             next_token = doc[token.i + 1]
 
             # If token is a number and followed by a period, don't treat it as a sentence boundary
-            if token.like_num and next_token.text == ".":
-                next_token.is_sent_start = False
-            # Handle common abbreviations
-            elif (
+            if (token.like_num and next_token.text == ".") or (
                 token.text.lower()
                 in [
                     "mr",
@@ -208,10 +203,7 @@ class VectorStore(Transformer):
                     "corp",
                 ]
                 and next_token.text == "."
-            ):
-                next_token.is_sent_start = False
-            # Handle bullet points and list markers
-            elif (
+            ) or (
                 # Numeric bullets with period (1., 2., etc)
                 (
                     token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD
@@ -245,8 +237,7 @@ class VectorStore(Transformer):
         return doc
 
     def _create_custom_tokenizer(self, nlp) -> Language:
-        """
-        Creates a custom tokenizer that handles special cases for sentence boundaries.
+        """Creates a custom tokenizer that handles special cases for sentence boundaries.
         """
         # Add the custom rule to the pipeline
         if "sentencizer" not in nlp.pipe_names:
@@ -269,7 +260,7 @@ class VectorStore(Transformer):
         return nlp
 
     async def _initialize_collection(
-        self, embedding_size: int = 1024, sparse_idf: bool = False
+        self, embedding_size: int = 1024, sparse_idf: bool = False,
     ) -> None:
         """Initialize Qdrant collection with proper configuration."""
         try:
@@ -280,15 +271,15 @@ class VectorStore(Transformer):
             if current_vector_size != embedding_size:
                 self.logger.warning(
                     f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
-                    " Recreating collection."
+                    " Recreating collection.",
                 )
                 await self.vector_db_service.delete_collection(self.collection_name)
                 raise Exception(
-                    "Recreating collection due to vector dimension mismatch."
+                    "Recreating collection due to vector dimension mismatch.",
                 )
         except Exception:
             self.logger.info(
-                f"Collection {self.collection_name} not found, creating new collection"
+                f"Collection {self.collection_name} not found, creating new collection",
             )
             try:
                 await self.vector_db_service.create_collection(
@@ -297,7 +288,7 @@ class VectorStore(Transformer):
                     sparse_idf=sparse_idf,
                 )
                 self.logger.info(
-                    f"✅ Successfully created collection {self.collection_name}"
+                    f"✅ Successfully created collection {self.collection_name}",
                 )
                 await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
@@ -315,7 +306,7 @@ class VectorStore(Transformer):
                 )
             except Exception as e:
                 self.logger.error(
-                    f"❌ Error creating collection {self.collection_name}: {str(e)}"
+                    f"❌ Error creating collection {self.collection_name}: {e!s}",
                 )
                 raise VectorStoreError(
                     "Failed to create collection",
@@ -333,7 +324,7 @@ class VectorStore(Transformer):
 
             dense_embeddings = None
             ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value,use_cache=False
+                config_node_constants.AI_MODELS.value,use_cache=False,
             )
             embedding_configs = ai_models["embedding"]
             is_multimodal = False
@@ -357,7 +348,7 @@ class VectorStore(Transformer):
                 embedding_size = len(sample_embedding)
             except Exception as e:
                 self.logger.warning(
-                    f"Error with configured embedding model, falling back to default: {str(e)}"
+                    f"Error with configured embedding model, falling back to default: {e!s}",
                 )
                 raise IndexingError(
                     "Failed to get embedding model: " + str(e),
@@ -376,7 +367,7 @@ class VectorStore(Transformer):
                 model_name = "unknown"
 
             self.logger.info(
-                f"Using embedding model: {model_name}, embedding_size: {embedding_size}"
+                f"Using embedding model: {model_name}, embedding_size: {embedding_size}",
             )
 
             # Initialize collection with correct embedding size
@@ -406,16 +397,15 @@ class VectorStore(Transformer):
             self.is_multimodal_embedding = bool(is_multimodal)
             return self.is_multimodal_embedding
         except IndexingError as e:
-            self.logger.error(f"Error getting embedding model: {str(e)}")
+            self.logger.error(f"Error getting embedding model: {e!s}")
             raise IndexingError(
-                "Failed to get embedding model: " + str(e), details={"error": str(e)}
+                "Failed to get embedding model: " + str(e), details={"error": str(e)},
             )
 
     async def _create_embeddings(
-        self, chunks: List[Document],record_id: str
+        self, chunks: list[Document],record_id: str,
     ) -> None:
-        """
-        Create both sparse and dense embeddings for document chunks and store them in vector store.
+        """Create both sparse and dense embeddings for document chunks and store them in vector store.
         Handles both text and image embeddings.
 
         Args:
@@ -426,6 +416,7 @@ class VectorStore(Transformer):
             VectorStoreError: If there's an error storing embeddings
             MetadataProcessingError: If there's an error processing metadata
             DocumentProcessingError: If there's an error updating document status
+
         """
         try:
             # Validate input
@@ -442,7 +433,7 @@ class VectorStore(Transformer):
                     image_chunks.append(chunk)
 
             self.logger.info(
-                f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks"
+                f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks",
             )
 
             if len(image_chunks) > 0:
@@ -457,15 +448,15 @@ class VectorStore(Transformer):
                     co = cohere.ClientV2(api_key=self.api_key)
 
                     # Process images in parallel since Cohere API only allows max 1 image per request
-                    async def embed_single_image(i: int, image_base64: str) -> Optional[PointStruct]:
+                    async def embed_single_image(i: int, image_base64: str) -> PointStruct | None:
                         """Embed a single image with Cohere API."""
                         image_input = {
                             "content": [
                                 {
                                     "type": "image_url",
-                                    "image_url": {"url": image_base64}
-                                }
-                            ]
+                                    "image_url": {"url": image_base64},
+                                },
+                            ],
                         }
 
                         try:
@@ -478,7 +469,7 @@ class VectorStore(Transformer):
                                     input_type="image",
                                     embedding_types=["float"],
                                     inputs=[image_input],
-                                )
+                                ),
                             )
                             chunk = image_chunks[i]
                             embedding = response.embeddings.float[0]
@@ -495,7 +486,7 @@ class VectorStore(Transformer):
                             error_text = str(cohere_error)
                             if "image size must be at most" in error_text:
                                 self.logger.warning(
-                                    f"Skipping image {i} embedding due to size limit: {error_text}"
+                                    f"Skipping image {i} embedding due to size limit: {error_text}",
                                 )
                                 return None
                             # Re-raise unknown errors
@@ -505,7 +496,7 @@ class VectorStore(Transformer):
                     concurrency_limit = 10
                     semaphore = asyncio.Semaphore(concurrency_limit)
 
-                    async def limited_embed(i: int, image_base64: str) -> Optional[PointStruct]:
+                    async def limited_embed(i: int, image_base64: str) -> PointStruct | None:
                         async with semaphore:
                             return await embed_single_image(i, image_base64)
 
@@ -517,12 +508,12 @@ class VectorStore(Transformer):
                         if isinstance(result, PointStruct):
                             points.append(result)
                         elif isinstance(result, Exception):
-                            self.logger.warning(f"Failed to embed image: {str(result)}")
+                            self.logger.warning(f"Failed to embed image: {result!s}")
                 elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
                     # Process in batches to respect API limits
-                    batch_size = getattr(self.dense_embeddings, 'batch_size', 7)
+                    batch_size = getattr(self.dense_embeddings, "batch_size", 7)
 
-                    async def process_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+                    async def process_voyage_batch(batch_start: int, batch_images: list[str]) -> list[PointStruct]:
                         """Process a single batch of images with Voyage AI."""
                         try:
                             embeddings = await self.dense_embeddings.aembed_documents(batch_images)
@@ -540,12 +531,12 @@ class VectorStore(Transformer):
                                 )
                                 batch_points.append(point)
                             self.logger.info(
-                                f"✅ Processed Voyage batch starting at {batch_start}: {len(embeddings)} image embeddings"
+                                f"✅ Processed Voyage batch starting at {batch_start}: {len(embeddings)} image embeddings",
                             )
                             return batch_points
                         except Exception as voyage_error:
                             self.logger.warning(
-                                f"Failed to process Voyage batch starting at {batch_start}: {str(voyage_error)}"
+                                f"Failed to process Voyage batch starting at {batch_start}: {voyage_error!s}",
                             )
                             return []
 
@@ -560,7 +551,7 @@ class VectorStore(Transformer):
                     concurrency_limit = 5  # Process up to 5 batches concurrently
                     semaphore = asyncio.Semaphore(concurrency_limit)
 
-                    async def limited_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+                    async def limited_voyage_batch(batch_start: int, batch_images: list[str]) -> list[PointStruct]:
                         async with semaphore:
                             return await process_voyage_batch(batch_start, batch_images)
 
@@ -572,7 +563,7 @@ class VectorStore(Transformer):
                         if isinstance(result, list):
                             points.extend(result)
                         elif isinstance(result, Exception):
-                            self.logger.warning(f"Voyage batch processing exception: {str(result)}")
+                            self.logger.warning(f"Voyage batch processing exception: {result!s}")
 
                 elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
                     import json
@@ -594,11 +585,11 @@ class VectorStore(Transformer):
                         bedrock = boto3.client(**client_kwargs)
                     except NoCredentialsError as cred_err:
                         raise EmbeddingError(
-                            "AWS credentials not found for Bedrock image embeddings. Provide awsAccessKeyId/awsAccessSecretKey or configure a credential source."
+                            "AWS credentials not found for Bedrock image embeddings. Provide awsAccessKeyId/awsAccessSecretKey or configure a credential source.",
                         ) from cred_err
 
                     # Process images in parallel
-                    async def embed_single_bedrock_image(i: int, image_ref: str) -> Optional[PointStruct]:
+                    async def embed_single_bedrock_image(i: int, image_ref: str) -> PointStruct | None:
                         """Embed a single image with AWS Bedrock."""
                         normalized_b64 = await self._normalize_image_to_base64(image_ref)
                         if not normalized_b64:
@@ -608,8 +599,8 @@ class VectorStore(Transformer):
                         request_body = {
                             "inputImage": normalized_b64,
                             "embeddingConfig": {
-                                "outputEmbeddingLength": 1024  # or 384 for smaller embeddings
-                            }
+                                "outputEmbeddingLength": 1024,  # or 384 for smaller embeddings
+                            },
                         }
 
                         try:
@@ -620,12 +611,12 @@ class VectorStore(Transformer):
                                 lambda: bedrock.invoke_model(
                                     modelId=self.model_name,
                                     body=json.dumps(request_body),
-                                    contentType='application/json',
-                                    accept='application/json'
-                                )
+                                    contentType="application/json",
+                                    accept="application/json",
+                                ),
                             )
-                            response_body = json.loads(response['body'].read())
-                            image_embedding = response_body['embedding']
+                            response_body = json.loads(response["body"].read())
+                            image_embedding = response_body["embedding"]
 
                             image_chunk = image_chunks[i]
                             return PointStruct(
@@ -638,7 +629,7 @@ class VectorStore(Transformer):
                             )
                         except NoCredentialsError as cred_err:
                             raise EmbeddingError(
-                                "AWS credentials not found while invoking Bedrock model."
+                                "AWS credentials not found while invoking Bedrock model.",
                             ) from cred_err
                         except ClientError as client_err:
                             # Handle Bedrock 4xx (e.g., bad base64) gracefully per image
@@ -653,7 +644,7 @@ class VectorStore(Transformer):
                     concurrency_limit = 10
                     semaphore = asyncio.Semaphore(concurrency_limit)
 
-                    async def limited_bedrock_embed(i: int, image_ref: str) -> Optional[PointStruct]:
+                    async def limited_bedrock_embed(i: int, image_ref: str) -> PointStruct | None:
                         async with semaphore:
                             return await embed_single_bedrock_image(i, image_ref)
 
@@ -665,20 +656,20 @@ class VectorStore(Transformer):
                         if isinstance(result, PointStruct):
                             points.append(result)
                         elif isinstance(result, Exception):
-                            self.logger.warning(f"Failed to embed image with Bedrock: {str(result)}")
+                            self.logger.warning(f"Failed to embed image with Bedrock: {result!s}")
                 elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
                     import httpx
 
                     # Process in batches to respect API limits
                     batch_size = 32  # Reasonable batch size for image embeddings
 
-                    async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+                    async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: list[str]) -> list[PointStruct]:
                         """Process a single batch of images with Jina AI."""
                         try:
-                            url = 'https://api.jina.ai/v1/embeddings'
+                            url = "https://api.jina.ai/v1/embeddings"
                             headers = {
-                                'Content-Type': 'application/json',
-                                'Authorization': 'Bearer ' + self.api_key
+                                "Content-Type": "application/json",
+                                "Authorization": "Bearer " + self.api_key,
                             }
                             # Normalize all images first (async operation)
                             normalized_images = await asyncio.gather(*[
@@ -691,7 +682,7 @@ class VectorStore(Transformer):
                                     {"image": normalized_b64}
                                     for normalized_b64 in normalized_images
                                     if normalized_b64 is not None
-                                ]
+                                ],
                             }
 
                             # Make truly async request
@@ -713,12 +704,12 @@ class VectorStore(Transformer):
                                 )
                                 batch_points.append(point)
                             self.logger.info(
-                                f"✅ Processed Jina AI batch starting at {batch_start}: {len(embeddings)} image embeddings"
+                                f"✅ Processed Jina AI batch starting at {batch_start}: {len(embeddings)} image embeddings",
                             )
                             return batch_points
                         except Exception as jina_error:
                             self.logger.warning(
-                                f"Failed to process Jina AI batch starting at {batch_start}: {str(jina_error)}"
+                                f"Failed to process Jina AI batch starting at {batch_start}: {jina_error!s}",
                             )
                             return []
 
@@ -735,7 +726,7 @@ class VectorStore(Transformer):
                         concurrency_limit = 5  # Process up to 5 batches concurrently
                         semaphore = asyncio.Semaphore(concurrency_limit)
 
-                        async def limited_process_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+                        async def limited_process_batch(batch_start: int, batch_images: list[str]) -> list[PointStruct]:
                             async with semaphore:
                                 return await process_jina_batch(client, batch_start, batch_images)
 
@@ -747,7 +738,7 @@ class VectorStore(Transformer):
                             if isinstance(result, list):
                                 points.extend(result)
                             elif isinstance(result, Exception):
-                                self.logger.warning(f"Jina AI batch processing exception: {str(result)}")
+                                self.logger.warning(f"Jina AI batch processing exception: {result!s}")
 
 
                 if points:
@@ -756,16 +747,16 @@ class VectorStore(Transformer):
                     self.logger.info(f"⏱️ Starting image embeddings insertion for {len(points)} points")
 
                     self.vector_db_service.upsert_points(
-                            collection_name=self.collection_name, points=points
+                            collection_name=self.collection_name, points=points,
                         )
 
                     elapsed_time = time.perf_counter() - start_time
                     self.logger.info(
-                                    f"✅ Successfully added {len(points)} image embeddings to vector store in {elapsed_time:.2f}s"
+                                    f"✅ Successfully added {len(points)} image embeddings to vector store in {elapsed_time:.2f}s",
                                 )
                 else:
                     self.logger.info(
-                        "No image embeddings to upsert; all images were skipped or failed to embed"
+                        "No image embeddings to upsert; all images were skipped or failed to embed",
                     )
 
             if langchain_document_chunks:
@@ -777,7 +768,7 @@ class VectorStore(Transformer):
 
                         elapsed_time = time.perf_counter() - start_time
                         self.logger.info(
-                            f"✅ Successfully added {len(langchain_document_chunks)} langchain documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(langchain_document_chunks)*1000:.2f}ms per document)"
+                            f"✅ Successfully added {len(langchain_document_chunks)} langchain documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(langchain_document_chunks)*1000:.2f}ms per document)",
                         )
                 except Exception as e:
                     raise VectorStoreError(
@@ -790,7 +781,7 @@ class VectorStore(Transformer):
                 if chunks:
                     meta = chunks[0].metadata if isinstance(chunks[0], Document) else chunks[0].get("metadata", {})
                     record = await self.arango_service.get_document(
-                        record_id, CollectionNames.RECORDS.value
+                        record_id, CollectionNames.RECORDS.value,
                     )
                     if not record:
                         raise DocumentProcessingError(
@@ -804,17 +795,17 @@ class VectorStore(Transformer):
                             "isDirty": False,
                             "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                             "virtualRecordId": meta.get("virtualRecordId"),
-                        }
+                        },
                     )
 
                     docs = [doc]
 
                     success = await self.arango_service.batch_upsert_nodes(
-                        docs, CollectionNames.RECORDS.value
+                        docs, CollectionNames.RECORDS.value,
                     )
                     if not success:
                         raise DocumentProcessingError(
-                            "Failed to update indexing status", doc_id=record_id
+                            "Failed to update indexing status", doc_id=record_id,
                         )
                     return
 
@@ -844,12 +835,12 @@ class VectorStore(Transformer):
             content=[
                 {"type": "text", "text": prompt_for_image_description},
                 {"type": "image_url", "image_url": {"url": base64_string}},
-            ]
+            ],
         )
         response = await vlm.ainvoke([message])
         return response.content
 
-    async def describe_images(self, base64_images: List[str],vlm:BaseChatModel) -> List[dict]:
+    async def describe_images(self, base64_images: list[str],vlm:BaseChatModel) -> list[dict]:
 
         async def describe(i: int, base64_string: str) -> dict:
             try:
@@ -877,9 +868,9 @@ class VectorStore(Transformer):
         record_id: str,
         virtual_record_id: str,
         mime_type: str,
-    ) -> List[Document]|None|bool:
-        """
-        Main method to index documents through the entire pipeline.
+    ) -> list[Document]|None|bool:
+        """Main method to index documents through the entire pipeline.
+
         Args:
             sentences: List of dictionaries containing text and metadata
                     Each dict should have 'text' and 'metadata' keys
@@ -888,8 +879,8 @@ class VectorStore(Transformer):
             DocumentProcessingError: If there's an error processing the documents
             ChunkingError: If there's an error during document chunking
             EmbeddingError: If there's an error creating embeddings
-        """
 
+        """
         try:
           is_multimodal_embedding = await self.get_embedding_model_instance()
         except Exception as e:
@@ -963,13 +954,13 @@ class VectorStore(Transformer):
                                             **metadata,
                                             "isBlock": False,
                                         },
-                                    )
+                                    ),
                                 )
                         documents_to_embed.append(
                             Document(page_content=block_text, metadata={
                                         **metadata,
                                         "isBlock": True,
-                                    },)
+                                    }),
                         )
 
                     self.logger.info("✅ Added text documents for embedding")
@@ -1003,11 +994,11 @@ class VectorStore(Transformer):
                                 image_data = block.data
                                 image_uri = image_data.get("uri")
                                 documents_to_embed.append(
-                                    {"image_uri": image_uri, "metadata": metadata}
+                                    {"image_uri": image_uri, "metadata": metadata},
                                 )
                         elif is_multimodal_llm:
                             description_results = await self.describe_images(
-                                images_uris,llm
+                                images_uris,llm,
                             )
                             for result, block in zip(description_results, image_blocks):
                                 if result["success"]:
@@ -1021,13 +1012,13 @@ class VectorStore(Transformer):
                                     description = result["description"]
                                     documents_to_embed.append(
                                         Document(
-                                            page_content=description, metadata=metadata
-                                        )
+                                            page_content=description, metadata=metadata,
+                                        ),
                                     )
                         elif mime_type in {MimeTypes.PNG.value, MimeTypes.JPG.value, MimeTypes.JPEG.value, MimeTypes.WEBP.value, MimeTypes.SVG.value, MimeTypes.HEIC.value, MimeTypes.HEIF.value}:
                             try:
                                 record = await self.arango_service.get_document(
-                                    record_id, CollectionNames.RECORDS.value
+                                    record_id, CollectionNames.RECORDS.value,
                                 )
                                 if not record:
                                     raise DocumentProcessingError(
@@ -1040,17 +1031,17 @@ class VectorStore(Transformer):
                                         "indexingStatus": "ENABLE_MULTIMODAL_MODELS",
                                         "isDirty": True,
                                         "virtualRecordId": virtual_record_id,
-                                    }
+                                    },
                                 )
 
                                 docs = [doc]
 
                                 success = await self.arango_service.batch_upsert_nodes(
-                                    docs, CollectionNames.RECORDS.value
+                                    docs, CollectionNames.RECORDS.value,
                                 )
                                 if not success:
                                     raise DocumentProcessingError(
-                                        "Failed to update indexing status", doc_id=record_id
+                                        "Failed to update indexing status", doc_id=record_id,
                                     )
 
                                 return False
@@ -1097,7 +1088,7 @@ class VectorStore(Transformer):
 
             if not documents_to_embed:
                 self.logger.warning(
-                    "⚠️ No documents to embed after filtering by block type"
+                    "⚠️ No documents to embed after filtering by block type",
                 )
                 return True
 
@@ -1118,7 +1109,7 @@ class VectorStore(Transformer):
         except Exception as e:
             # Catch any unexpected errors
             raise IndexingError(
-                f"Unexpected error during indexing: {str(e)}",
+                f"Unexpected error during indexing: {e!s}",
                 details={"error_type": type(e).__name__},
             )
 

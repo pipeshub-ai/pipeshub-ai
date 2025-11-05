@@ -27,7 +27,7 @@ class BlobStorage(Transformer):
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        record_dict = record.model_dump(mode='json')
+        record_dict = record.model_dump(mode="json")
         document_id = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
 
         # Store the mapping if we have both IDs and arango_service is available
@@ -60,7 +60,7 @@ class BlobStorage(Transformer):
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error getting signed URL: %s", str(e))
-            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+            raise aiohttp.ClientError(f"Unexpected error: {e!s}")
 
     async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
         """Helper method to upload to signed URL with retry logic"""
@@ -68,7 +68,7 @@ class BlobStorage(Transformer):
             async with session.put(
                 signed_url,
                 json=data,
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
             ) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     try:
@@ -88,7 +88,7 @@ class BlobStorage(Transformer):
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
-            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+            raise aiohttp.ClientError(f"Unexpected error: {e!s}")
 
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
         """Helper method to create placeholder with retry logic"""
@@ -113,11 +113,10 @@ class BlobStorage(Transformer):
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error creating placeholder: %s", str(e))
-            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+            raise aiohttp.ClientError(f"Unexpected error: {e!s}")
 
     async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict) -> str | None:
-        """
-        Save document to storage using FormData upload
+        """Save document to storage using FormData upload
         Returns:
             str | None: document_id if successful, None if failed
         """
@@ -131,7 +130,7 @@ class BlobStorage(Transformer):
                     "scopes": [TokenScopes.STORAGE_TOKEN.value],
                 }
                 secret_keys = await self.config_service.get_config(
-                    config_node_constants.SECRET_KEYS.value
+                    config_node_constants.SECRET_KEYS.value,
                 )
                 scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
                 if not scoped_jwt_secret:
@@ -139,7 +138,7 @@ class BlobStorage(Transformer):
 
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
                 headers = {
-                    "Authorization": f"Bearer {jwt_token}"
+                    "Authorization": f"Bearer {jwt_token}",
                 }
             except Exception as e:
                 self.logger.error("❌ Failed to generate JWT token: %s", str(e))
@@ -148,14 +147,14 @@ class BlobStorage(Transformer):
             # Get endpoint configuration
             try:
                 endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
                 nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
                     raise ValueError("Missing CM endpoint configuration")
 
                 storage = await self.config_service.get_config(
-                    config_node_constants.STORAGE.value
+                    config_node_constants.STORAGE.value,
                 )
                 storage_type = storage.get("storageType")
                 if not storage_type:
@@ -170,21 +169,21 @@ class BlobStorage(Transformer):
                     async with aiohttp.ClientSession() as session:
                         upload_data = {
                             "record": record,
-                            "virtualRecordId": virtual_record_id
+                            "virtualRecordId": virtual_record_id,
                         }
-                        json_data = json.dumps(upload_data).encode('utf-8')
+                        json_data = json.dumps(upload_data).encode("utf-8")
 
                         # Create form data
                         form_data = aiohttp.FormData()
-                        form_data.add_field('file',
+                        form_data.add_field("file",
                                         json_data,
-                                        filename=f'record_{record_id}.json',
-                                        content_type='application/json')
-                        form_data.add_field('documentName', f'record_{record_id}')
-                        form_data.add_field('documentPath', 'records')
-                        form_data.add_field('isVersionedFile', 'true')
-                        form_data.add_field('extension', 'json')
-                        form_data.add_field('recordId', record_id)
+                                        filename=f"record_{record_id}.json",
+                                        content_type="application/json")
+                        form_data.add_field("documentName", f"record_{record_id}")
+                        form_data.add_field("documentPath", "records")
+                        form_data.add_field("isVersionedFile", "true")
+                        form_data.add_field("extension", "json")
+                        form_data.add_field("recordId", record_id)
 
                         # Make upload request
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
@@ -205,7 +204,7 @@ class BlobStorage(Transformer):
                                 raise Exception("Failed to upload record")
 
                             response_data = await response.json()
-                            document_id = response_data.get('_id')
+                            document_id = response_data.get("_id")
 
                             if not document_id:
                                 self.logger.error("❌ No document ID in upload response")
@@ -224,7 +223,7 @@ class BlobStorage(Transformer):
                 placeholder_data = {
                     "documentName": f"record_{record_id}",
                     "documentPath": "records",
-                    "extension": "json"
+                    "extension": "json",
                 }
 
                 try:
@@ -245,13 +244,13 @@ class BlobStorage(Transformer):
                         self.logger.info("🔑 Getting signed URL for document: %s", document_id)
                         upload_data = {
                             "record": record,
-                            "virtualRecordId": virtual_record_id
+                            "virtualRecordId": virtual_record_id,
                         }
 
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
                         upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
 
-                        signed_url = upload_result.get('signedUrl')
+                        signed_url = upload_result.get("signedUrl")
                         if not signed_url:
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
@@ -277,10 +276,11 @@ class BlobStorage(Transformer):
             raise e
 
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> str:
-        """
-        Get the document ID by virtual record ID from ArangoDB.
+        """Get the document ID by virtual record ID from ArangoDB.
+
         Returns:
             str: The document ID if found, else None.
+
         """
         if not self.arango_service:
             self.logger.error("❌ ArangoService not initialized, cannot get document ID by virtual record ID.")
@@ -295,18 +295,18 @@ class BlobStorage(Transformer):
             results = list(cursor)
             if results:
                 return results[0]  # Return first document ID
-            else:
-                self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
-                return None
+            self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
+            return None
         except Exception as e:
             self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
             raise e
 
     async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> str:
-            """
-            Retrieve a record's content from blob storage using the virtual_record_id.
+            """Retrieve a record's content from blob storage using the virtual_record_id.
+
             Returns:
                 str: The content of the record if found, else an empty string.
+
             """
             self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
@@ -316,7 +316,7 @@ class BlobStorage(Transformer):
                     "scopes": [TokenScopes.STORAGE_TOKEN.value],
                 }
                 secret_keys = await self.config_service.get_config(
-                    config_node_constants.SECRET_KEYS.value
+                    config_node_constants.SECRET_KEYS.value,
                 )
                 scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
                 if not scoped_jwt_secret:
@@ -324,12 +324,12 @@ class BlobStorage(Transformer):
 
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
                 headers = {
-                    "Authorization": f"Bearer {jwt_token}"
+                    "Authorization": f"Bearer {jwt_token}",
                 }
 
                 # Get endpoint configuration
                 endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
                 nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
@@ -354,21 +354,20 @@ class BlobStorage(Transformer):
                                             data = await resp.json()
                             self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)
                             return data.get("record")
-                        else:
-                            self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
-                            raise Exception("Failed to retrieve record from storage")
+                        self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
+                        raise Exception("Failed to retrieve record from storage")
             except Exception as e:
                 self.logger.error("❌ Error retrieving record from storage: %s", str(e))
                 self.logger.exception("Detailed error trace:")
                 raise e
 
     async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str) -> bool:
-        """
-        Stores the mapping between virtual_record_id and document_id in ArangoDB.
+        """Stores the mapping between virtual_record_id and document_id in ArangoDB.
+
         Returns:
             bool: True if successful, False otherwise.
-        """
 
+        """
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
@@ -379,20 +378,19 @@ class BlobStorage(Transformer):
                 "_key": mapping_key,
                 "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
-                "createdAt": get_epoch_timestamp_in_ms()
+                "createdAt": get_epoch_timestamp_in_ms(),
             }
 
             success = await self.arango_service.batch_upsert_nodes(
                 [mapping_document],
-                collection_name
+                collection_name,
             )
 
             if success:
                 self.logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s", virtual_record_id, document_id)
                 return True
-            else:
-                self.logger.error("❌ Failed to store virtual record mapping")
-                raise Exception("Failed to store virtual record mapping")
+            self.logger.error("❌ Failed to store virtual record mapping")
+            raise Exception("Failed to store virtual record mapping")
 
         except Exception as e:
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))

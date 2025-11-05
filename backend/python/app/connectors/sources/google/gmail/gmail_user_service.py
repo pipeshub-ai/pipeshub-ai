@@ -5,8 +5,9 @@ import base64
 import os
 import re
 import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, List, Optional, TypeVar
+from typing import TypeVar
 from uuid import uuid4
 
 import google.oauth2.credentials
@@ -32,7 +33,7 @@ from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class GmailUserService:
@@ -81,7 +82,7 @@ class GmailUserService:
                 details={"error": str(e)},
             )
 
-    async def _get_gmail_scopes(self) -> List[str]:
+    async def _get_gmail_scopes(self) -> list[str]:
         """Get scopes for gmail, with fallback to default readonly scope."""
         SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
         if not SCOPES:
@@ -101,7 +102,7 @@ class GmailUserService:
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name="gmail"
+                    org_id, user_id, app_name="gmail",
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -146,7 +147,7 @@ class GmailUserService:
                     expiry_ms = creds_data.get("access_token_expiry_time")
                     if expiry_ms:
                         self.token_expiry = datetime.fromtimestamp(
-                            int(expiry_ms) / 1000, tz=timezone.utc
+                            int(expiry_ms) / 1000, tz=timezone.utc,
                         )
                     else:
                         # As a last resort, set short-lived window to avoid tight loops
@@ -198,14 +199,14 @@ class GmailUserService:
         now = datetime.now(timezone.utc)
         time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
         self.logger.info(
-            f"Time until refresh: {time_until_refresh.total_seconds()} seconds"
+            f"Time until refresh: {time_until_refresh.total_seconds()} seconds",
         )
 
         if time_until_refresh.total_seconds() <= 0:
             await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name="gmail")
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name="gmail"
+                self.org_id, self.user_id, app_name="gmail",
             )
             SCOPES = await self._get_gmail_scopes()
             creds = google.oauth2.credentials.Credentials(
@@ -232,7 +233,7 @@ class GmailUserService:
                     expiry_ms = creds_data.get("access_token_expiry_time")
                     if expiry_ms:
                         self.token_expiry = datetime.fromtimestamp(
-                            int(expiry_ms) / 1000, tz=timezone.utc
+                            int(expiry_ms) / 1000, tz=timezone.utc,
                         )
                     else:
                         self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -246,13 +247,13 @@ class GmailUserService:
         try:
             if not self.credentials:
                 raise GoogleAuthError(
-                    "No credentials provided for enterprise connection."
+                    "No credentials provided for enterprise connection.",
                 )
             self.org_id = org_id
             self.user_id = user_id
             try:
                 self.service = build(
-                    "gmail", "v1", credentials=self.credentials, cache_discovery=False
+                    "gmail", "v1", credentials=self.credentials, cache_discovery=False,
                 )
                 self.logger.debug("Self Gmail Service: %s", self.service)
             except Exception as e:
@@ -302,7 +303,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_individual_user(self, org_id: str) -> List[Dict]:
+    async def list_individual_user(self, org_id: str) -> list[dict]:
         """Get individual user info"""
         try:
             self.logger.info("🚀 Getting individual user info")
@@ -338,7 +339,7 @@ class GmailUserService:
                         "isActive": False,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
+                    },
                 ]
             except Exception as e:
                 raise MailOperationError(
@@ -356,7 +357,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_messages(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_messages(self, query: str = "newer_than:30d") -> list[dict]:
         """Get list of messages"""
         try:
             self.logger.info("🚀 Getting list of messages")
@@ -412,10 +413,10 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def get_message(self, message_id: str) -> Dict:
+    async def get_message(self, message_id: str) -> dict:
         """Get message by id"""
 
-        def get_message_content(payload: Dict) -> str:
+        def get_message_content(payload: dict) -> str:
             """Recursively extract message content from MIME parts"""
             if not payload:
                 return ""
@@ -449,11 +450,11 @@ class GmailUserService:
                 if "data" in payload.get("body", {}):
                     try:
                         decoded_content = base64.urlsafe_b64decode(
-                            payload["body"]["data"]
+                            payload["body"]["data"],
                         ).decode("utf-8")
                         return decoded_content
                     except Exception as e:
-                        self.logger.error(f"❌ Error decoding content: {str(e)}")
+                        self.logger.error(f"❌ Error decoding content: {e!s}")
                         return ""
 
             return ""
@@ -472,7 +473,7 @@ class GmailUserService:
                         "Message not found: " + str(e),
                         details={"message_id": message_id},
                     )
-                elif e.resp.status == HttpStatusCode.FORBIDDEN.value:
+                if e.resp.status == HttpStatusCode.FORBIDDEN.value:
                     raise GoogleAuthError(
                         "Permission denied accessing message: " + str(e),
                         details={"message_id": message_id},
@@ -532,7 +533,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_threads(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_threads(self, query: str = "newer_than:30d") -> list[dict]:
         """Get list of unique threads"""
         try:
             self.logger.info("🚀 Getting list of threads")
@@ -597,13 +598,13 @@ class GmailUserService:
     @exponential_backoff()
     @token_refresh
     async def list_attachments(
-        self, message, org_id: str, user, account_type: str
-    ) -> List[Dict]:
+        self, message, org_id: str, user, account_type: str,
+    ) -> list[dict]:
         """Get list of attachments for a message"""
         try:
             if not isinstance(message, dict):
                 raise MailOperationError(
-                    "Invalid message format", details={"type": type(message)}
+                    "Invalid message format", details={"type": type(message)},
                 )
 
             user_id = user.get("userId")
@@ -638,20 +639,20 @@ class GmailUserService:
                                     "extension": extension,
                                     "mimeType": part.get("mimeType", ""),
                                     "size": part["body"].get("size", 0),
-                                }
+                                },
                             )
                     except Exception as e:
                         failed_items.append(
                             {
                                 "part_filename": part.get("filename", "unknown"),
                                 "error": str(e),
-                            }
+                            },
                         )
 
             # Process Drive attachments
             try:
                 self.logger.info(
-                    f"🎯 Processing Drive attachments for message: {message['id']}"
+                    f"🎯 Processing Drive attachments for message: {message['id']}",
                 )
 
                 file_ids = await self.get_file_ids(message)
@@ -678,7 +679,7 @@ class GmailUserService:
                                         "extension": file_metadata.get("extension", ""),
                                         "size": file_metadata.get("size", 0),
                                         "drive_file": True,
-                                    }
+                                    },
                                 )
                         except Exception as e:
                             failed_items.append({"file_id": file_id, "error": str(e)})
@@ -708,26 +709,26 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def get_file_ids(self, message) -> List[str]:
+    async def get_file_ids(self, message) -> list[str]:
         """Get file ids from message by recursively checking all parts and MIME types"""
         try:
 
-            def extract_file_ids(html_content: str) -> List[str]:
+            def extract_file_ids(html_content: str) -> list[str]:
                 if not isinstance(html_content, str):
                     return []
                 try:
                     unencoded_data = base64.urlsafe_b64decode(html_content).decode(
-                        "UTF-8"
+                        "UTF-8",
                     )
                     return re.findall(
                         r"https://drive\.google\.com/file/d/([^/]+)/view\?usp=drive_web",
                         unencoded_data,
                     )
                 except Exception as e:
-                    self.logger.warning(f"Failed to decode content: {str(e)}")
+                    self.logger.warning(f"Failed to decode content: {e!s}")
                     return []
 
-            def process_part(part: Dict) -> List[str]:
+            def process_part(part: dict) -> list[str]:
                 if not isinstance(part, dict):
                     return []
 
@@ -768,7 +769,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def create_gmail_user_watch(self, user_id="me", accountType=AccountType.INDIVIDUAL.value) -> Dict:
+    async def create_gmail_user_watch(self, user_id="me", accountType=AccountType.INDIVIDUAL.value) -> dict:
         """Create user watch"""
         try:
             self.logger.info("🚀 Creating user watch for user %s", user_id)
@@ -776,12 +777,12 @@ class GmailUserService:
             if accountType == AccountType.INDIVIDUAL.value:
                 self.logger.info("Creating Individual Gmail User watch")
                 creds_data = await self.google_token_handler.get_individual_token(
-                    self.org_id, self.user_id, app_name="gmail"
+                    self.org_id, self.user_id, app_name="gmail",
                 )
             else:
                 self.logger.info("Creating Enterprise Gmail User watch")
                 creds_data = await self.google_token_handler.get_enterprise_token(
-                    self.org_id, app_name="gmail"
+                    self.org_id, app_name="gmail",
                 )
 
             enable_real_time_updates = creds_data.get("enableRealTimeUpdates", False)
@@ -793,7 +794,7 @@ class GmailUserService:
             self.logger.info(f"🚀 Topic: {topic}")
             if not topic:
                 raise MailOperationError(
-                    "Topic is required", details={"user_id": user_id}
+                    "Topic is required", details={"user_id": user_id},
                 )
 
             self.logger.info("🚀 Creating user watch for user %s", user_id)
@@ -813,7 +814,7 @@ class GmailUserService:
                         "Permission denied creating user watch: " + str(e),
                         details={"user_id": user_id, "error": str(e)},
                     )
-                elif e.resp.status == HttpStatusCode.BAD_REQUEST.value:
+                if e.resp.status == HttpStatusCode.BAD_REQUEST.value:
                     raise MailOperationError(
                         "Invalid request creating user watch: " + str(e),
                         details={"user_id": user_id, "topic": topic, "error": str(e)},
@@ -849,13 +850,13 @@ class GmailUserService:
             return True
         except Exception as e:
             self.logger.error(
-                "❌ Failed to delete user watch for user %s: %s", user_id, str(e)
+                "❌ Failed to delete user watch for user %s: %s", user_id, str(e),
             )
             return False
 
     @exponential_backoff()
     @token_refresh
-    async def fetch_gmail_changes(self, user_email: str, history_id: str) -> Dict:
+    async def fetch_gmail_changes(self, user_email: str, history_id: str) -> dict:
         """Fetches new emails using Gmail API's history endpoint"""
         try:
             self.logger.info("🚀 Fetching changes in user mail")
@@ -865,7 +866,7 @@ class GmailUserService:
 
             if not history_id:
                 raise MailOperationError(
-                    "History ID is required", details={"user_email": user_email}
+                    "History ID is required", details={"user_email": user_email},
                 )
 
             try:
@@ -907,7 +908,7 @@ class GmailUserService:
                             "error": str(e),
                         },
                     )
-                elif e.resp.status == HttpStatusCode.FORBIDDEN.value:
+                if e.resp.status == HttpStatusCode.FORBIDDEN.value:
                     raise GoogleAuthError(
                         "Permission denied fetching changes: " + str(e),
                         details={"user_email": user_email, "error": str(e)},
@@ -922,7 +923,7 @@ class GmailUserService:
                 )
 
             if not isinstance(inbox_response, dict) or not isinstance(
-                sent_response, dict
+                sent_response, dict,
             ):
                 raise MailOperationError(
                     "Invalid response format for history",
@@ -958,10 +959,9 @@ class GmailUserService:
     @exponential_backoff()
     @token_refresh
     async def get_attachment_id_from_message_part(
-        self, combined_id: str, user
-    ) -> Optional[str]:
-        """
-        Given a combined ID (messageId_partId), fetch the actual attachmentId from Gmail.
+        self, combined_id: str, user,
+    ) -> str | None:
+        """Given a combined ID (messageId_partId), fetch the actual attachmentId from Gmail.
         """
         try:
             message_id, part_id = combined_id.split("_", 1)
@@ -988,11 +988,10 @@ class GmailUserService:
                     attachment_id = part.get("body", {}).get("attachmentId")
                     if attachment_id:
                         return attachment_id
-                    else:
-                        raise MailOperationError(
-                            "Attachment ID not found in part body",
-                            details={"combined_id": combined_id, "part": part},
-                        )
+                    raise MailOperationError(
+                        "Attachment ID not found in part body",
+                        details={"combined_id": combined_id, "part": part},
+                    )
 
             raise MailOperationError(
                 "Part ID not found in message",
@@ -1007,31 +1006,31 @@ class GmailUserService:
         except Exception as e:
             self.logger.exception("Error fetching attachment ID from message part")
             raise MailOperationError(
-                "Failed to fetch attachment ID", details={"error": str(e), "combined_id": combined_id}
+                "Failed to fetch attachment ID", details={"error": str(e), "combined_id": combined_id},
             )
 
     # Async wrapper methods for blocking operations
-    async def list_messages_async(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_messages_async(self, query: str = "newer_than:30d") -> list[dict]:
         """Async wrapper for list_messages to run in separate thread"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_messages, query))
 
-    async def list_threads_async(self, query: str = "newer_than:30d") -> List[Dict]:
+    async def list_threads_async(self, query: str = "newer_than:30d") -> list[dict]:
         """Async wrapper for list_threads to run in separate thread"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_threads, query))
 
-    async def get_message_async(self, message_id: str) -> Dict:
+    async def get_message_async(self, message_id: str) -> dict:
         """Async wrapper for get_message to run in separate thread"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.get_message, message_id))
 
-    async def list_attachments_async(self, message, org_id: str, user, account_type: str) -> List[Dict]:
+    async def list_attachments_async(self, message, org_id: str, user, account_type: str) -> list[dict]:
         """Async wrapper for list_attachments to run in separate thread"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_attachments, message, org_id, user, account_type))
 
-    async def fetch_gmail_changes_async(self, user_email: str, history_id: str) -> Dict:
+    async def fetch_gmail_changes_async(self, user_email: str, history_id: str) -> dict:
         """Async wrapper for fetch_gmail_changes to run in separate thread"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.fetch_gmail_changes, user_email, history_id))

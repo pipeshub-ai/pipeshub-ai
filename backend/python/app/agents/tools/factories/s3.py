@@ -1,5 +1,4 @@
-"""
-Client factories for S3.
+"""Client factories for S3.
 """
 
 
@@ -15,8 +14,7 @@ class S3ClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> S3Client:
         """Create S3 client instance"""
-
         return await S3Client.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

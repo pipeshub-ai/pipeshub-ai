@@ -1,6 +1,6 @@
 import logging
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from arango.client import ArangoClient
 
@@ -14,21 +14,22 @@ logger = logging.getLogger(__name__)
 
 # TODO: Remove Generic Exception Handling
 class ArangoService(IGraphService):
-    def __init__(self, logger: Logger, config_service: Union[ArangoConfig, ConfigurationService]) -> None:
+    def __init__(self, logger: Logger, config_service: ArangoConfig | ConfigurationService) -> None:
         self.logger = logger
         self.config_service = config_service
-        self.client: Optional[ArangoClient] = None
-        self.db: Optional[Any] = None
+        self.client: ArangoClient | None = None
+        self.db: Any | None = None
 
     @classmethod
-    async def create(cls, logger: Logger, config_service: Union[ArangoConfig, ConfigurationService]) -> 'ArangoService':
-        """
-        Factory method to create and initialize an ArangoService instance.
+    async def create(cls, logger: Logger, config_service: ArangoConfig | ConfigurationService) -> "ArangoService":
+        """Factory method to create and initialize an ArangoService instance.
+
         Args:
             logger: Logger instance
             config_service: ConfigurationService instance
         Returns:
             ArangoService: Initialized ArangoService instance
+
         """
         service = cls(logger, config_service)
         service.client = await service.__create_arango_client()
@@ -48,7 +49,7 @@ class ArangoService(IGraphService):
                 arangodb_config = self.config_service.to_dict()
             else:
                 arangodb_config = await self.config_service.get_config(
-                    config_node_constants.ARANGODB.value
+                    config_node_constants.ARANGODB.value,
                 )
 
             if not arangodb_config or not isinstance(arangodb_config, dict):
@@ -76,7 +77,7 @@ class ArangoService(IGraphService):
 
             # Connect to system db to ensure our db exists
             sys_db = self.client.db(
-                "_system", username=arango_user, password=arango_password, verify=False
+                "_system", username=arango_user, password=arango_password, verify=False,
             )
             self.logger.info("System database connected")
 
@@ -85,7 +86,7 @@ class ArangoService(IGraphService):
                 self.logger.info(f"Database '{arango_db}' does not exist, creating it...")
                 sys_db.create_database(
                     name=arango_db,
-                    users=[{"username": arango_user, "password": arango_password, "active": True}]
+                    users=[{"username": arango_user, "password": arango_password, "active": True}],
                 )
                 self.logger.info(f"✅ Database '{arango_db}' created successfully")
             else:
@@ -94,7 +95,7 @@ class ArangoService(IGraphService):
             # Connect to our database
             self.logger.info(f"Connecting to database '{arango_db}'...")
             self.db = self.client.db(
-                arango_db, username=arango_user, password=arango_password, verify=False
+                arango_db, username=arango_user, password=arango_password, verify=False,
             )
             self.logger.info("✅ Database connected successfully")
             self.logger.debug(f"Database object: {self.db}")
@@ -126,13 +127,13 @@ class ArangoService(IGraphService):
             arango_config = self.config_service.to_dict()
         else:
             arango_config = await self.config_service.get_config(
-                config_node_constants.ARANGODB.value
+                config_node_constants.ARANGODB.value,
             )
 
         if not arango_config or not isinstance(arango_config, dict):
             raise ValueError("ArangoDB configuration not found or invalid")
 
-        url = arango_config.get('url')
+        url = arango_config.get("url")
         if not url:
             raise ValueError("ArangoDB URL not found in configuration")
         return url
@@ -185,11 +186,11 @@ class ArangoService(IGraphService):
         """Get an edge"""
         return None # type: ignore
 
-    async def get_nodes(self, node_type: str) -> List[Node]:
+    async def get_nodes(self, node_type: str) -> list[Node]:
         """Get all nodes of a given type"""
         return []
 
-    async def get_edges(self, edge_type: str) -> List[Edge]:
+    async def get_edges(self, edge_type: str) -> list[Edge]:
         """Get all edges of a given type"""
         return []
 
@@ -215,7 +216,7 @@ class ArangoService(IGraphService):
             self.logger.error(f"Failed to create collection {collection_name}: {e}")
             return False
 
-    async def upsert_document(self, collection_name: str, document: Dict[str, Any]) -> bool:
+    async def upsert_document(self, collection_name: str, document: dict[str, Any]) -> bool:
         """Insert or update a document in a collection using atomic AQL UPSERT"""
         try:
             if not self.db:
@@ -237,7 +238,7 @@ class ArangoService(IGraphService):
 
             bind_vars = {
                 "_key": document["_key"],
-                "document": document
+                "document": document,
             }
 
             result = await self.execute_query(upsert_query, bind_vars)
@@ -246,17 +247,15 @@ class ArangoService(IGraphService):
             if result is not None:
                 self.logger.debug(f"Upserted document {document['_key']} in {collection_name}")
                 return True
-            else:
-                self.logger.error(f"Upsert operation failed for document {document['_key']} in {collection_name}")
-                return False
+            self.logger.error(f"Upsert operation failed for document {document['_key']} in {collection_name}")
+            return False
 
         except Exception as e:
             self.logger.error(f"Failed to upsert document in {collection_name}: {e}")
             return False
 
-    async def upsert_document_with_merge(self, collection_name: str, document: Dict[str, Any], merge_strategy: str = "merge") -> Optional[Dict[str, Any]]:
-        """
-        Insert or update a document with custom merge strategy using AQL UPSERT
+    async def upsert_document_with_merge(self, collection_name: str, document: dict[str, Any], merge_strategy: str = "merge") -> dict[str, Any] | None:
+        """Insert or update a document with custom merge strategy using AQL UPSERT
         Args:
             collection_name: Name of the collection
             document: Document to upsert
@@ -308,7 +307,7 @@ class ArangoService(IGraphService):
 
             bind_vars = {
                 "_key": document["_key"],
-                "document": document
+                "document": document,
             }
 
             result = await self.execute_query(upsert_query, bind_vars)
@@ -316,17 +315,15 @@ class ArangoService(IGraphService):
             if result is not None and len(result) > 0:
                 self.logger.debug(f"Upserted document {document['_key']} in {collection_name} with strategy '{merge_strategy}'")
                 return result[0]  # Return the upserted document
-            else:
-                self.logger.error(f"Upsert operation failed for document {document['_key']} in {collection_name}")
-                return None
+            self.logger.error(f"Upsert operation failed for document {document['_key']} in {collection_name}")
+            return None
 
         except Exception as e:
             self.logger.error(f"Failed to upsert document in {collection_name}: {e}")
             return None
 
-    async def batch_upsert_documents(self, collection_name: str, documents: List[Dict[str, Any]], merge_strategy: str = "merge") -> bool:
-        """
-        Batch upsert multiple documents using AQL UPSERT for better performance
+    async def batch_upsert_documents(self, collection_name: str, documents: list[dict[str, Any]], merge_strategy: str = "merge") -> bool:
+        """Batch upsert multiple documents using AQL UPSERT for better performance
         Args:
             collection_name: Name of the collection
             documents: List of documents to upsert
@@ -370,7 +367,7 @@ class ArangoService(IGraphService):
             """
 
             bind_vars = {
-                "documents": documents
+                "documents": documents,
             }
 
             result = await self.execute_query(batch_upsert_query, bind_vars)
@@ -378,15 +375,14 @@ class ArangoService(IGraphService):
             if result is not None:
                 self.logger.debug(f"Batch upserted {len(documents)} documents in {collection_name} with strategy '{merge_strategy}'")
                 return True
-            else:
-                self.logger.error(f"Batch upsert operation failed for {len(documents)} documents in {collection_name}")
-                return False
+            self.logger.error(f"Batch upsert operation failed for {len(documents)} documents in {collection_name}")
+            return False
 
         except Exception as e:
             self.logger.error(f"Failed to batch upsert documents in {collection_name}: {e}")
             return False
 
-    async def get_document(self, collection_name: str, document_key: str) -> Optional[Dict[str, Any]]:
+    async def get_document(self, collection_name: str, document_key: str) -> dict[str, Any] | None:
         """Get a document by key from a collection"""
         try:
             if not self.db:
@@ -427,7 +423,7 @@ class ArangoService(IGraphService):
             self.logger.error(f"Failed to delete document {document_key} from {collection_name}: {e}")
             return False
 
-    async def execute_query(self, query: str, bind_vars: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
+    async def execute_query(self, query: str, bind_vars: dict[str, Any] | None = None) -> list[dict[str, Any]] | None:
         """Execute an AQL query"""
         try:
             if not self.db:
@@ -447,7 +443,7 @@ class ArangoService(IGraphService):
             self.logger.error(f"Failed to execute query: {e}")
             return None
 
-    async def create_index(self, collection_name: str, fields: List[str], index_type: str = "persistent") -> bool:
+    async def create_index(self, collection_name: str, fields: list[str], index_type: str = "persistent") -> bool:
         """Create an index on a collection"""
         try:
             if not self.db:

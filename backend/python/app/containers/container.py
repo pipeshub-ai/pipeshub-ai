@@ -1,10 +1,11 @@
 import asyncio
-from typing import Type, TypeVar
+from typing import TypeVar
 
 from arango import ArangoClient  # type: ignore
 from dependency_injector import containers, providers  # type: ignore
 from redis import asyncio as aioredis  # type: ignore
 from redis.asyncio import Redis  # type: ignore
+from typing_extensions import Self
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
@@ -31,7 +32,7 @@ class BaseAppContainer(containers.DeclarativeContainer):
     async def _create_arango_client(config_service) -> ArangoClient:
         """Async factory method to initialize ArangoClient."""
         arangodb_config = await config_service.get_config(
-            config_node_constants.ARANGODB.value
+            config_node_constants.ARANGODB.value,
         )
         hosts = arangodb_config["url"]
         return ArangoClient(hosts=hosts)
@@ -40,7 +41,7 @@ class BaseAppContainer(containers.DeclarativeContainer):
     async def _create_redis_client(config_service) -> Redis:
         """Async factory method to initialize RedisClient."""
         redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
+            config_node_constants.REDIS.value,
         )
         # Build Redis URL with password if provided
         url = build_redis_url(redis_config)
@@ -48,17 +49,17 @@ class BaseAppContainer(containers.DeclarativeContainer):
 
     # Common external service providers
     arango_client = providers.Resource(
-        _create_arango_client, config_service=config_service
+        _create_arango_client, config_service=config_service,
     )
     redis_client = providers.Resource(
-        _create_redis_client, config_service=config_service
+        _create_redis_client, config_service=config_service,
     )
 
     # Note: Each service container should define its own wiring_config
     # based on its specific module dependencies
 
     @classmethod
-    def init(cls: Type[T], service_name: str) -> T:
+    def init(cls, service_name: str) -> Self:
         """Initialize the container with the given service name."""
         container = cls()
         container.logger().info(f"🚀 Initializing {cls.__name__} for {service_name}")

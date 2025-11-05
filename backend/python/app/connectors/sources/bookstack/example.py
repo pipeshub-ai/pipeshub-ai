@@ -87,8 +87,8 @@ async def test_run() -> None:
         "auth": {
             "base_url": bookstack_base_url,
             "token_id": bookstack_token_id,
-            "token_secret": bookstack_token_secret
-        }
+            "token_secret": bookstack_token_secret,
+        },
     }
 
     await key_value_store.create_key("/services/connectors/bookstack/config", config)
@@ -110,7 +110,7 @@ async def test_run() -> None:
         bookstack_connector = await BookStackConnector.create_connector(
             logger,
             data_store_provider,
-            config_service
+            config_service,
         )
 
         # Initialize the connector

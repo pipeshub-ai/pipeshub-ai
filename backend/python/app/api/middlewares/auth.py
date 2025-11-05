@@ -27,7 +27,7 @@ async def isJwtTokenValid(request: Request) -> dict:
         logger.debug("🚀 Starting authentication")
         config_service = await get_config_service(request)
         secret_keys = await config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
+            config_node_constants.SECRET_KEYS.value,
         )
         jwt_secret = secret_keys.get("jwtSecret")
         algorithm = os.environ.get("JWT_ALGORITHM", "HS256")

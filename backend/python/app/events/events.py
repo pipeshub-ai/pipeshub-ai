@@ -26,10 +26,9 @@ class EventProcessor:
         self.arango_service = arango_service
 
     async def _download_from_signed_url(
-        self, signed_url: str, record_id: str, doc: dict
+        self, signed_url: str, record_id: str, doc: dict,
     ) -> bytes:
-        """
-        Download file from signed URL with exponential backoff retry
+        """Download file from signed URL with exponential backoff retry
 
         Args:
             signed_url: The signed URL to download from
@@ -38,6 +37,7 @@ class EventProcessor:
 
         Returns:
             bytes: The downloaded file content
+
         """
         chunk_size = 1024 * 1024 * 3  # 3MB chunks
         max_retries = 3
@@ -58,13 +58,13 @@ class EventProcessor:
                         async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
-                                    f"Failed to download file: {response.status}"
+                                    f"Failed to download file: {response.status}",
                                 )
 
                             content_length = response.headers.get("Content-Length")
                             if content_length:
                                 self.logger.info(
-                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
+                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB",
                                 )
 
                             last_logged_size = 0
@@ -74,42 +74,42 @@ class EventProcessor:
                             self.logger.info("Starting chunked download...")
                             try:
                                 async for chunk in response.content.iter_chunked(
-                                    chunk_size
+                                    chunk_size,
                                 ):
                                     file_buffer.write(chunk)
                                     total_size += len(chunk)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
-                                            f"Total size so far: {total_size / (1024*1024):.2f} MB"
+                                            f"Total size so far: {total_size / (1024*1024):.2f} MB",
                                         )
                                         last_logged_size = total_size
-                            except IOError as io_err:
+                            except OSError as io_err:
                                 raise aiohttp.ClientError(
-                                    f"IO error during chunk download: {str(io_err)}"
+                                    f"IO error during chunk download: {io_err!s}",
                                 )
 
                             file_content = file_buffer.getvalue()
                             self.logger.info(
-                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
+                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB",
                             )
                             return file_content
 
                     except aiohttp.ServerDisconnectedError as sde:
-                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                        raise aiohttp.ClientError(f"Server disconnected: {sde!s}")
                     except aiohttp.ClientConnectorError as cce:
-                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+                        raise aiohttp.ClientError(f"Connection error: {cce!s}")
 
-            except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
+            except (OSError, aiohttp.ClientError, asyncio.TimeoutError) as e:
                 error_type = type(e).__name__
                 self.logger.warning(
-                    f"Download attempt {attempt + 1} failed with {error_type}: {str(e)}. "
-                    f"Retrying in {delay} seconds..."
+                    f"Download attempt {attempt + 1} failed with {error_type}: {e!s}. "
+                    f"Retrying in {delay} seconds...",
                 )
 
                 if attempt == max_retries - 1:  # Last attempt failed
                     self.logger.error(
                         f"❌ All download attempts failed for record {record_id}. "
-                        f"Error type: {error_type}, Details: {repr(e)}"
+                        f"Error type: {error_type}, Details: {e!r}",
                     )
                     doc.update(
                         {
@@ -117,16 +117,16 @@ class EventProcessor:
                             "extractionStatus": ProgressStatus.FAILED.value,
                             "reason": (
                                 f"Download failed after {max_retries} attempts. "
-                                f"Error: {error_type} - {str(e)}. File id: {record_id}"
+                                f"Error: {error_type} - {e!s}. File id: {record_id}"
                             ),
-                        }
+                        },
                     )
                     await self.arango_service.batch_upsert_nodes(
-                        [doc], CollectionNames.RECORDS.value
+                        [doc], CollectionNames.RECORDS.value,
                     )
                     raise Exception(
                         f"Download failed after {max_retries} attempts. "
-                        f"Error: {error_type} - {str(e)}. File id: {record_id}"
+                        f"Error: {error_type} - {e!s}. File id: {record_id}",
                     )
                 await asyncio.sleep(delay)
             finally:
@@ -134,8 +134,7 @@ class EventProcessor:
                     file_buffer.close()
 
     async def on_event(self, event_data: dict) -> None:
-        """
-        Process events received from Kafka consumer
+        """Process events received from Kafka consumer
         Args:
             event_data: Dictionary containing:
                 - event_type: Type of event (create, update, delete)
@@ -148,7 +147,7 @@ class EventProcessor:
         try:
             # Extract event type and record ID
             event_type = event_data.get(
-                "eventType", EventTypes.NEW_RECORD.value
+                "eventType", EventTypes.NEW_RECORD.value,
             )  # default to create
             event_data = event_data.get("payload")
             record_id = event_data.get("recordId")
@@ -158,10 +157,10 @@ class EventProcessor:
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")
-                return
+                return None
 
             record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
 
             if virtual_record_id is None:
@@ -176,7 +175,7 @@ class EventProcessor:
                     raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
 
                 self.logger.info(
-                    f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
+                    f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}""",
                 )
                 await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
@@ -208,7 +207,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     html_content=event_data.get("body"),
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
 
                 return result
@@ -216,7 +215,7 @@ class EventProcessor:
             if signed_url:
                 self.logger.debug("Signed URL received")
                 file_content = await self._download_from_signed_url(
-                    signed_url, record_id, doc
+                    signed_url, record_id, doc,
                 )
             else:
                 file_content = event_data.get("buffer")
@@ -227,7 +226,7 @@ class EventProcessor:
             if record_type == RecordTypes.FILE.value:
                 try:
                     file = await self.arango_service.get_document(
-                        record_id, CollectionNames.FILES.value
+                        record_id, CollectionNames.FILES.value,
                     )
                     file_doc = dict(file)
 
@@ -240,13 +239,13 @@ class EventProcessor:
                         await self.arango_service.batch_upsert_nodes([file_doc], CollectionNames.FILES.value)
 
                     # Add indexingStatus to initial duplicate check to find in-progress files
-                    duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get('_key'), md5_checksum, size_in_bytes)
+                    duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get("_key"), md5_checksum, size_in_bytes)
                     if duplicate_files:
                         # Wait and check for processed duplicates
                         for attempt in range(60):  # Wait up to 60 seconds
                             processed_duplicate = next(
                                 (f for f in duplicate_files if f.get("summaryDocumentId") and f.get("virtualRecordId")),
-                                None
+                                None,
                             )
 
                             if processed_duplicate:
@@ -265,14 +264,14 @@ class EventProcessor:
                                 # Copy all relationships from the processed duplicate to this document
                                 await self.arango_service.copy_document_relationships(
                                     processed_duplicate.get("_key"),
-                                    doc.get("_key")
+                                    doc.get("_key"),
                                 )
-                                return
+                                return None
 
                             # Check if any duplicate is in progress
                             in_progress = next(
                                 (f for f in duplicate_files if f.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
-                                None
+                                None,
                             )
 
                             if in_progress:
@@ -282,7 +281,7 @@ class EventProcessor:
                                 await asyncio.sleep(5)
                                 # Refresh duplicate files list
                                 duplicate_files = await self.arango_service.find_duplicate_files(
-                                    file_doc.get('_key'), md5_checksum, size_in_bytes
+                                    file_doc.get("_key"), md5_checksum, size_in_bytes,
                                 )
                             else:
                                 # No file is being processed, we can proceed
@@ -294,7 +293,7 @@ class EventProcessor:
                         if event_type == EventTypes.UPDATE_RECORD.value:
                             virtual_record_id = str(uuid4())
                 except Exception as e:
-                    self.logger.error(f"❌ Error in file processing: {repr(e)}")
+                    self.logger.error(f"❌ Error in file processing: {e!r}")
                     raise
 
             if virtual_record_id is None:
@@ -308,11 +307,11 @@ class EventProcessor:
                         file_content = json.loads(file_content.decode("utf-8"))
                     except json.JSONDecodeError as e:
                         self.logger.error(
-                            f"Failed to decode Google Slides content: {str(e)}"
+                            f"Failed to decode Google Slides content: {e!s}",
                         )
                         raise
                 result = await self.processor.process_google_slides(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                    record_id, record_version, org_id, file_content, virtual_record_id,
                 )
                 return result
 
@@ -324,11 +323,11 @@ class EventProcessor:
                         file_content = json.loads(file_content.decode("utf-8"))
                     except json.JSONDecodeError as e:
                         self.logger.error(
-                            f"Failed to decode Google Docs content: {str(e)}"
+                            f"Failed to decode Google Docs content: {e!s}",
                         )
                         raise
                 result = await self.processor.process_google_docs(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                    record_id, record_version, org_id, file_content, virtual_record_id,
                 )
                 return result
 
@@ -340,11 +339,11 @@ class EventProcessor:
                         file_content = json.loads(file_content.decode("utf-8"))
                     except json.JSONDecodeError as e:
                         self.logger.error(
-                            f"Failed to decode Google Sheets content: {str(e)}"
+                            f"Failed to decode Google Sheets content: {e!s}",
                         )
                         raise
                 result = await self.processor.process_google_sheets(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                    record_id, record_version, org_id, file_content, virtual_record_id,
                 )
                 return result
 
@@ -371,7 +370,7 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     recordType=record_type,
                     connectorName=connector,
-                    origin=origin
+                    origin=origin,
                 )
                 return result
 
@@ -380,7 +379,7 @@ class EventProcessor:
                     recordName=record_name,
                     recordId=record_id,
                     pdf_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
                 if result is False:
                     result = await self.processor.process_pdf_document(
@@ -390,7 +389,7 @@ class EventProcessor:
                         source=connector,
                         orgId=org_id,
                         pdf_binary=file_content,
-                        virtual_record_id = virtual_record_id
+                        virtual_record_id = virtual_record_id,
                     )
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
@@ -401,7 +400,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     docx_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
 
             elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
@@ -412,7 +411,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     doc_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
             elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
                 result = await self.processor.process_excel_document(
@@ -422,7 +421,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
             elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
                 result = await self.processor.process_xls_document(
@@ -432,7 +431,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     xls_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
                 result = await self.processor.process_csv_document(
@@ -466,7 +465,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
 
             elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
@@ -477,7 +476,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     ppt_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
 
             elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
@@ -488,7 +487,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     md_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
 
             elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
@@ -499,7 +498,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     mdx_content=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
                 )
 
             elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
@@ -513,7 +512,7 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     recordType=record_type,
                     connectorName=connector,
-                    origin=origin
+                    origin=origin,
                 )
 
             elif (
@@ -547,11 +546,11 @@ class EventProcessor:
                 raise Exception(f"Unsupported file extension: {extension}")
 
             self.logger.info(
-                f"✅ Successfully processed document for record {record_id}"
+                f"✅ Successfully processed document for record {record_id}",
             )
             return result
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer
-            self.logger.error(f"❌ Error in event processor: {repr(e)}")
+            self.logger.error(f"❌ Error in event processor: {e!r}")
             raise

@@ -1,5 +1,5 @@
 # router.py fixes - Add return type annotations
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -33,11 +33,11 @@ HTTP_INTERNAL_SERVER_ERROR = 500
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
 
-def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
+def _parse_comma_separated_str(value: str | None) -> list[str] | None:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
         return None
-    return [item.strip() for item in value.split(',') if item.strip()]
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 @kb_router.post(
     "/",
@@ -58,7 +58,7 @@ async def create_knowledge_base(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
@@ -73,7 +73,7 @@ async def create_knowledge_base(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return CreateKnowledgeBaseResponse(**result)
@@ -83,7 +83,7 @@ async def create_knowledge_base(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
@@ -92,22 +92,22 @@ async def create_knowledge_base(
     response_model=ListKnowledgeBaseResponse,
     responses={
         500: {"model": ErrorResponse},
-    }
+    },
 )
 @inject
 async def list_user_knowledge_bases(
     request: Request,
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
-    search: Optional[str] = Query(None, description="Search by KB name"),
-    permissions: Optional[str] = Query(None, description="Filter by permission roles"),
+    search: str | None = Query(None, description="Search by KB name"),
+    permissions: str | None = Query(None, description="Filter by permission roles"),
     sort_by: str = Query("name", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[ListKnowledgeBaseResponse, Dict[str, Any]]:
+) -> ListKnowledgeBaseResponse | dict[str, Any]:
     try:
         # Parse comma-separated string into list
-        parsed_permissions = [item.strip() for item in permissions.split(',') if item.strip()] if permissions else None
+        parsed_permissions = [item.strip() for item in permissions.split(",") if item.strip()] if permissions else None
 
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
@@ -120,14 +120,14 @@ async def list_user_knowledge_bases(
             search=search,
             permissions=parsed_permissions,
             sort_by=sort_by,
-            sort_order=sort_order
+            sort_order=sort_order,
         )
         if isinstance(result, dict) and result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -137,21 +137,21 @@ async def list_user_knowledge_bases(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
 @kb_router.get(
     "/{kb_id}",
     response_model=KnowledgeBaseResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 @inject
 async def get_knowledge_base(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[KnowledgeBaseResponse, Dict[str, Any]]:
+) -> KnowledgeBaseResponse | dict[str, Any]:
     try :
         user_id = request.state.user.get("userId")
         result = await kb_service.get_knowledge_base(kb_id=kb_id, user_id=user_id)
@@ -161,7 +161,7 @@ async def get_knowledge_base(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -171,7 +171,7 @@ async def get_knowledge_base(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.put(
@@ -179,8 +179,8 @@ async def get_knowledge_base(
     response_model=SuccessResponse,
     responses={
         403: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+        404: {"model": ErrorResponse},
+    },
 )
 @inject
 async def update_knowledge_base(
@@ -195,7 +195,7 @@ async def update_knowledge_base(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         result = await kb_service.update_knowledge_base(kb_id=kb_id, user_id=user_id, updates=body)
         if not result or result.get("success") is False:
@@ -203,7 +203,7 @@ async def update_knowledge_base(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return SuccessResponse(message="Knowledge base updated successfully")
 
@@ -213,7 +213,7 @@ async def update_knowledge_base(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.delete(
@@ -221,8 +221,8 @@ async def update_knowledge_base(
     response_model=SuccessResponse,
     responses={
         403: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+        404: {"model": ErrorResponse},
+    },
 )
 @inject
 async def delete_knowledge_base(
@@ -238,7 +238,7 @@ async def delete_knowledge_base(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return SuccessResponse(message="Knowledge base deleted successfully")
 
@@ -248,20 +248,20 @@ async def delete_knowledge_base(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.post(
     "/{kb_id}/records",
     response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 @inject
 async def create_records_in_kb(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[CreateRecordsResponse, Dict[str, Any]]:
+) -> CreateRecordsResponse | dict[str, Any]:
     try:
         user_id = request.state.user.get("userId")
         try:
@@ -269,7 +269,7 @@ async def create_records_in_kb(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         result = await kb_service.create_records_in_kb(
             kb_id=kb_id,
@@ -282,7 +282,7 @@ async def create_records_in_kb(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -292,7 +292,7 @@ async def create_records_in_kb(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.post(
@@ -310,9 +310,8 @@ async def upload_records_to_kb(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[UploadRecordsinKBResponse, Dict[str, Any]]:
-    """
-    ⭐ UNIFIED: Upload records to KB root using consolidated service
+) -> UploadRecordsinKBResponse | dict[str, Any]:
+    """⭐ UNIFIED: Upload records to KB root using consolidated service
     """
     try:
         # Input validation
@@ -323,19 +322,19 @@ async def upload_records_to_kb(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
 
         if not body.get("files"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No files provided for upload"
+                detail="No files provided for upload",
             )
 
         if not user_id or not org_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="userId and orgId are required"
+                detail="userId and orgId are required",
             )
 
         # Convert Pydantic models to dicts for service layer
@@ -361,7 +360,7 @@ async def upload_records_to_kb(
             error_reason = result.get("reason", "Unknown error") if result else "Service error"
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         # Return unified response
@@ -372,7 +371,7 @@ async def upload_records_to_kb(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error during KB upload: {str(e)}"
+            detail=f"Unexpected error during KB upload: {e!s}",
         )
 
 @kb_router.post(
@@ -391,9 +390,8 @@ async def upload_records_to_folder(
     folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[UploadRecordsinFolderResponse, Dict[str, Any]]:
-    """
-    ⭐ UNIFIED: Upload records to specific folder using consolidated service
+) -> UploadRecordsinFolderResponse | dict[str, Any]:
+    """⭐ UNIFIED: Upload records to specific folder using consolidated service
     """
     try:
         # Input validation
@@ -404,18 +402,18 @@ async def upload_records_to_folder(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         if not body.get("files"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No files provided for upload"
+                detail="No files provided for upload",
             )
 
         if not user_id or not org_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="userId and orgId are required"
+                detail="userId and orgId are required",
             )
 
         # Convert Pydantic models to dicts for service layer
@@ -442,7 +440,7 @@ async def upload_records_to_folder(
             error_reason = result.get("reason", "Unknown error") if result else "Service error"
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         # Return unified response
@@ -453,20 +451,20 @@ async def upload_records_to_folder(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error during folder upload: {str(e)}"
+            detail=f"Unexpected error during folder upload: {e!s}",
         )
 
 @kb_router.post(
     "/{kb_id}/folder",
     response_model=CreateFolderResponse,
-    responses={403: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 400: {"model": ErrorResponse}},
 )
 @inject
 async def create_folder_in_kb_root(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[CreateFolderResponse, Dict[str, Any]]:
+) -> CreateFolderResponse | dict[str, Any]:
     """Create folder in KB root"""
     try:
         try:
@@ -474,7 +472,7 @@ async def create_folder_in_kb_root(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
@@ -482,7 +480,7 @@ async def create_folder_in_kb_root(
             kb_id=kb_id,
             name=body.get("name"),
             user_id=user_id,
-            org_id=org_id
+            org_id=org_id,
         )
 
         if not result or result.get("success") is False:
@@ -490,7 +488,7 @@ async def create_folder_in_kb_root(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -498,12 +496,12 @@ async def create_folder_in_kb_root(
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e!s}")
 
 @kb_router.post(
     "/{kb_id}/folder/{parent_folder_id}/subfolder",
     response_model=CreateFolderResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 @inject
 async def create_nested_folder(
@@ -511,7 +509,7 @@ async def create_nested_folder(
     parent_folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[CreateFolderResponse, Dict[str, Any]]:
+) -> CreateFolderResponse | dict[str, Any]:
     """Create folder inside another folder"""
     try:
         try:
@@ -519,7 +517,7 @@ async def create_nested_folder(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
@@ -528,7 +526,7 @@ async def create_nested_folder(
             parent_folder_id=parent_folder_id,
             name=body.get("name"),
             user_id=user_id,
-            org_id=org_id
+            org_id=org_id,
         )
 
         if not result or result.get("success") is False:
@@ -536,7 +534,7 @@ async def create_nested_folder(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -544,12 +542,12 @@ async def create_nested_folder(
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e!s}")
 
 @kb_router.get(
     "/{kb_id}/folder/{folder_id}/user/{user_id}",
     response_model=FolderContentsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 @inject
 async def get_folder_contents(
@@ -557,7 +555,7 @@ async def get_folder_contents(
     folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[FolderContentsResponse, Dict[str, Any]]:
+) -> FolderContentsResponse | dict[str, Any]:
     try:
         user_id = request.state.user.get("userId")
         result = await kb_service.get_folder_contents(kb_id=kb_id, folder_id=folder_id, user_id=user_id)
@@ -566,7 +564,7 @@ async def get_folder_contents(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -576,14 +574,14 @@ async def get_folder_contents(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
 @kb_router.put(
     "/{kb_id}/folder/{folder_id}",
     response_model=SuccessResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
 )
 @inject
 async def update_folder(
@@ -598,7 +596,7 @@ async def update_folder(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.updateFolder(folder_id=folder_id, kb_id=kb_id, user_id=user_id, name=body.get("name"))
@@ -607,7 +605,7 @@ async def update_folder(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return SuccessResponse(message="Folder updated successfully")
 
@@ -617,13 +615,13 @@ async def update_folder(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.delete(
     "/{kb_id}/folder/{folder_id}",
     response_model=SuccessResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 @inject
 async def delete_folder(
@@ -640,7 +638,7 @@ async def delete_folder(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return SuccessResponse(message="Folder deleted successfully")
 
@@ -650,12 +648,12 @@ async def delete_folder(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.get(
     "/{kb_id}/records",
-    response_model=ListRecordsResponse
+    response_model=ListRecordsResponse,
 )
 @inject
 async def list_kb_records(
@@ -663,17 +661,17 @@ async def list_kb_records(
     request: Request,
     page: int = 1,
     limit: int = 20,
-    search: Optional[str] = None,
-    record_types: Optional[List[str]] = None,
-    origins: Optional[List[str]] = None,
-    connectors: Optional[List[str]] = None,
-    indexing_status: Optional[List[str]] = None,
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
+    search: str | None = None,
+    record_types: list[str] | None = None,
+    origins: list[str] | None = None,
+    connectors: list[str] | None = None,
+    indexing_status: list[str] | None = None,
+    date_from: int | None = None,
+    date_to: int | None = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     return await kb_service.list_kb_records(
@@ -694,7 +692,7 @@ async def list_kb_records(
     )
 
 @kb_router.get(
-    "/{kb_id}/children"
+    "/{kb_id}/children",
 )
 @inject
 async def get_kb_children(
@@ -703,17 +701,16 @@ async def get_kb_children(
     page: int = 1,
     limit: int = 20,
     level: int = 1,
-    search: Optional[str] = None,
-    record_types: Optional[List[str]] = None,
-    origins: Optional[List[str]] = None,
-    connectors: Optional[List[str]] = None,
-    indexing_status: Optional[List[str]] = None,
+    search: str | None = None,
+    record_types: list[str] | None = None,
+    origins: list[str] | None = None,
+    connectors: list[str] | None = None,
+    indexing_status: list[str] | None = None,
     sort_by: str = "name",
     sort_order: str = "asc",
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Dict[str, Any]:
-    """
-    Get KB root contents (folders and records) with pagination and filters
+) -> dict[str, Any]:
+    """Get KB root contents (folders and records) with pagination and filters
     """
     try:
         user_id = request.state.user.get("userId")
@@ -737,7 +734,7 @@ async def get_kb_children(
             error_reason = result.get("reason", "Unknown error") if result else "Service error"
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -747,7 +744,7 @@ async def get_kb_children(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
@@ -762,17 +759,16 @@ async def get_folder_children(
     page: int = 1,
     limit: int = 20,
     level: int = 1,
-    search: Optional[str] = None,
-    record_types: Optional[List[str]] = None,
-    origins: Optional[List[str]] = None,
-    connectors: Optional[List[str]] = None,
-    indexing_status: Optional[List[str]] = None,
+    search: str | None = None,
+    record_types: list[str] | None = None,
+    origins: list[str] | None = None,
+    connectors: list[str] | None = None,
+    indexing_status: list[str] | None = None,
     sort_by: str = "name",
     sort_order: str = "asc",
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Dict[str, Any]:
-    """
-    Get folder contents (subfolders and records) with pagination and filters
+) -> dict[str, Any]:
+    """Get folder contents (subfolders and records) with pagination and filters
     """
     try:
         user_id = request.state.user.get("userId")
@@ -797,7 +793,7 @@ async def get_folder_children(
             error_reason = result.get("reason", "Unknown error") if result else "Service error"
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -807,27 +803,27 @@ async def get_folder_children(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.post(
     "/{kb_id}/permissions",
     response_model=CreatePermissionsResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
 )
 @inject
 async def create_kb_permissions(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[CreatePermissionsResponse, Dict[str, Any]]:
+) -> CreatePermissionsResponse | dict[str, Any]:
     try:
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.create_kb_permissions(
@@ -842,7 +838,7 @@ async def create_kb_permissions(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -852,28 +848,28 @@ async def create_kb_permissions(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
 @kb_router.put(
     "/{kb_id}/permissions",
     response_model=UpdatePermissionResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
 )
 @inject
 async def update_kb_permission(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[UpdatePermissionResponse, Dict[str, Any]]:
+) -> UpdatePermissionResponse | dict[str, Any]:
     try:
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.update_kb_permission(
@@ -888,7 +884,7 @@ async def update_kb_permission(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -898,23 +894,22 @@ async def update_kb_permission(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
 @kb_router.delete(
     "/{kb_id}/permissions",
     response_model=RemovePermissionResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
 )
 @inject
 async def remove_kb_permission(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[RemovePermissionResponse, Dict[str, Any]]:
-    """
-    Remove permissions for users and teams from a knowledge base
+) -> RemovePermissionResponse | dict[str, Any]:
+    """Remove permissions for users and teams from a knowledge base
     """
     try:
         try:
@@ -922,7 +917,7 @@ async def remove_kb_permission(
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.remove_kb_permission(
@@ -936,7 +931,7 @@ async def remove_kb_permission(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -946,20 +941,20 @@ async def remove_kb_permission(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.get(
     "/{kb_id}/permissions",
     response_model=ListPermissionsResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
 )
 @inject
 async def list_kb_permissions(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[ListPermissionsResponse, Dict[str, Any]]:
+) -> ListPermissionsResponse | dict[str, Any]:
     try:
         user_id = request.state.user.get("userId")
         result = await kb_service.list_kb_permissions(kb_id=kb_id, requester_id=user_id)
@@ -968,7 +963,7 @@ async def list_kb_permissions(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -978,14 +973,14 @@ async def list_kb_permissions(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
 @kb_router.post(
     "/{kb_id}/folder/{folder_id}/records",
     response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 @inject
 async def create_records_in_folder(
@@ -993,14 +988,14 @@ async def create_records_in_folder(
     folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[CreateRecordsResponse, Dict[str, Any]]:
+) -> CreateRecordsResponse | dict[str, Any]:
     try:
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.create_records_in_folder(
@@ -1015,7 +1010,7 @@ async def create_records_in_folder(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
         return result
 
@@ -1025,7 +1020,7 @@ async def create_records_in_folder(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
@@ -1034,22 +1029,22 @@ async def create_records_in_folder(
     response_model=UpdateRecordResponse,
     responses={
         403: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+        404: {"model": ErrorResponse},
+    },
 )
 @inject
 async def update_record(
     record_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[UpdateRecordResponse, Dict[str, Any]]:
+) -> UpdateRecordResponse | dict[str, Any]:
     try:
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.update_record(
@@ -1063,7 +1058,7 @@ async def update_record(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -1074,7 +1069,7 @@ async def update_record(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 @kb_router.delete(
@@ -1082,22 +1077,22 @@ async def update_record(
     response_model=DeleteRecordResponse,
     responses={
         403: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+        404: {"model": ErrorResponse},
+    },
 )
 @inject
 async def delete_records_in_kb(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[DeleteRecordResponse, Dict[str, Any]]:
+) -> DeleteRecordResponse | dict[str, Any]:
     try:
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.delete_records_in_kb(
@@ -1110,7 +1105,7 @@ async def delete_records_in_kb(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -1121,7 +1116,7 @@ async def delete_records_in_kb(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
@@ -1130,8 +1125,8 @@ async def delete_records_in_kb(
     response_model=DeleteRecordResponse,
     responses={
         403: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+        404: {"model": ErrorResponse},
+    },
 )
 @inject
 async def delete_record_in_folder(
@@ -1139,14 +1134,14 @@ async def delete_record_in_folder(
     folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Union[DeleteRecordResponse, Dict[str, Any]]:
+) -> DeleteRecordResponse | dict[str, Any]:
     try:
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
+                detail="Invalid request body",
             )
         user_id = request.state.user.get("userId")
         result = await kb_service.delete_records_in_folder(
@@ -1160,7 +1155,7 @@ async def delete_record_in_folder(
             error_reason = result.get("reason", "Unknown error")
             raise HTTPException(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+                detail=error_reason,
             )
 
         return result
@@ -1171,7 +1166,7 @@ async def delete_record_in_folder(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=f"Unexpected error: {e!s}",
         )
 
 
@@ -1184,19 +1179,19 @@ async def list_all_records(
     request: Request,
     page: int = 1,
     limit: int = 20,
-    search: Optional[str] = None,
-    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
+    search: str | None = None,
+    record_types: str | None = Query(None, description="Comma-separated list of record types"),
+    origins: str | None = Query(None, description="Comma-separated list of origins"),
+    connectors: str | None = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: str | None = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: str | None = Query(None, description="Comma-separated list of permissions"),
+    date_from: int | None = None,
+    date_to: int | None = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     source: str = "all",
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
 
     # Parse comma-separated strings into lists
     parsed_record_types = _parse_comma_separated_str(record_types)

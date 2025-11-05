@@ -1,5 +1,4 @@
-"""
-ServiceNow Knowledge Base Connector
+"""ServiceNow Knowledge Base Connector
 
 This connector syncs knowledge base articles, categories, attachments, and permissions
 from ServiceNow into the PipesHub AI platform.
@@ -14,8 +13,9 @@ Synced Entities:
 
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -100,14 +100,14 @@ ORGANIZATIONAL_ENTITIES = {
             DocumentationLink(
                 "ServiceNow OAuth Setup",
                 "https://docs.servicenow.com/bundle/latest/page/administer/security/concept/c_OAuthApplications.html",
-                "setup"
-            )
+                "setup",
+            ),
         )
         .with_redirect_uri("connectors/oauth/callback/ServiceNow", True)
         .with_oauth_urls(
             "https://example.service-now.com/oauth_auth.do",
             "https://example.service-now.com/oauth_token.do",
-            ["useraccount"]
+            ["useraccount"],
         )
         .add_auth_field(
             AuthField(
@@ -118,7 +118,7 @@ ORGANIZATIONAL_ENTITIES = {
                 field_type="URL",
                 required=True,
                 max_length=2000,
-            )
+            ),
         )
         .add_auth_field(
             AuthField(
@@ -129,7 +129,7 @@ ORGANIZATIONAL_ENTITIES = {
                 field_type="URL",
                 required=True,
                 max_length=2000,
-            )
+            ),
         )
         .add_auth_field(
             AuthField(
@@ -140,17 +140,16 @@ ORGANIZATIONAL_ENTITIES = {
                 field_type="URL",
                 required=True,
                 max_length=2000,
-            )
+            ),
         )
         .add_auth_field(CommonFields.client_id("ServiceNow OAuth Application Registry"))
         .add_auth_field(CommonFields.client_secret("ServiceNow OAuth Application Registry"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class ServiceNowConnector(BaseConnector):
-    """
-    ServiceNow Knowledge Base Connector
+    """ServiceNow Knowledge Base Connector
 
     This connector syncs ServiceNow Knowledge Base data including:
     - Knowledge bases and categories
@@ -166,14 +165,14 @@ class ServiceNowConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
     ) -> None:
-        """
-        Initialize the ServiceNow KB Connector.
+        """Initialize the ServiceNow KB Connector.
 
         Args:
             logger: Logger instance
             data_entities_processor: Processor for handling entities
             data_store_provider: Data store provider
             config_service: Configuration service
+
         """
         super().__init__(
             ServicenowApp(),
@@ -184,18 +183,18 @@ class ServiceNowConnector(BaseConnector):
         )
 
         # ServiceNow API client instances
-        self.servicenow_client: Optional[ServiceNowRESTClientViaOAuthAuthorizationCode] = None
-        self.servicenow_datasource: Optional[ServiceNowDataSource] = None
+        self.servicenow_client: ServiceNowRESTClientViaOAuthAuthorizationCode | None = None
+        self.servicenow_datasource: ServiceNowDataSource | None = None
 
         # Configuration
-        self.instance_url: Optional[str] = None
-        self.client_id: Optional[str] = None
-        self.client_secret: Optional[str] = None
-        self.redirect_uri: Optional[str] = None
+        self.instance_url: str | None = None
+        self.client_id: str | None = None
+        self.client_secret: str | None = None
+        self.redirect_uri: str | None = None
 
         # OAuth tokens (managed by framework/client)
-        self.access_token: Optional[str] = None
-        self.refresh_token: Optional[str] = None
+        self.access_token: str | None = None
+        self.refresh_token: str | None = None
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -232,25 +231,25 @@ class ServiceNowConnector(BaseConnector):
         }
 
         # Role name to sys_id mapping (loaded from DB before article sync)
-        self.role_name_to_id_map: Dict[str, str] = {}
+        self.role_name_to_id_map: dict[str, str] = {}
 
         # Batch processing configuration
         self.batch_size = 100
         self.max_concurrent_batches = 3
 
     async def init(self) -> bool:
-        """
-        Initialize the connector with OAuth credentials and API client.
+        """Initialize the connector with OAuth credentials and API client.
 
         Returns:
             bool: True if initialization successful, False otherwise
+
         """
         try:
             self.logger.info("🔧 Initializing ServiceNow KB Connector (OAuth)...")
 
             # Load configuration
             config = await self.config_service.get_config(
-                "/services/connectors/servicenow/config"
+                "/services/connectors/servicenow/config",
             )
 
             if not config:
@@ -275,11 +274,11 @@ class ServiceNowConnector(BaseConnector):
                     self.client_id,
                     self.client_secret,
                     self.redirect_uri,
-                ]
+                ],
             ):
                 self.logger.error(
                     "❌ Incomplete ServiceNow OAuth configuration. "
-                    "Ensure instanceUrl, clientId, clientSecret, and redirectUri are configured."
+                    "Ensure instanceUrl, clientId, clientSecret, and redirectUri are configured.",
                 )
                 return False
 
@@ -290,7 +289,7 @@ class ServiceNowConnector(BaseConnector):
 
             # Initialize ServiceNow OAuth client
             self.logger.info(
-                f"🔗 Connecting to ServiceNow instance: {self.instance_url}"
+                f"🔗 Connecting to ServiceNow instance: {self.instance_url}",
             )
             self.servicenow_client = ServiceNowRESTClientViaOAuthAuthorizationCode(
                 instance_url=self.instance_url,
@@ -320,11 +319,11 @@ class ServiceNowConnector(BaseConnector):
             return False
 
     async def test_connection_and_access(self) -> bool:
-        """
-        Test OAuth connection and access to ServiceNow API.
+        """Test OAuth connection and access to ServiceNow API.
 
         Returns:
             bool: True if connection successful, False otherwise
+
         """
         try:
             self.logger.info("🔍 Testing ServiceNow OAuth connection...")
@@ -333,7 +332,7 @@ class ServiceNowConnector(BaseConnector):
             response = await self.servicenow_datasource.get_now_table_tableName(
                 tableName="kb_knowledge_base",
                 sysparm_limit="1",
-                sysparm_fields="sys_id,title"
+                sysparm_fields="sys_id,title",
             )
 
             if not response.success:
@@ -348,8 +347,7 @@ class ServiceNowConnector(BaseConnector):
             return False
 
     async def run_sync(self) -> None:
-        """
-        Run full synchronization of ServiceNow Knowledge Base data with multi-user support.
+        """Run full synchronization of ServiceNow Knowledge Base data with multi-user support.
 
         Sync order:
         1. Users and Groups (global, no impersonation)
@@ -432,8 +430,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def run_incremental_sync(self) -> None:
-        """
-        Run incremental synchronization using delta links or timestamps.
+        """Run incremental synchronization using delta links or timestamps.
 
         For ServiceNow, this uses the sys_updated_on field to fetch only
         records updated since the last sync.
@@ -442,8 +439,7 @@ class ServiceNowConnector(BaseConnector):
         await self.run_sync()
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """
-        Stream record content (article HTML or attachment file) from ServiceNow.
+        """Stream record content (article HTML or attachment file) from ServiceNow.
 
         For articles (WebpageRecord): Fetches HTML content from kb_knowledge table
         For attachments (FileRecord): Downloads file from attachment API
@@ -453,6 +449,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             StreamingResponse: Streaming response with article HTML or file content
+
         """
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
@@ -462,15 +459,15 @@ class ServiceNowConnector(BaseConnector):
                 html_content = await self._fetch_article_content(record.external_record_id)
 
                 async def generate_article() -> AsyncGenerator[bytes, None]:
-                    yield html_content.encode('utf-8')
+                    yield html_content.encode("utf-8")
 
                 return StreamingResponse(
                     generate_article(),
-                    media_type='text/html',
-                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
+                    media_type="text/html",
+                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'},
                 )
 
-            elif record.record_type == RecordType.FILE:
+            if record.record_type == RecordType.FILE:
                 # Attachment - download file from ServiceNow
                 file_content = await self._fetch_attachment_content(record.external_record_id)
 
@@ -478,32 +475,30 @@ class ServiceNowConnector(BaseConnector):
                     yield file_content
 
                 # Use stored mime type or default
-                media_type = record.mime_type or 'application/octet-stream'
+                media_type = record.mime_type or "application/octet-stream"
                 filename = record.record_name or f"{record.external_record_id}"
 
                 return StreamingResponse(
                     generate_attachment(),
                     media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
                 )
 
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported record type for streaming: {record.record_type}"
-                )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported record type for streaming: {record.record_type}",
+            )
 
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
             raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
+                status_code=500, detail=f"Failed to stream record: {e!s}",
             )
 
     async def _fetch_article_content(self, article_sys_id: str) -> str:
-        """
-        Fetch article HTML content from ServiceNow kb_knowledge table.
+        """Fetch article HTML content from ServiceNow kb_knowledge table.
 
         Args:
             article_sys_id: The sys_id of the article
@@ -513,6 +508,7 @@ class ServiceNowConnector(BaseConnector):
 
         Raises:
             HTTPException: If article not found or fetch fails
+
         """
         try:
             self.logger.debug(f"Fetching article content for {article_sys_id}")
@@ -525,14 +521,14 @@ class ServiceNowConnector(BaseConnector):
                 sysparm_limit="1",
                 sysparm_display_value="false",
                 sysparm_no_count="true",
-                sysparm_exclude_reference_link="true"
+                sysparm_exclude_reference_link="true",
             )
 
             # Check response using correct attributes
             if not response or not response.success or not response.data:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Article not found: {article_sys_id}"
+                    detail=f"Article not found: {article_sys_id}",
                 )
 
             # Extract article from result array
@@ -540,7 +536,7 @@ class ServiceNowConnector(BaseConnector):
             if not articles or len(articles) == 0:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Article not found: {article_sys_id}"
+                    detail=f"Article not found: {article_sys_id}",
                 )
 
             article = articles[0]
@@ -562,12 +558,11 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Failed to fetch article content: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to fetch article content: {str(e)}"
+                detail=f"Failed to fetch article content: {e!s}",
             )
 
     async def _fetch_attachment_content(self, attachment_sys_id: str) -> bytes:
-        """
-        Fetch attachment file content from ServiceNow.
+        """Fetch attachment file content from ServiceNow.
 
         Uses the attachment download API: GET /api/now/attachment/{sys_id}/file
 
@@ -579,6 +574,7 @@ class ServiceNowConnector(BaseConnector):
 
         Raises:
             HTTPException: If attachment not found or download fails
+
         """
         try:
             self.logger.debug(f"Downloading attachment {attachment_sys_id}")
@@ -587,7 +583,7 @@ class ServiceNowConnector(BaseConnector):
             if not self.servicenow_client:
                 raise HTTPException(
                     status_code=500,
-                    detail="ServiceNow client not initialized"
+                    detail="ServiceNow client not initialized",
                 )
 
             # Download using REST client (returns bytes directly)
@@ -596,7 +592,7 @@ class ServiceNowConnector(BaseConnector):
             if not file_content:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Attachment not found or empty: {attachment_sys_id}"
+                    detail=f"Attachment not found or empty: {attachment_sys_id}",
                 )
 
             self.logger.debug(f"✅ Downloaded {len(file_content)} bytes for attachment {attachment_sys_id}")
@@ -608,12 +604,11 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Failed to download attachment: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to download attachment: {str(e)}"
+                detail=f"Failed to download attachment: {e!s}",
             )
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
-        """
-        Get signed URL for record access.
+    def get_signed_url(self, record: Record) -> str | None:
+        """Get signed URL for record access.
 
         ServiceNow doesn't support pre-signed URLs in the traditional sense,
         so this returns None. Access is controlled through the stream_record method.
@@ -623,14 +618,14 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             Optional[str]: None for ServiceNow
+
         """
         return None
 
     async def handle_webhook_notification(
-        self, org_id: str, notification: Dict
+        self, org_id: str, notification: dict,
     ) -> bool:
-        """
-        Handle webhook notifications from ServiceNow.
+        """Handle webhook notifications from ServiceNow.
 
         This can be used for real-time sync when ServiceNow sends notifications
         about changes to KB articles.
@@ -641,6 +636,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             bool: True if handled successfully
+
         """
         try:
             # TODO: Implement webhook handling
@@ -653,8 +649,7 @@ class ServiceNowConnector(BaseConnector):
             return False
 
     def cleanup(self) -> None:
-        """
-        Clean up resources used by the connector.
+        """Clean up resources used by the connector.
 
         This is called when the connector is being shut down.
         """
@@ -672,8 +667,7 @@ class ServiceNowConnector(BaseConnector):
 
 
     async def _sync_users_and_groups(self) -> None:
-        """
-        Sync users, groups, and roles from ServiceNow.
+        """Sync users, groups, and roles from ServiceNow.
 
         This is the foundation for permission management.
 
@@ -711,8 +705,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _sync_users(self) -> None:
-        """
-        Sync users from ServiceNow using offset-based pagination.
+        """Sync users from ServiceNow using offset-based pagination.
 
         First sync: Fetches all users
         Subsequent syncs: Only fetches users modified since last sync
@@ -839,8 +832,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _sync_user_groups(self) -> None:
-        """
-        Sync user groups and flatten memberships.
+        """Sync user groups and flatten memberships.
         Simple 3-step process: fetch groups → fetch memberships → flatten & upsert
         """
         try:
@@ -859,7 +851,7 @@ class ServiceNowConnector(BaseConnector):
             # STEP 3: Flatten and create AppUserGroup objects
             group_with_permissions = await self._flatten_and_create_user_groups(
                 groups_data,
-                memberships_data
+                memberships_data,
             )
 
             self.logger.info(f"Flattened groups with permissions: {group_with_permissions}")
@@ -875,7 +867,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
 
-    async def _fetch_all_groups(self) -> List[dict]:
+    async def _fetch_all_groups(self) -> list[dict]:
         """Fetch all groups from ServiceNow (no delta sync)"""
         try:
             all_groups = []
@@ -915,7 +907,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
 
-    async def _fetch_all_memberships(self) -> List[dict]:
+    async def _fetch_all_memberships(self) -> list[dict]:
         """Fetch all user-group memberships from ServiceNow"""
         try:
             last_sync_data = await self.group_sync_point.read_sync_point("groups")
@@ -972,14 +964,14 @@ class ServiceNowConnector(BaseConnector):
 
     async def _flatten_and_create_user_groups(
         self,
-        groups_data: List[dict],
-        memberships_data: List[dict]
-    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
-        """
-        Flatten group hierarchy and create AppUserGroup objects.
+        groups_data: list[dict],
+        memberships_data: list[dict],
+    ) -> list[tuple[AppUserGroup, list[AppUser]]]:
+        """Flatten group hierarchy and create AppUserGroup objects.
 
         Returns:
             List of (AppUserGroup, [AppUser]) tuples
+
         """
         try:
             # Build parent-child relationships
@@ -987,13 +979,13 @@ class ServiceNowConnector(BaseConnector):
             group_by_id = {}  # group_id -> group_data
 
             for group in groups_data:
-                group_id = group['sys_id']
+                group_id = group["sys_id"]
                 group_by_id[group_id] = group
 
                 # Extract parent sys_id
-                parent_ref = group.get('parent')
+                parent_ref = group.get("parent")
                 if parent_ref:
-                    parent_id = parent_ref.get('value') if isinstance(parent_ref, dict) else parent_ref
+                    parent_id = parent_ref.get("value") if isinstance(parent_ref, dict) else parent_ref
                     if parent_id:
                         children_map[parent_id].add(group_id)
 
@@ -1001,11 +993,11 @@ class ServiceNowConnector(BaseConnector):
             direct_users = defaultdict(set)  # group_id -> {user_ids}
 
             for membership in memberships_data:
-                user_ref = membership.get('user', {})
-                group_ref = membership.get('group', {})
+                user_ref = membership.get("user", {})
+                group_ref = membership.get("group", {})
 
-                user_id = user_ref.get('value') if isinstance(user_ref, dict) else user_ref
-                group_id = group_ref.get('value') if isinstance(group_ref, dict) else group_ref
+                user_id = user_ref.get("value") if isinstance(user_ref, dict) else user_ref
+                group_id = group_ref.get("value") if isinstance(group_ref, dict) else group_ref
 
                 if user_id and group_id:
                     direct_users[group_id].add(user_id)
@@ -1037,7 +1029,7 @@ class ServiceNowConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_app_users = await tx_store.get_app_users(
                     org_id=self.data_entities_processor.org_id,
-                    app_name=Connectors.SERVICENOW
+                    app_name=Connectors.SERVICENOW,
                 )
 
                 self.logger.info(f"Loaded {len(existing_app_users)} existing users from DB for lookup: {existing_app_users}")
@@ -1067,7 +1059,7 @@ class ServiceNowConnector(BaseConnector):
 
                 self.logger.debug(
                     f"Group {group_data.get('name')} ({group_id}): "
-                    f"{len(flattened_user_ids)} total users, {len(app_users)} found in DB"
+                    f"{len(flattened_user_ids)} total users, {len(app_users)} found in DB",
                 )
 
                 result.append((user_group, app_users))
@@ -1081,8 +1073,7 @@ class ServiceNowConnector(BaseConnector):
 
 
     async def _sync_roles(self) -> None:
-        """
-        Sync roles from ServiceNow sys_user_role table.
+        """Sync roles from ServiceNow sys_user_role table.
 
         Creates AppUserGroup entities for each ServiceNow role with ROLE_ prefix
         to distinguish them from regular user groups.
@@ -1100,7 +1091,7 @@ class ServiceNowConnector(BaseConnector):
 
             if last_sync_time:
                 self.logger.info(
-                    f"🔄 Delta sync: fetching roles updated after {last_sync_time}"
+                    f"🔄 Delta sync: fetching roles updated after {last_sync_time}",
                 )
                 query = f"sys_updated_on>{last_sync_time}^ORDERBYsys_updated_on"
             else:
@@ -1148,7 +1139,7 @@ class ServiceNowConnector(BaseConnector):
 
                         if not role_name:
                             self.logger.warning(
-                                f"Role {role_sys_id} has no name, skipping"
+                                f"Role {role_sys_id} has no name, skipping",
                             )
                             continue
 
@@ -1181,7 +1172,7 @@ class ServiceNowConnector(BaseConnector):
 
                     except Exception as e:
                         self.logger.error(
-                            f"Error transforming role {role_data.get('sys_id')}: {e}"
+                            f"Error transforming role {role_data.get('sys_id')}: {e}",
                         )
                         continue
 
@@ -1202,7 +1193,7 @@ class ServiceNowConnector(BaseConnector):
             # Save checkpoint
             if latest_update_time:
                 await self.role_sync_point.update_sync_point(
-                    "roles", {"last_sync_time": latest_update_time}
+                    "roles", {"last_sync_time": latest_update_time},
                 )
 
             self.logger.info(f"✅ Role sync complete. Total synced: {total_synced}")
@@ -1212,8 +1203,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _sync_role_hierarchy(self) -> None:
-        """
-        Sync role hierarchy from sys_user_role_contains table.
+        """Sync role hierarchy from sys_user_role_contains table.
 
         ServiceNow roles use a many-to-many containment model where:
         - One role can contain multiple child roles
@@ -1268,7 +1258,7 @@ class ServiceNowConnector(BaseConnector):
                 return
 
             self.logger.info(
-                f"Fetched {len(all_containment_records)} role containment relationships"
+                f"Fetched {len(all_containment_records)} role containment relationships",
             )
 
             # Create hierarchy edges
@@ -1295,7 +1285,7 @@ class ServiceNowConnector(BaseConnector):
                         if not parent_role_sys_id or not child_role_sys_id:
                             self.logger.warning(
                                 f"Invalid containment record {record.get('sys_id')}: "
-                                f"parent={parent_role_sys_id}, child={child_role_sys_id}"
+                                f"parent={parent_role_sys_id}, child={child_role_sys_id}",
                             )
                             continue
 
@@ -1311,12 +1301,12 @@ class ServiceNowConnector(BaseConnector):
 
                     except Exception as e:
                         self.logger.error(
-                            f"Error creating hierarchy for record {record.get('sys_id')}: {e}"
+                            f"Error creating hierarchy for record {record.get('sys_id')}: {e}",
                         )
                         continue
 
                 self.logger.info(
-                    f"✅ Role hierarchy sync complete. Created {hierarchy_count} relationships"
+                    f"✅ Role hierarchy sync complete. Created {hierarchy_count} relationships",
                 )
 
         except Exception as e:
@@ -1324,8 +1314,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _sync_user_role_assignments(self) -> None:
-        """
-        Sync user-role assignments from sys_user_has_role table.
+        """Sync user-role assignments from sys_user_has_role table.
 
         Creates membership edges between users and role-based usergroups.
         Includes both direct and inherited role assignments.
@@ -1337,7 +1326,7 @@ class ServiceNowConnector(BaseConnector):
 
             # Get last sync checkpoint
             last_sync_data = await self.role_assignment_sync_point.read_sync_point(
-                "role_assignments"
+                "role_assignments",
             )
             last_sync_time = (
                 last_sync_data.get("last_sync_time") if last_sync_data else None
@@ -1346,7 +1335,7 @@ class ServiceNowConnector(BaseConnector):
             # Build query for active assignments with incremental sync
             if last_sync_time:
                 self.logger.info(
-                    f"🔄 Delta sync: fetching assignments updated after {last_sync_time}"
+                    f"🔄 Delta sync: fetching assignments updated after {last_sync_time}",
                 )
                 query = f"state=active^sys_updated_on>{last_sync_time}^ORDERBYsys_updated_on"
             else:
@@ -1409,17 +1398,17 @@ class ServiceNowConnector(BaseConnector):
                         if not user_sys_id or not role_sys_id:
                             self.logger.warning(
                                 f"Invalid assignment {assignment.get('sys_id')}: "
-                                f"user={user_sys_id}, role={role_sys_id}"
+                                f"user={user_sys_id}, role={role_sys_id}",
                             )
                             continue
 
                         all_assignments.append(
-                            {"user_sys_id": user_sys_id, "role_sys_id": role_sys_id}
+                            {"user_sys_id": user_sys_id, "role_sys_id": role_sys_id},
                         )
 
                     except Exception as e:
                         self.logger.error(
-                            f"Error processing assignment {assignment.get('sys_id')}: {e}"
+                            f"Error processing assignment {assignment.get('sys_id')}: {e}",
                         )
                         continue
 
@@ -1445,28 +1434,27 @@ class ServiceNowConnector(BaseConnector):
                             membership_count += 1
 
                     self.logger.info(
-                        f"Created {membership_count} user-role membership edges"
+                        f"Created {membership_count} user-role membership edges",
                     )
 
             # Save checkpoint
             if latest_update_time:
                 await self.role_assignment_sync_point.update_sync_point(
-                    "role_assignments", {"last_sync_time": latest_update_time}
+                    "role_assignments", {"last_sync_time": latest_update_time},
                 )
 
             self.logger.info(
-                f"✅ User-role assignment sync complete. Total processed: {len(all_assignments)}"
+                f"✅ User-role assignment sync complete. Total processed: {len(all_assignments)}",
             )
 
         except Exception as e:
             self.logger.error(
-                f"❌ User-role assignment sync failed: {e}", exc_info=True
+                f"❌ User-role assignment sync failed: {e}", exc_info=True,
             )
             raise
 
     async def _sync_organizational_entities(self) -> None:
-        """
-        Sync all organizational entities from ServiceNow.
+        """Sync all organizational entities from ServiceNow.
 
         Syncs in order:
         1. Companies (top-level)
@@ -1494,10 +1482,9 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _sync_single_organizational_entity(
-        self, entity_type: str, config: Dict[str, Any]
+        self, entity_type: str, config: dict[str, Any],
     ) -> None:
-        """
-        Generic sync method for a single organizational entity type.
+        """Generic sync method for a single organizational entity type.
 
         Uses two-pass approach:
         - Pass 1: Create all entity nodes as AppUserGroups
@@ -1506,6 +1493,7 @@ class ServiceNowConnector(BaseConnector):
         Args:
             entity_type: Type of entity (company, department, location, cost_center)
             config: Configuration dict with table name, fields, prefix, etc.
+
         """
         try:
             table_name = config["table"]
@@ -1592,7 +1580,7 @@ class ServiceNowConnector(BaseConnector):
                 user_groups = []
                 for entity_data in entities_data:
                     user_group = self._transform_to_organizational_group(
-                        entity_data, prefix
+                        entity_data, prefix,
                     )
                     if user_group:
                         user_groups.append(user_group)
@@ -1637,22 +1625,21 @@ class ServiceNowConnector(BaseConnector):
             # Save checkpoint
             if latest_update_time:
                 await sync_point.update_sync_point(
-                    sync_point_key, {"last_sync_time": latest_update_time}
+                    sync_point_key, {"last_sync_time": latest_update_time},
                 )
 
             self.logger.info(
-                f"✅ {entity_type.capitalize()} sync complete. Total synced: {total_synced}"
+                f"✅ {entity_type.capitalize()} sync complete. Total synced: {total_synced}",
             )
 
         except Exception as e:
             self.logger.error(
-                f"❌ {entity_type.capitalize()} sync failed: {e}", exc_info=True
+                f"❌ {entity_type.capitalize()} sync failed: {e}", exc_info=True,
             )
             raise
 
     async def _sync_knowledge_bases(self, user_sys_id: str, user_email: str) -> None:
-        """
-        Sync knowledge bases from ServiceNow kb_knowledge_base table using offset-based pagination.
+        """Sync knowledge bases from ServiceNow kb_knowledge_base table using offset-based pagination.
 
         Creates:
         - RecordGroup nodes (type=SERVICENOW) in recordGroups collection
@@ -1666,6 +1653,7 @@ class ServiceNowConnector(BaseConnector):
         Args:
             user_sys_id: ServiceNow user sys_id for impersonation
             user_email: Platform user email for permission tracking
+
         """
         try:
             # Get per-user sync checkpoint for delta sync
@@ -1729,12 +1717,12 @@ class ServiceNowConnector(BaseConnector):
                 if kb_record_groups:
                     async with self.data_store_provider.transaction() as tx_store:
                         for kb_record_group, kb_data in kb_record_groups:
-                            kb_sys_id = kb_data['sys_id']
+                            kb_sys_id = kb_data["sys_id"]
 
                             # Check if KB already exists
                             existing_kb = await tx_store.get_record_group_by_external_id(
                                 Connectors.SERVICENOW,
-                                kb_sys_id
+                                kb_sys_id,
                             )
 
                             if existing_kb:
@@ -1748,7 +1736,7 @@ class ServiceNowConnector(BaseConnector):
                                 await tx_store.batch_upsert_record_group_permissions(
                                     existing_kb.id,
                                     [current_user_permission],
-                                    Connectors.SERVICENOW
+                                    Connectors.SERVICENOW,
                                 )
 
                                 self.logger.debug(f"Added permission for {user_email} to existing KB {kb_sys_id}")
@@ -1793,7 +1781,7 @@ class ServiceNowConnector(BaseConnector):
                                     if criteria_details:
                                         read_perms = await self._extract_permissions_from_user_criteria_details(
                                             criteria_details,
-                                            PermissionType.READ
+                                            PermissionType.READ,
                                         )
                                         kb_permissions.extend(read_perms)
 
@@ -1803,7 +1791,7 @@ class ServiceNowConnector(BaseConnector):
                                     if criteria_details:
                                         write_perms = await self._extract_permissions_from_user_criteria_details(
                                             criteria_details,
-                                            PermissionType.WRITE
+                                            PermissionType.WRITE,
                                         )
                                         kb_permissions.extend(write_perms)
 
@@ -1835,7 +1823,7 @@ class ServiceNowConnector(BaseConnector):
                                 if kb_permissions:
                                     permission_objects = await self._convert_permissions_to_objects(
                                         kb_permissions,
-                                        tx_store
+                                        tx_store,
                                     )
 
                                 # Add current user to permission objects
@@ -1845,11 +1833,11 @@ class ServiceNowConnector(BaseConnector):
                                     await tx_store.batch_upsert_record_group_permissions(
                                         kb_record_group.id,
                                         permission_objects,
-                                        Connectors.SERVICENOW
+                                        Connectors.SERVICENOW,
                                     )
 
                                     self.logger.debug(
-                                        f"Created KB {kb_sys_id} with {len(permission_objects)} permissions (including {user_email})"
+                                        f"Created KB {kb_sys_id} with {len(permission_objects)} permissions (including {user_email})",
                                     )
 
                     total_synced += len(kb_record_groups)
@@ -1872,8 +1860,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _sync_categories(self, user_sys_id: str, user_email: str) -> None:
-        """
-        Sync categories from ServiceNow kb_category table using single-pass approach.
+        """Sync categories from ServiceNow kb_category table using single-pass approach.
 
         Creates:
         - RecordGroup nodes (type=SERVICENOW_CATEGORY) in recordGroups collection
@@ -1888,6 +1875,7 @@ class ServiceNowConnector(BaseConnector):
         Args:
             user_sys_id: ServiceNow user sys_id for impersonation
             user_email: Platform user email for tracking
+
         """
         try:
             # Get per-user sync checkpoint for delta sync
@@ -1960,15 +1948,12 @@ class ServiceNowConnector(BaseConnector):
 
                     # Set parent_record_group_id if parent exists
                     if parent_sys_id and parent_table:
-                        if parent_table == "kb_knowledge_base":
-                            category_rg.parent_record_group_id = parent_sys_id
-                            # category_rg.parent_group_type = RecordGroupType.SERVICENOWKB
-                        elif parent_table == "kb_category":
+                        if parent_table == "kb_knowledge_base" or parent_table == "kb_category":
                             category_rg.parent_record_group_id = parent_sys_id
                             # category_rg.parent_group_type = RecordGroupType.SERVICENOW_CATEGORY
                         else:
                             self.logger.warning(
-                                f"Unknown parent_table type: {parent_table} for category {cat_data.get('sys_id')}"
+                                f"Unknown parent_table type: {parent_table} for category {cat_data.get('sys_id')}",
                             )
 
                     # Categories typically inherit permissions from their parent KB
@@ -2004,8 +1989,7 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _load_role_name_mapping_from_db(self) -> None:
-        """
-        Load role name to sys_id mapping from database.
+        """Load role name to sys_id mapping from database.
 
         Queries existing role-based usergroups (with ROLE_ prefix) and builds
         an in-memory mapping for quick lookups during permission extraction.
@@ -2031,7 +2015,7 @@ class ServiceNowConnector(BaseConnector):
                     self.role_name_to_id_map[role_name] = role_sys_id
 
             self.logger.info(
-                f"Loaded {len(self.role_name_to_id_map)} role name mappings from database"
+                f"Loaded {len(self.role_name_to_id_map)} role name mappings from database",
             )
 
         except Exception as e:
@@ -2039,8 +2023,7 @@ class ServiceNowConnector(BaseConnector):
             # Continue with empty map - role permissions will be skipped
 
     async def _sync_articles(self, user_sys_id: str, user_email: str) -> None:
-        """
-        Sync KB articles and attachments from ServiceNow using batch processing.
+        """Sync KB articles and attachments from ServiceNow using batch processing.
 
         Flow:
         1. Fetch 100 articles in a batch
@@ -2059,6 +2042,7 @@ class ServiceNowConnector(BaseConnector):
         Args:
             user_sys_id: ServiceNow user sys_id for impersonation
             user_email: Platform user email for permission tracking
+
         """
         try:
             # Load role name mapping from database (needed for permission extraction)
@@ -2167,10 +2151,9 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _process_single_article(
-        self, article_data: Dict[str, Any], criteria_map: Dict[str, Dict], user_sys_id: str, user_email: str
-    ) -> List[RecordUpdate]:
-        """
-        Process a single article and return RecordUpdate objects for article + attachments.
+        self, article_data: dict[str, Any], criteria_map: dict[str, dict], user_sys_id: str, user_email: str,
+    ) -> list[RecordUpdate]:
+        """Process a single article and return RecordUpdate objects for article + attachments.
 
         Args:
             article_data: ServiceNow kb_knowledge record
@@ -2180,6 +2163,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             List[RecordUpdate]: RecordUpdate for article + RecordUpdates for attachments
+
         """
         try:
             article_sys_id = article_data.get("sys_id")
@@ -2194,7 +2178,7 @@ class ServiceNowConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_article = await tx_store.get_record_by_external_id(
                     Connectors.SERVICENOW,
-                    article_sys_id
+                    article_sys_id,
                 )
 
             # Transform article to WebpageRecord
@@ -2246,7 +2230,7 @@ class ServiceNowConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_attachment = await tx_store.get_record_by_external_id(
                         Connectors.SERVICENOW,
-                        att_sys_id
+                        att_sys_id,
                     )
 
                 # Transform attachment to FileRecord
@@ -2278,15 +2262,15 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Failed to process article {article_data.get('sys_id')}: {e}", exc_info=True)
             return []
 
-    async def _process_record_updates_batch(self, record_updates: List[RecordUpdate]) -> None:
-        """
-        Process a batch of RecordUpdates using the data entities processor.
+    async def _process_record_updates_batch(self, record_updates: list[RecordUpdate]) -> None:
+        """Process a batch of RecordUpdates using the data entities processor.
 
         This method converts RecordUpdates to (Record, Permissions) tuples and passes them
         to on_new_records() for batch processing.
 
         Args:
             record_updates: List of RecordUpdate objects
+
         """
         try:
             if not record_updates:
@@ -2308,10 +2292,9 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _fetch_user_criteria_batch(
-        self, criteria_sys_ids: set, user_sys_id: str
-    ) -> Dict[str, Dict]:
-        """
-        Batch fetch user_criteria records from ServiceNow.
+        self, criteria_sys_ids: set, user_sys_id: str,
+    ) -> dict[str, dict]:
+        """Batch fetch user_criteria records from ServiceNow.
 
         Args:
             criteria_sys_ids: Set of user_criteria sys_ids
@@ -2319,6 +2302,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             Dict mapping criteria_sys_id to {users: [...], groups: [...]}
+
         """
         try:
             if not criteria_sys_ids:
@@ -2368,10 +2352,9 @@ class ServiceNowConnector(BaseConnector):
             return {}
 
     async def _fetch_attachments_for_article(
-        self, article_sys_id: str, user_sys_id: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch all attachments for a single article.
+        self, article_sys_id: str, user_sys_id: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch all attachments for a single article.
 
         Args:
             article_sys_id: Article sys_id
@@ -2379,6 +2362,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             List of attachment data dictionaries
+
         """
         try:
             # Query: table_name=kb_knowledge^table_sys_id={article_sys_id}
@@ -2404,10 +2388,9 @@ class ServiceNowConnector(BaseConnector):
             return []
 
     def _extract_roles_from_user_criteria(
-        self, criteria: Dict[str, Any], permission_type: PermissionType
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract role-based permissions from a user_criteria record.
+        self, criteria: dict[str, Any], permission_type: PermissionType,
+    ) -> list[dict[str, Any]]:
+        """Extract role-based permissions from a user_criteria record.
 
         Args:
             criteria: User criteria dictionary containing roles list
@@ -2415,6 +2398,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             List of permission dictionaries for roles
+
         """
         permissions = []
 
@@ -2434,21 +2418,20 @@ class ServiceNowConnector(BaseConnector):
                         "entity_type": EntityType.GROUP.value,
                         "source_sys_id": role_sys_id,
                         "role": permission_type.value,
-                    }
+                    },
                 )
             else:
                 self.logger.warning(
                     f"Role '{role_name}' referenced in user_criteria but not found in database. "
-                    f"Role may need to be synced first."
+                    f"Role may need to be synced first.",
                 )
 
         return permissions
 
     async def _extract_article_permissions(
-        self, article_data: Dict[str, Any], criteria_map: Dict[str, Dict]
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract all permissions for an article.
+        self, article_data: dict[str, Any], criteria_map: dict[str, dict],
+    ) -> list[dict[str, Any]]:
+        """Extract all permissions for an article.
 
         Returns list of permission dictionaries:
         [
@@ -2478,7 +2461,7 @@ class ServiceNowConnector(BaseConnector):
                             "entity_type": "USER",
                             "source_sys_id": author_sys_id,
                             "role": PermissionType.OWNER.value,
-                        }
+                        },
                     )
 
             # 2. can_read_user_criteria → READER permissions
@@ -2498,7 +2481,7 @@ class ServiceNowConnector(BaseConnector):
                                 "entity_type": EntityType.USER.value,
                                 "source_sys_id": user_sys_id,
                                 "role": PermissionType.READ.value,
-                            }
+                            },
                         )
 
                     # Add group permissions
@@ -2508,12 +2491,12 @@ class ServiceNowConnector(BaseConnector):
                                 "entity_type": EntityType.GROUP.value,
                                 "source_sys_id": group_sys_id,
                                 "role": PermissionType.READ.value,
-                            }
+                            },
                         )
 
                     # Add role permissions
                     role_permissions = self._extract_roles_from_user_criteria(
-                        criteria_data, PermissionType.READ
+                        criteria_data, PermissionType.READ,
                     )
                     permissions.extend(role_permissions)
 
@@ -2524,10 +2507,9 @@ class ServiceNowConnector(BaseConnector):
             return permissions
 
     async def _convert_permissions_to_objects(
-        self, permissions_dict: List[Dict[str, Any]], tx_store: TransactionStore
-    ) -> List[Permission]:
-        """
-        Convert USER and GROUP permissions from dict format to Permission objects.
+        self, permissions_dict: list[dict[str, Any]], tx_store: TransactionStore,
+    ) -> list[Permission]:
+        """Convert USER and GROUP permissions from dict format to Permission objects.
 
         ServiceNow-specific: Uses sourceUserId field to look up users, then gets their email.
         This method handles the connector-specific logic for permission mapping.
@@ -2542,6 +2524,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             List of Permission objects ready for edge creation
+
         """
         permission_objects = []
 
@@ -2568,7 +2551,7 @@ class ServiceNowConnector(BaseConnector):
                                 email=user.email,
                                 type=PermissionType(role),
                                 entity_type=EntityType.USER,
-                            )
+                            ),
                         )
                     else:
                         self.logger.warning(f"User not found for source_sys_id: {source_sys_id}")
@@ -2580,21 +2563,20 @@ class ServiceNowConnector(BaseConnector):
                             external_id=source_sys_id,
                             type=PermissionType(role),
                             entity_type=EntityType.GROUP,
-                        )
+                        ),
                     )
                 else:
                     self.logger.warning(f"Unknown entity_type '{entity_type}' in permission: {perm}")
 
             except Exception as e:
-                self.logger.error(f"Failed to convert permission {perm}: {str(e)}", exc_info=True)
+                self.logger.error(f"Failed to convert permission {perm}: {e!s}", exc_info=True)
 
         return permission_objects
 
     async def _fetch_kb_permissions_from_criteria(
-        self, kb_sys_id: str
-    ) -> Dict[str, List[str]]:
-        """
-        Fetch permission criteria IDs for a knowledge base from mtom tables.
+        self, kb_sys_id: str,
+    ) -> dict[str, list[str]]:
+        """Fetch permission criteria IDs for a knowledge base from mtom tables.
 
         ServiceNow KB permissions use many-to-many tables:
         - kb_uc_can_read_mtom: Read permissions (maps to READER)
@@ -2605,11 +2587,12 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             Dict with 'read' and 'write' lists of criteria sys_ids
+
         """
         try:
             criteria_map = {
                 "read": [],
-                "write": []
+                "write": [],
             }
 
             # Fetch READ criteria
@@ -2658,7 +2641,7 @@ class ServiceNowConnector(BaseConnector):
 
             self.logger.debug(
                 f"KB {kb_sys_id} criteria: {len(criteria_map['read'])} read, "
-                f"{len(criteria_map['write'])} write"
+                f"{len(criteria_map['write'])} write",
             )
 
             return criteria_map
@@ -2666,15 +2649,14 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(
                 f"Failed to fetch KB permissions for {kb_sys_id}: {e}",
-                exc_info=True
+                exc_info=True,
             )
             return {"read": [], "write": []}
 
     async def _extract_permissions_from_user_criteria_details(
-        self, criteria_details: Dict[str, Any], permission_type: PermissionType
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract all permissions from a user_criteria record.
+        self, criteria_details: dict[str, Any], permission_type: PermissionType,
+    ) -> list[dict[str, Any]]:
+        """Extract all permissions from a user_criteria record.
 
         User criteria can contain:
         - user: Individual user sys_id (comma-separated if multiple)
@@ -2690,12 +2672,13 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             List of permission dictionaries
+
         """
         permissions = []
 
         try:
             # Helper function to parse comma-separated sys_ids
-            def parse_sys_ids(field_value) -> List[str]:
+            def parse_sys_ids(field_value) -> list[str]:
                 """Parse comma-separated sys_ids from field value."""
                 if not field_value:
                     return []
@@ -2744,7 +2727,7 @@ class ServiceNowConnector(BaseConnector):
                     })
                 else:
                     self.logger.warning(
-                        f"Role '{role_name}' in user_criteria not found in role mapping"
+                        f"Role '{role_name}' in user_criteria not found in role mapping",
                     )
 
             # 4. Extract DEPARTMENT permissions (organizational entity)
@@ -2777,22 +2760,22 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(
                 f"Error extracting permissions from user_criteria: {e}",
-                exc_info=True
+                exc_info=True,
             )
 
         return permissions
 
     async def _transform_to_app_user(
-        self, user_data: Dict[str, Any]
-    ) -> Optional[AppUser]:
-        """
-        Transform ServiceNow user to AppUser entity.
+        self, user_data: dict[str, Any],
+    ) -> AppUser | None:
+        """Transform ServiceNow user to AppUser entity.
 
         Args:
             user_data: ServiceNow sys_user record
 
         Returns:
             AppUser: Transformed user entity or None if invalid
+
         """
         try:
             sys_id = user_data.get("sys_id")
@@ -2835,16 +2818,16 @@ class ServiceNowConnector(BaseConnector):
             return None
 
     def _transform_to_user_group(
-        self, group_data: Dict[str, Any]
-    ) -> Optional[AppUserGroup]:
-        """
-        Transform ServiceNow group to AppUserGroup entity.
+        self, group_data: dict[str, Any],
+    ) -> AppUserGroup | None:
+        """Transform ServiceNow group to AppUserGroup entity.
 
         Args:
             group_data: ServiceNow sys_user_group record
 
         Returns:
             AppUserGroup: Transformed user group entity or None if invalid
+
         """
         try:
             sys_id = group_data.get("sys_id")
@@ -2878,10 +2861,9 @@ class ServiceNowConnector(BaseConnector):
             return None
 
     def _transform_to_organizational_group(
-        self, entity_data: Dict[str, Any], prefix: str
-    ) -> Optional[AppUserGroup]:
-        """
-        Transform ServiceNow organizational entity to AppUserGroup.
+        self, entity_data: dict[str, Any], prefix: str,
+    ) -> AppUserGroup | None:
+        """Transform ServiceNow organizational entity to AppUserGroup.
 
         This is a generic transform method for companies, departments, locations, and cost centers.
 
@@ -2891,6 +2873,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             AppUserGroup: Transformed organizational group or None if invalid
+
         """
         try:
             sys_id = entity_data.get("sys_id")
@@ -2904,11 +2887,11 @@ class ServiceNowConnector(BaseConnector):
             source_updated_at = None
             if entity_data.get("sys_created_on"):
                 source_created_at = self._parse_servicenow_datetime(
-                    entity_data["sys_created_on"]
+                    entity_data["sys_created_on"],
                 )
             if entity_data.get("sys_updated_on"):
                 source_updated_at = self._parse_servicenow_datetime(
-                    entity_data["sys_updated_on"]
+                    entity_data["sys_updated_on"],
                 )
 
             # Create AppUserGroup with prefix
@@ -2932,16 +2915,16 @@ class ServiceNowConnector(BaseConnector):
             return None
 
     def _transform_to_kb_record_group(
-        self, kb_data: Dict[str, Any]
-    ) -> Optional[RecordGroup]:
-        """
-        Transform ServiceNow knowledge base to RecordGroup entity.
+        self, kb_data: dict[str, Any],
+    ) -> RecordGroup | None:
+        """Transform ServiceNow knowledge base to RecordGroup entity.
 
         Args:
             kb_data: ServiceNow kb_knowledge_base record
 
         Returns:
             RecordGroup: Transformed KB as RecordGroup with type SERVICENOW or None if invalid
+
         """
         try:
             sys_id = kb_data.get("sys_id")
@@ -2984,16 +2967,16 @@ class ServiceNowConnector(BaseConnector):
             return None
 
     def _transform_to_category_record_group(
-        self, category_data: Dict[str, Any]
-    ) -> Optional[RecordGroup]:
-        """
-        Transform ServiceNow kb_category to RecordGroup entity.
+        self, category_data: dict[str, Any],
+    ) -> RecordGroup | None:
+        """Transform ServiceNow kb_category to RecordGroup entity.
 
         Args:
             category_data: ServiceNow kb_category record
 
         Returns:
             RecordGroup: Transformed category as RecordGroup with type SERVICENOW_CATEGORY or None if invalid
+
         """
         try:
             sys_id = category_data.get("sys_id")
@@ -3036,16 +3019,16 @@ class ServiceNowConnector(BaseConnector):
             return None
 
     def _transform_to_article_webpage_record(
-        self, article_data: Dict[str, Any]
-    ) -> Optional[WebpageRecord]:
-        """
-        Transform ServiceNow kb_knowledge article to WebpageRecord entity.
+        self, article_data: dict[str, Any],
+    ) -> WebpageRecord | None:
+        """Transform ServiceNow kb_knowledge article to WebpageRecord entity.
 
         Args:
             article_data: ServiceNow kb_knowledge record
 
         Returns:
             WebpageRecord: Transformed article or None if invalid
+
         """
         try:
             sys_id = article_data.get("sys_id")
@@ -3124,12 +3107,11 @@ class ServiceNowConnector(BaseConnector):
 
     def _transform_to_attachment_file_record(
         self,
-        attachment_data: Dict[str, Any],
-        parent_record_group_type: Optional[RecordGroupType] = None,
-        parent_external_record_group_id: Optional[str] = None,
-    ) -> Optional[FileRecord]:
-        """
-        Transform ServiceNow sys_attachment to FileRecord entity.
+        attachment_data: dict[str, Any],
+        parent_record_group_type: RecordGroupType | None = None,
+        parent_external_record_group_id: str | None = None,
+    ) -> FileRecord | None:
+        """Transform ServiceNow sys_attachment to FileRecord entity.
 
         Args:
             attachment_data: ServiceNow sys_attachment record
@@ -3138,6 +3120,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             FileRecord: Transformed attachment or None if invalid
+
         """
         try:
             sys_id = attachment_data.get("sys_id")
@@ -3208,9 +3191,8 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Error transforming attachment {attachment_data.get('sys_id')}: {e}", exc_info=True)
             return None
 
-    def _parse_servicenow_datetime(self, datetime_str: str) -> Optional[int]:
-        """
-        Parse ServiceNow datetime string to epoch timestamp in milliseconds.
+    def _parse_servicenow_datetime(self, datetime_str: str) -> int | None:
+        """Parse ServiceNow datetime string to epoch timestamp in milliseconds.
 
         ServiceNow format: "2023-01-15 10:30:45" (UTC)
 
@@ -3219,6 +3201,7 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             int: Epoch timestamp in milliseconds or None if parsing fails
+
         """
         try:
             from datetime import datetime
@@ -3238,8 +3221,7 @@ class ServiceNowConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
     ) -> "ServiceNowConnector":
-        """
-        Factory method to create and initialize the connector.
+        """Factory method to create and initialize the connector.
 
         Args:
             logger: Logger instance
@@ -3248,9 +3230,10 @@ class ServiceNowConnector(BaseConnector):
 
         Returns:
             ServiceNowConnector: Initialized connector instance
+
         """
         data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
+            logger, data_store_provider, config_service,
         )
         await data_entities_processor.initialize()
 

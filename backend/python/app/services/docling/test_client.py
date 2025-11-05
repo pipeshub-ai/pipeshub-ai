@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test script for the Docling service client
+"""Test script for the Docling service client
 """
 
 import asyncio
@@ -41,7 +40,7 @@ async def test_docling_client() -> None:
         else:
             print("❌ PDF processing test failed - no result returned")
     except Exception as e:
-        print(f"❌ PDF processing test failed with error: {str(e)}")
+        print(f"❌ PDF processing test failed with error: {e!s}")
 
 
 if __name__ == "__main__":

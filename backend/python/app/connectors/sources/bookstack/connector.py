@@ -1,10 +1,10 @@
 import asyncio
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -54,16 +54,17 @@ from app.sources.external.bookstack.bookstack import BookStackDataSource
 @dataclass
 class RecordUpdate:
     """Track updates to a record"""
-    record: Optional[FileRecord]
+
+    record: FileRecord | None
     is_new: bool
     is_updated: bool
     is_deleted: bool
     metadata_changed: bool
     content_changed: bool
     permissions_changed: bool
-    old_permissions: Optional[List[Permission]] = None
-    new_permissions: Optional[List[Permission]] = None
-    external_record_id: Optional[str] = None
+    old_permissions: list[Permission] | None = None
+    new_permissions: list[Permission] | None = None
+    external_record_id: str | None = None
 
 @ConnectorBuilder("BookStack")\
     .in_group("BookStack")\
@@ -75,12 +76,12 @@ class RecordUpdate:
         .add_documentation_link(DocumentationLink(
             "BookStack API Access",
             "https://www.bookstackapp.com/docs/admin/api-access/",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/bookstack/bookstack',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/bookstack/bookstack",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -89,7 +90,7 @@ class RecordUpdate:
             placeholder="https://bookstack.example.com",
             description="The base URL of your BookStack instance",
             field_type="TEXT",
-            max_length=2048
+            max_length=2048,
         ))
         .add_auth_field(AuthField(
             name="token_id",
@@ -97,7 +98,7 @@ class RecordUpdate:
             placeholder="YourTokenID",
             description="The Token ID generated from your BookStack profile",
             field_type="TEXT",
-            max_length=100
+            max_length=100,
         ))
         .add_auth_field(AuthField(
             name="token_secret",
@@ -106,16 +107,16 @@ class RecordUpdate:
             description="The Token Secret generated from your BookStack profile",
             field_type="PASSWORD",
             max_length=100,
-            is_secret=True
+            is_secret=True,
         ))
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class BookStackConnector(BaseConnector):
-    """
-    Connector for synchronizing data from a BookStack instance.
+    """Connector for synchronizing data from a BookStack instance.
     Syncs books, chapters, pages, attachments, users, roles, and permissions.
     """
+
     bookstack_base_url: str
 
     def __init__(
@@ -130,7 +131,7 @@ class BookStackConnector(BaseConnector):
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
         )
 
         self.connector_name = Connectors.BOOKSTACK
@@ -139,7 +140,7 @@ class BookStackConnector(BaseConnector):
         self._create_sync_points()
 
         # Data source and configuration
-        self.data_source: Optional[BookStackDataSource] = None
+        self.data_source: BookStackDataSource | None = None
         self.batch_size = 100
         self.max_concurrent_batches = 5
 
@@ -150,7 +151,7 @@ class BookStackConnector(BaseConnector):
                 connector_name=self.connector_name,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
-                data_store_provider=self.data_store_provider
+                data_store_provider=self.data_store_provider,
             )
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
@@ -158,15 +159,15 @@ class BookStackConnector(BaseConnector):
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
 
     async def init(self) -> bool:
-        """
-        Initializes the BookStack client using credentials from the config service.
+        """Initializes the BookStack client using credentials from the config service.
 
         Returns:
             True if initialization was successful, False otherwise
+
         """
         try:
             config = await self.config_service.get_config(
-                "/services/connectors/bookstack/config"
+                "/services/connectors/bookstack/config",
             )
             if not config:
                 self.logger.error("BookStack configuration not found.")
@@ -182,7 +183,7 @@ class BookStackConnector(BaseConnector):
 
             if not all([base_url, token_id, token_secret]):
                 self.logger.error(
-                    "BookStack base_url, token_id, or token_secret not found in configuration."
+                    "BookStack base_url, token_id, or token_secret not found in configuration.",
                 )
                 return False
 
@@ -190,7 +191,7 @@ class BookStackConnector(BaseConnector):
             token_config = BookStackTokenConfig(
                 base_url=base_url,
                 token_id=token_id,
-                token_secret=token_secret
+                token_secret=token_secret,
             )
             try:
                 client = await BookStackClient.build_and_validate(token_config)
@@ -207,11 +208,11 @@ class BookStackConnector(BaseConnector):
             return False
 
     async def test_connection_and_access(self) -> bool:
-        """
-        Tests the connection to BookStack by attempting to list books.
+        """Tests the connection to BookStack by attempting to list books.
 
         Returns:
             True if connection test was successful, False otherwise
+
         """
         if not self.data_source:
             self.logger.error("BookStack data source not initialized")
@@ -223,17 +224,15 @@ class BookStackConnector(BaseConnector):
             if response.success:
                 self.logger.info("BookStack connection test successful.")
                 return True
-            else:
-                self.logger.error(f"BookStack connection test failed: {response.error}")
-                return False
+            self.logger.error(f"BookStack connection test failed: {response.error}")
+            return False
 
         except Exception as e:
             self.logger.error(f"BookStack connection test failed: {e}", exc_info=True)
             return False
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
-        """
-        Get a signed URL for accessing a BookStack record.
+    async def get_signed_url(self, record: Record) -> str | None:
+        """Get a signed URL for accessing a BookStack record.
         BookStack doesn't use signed URLs, so we return the web URL.
 
         Args:
@@ -241,6 +240,7 @@ class BookStackConnector(BaseConnector):
 
         Returns:
             The web URL of the record or None
+
         """
         signed_url = f"{self.bookstack_base_url}api/pages/{record.external_record_id}/export/markdown"
         if not record.weburl:
@@ -250,8 +250,7 @@ class BookStackConnector(BaseConnector):
         return signed_url
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """
-        Stream the content of a BookStack record.
+        """Stream the content of a BookStack record.
 
         Args:
             record: The record to stream
@@ -261,19 +260,20 @@ class BookStackConnector(BaseConnector):
 
         Raises:
             HTTPException if record cannot be streamed
+
         """
         if not self.data_source:
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="BookStack connector not initialized"
+                detail="BookStack connector not initialized",
             )
 
-        record_id = record.external_record_id.split('/')[1]
+        record_id = record.external_record_id.split("/")[1]
         markdown_response = await self.data_source.export_page_markdown(record_id)
         if not markdown_response.success:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Record not found or access denied"
+                detail="Record not found or access denied",
             )
         raw_markdown = markdown_response.data.get("markdown")
         # Stream the content from the URL
@@ -281,13 +281,13 @@ class BookStackConnector(BaseConnector):
             raw_markdown,
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+                "Content-Disposition": f"attachment; filename={record.record_name}",
+            },
         )
 
-    def _get_app_users(self, users: List[Dict]) -> List[AppUser]:
+    def _get_app_users(self, users: list[dict]) -> list[AppUser]:
         """Converts a list of BookStack user dictionaries to a list of AppUser objects."""
-        app_users: List[AppUser] = []
+        app_users: list[AppUser] = []
         for user in users:
             app_users.append(
                 AppUser(
@@ -297,13 +297,12 @@ class BookStackConnector(BaseConnector):
                     email=user.get("email"),
                     is_active=True,  # Assuming users returned from the API are active
                     title=None,      # Role/title is not provided in the /api/users endpoint
-                )
+                ),
             )
         return app_users
 
-    async def get_all_users(self) -> List[AppUser]:
-        """
-        Fetches all users from BookStack, transforms them into AppUser objects,
+    async def get_all_users(self) -> list[AppUser]:
+        """Fetches all users from BookStack, transforms them into AppUser objects,
         """
         self.logger.info("Starting BookStack user sync...")
         all_bookstack_users = []
@@ -313,7 +312,7 @@ class BookStackConnector(BaseConnector):
         while True:
             response = await self.data_source.list_users(
                 count=self.batch_size,
-                offset=offset
+                offset=offset,
             )
 
             if not response.success or not response.data:
@@ -343,14 +342,14 @@ class BookStackConnector(BaseConnector):
 
         return app_users
 
-    async def list_roles_with_details(self) -> Dict[int, Dict]:
-        """
-        Gets a list of all roles with their detailed information, including
+    async def list_roles_with_details(self) -> dict[int, dict]:
+        """Gets a list of all roles with their detailed information, including
         permissions and assigned users.
 
         Returns:
             A dictionary where the key is the role_id and the value is the
             dictionary containing the role's full details.
+
         """
         self.logger.info("Fetching all roles with details...")
 
@@ -360,13 +359,13 @@ class BookStackConnector(BaseConnector):
             self.logger.error(f"Failed to list roles: {list_response.error}")
             return {}
 
-        basic_roles = list_response.data.get('data', [])
+        basic_roles = list_response.data.get("data", [])
         if not basic_roles:
             self.logger.info("No roles found in BookStack.")
             return {}
 
         # Create a list of concurrent tasks to get the details for each role
-        tasks = [self.data_source.get_role(role['id']) for role in basic_roles]
+        tasks = [self.data_source.get_role(role["id"]) for role in basic_roles]
 
         # Execute all tasks in parallel and wait for them to complete
         detail_responses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -374,7 +373,7 @@ class BookStackConnector(BaseConnector):
         # Process the results into the final dictionary
         roles_details_map = {}
         for i, response in enumerate(detail_responses):
-            role_id = basic_roles[i]['id']
+            role_id = basic_roles[i]["id"]
             if isinstance(response, Exception):
                 self.logger.error(f"Exception fetching details for role ID {role_id}: {response}")
             elif not response.success:
@@ -385,22 +384,21 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Successfully fetched details for {len(roles_details_map)} roles.")
         return roles_details_map
 
-    def _parse_id_and_name_from_event(self, event: Dict) -> Tuple[Optional[int], Optional[str]]:
-        """
-        Parses an audit log event's 'detail' string to extract the entity's ID and name.
+    def _parse_id_and_name_from_event(self, event: dict) -> tuple[int | None, str | None]:
+        """Parses an audit log event's 'detail' string to extract the entity's ID and name.
         The expected format is '(ID) Name', e.g., '(5) Tester'.
         """
-        detail = event.get('detail')
+        detail = event.get("detail")
         if not detail:
             self.logger.warning(f"Audit log event (ID: {event.get('id')}) is missing 'detail'.")
             return None, None
 
         try:
             # Split the string just once at the first space
-            id_part, name_part = detail.split(' ', 1)
+            id_part, name_part = detail.split(" ", 1)
 
             # Clean up and convert the parts
-            entity_id = int(id_part.strip('()'))
+            entity_id = int(id_part.strip("()"))
             entity_name = name_part.strip()
 
             return entity_id, entity_name
@@ -414,12 +412,11 @@ class BookStackConnector(BaseConnector):
         utc_now = datetime.now(timezone.utc)
 
         # Format the time into the ISO 8601 string format with 'Z'
-        iso_format_string = utc_now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        iso_format_string = utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
         return iso_format_string
 
     async def run_sync(self) -> None:
-        """
-        Runs a full synchronization from the BookStack instance.
+        """Runs a full synchronization from the BookStack instance.
         Syncs users, groups, record groups (books/shelves), and records (pages/chapters).
         """
         try:
@@ -458,23 +455,22 @@ class BookStackConnector(BaseConnector):
 
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
-        if full_sync or not bookstack_user_sync_point.get('timestamp'):
+        if full_sync or not bookstack_user_sync_point.get("timestamp"):
             await self.user_sync_point.update_sync_point(
                 bookstack_user_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
             await self._sync_users_full(users)
         else:
-            last_sync_timestamp = bookstack_user_sync_point.get('timestamp')
+            last_sync_timestamp = bookstack_user_sync_point.get("timestamp")
             await self._sync_users_incremental(users, last_sync_timestamp)
             await self.user_sync_point.update_sync_point(
                 bookstack_user_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
 
-    async def _sync_users_full(self, app_users: List[AppUser]) -> None:
-        """
-        Fetches all users from BookStack, transforms them into AppUser objects,
+    async def _sync_users_full(self, app_users: list[AppUser]) -> None:
+        """Fetches all users from BookStack, transforms them into AppUser objects,
         and upserts them into the database.
         """
         self.logger.info("Starting BookStack user sync...")
@@ -483,46 +479,45 @@ class BookStackConnector(BaseConnector):
         await self.data_entities_processor.on_new_app_users(app_users)
         self.logger.info("✅ Finished syncing BookStack users.")
 
-    async def _sync_users_incremental(self, app_users: List[AppUser], last_sync_timestamp: str) -> None:
-        """
-        Syncs only the users that have been newly created since the last sync timestamp
+    async def _sync_users_incremental(self, app_users: list[AppUser], last_sync_timestamp: str) -> None:
+        """Syncs only the users that have been newly created since the last sync timestamp
         by checking the audit log.
         """
         self.logger.info(f"Starting incremental user sync from timestamp: {last_sync_timestamp}")
 
         # 1. Fetch 'user_create' events from the audit log
         user_create_response = await self.data_source.list_audit_log(
-            filter={'type': 'user_create', 'created_at:gte': last_sync_timestamp}
+            filter={"type": "user_create", "created_at:gte": last_sync_timestamp},
         )
         user_update_response = await self.data_source.list_audit_log(
-            filter={'type': 'user_update', 'created_at:gte': last_sync_timestamp}
+            filter={"type": "user_update", "created_at:gte": last_sync_timestamp},
         )
         user_delete_response = await self.data_source.list_audit_log(
-            filter={'type': 'user_delete', 'created_at:gte': last_sync_timestamp}
+            filter={"type": "user_delete", "created_at:gte": last_sync_timestamp},
         )
 
-        if user_create_response.success and user_create_response.data.get('data'):
-            await self._handle_user_create_event(user_create_response.data.get('data'), app_users)
-        if user_update_response.success and user_update_response.data.get('data'):
-            await self._handle_user_update_event(user_update_response.data.get('data'), app_users)
-        if user_delete_response.success and user_delete_response.data.get('data'):
+        if user_create_response.success and user_create_response.data.get("data"):
+            await self._handle_user_create_event(user_create_response.data.get("data"), app_users)
+        if user_update_response.success and user_update_response.data.get("data"):
+            await self._handle_user_update_event(user_update_response.data.get("data"), app_users)
+        if user_delete_response.success and user_delete_response.data.get("data"):
             # await self._handle_user_delete_event(user_delete_response.data.get('data'), app_users)
             self.logger.info("Method not implemenet yet !")
 
-    async def _handle_user_create_event(self, user_create_events: List[Dict], app_users: List[AppUser]) -> None:
+    async def _handle_user_create_event(self, user_create_events: list[dict], app_users: list[AppUser]) -> None:
         self.logger.info("New users found !")
         # 2. Parse the audit log to get the IDs of newly created users
         new_user_ids = set()
         log_entries = user_create_events
         for entry in log_entries:
-            detail_string = entry.get('detail')
+            detail_string = entry.get("detail")
             if not detail_string:
                 continue
 
             try:
                 # The detail string is formatted as '(ID) Name', e.g., '(5) Harshit'
-                id_part, _ = detail_string.split(' ', 1)
-                user_id_str = id_part.strip('()')
+                id_part, _ = detail_string.split(" ", 1)
+                user_id_str = id_part.strip("()")
 
                 # Ensure the extracted part is a digit before adding
                 if user_id_str.isdigit():
@@ -549,7 +544,7 @@ class BookStackConnector(BaseConnector):
         else:
             self.logger.warning("Found new user IDs in audit log, but no matching user objects were found in the full user list.")
 
-    async def _handle_user_update_event(self, user_update_events: List[Dict], app_users: List[AppUser]) -> None:
+    async def _handle_user_update_event(self, user_update_events: list[dict], app_users: list[AppUser]) -> None:
         self.logger.info("Updated users found !")
 
         # First handle the user update itself (updates the user record)
@@ -581,9 +576,9 @@ class BookStackConnector(BaseConnector):
                     continue
 
                 user_details = user_response.data
-                roles = user_details.get('roles', [])
+                roles = user_details.get("roles", [])
 
-                user_email = user_details.get('email')
+                user_email = user_details.get("email")
                 if not user_email:
                     self.logger.warning(f"User {name} (ID: {user_id}) has no email, skipping role updates.")
                     continue
@@ -605,8 +600,8 @@ class BookStackConnector(BaseConnector):
                 self.logger.info(f"User {name} is part of {len(roles)} role(s). Resyncing...")
 
                 for role in roles:
-                    role_id = role.get('id')
-                    role_name = role.get('display_name')
+                    role_id = role.get("id")
+                    role_name = role.get("display_name")
 
                     if role_id:
                         self.logger.info(f"Resyncing role '{role_name}' (ID: {role_id}) due to user update")
@@ -620,7 +615,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info("✅ Finished processing user update events and role resyncs")
 
 
-    async def _handle_user_delete_event(self, user_delete_events: List[Dict], app_users: List[AppUser]) -> None:
+    async def _handle_user_delete_event(self, user_delete_events: list[dict], app_users: list[AppUser]) -> None:
         self.logger.info("Deleted users found !")
 
         for event in user_delete_events:
@@ -637,13 +632,13 @@ class BookStackConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     # Look up the user by their external ID (source_user_id)
                     user = await tx_store.get_user_by_user_id(
-                        user_id=str(user_id)
+                        user_id=str(user_id),
                     )
 
                     if not user:
                         self.logger.warning(
                             f"User with BookStack ID {user_id} ({name}) not found in database. "
-                            "May have been already deleted or never synced."
+                            "May have been already deleted or never synced.",
                         )
                         continue
 
@@ -652,32 +647,32 @@ class BookStackConnector(BaseConnector):
                 # If user is found, call the data processor to handle removal
                 if user_email:
                     self.logger.info(
-                        f"Deleting user {name} (BookStack ID: {user_id}, email: {user_email})"
+                        f"Deleting user {name} (BookStack ID: {user_id}, email: {user_email})",
                     )
 
                     # Call data_entities_processor to remove the user
                     success = await self.data_entities_processor.on_user_removed(
                         user_email=user_email,
-                        connector_name=self.connector_name
+                        connector_name=self.connector_name,
                     )
 
                     if success:
                         self.logger.info(
-                            f"✅ Successfully deleted user {name} (email: {user_email})"
+                            f"✅ Successfully deleted user {name} (email: {user_email})",
                         )
                     else:
                         self.logger.error(
-                            f"Failed to delete user {name} (email: {user_email}) from database"
+                            f"Failed to delete user {name} (email: {user_email}) from database",
                         )
                 else:
                     self.logger.warning(
-                        f"User {name} (ID: {user_id}) found but has no email address"
+                        f"User {name} (ID: {user_id}) found but has no email address",
                     )
 
             except Exception as e:
                 self.logger.error(
                     f"Error processing user deletion for user ID {user_id}: {e}",
-                    exc_info=True
+                    exc_info=True,
                 )
 
         self.logger.info("✅ Finished processing user delete events")
@@ -689,24 +684,23 @@ class BookStackConnector(BaseConnector):
         bookstack_user_group_sync_point = await self.user_group_sync_point.read_sync_point(bookstack_user_group_sync_key)
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
-        if full_sync or not bookstack_user_group_sync_point.get('timestamp'):
+        if full_sync or not bookstack_user_group_sync_point.get("timestamp"):
             await self.user_group_sync_point.update_sync_point(
                 bookstack_user_group_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
             await self._sync_user_groups_full()
         else:
-            last_sync_timestamp = bookstack_user_group_sync_point.get('timestamp')
+            last_sync_timestamp = bookstack_user_group_sync_point.get("timestamp")
             await self._sync_user_groups_incremental(last_sync_timestamp)
             await self.user_group_sync_point.update_sync_point(
                 bookstack_user_group_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
 
 
     async def _sync_user_groups_full(self) -> None:
-        """
-        Fetches all roles with their detailed user assignments to build and
+        """Fetches all roles with their detailed user assignments to build and
         upsert user groups with their member users (AppUser objects).
         """
         self.logger.info("Starting BookStack user group and permissions sync...")
@@ -734,7 +728,7 @@ class BookStackConnector(BaseConnector):
                 app_name=self.connector_name,
                 source_user_group_id=str(role.get("id")),
                 name=role.get("display_name"),
-                org_id=self.data_entities_processor.org_id
+                org_id=self.data_entities_processor.org_id,
             )
 
             # Build list of AppUser objects for users in this role
@@ -757,7 +751,7 @@ class BookStackConnector(BaseConnector):
                     is_active=True,  # Assuming users in roles are active
                     title=user_details.get("title") if user_details.get("title") else None,
                     source_created_at=self._parse_timestamp(user_details.get("created_at")) if user_details.get("created_at") else None,
-                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None
+                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None,
                 )
                 app_users.append(app_user)
 
@@ -772,21 +766,20 @@ class BookStackConnector(BaseConnector):
             self.logger.info("No user groups were processed.")
 
 
-    def _parse_timestamp(self, timestamp_str: str) -> Optional[int]:
+    def _parse_timestamp(self, timestamp_str: str) -> int | None:
         """Helper to parse timestamp string to epoch milliseconds."""
         if not timestamp_str:
             return None
         try:
             from datetime import datetime
-            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
             return int(dt.timestamp() * 1000)
         except Exception as e:
             self.logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
             return None
 
-    async def _fetch_all_roles_with_details(self) -> List[Dict]:
-        """
-        Helper to fetch all roles and then get their detailed profiles,
+    async def _fetch_all_roles_with_details(self) -> list[dict]:
+        """Helper to fetch all roles and then get their detailed profiles,
         including assigned users, concurrently.
         """
         # First, get the basic list of all roles to find their IDs.
@@ -797,13 +790,13 @@ class BookStackConnector(BaseConnector):
 
         # Asynchronously fetch the full details for each role in parallel.
         self.logger.info(f"Fetching details for {len(basic_roles)} roles concurrently...")
-        tasks = [self.data_source.get_role(role['id']) for role in basic_roles]
+        tasks = [self.data_source.get_role(role["id"]) for role in basic_roles]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         detailed_roles = []
         for i, res in enumerate(responses):
             if isinstance(res, Exception) or not res.success:
-                role_id = basic_roles[i]['id']
+                role_id = basic_roles[i]["id"]
                 self.logger.error(f"Failed to get details for role ID {role_id}: {res}")
             else:
                 detailed_roles.append(res.data)
@@ -813,11 +806,10 @@ class BookStackConnector(BaseConnector):
 
     def _build_role_permissions_map(
         self,
-        all_roles_with_details: List[Dict],
-        user_email_map: Dict[int, str]
-    ) -> Dict[int, List[Permission]]:
-        """
-        Creates a map of role_id -> [List of Permissions] from detailed role objects.
+        all_roles_with_details: list[dict],
+        user_email_map: dict[int, str],
+    ) -> dict[int, list[Permission]]:
+        """Creates a map of role_id -> [List of Permissions] from detailed role objects.
 
         Args:
             all_roles_with_details: A list of role dictionaries, each containing a 'users' key.
@@ -826,6 +818,7 @@ class BookStackConnector(BaseConnector):
         Returns:
             A dictionary where each key is a role_id and the value is a list of
             Permission objects for users belonging to that role.
+
         """
         self.logger.info("Building map of roles to user permissions...")
         role_to_permissions_map = {}
@@ -848,7 +841,7 @@ class BookStackConnector(BaseConnector):
                     external_id=str(user_id),
                     email=user_email,
                     type=PermissionType.WRITE, # Defaulting to WRITE as membership implies access
-                    entity_type=EntityType.GROUP
+                    entity_type=EntityType.GROUP,
                 )
                 permissions.append(permission)
 
@@ -858,7 +851,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Permission map built for {len(role_to_permissions_map)} roles.")
         return role_to_permissions_map
 
-    async def _fetch_all_roles(self) -> List[Dict]:
+    async def _fetch_all_roles(self) -> list[dict]:
         """Helper to fetch all roles with pagination."""
         self.logger.info("Fetching all roles from BookStack...")
         all_roles = []
@@ -877,7 +870,7 @@ class BookStackConnector(BaseConnector):
                 break
         return all_roles
 
-    async def _fetch_all_users_with_details(self) -> List[Dict]:
+    async def _fetch_all_users_with_details(self) -> list[dict]:
         """Helper to fetch all users and then get detailed profiles concurrently."""
         self.logger.info("Fetching all user IDs...")
         all_users_summary = []
@@ -899,13 +892,13 @@ class BookStackConnector(BaseConnector):
             return []
 
         self.logger.info(f"Fetching details for {len(all_users_summary)} users concurrently...")
-        tasks = [self.data_source.get_user(user['id']) for user in all_users_summary]
+        tasks = [self.data_source.get_user(user["id"]) for user in all_users_summary]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         detailed_users = []
         for i, res in enumerate(responses):
             if isinstance(res, Exception) or not res.success:
-                user_id = all_users_summary[i]['id']
+                user_id = all_users_summary[i]["id"]
                 self.logger.error(f"Failed to get details for user ID {user_id}: {res}")
             else:
                 detailed_users.append(res.data)
@@ -914,55 +907,52 @@ class BookStackConnector(BaseConnector):
         return detailed_users
 
     async def _sync_user_groups_incremental(self, last_sync_timestamp: str) -> None:
-        """
-        Sync user groups and permissions incrementally based on the last sync timestamp.
+        """Sync user groups and permissions incrementally based on the last sync timestamp.
         """
         self.logger.info("Starting BookStack user group sync incremental...")
 
         roles_create_events = await self.data_source.list_audit_log(
             filter={
-                'type': 'role_create',
-                'created_at:gte': last_sync_timestamp
-            }
+                "type": "role_create",
+                "created_at:gte": last_sync_timestamp,
+            },
         )
         role_update_events = await self.data_source.list_audit_log(
             filter={
-                'type': 'role_update',
-                'created_at:gte': last_sync_timestamp
-            }
+                "type": "role_update",
+                "created_at:gte": last_sync_timestamp,
+            },
         )
         role_delete_events = await self.data_source.list_audit_log(
             filter={
-                'type': 'role_delete',
-                'created_at:gte': last_sync_timestamp
-            }
+                "type": "role_delete",
+                "created_at:gte": last_sync_timestamp,
+            },
         )
 
         all_users = await self._fetch_all_users_with_details()
         user_email_map = {user.get("id"): user.get("email") for user in all_users}
 
-        if roles_create_events.success and roles_create_events.data and roles_create_events.data.get('data'):
-            for event in roles_create_events.data['data']:
+        if roles_create_events.success and roles_create_events.data and roles_create_events.data.get("data"):
+            for event in roles_create_events.data["data"]:
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_create_event(role_id, user_email_map)
 
-        if role_update_events.success and role_update_events.data and role_update_events.data.get('data'):
-            for event in role_update_events.data['data']:
+        if role_update_events.success and role_update_events.data and role_update_events.data.get("data"):
+            for event in role_update_events.data["data"]:
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_update_event(role_id, user_email_map)
 
-        if role_delete_events.success and role_delete_events.data and role_delete_events.data.get('data'):
-            for event in role_delete_events.data['data']:
+        if role_delete_events.success and role_delete_events.data and role_delete_events.data.get("data"):
+            for event in role_delete_events.data["data"]:
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_delete_event(role_id)
                 await self._sync_user_groups_full()
 
-    async def _handle_role_create_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
-        """
-        Handles a 'role_create' audit log event by fetching the new role's
+    async def _handle_role_create_event(self, role_id: int, user_email_map: dict[int, str]) -> None:
+        """Handles a 'role_create' audit log event by fetching the new role's
         details and its members, then sending it to the data processor.
         """
-
         if role_id is None:
             # This can happen if the parser function fails
             return
@@ -982,7 +972,7 @@ class BookStackConnector(BaseConnector):
             app_name=self.connector_name,
             source_user_group_id=str(role_id),
             name=role_details.get("display_name"),
-            org_id=self.data_entities_processor.org_id
+            org_id=self.data_entities_processor.org_id,
         )
 
         # Build the list of AppUser objects for members of this group
@@ -1015,7 +1005,7 @@ class BookStackConnector(BaseConnector):
                     is_active=True,  # Users in roles are assumed to be active
                     title=user_details.get("title") if user_details.get("title") else None,
                     source_created_at=self._parse_timestamp(user_details.get("created_at")) if user_details.get("created_at") else None,
-                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None
+                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None,
                 )
                 app_users.append(app_user)
 
@@ -1023,7 +1013,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Processing newly created user group '{app_user_group.name}' with {len(app_users)} members...")
         await self.data_entities_processor.on_new_user_groups([(app_user_group, app_users)])
 
-    async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
+    async def _handle_role_update_event(self, role_id: int, user_email_map: dict[int, str]) -> None:
         await self._handle_role_delete_event(role_id)
         await self._handle_role_create_event(role_id, user_email_map)
         await self._sync_record_groups(full_sync=True)
@@ -1031,8 +1021,7 @@ class BookStackConnector(BaseConnector):
 
 
     async def _handle_role_delete_event(self, role_id: int) -> None:
-        """
-        Handles a 'role_delete' audit log event by parsing the role ID
+        """Handles a 'role_delete' audit log event by parsing the role ID
         and calling the data processor to delete the corresponding user group.
         """
         self.logger.info(f"Processing deletion for user group (External ID: {role_id})")
@@ -1040,7 +1029,7 @@ class BookStackConnector(BaseConnector):
         # Call the data processor to delete the group from the database
         await self.data_entities_processor.on_user_group_deleted(
             external_group_id=str(role_id),
-            connector_name=self.connector_name
+            connector_name=self.connector_name,
         )
 
     #-------------------------------Record Groups Sync-----------------------------------#
@@ -1053,23 +1042,22 @@ class BookStackConnector(BaseConnector):
         roles_details = await self.list_roles_with_details()
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
-        if full_sync or not bookstack_record_group_sync_point.get('timestamp'):
+        if full_sync or not bookstack_record_group_sync_point.get("timestamp"):
             await self._sync_record_groups_full(roles_details)
             await self.record_sync_point.update_sync_point(
                 bookstack_record_group_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
         else:
-            last_sync_timestamp = bookstack_record_group_sync_point.get('timestamp')
+            last_sync_timestamp = bookstack_record_group_sync_point.get("timestamp")
             await self._sync_record_groups_incremental(last_sync_timestamp, roles_details)
             await self.record_sync_point.update_sync_point(
                 bookstack_record_group_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
 
-    async def _sync_record_groups_full(self, roles_details: Dict[int, Dict]) -> None:
-        """
-        Sync all record groups (shelves, books, and chapters) from BookStack
+    async def _sync_record_groups_full(self, roles_details: dict[int, dict]) -> None:
+        """Sync all record groups (shelves, books, and chapters) from BookStack
         and their associated permissions.
         """
         self.logger.info("Starting sync for shelves, books, and chapters as record groups.")
@@ -1078,21 +1066,21 @@ class BookStackConnector(BaseConnector):
         await self._sync_content_type_as_record_group(
             content_type_name="bookshelf",
             list_method=self.data_source.list_shelves,
-            roles_details=roles_details
+            roles_details=roles_details,
         )
 
         # Sync all books as record groups
         await self._sync_content_type_as_record_group(
             content_type_name="book",
             list_method=self.data_source.list_books,
-            roles_details=roles_details
+            roles_details=roles_details,
         )
 
         # Sync all chapters as record groups
         await self._sync_content_type_as_record_group(
             content_type_name="chapter",
             list_method=self.data_source.list_chapters,
-            roles_details=roles_details
+            roles_details=roles_details,
         )
 
         self.logger.info("✅ Finished syncing all record groups.")
@@ -1101,10 +1089,9 @@ class BookStackConnector(BaseConnector):
         self,
         content_type_name: str,
         list_method: Callable[..., Awaitable[BookStackResponse]],
-        roles_details: Dict[int, Dict]
+        roles_details: dict[int, dict],
     ) -> None:
-        """
-        Generic function to fetch a list of content items (like shelves, books),
+        """Generic function to fetch a list of content items (like shelves, books),
         and sync them as record groups with permissions.
         """
         self.logger.info(f"Starting sync for {content_type_name}s as record groups.")
@@ -1142,7 +1129,7 @@ class BookStackConnector(BaseConnector):
                 parent_external_id = f"book/{item.get('book_id')}"
 
             tasks.append(
-                self._create_record_group_with_permissions(item, content_type_name, roles_details, parent_external_id)
+                self._create_record_group_with_permissions(item, content_type_name, roles_details, parent_external_id),
             )
         results = await asyncio.gather(*tasks)
 
@@ -1152,14 +1139,14 @@ class BookStackConnector(BaseConnector):
         if record_groups_batch:
             await self.data_entities_processor.on_new_record_groups(record_groups_batch)
             self.logger.info(
-                f"✅ Successfully processed {len(record_groups_batch)} {content_type_name} record groups."
+                f"✅ Successfully processed {len(record_groups_batch)} {content_type_name} record groups.",
             )
         else:
             self.logger.warning(f"No {content_type_name} record groups were processed.")
 
     async def _create_record_group_with_permissions(
-        self, item: Dict, content_type_name: str, roles_details: Dict[int, Dict], parent_external_id: Optional[str] = None
-    ) -> Optional[Tuple[RecordGroup, List[Permission]]]:
+        self, item: dict, content_type_name: str, roles_details: dict[int, dict], parent_external_id: str | None = None,
+    ) -> tuple[RecordGroup, list[Permission]] | None:
         """Creates a RecordGroup and fetches its permissions for a single BookStack item."""
         try:
             item_id = item.get("id")
@@ -1182,7 +1169,7 @@ class BookStackConnector(BaseConnector):
 
             # 2. Fetch its permissions
             permissions_response = await self.data_source.get_content_permissions(
-                content_type=content_type_name, content_id=item_id
+                content_type=content_type_name, content_id=item_id,
             )
 
             permissions_list = []
@@ -1196,7 +1183,7 @@ class BookStackConnector(BaseConnector):
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for {content_type_name} '{item_name}' (ID: {item_id}): "
-                    f"{permissions_response.error}"
+                    f"{permissions_response.error}",
                 )
 
             return (record_group, permissions_list)
@@ -1206,13 +1193,12 @@ class BookStackConnector(BaseConnector):
             item_id = item.get("id", "N/A")
             self.logger.error(
                 f"Error processing {content_type_name} '{item_name}' (ID: {item_id}): {e}",
-                exc_info=True
+                exc_info=True,
             )
             return None
 
-    async def _parse_bookstack_permissions(self, permissions_data: Dict, roles_details: Dict[int, Dict], content_type_name: str) -> List[Permission]:
-        """
-        Parses the BookStack permission object into a list of Permission objects.
+    async def _parse_bookstack_permissions(self, permissions_data: dict, roles_details: dict[int, dict], content_type_name: str) -> list[Permission]:
+        """Parses the BookStack permission object into a list of Permission objects.
         If explicit role permissions are not set on an item, it calculates permissions
         based on the default role definitions.
         """
@@ -1229,8 +1215,8 @@ class BookStackConnector(BaseConnector):
                             external_id=str(owner.get("id")),
                             email=user_response.data.get("email"),
                             type=PermissionType.OWNER,
-                            entity_type=EntityType.USER
-                        )
+                            entity_type=EntityType.USER,
+                        ),
                     )
             except Exception as e:
                 self.logger.error(f"Failed to fetch owner details for user ID {owner.get('id')}: {e}")
@@ -1257,8 +1243,8 @@ class BookStackConnector(BaseConnector):
                     Permission(
                         external_id=str(role_id),
                         type=perm_type,
-                        entity_type=EntityType.GROUP
-                    )
+                        entity_type=EntityType.GROUP,
+                    ),
                 )
         #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group
         #So either we can replicate the permissions of it's parent or not create the permission's edge at all (it will fetch the records from inherited permissions)
@@ -1275,7 +1261,7 @@ class BookStackConnector(BaseConnector):
                 write_perms = {
                     f"{content_type_name}-create-all",
                     f"{content_type_name}-update-all",
-                    f"{content_type_name}-delete-all"
+                    f"{content_type_name}-delete-all",
                 }
                 read_perm = f"{content_type_name}-view-all"
 
@@ -1293,15 +1279,14 @@ class BookStackConnector(BaseConnector):
                         Permission(
                             external_id=str(role_id),
                             type=perm_type,
-                            entity_type=EntityType.GROUP
-                        )
+                            entity_type=EntityType.GROUP,
+                        ),
                     )
 
         return permissions_list
 
-    def _parse_bookstack_permissions_all_users(self, all_users: List[AppUser]) -> List[Permission]:
-        """
-        Creates a list of Permission objects granting READ access to every user
+    def _parse_bookstack_permissions_all_users(self, all_users: list[AppUser]) -> list[Permission]:
+        """Creates a list of Permission objects granting READ access to every user
         in the provided list.
         """
         permissions_list = []
@@ -1312,84 +1297,82 @@ class BookStackConnector(BaseConnector):
                         external_id=user.source_user_id,
                         email=user.email,
                         type=PermissionType.READ,
-                        entity_type=EntityType.USER
-                    )
+                        entity_type=EntityType.USER,
+                    ),
                 )
             else:
                 self.logger.warning(
                     f"Skipping permission for user {user.full_name} "
-                    f"due to missing email or source_user_id."
+                    f"due to missing email or source_user_id.",
                 )
 
         return permissions_list
 
-    async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict]) -> None:
-        """
-        Sync all record groups (books, shelves and chapter) from BookStack as RecordGroup objects, handling new/updated/deleted record groups.
+    async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: dict[int, dict]) -> None:
+        """Sync all record groups (books, shelves and chapter) from BookStack as RecordGroup objects, handling new/updated/deleted record groups.
         """
         self.logger.info("Starting sync for record groups (books and shelves) as record groups.")
 
         await self._sync_record_groups_events(
             content_type="bookshelf",
             roles_details=roles_details,
-            last_sync_timestamp=last_sync_timestamp
+            last_sync_timestamp=last_sync_timestamp,
         )
 
         await self._sync_record_groups_events(
             content_type="book",
             roles_details=roles_details,
-            last_sync_timestamp=last_sync_timestamp
+            last_sync_timestamp=last_sync_timestamp,
         )
 
         await self._sync_record_groups_events(
             content_type="chapter",
             roles_details=roles_details,
-            last_sync_timestamp=last_sync_timestamp
+            last_sync_timestamp=last_sync_timestamp,
         )
 
-    async def _sync_record_groups_events(self, content_type: str, roles_details: Dict[int, Dict], last_sync_timestamp: str) -> None:
+    async def _sync_record_groups_events(self, content_type: str, roles_details: dict[int, dict], last_sync_timestamp: str) -> None:
 
         tasks = {
-            "create": self.data_source.list_audit_log(filter={'type': f'{content_type}_create', 'created_at:gte': last_sync_timestamp}),
-            "update": self.data_source.list_audit_log(filter={'type': f'{content_type}_update', 'created_at:gte': last_sync_timestamp}),
-            "delete": self.data_source.list_audit_log(filter={'type': f'{content_type}_delete', 'created_at:gte': last_sync_timestamp}),
-            "permissions_update": self.data_source.list_audit_log(filter={'type': 'permissions_update', 'created_at:gte': last_sync_timestamp}),
+            "create": self.data_source.list_audit_log(filter={"type": f"{content_type}_create", "created_at:gte": last_sync_timestamp}),
+            "update": self.data_source.list_audit_log(filter={"type": f"{content_type}_update", "created_at:gte": last_sync_timestamp}),
+            "delete": self.data_source.list_audit_log(filter={"type": f"{content_type}_delete", "created_at:gte": last_sync_timestamp}),
+            "permissions_update": self.data_source.list_audit_log(filter={"type": "permissions_update", "created_at:gte": last_sync_timestamp}),
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         event_responses = dict(zip(tasks.keys(), results))
 
         # --- Handle Create Events ---
         create_response = event_responses.get("create")
-        if create_response and create_response.success and create_response.data.get('data'):
+        if create_response and create_response.success and create_response.data.get("data"):
             self.logger.info(f"Found {len(create_response.data['data'])} new {content_type}(s) to create.")
-            for event in create_response.data['data']:
+            for event in create_response.data["data"]:
                 await self._handle_record_group_create_event(event, content_type, roles_details)
 
         # --- Handle Update Events ---
         update_response = event_responses.get("update")
-        if update_response and update_response.success and update_response.data.get('data'):
+        if update_response and update_response.success and update_response.data.get("data"):
             self.logger.info(f"Found {len(update_response.data['data'])} updated {content_type}(s) to update.")
-            for event in update_response.data['data']:
+            for event in update_response.data["data"]:
                 await self._handle_record_group_create_event(event, content_type, roles_details)
 
         # --- Handle Delete Events ---
         delete_response = event_responses.get("delete")
-        if delete_response and delete_response.success and delete_response.data.get('data'):
+        if delete_response and delete_response.success and delete_response.data.get("data"):
             self.logger.info(f"Found {len(delete_response.data['data'])} deleted {content_type}(s) to delete.")
-            for event in delete_response.data['data']:
+            for event in delete_response.data["data"]:
                 await self._handle_record_group_delete_event(event, content_type)
 
         permissions_update_response = event_responses.get("permissions_update")
-        if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
+        if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get("data"):
             self.logger.info(f"Found {len(permissions_update_response.data['data'])} updated {content_type}(s) to update.")
-            for event in permissions_update_response.data['data']:
+            for event in permissions_update_response.data["data"]:
                 if event.get("loggable_type") == content_type:
                     await self._handle_record_group_create_event(event, content_type, roles_details)
 
 
-    async def _handle_record_group_create_event(self, event: Dict, content_type: str, roles_details: Dict[int, Dict]) -> None:
-        """
-        Handles a create event for any record group type (book, chapter, bookshelf).
+    async def _handle_record_group_create_event(self, event: dict, content_type: str, roles_details: dict[int, dict]) -> None:
+        """Handles a create event for any record group type (book, chapter, bookshelf).
         """
         item_id, item_name = self._parse_id_and_name_from_event(event)
         if item_id is None:
@@ -1427,7 +1410,7 @@ class BookStackConnector(BaseConnector):
             item=item_details,
             content_type_name=content_type,
             roles_details=roles_details,
-            parent_external_id=parent_external_id
+            parent_external_id=parent_external_id,
         )
 
         # 5. Process the new record group
@@ -1436,7 +1419,7 @@ class BookStackConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups([record_group_tuple])
             self.logger.info(f"✅ Successfully processed new {content_type}: '{item_name}'.")
 
-    async def _handle_record_group_delete_event(self, event: Dict, content_type: str) -> None:
+    async def _handle_record_group_delete_event(self, event: dict, content_type: str) -> None:
         self.logger.warning("!! method not implemented yet !!")
 
     #---------------------------Records Sync-----------------------------------#
@@ -1450,36 +1433,35 @@ class BookStackConnector(BaseConnector):
         users = await self.get_all_users()
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
-        if full_sync or not bookstack_record_sync_point.get('timestamp'):
+        if full_sync or not bookstack_record_sync_point.get("timestamp"):
             await self._sync_records_full(roles_details, users)
             await self.record_sync_point.update_sync_point(
                 bookstack_record_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
         else:
-            last_sync_timestamp = bookstack_record_sync_point.get('timestamp')
+            last_sync_timestamp = bookstack_record_sync_point.get("timestamp")
             await self._sync_records_incremental(last_sync_timestamp, roles_details, users)
             await self.record_sync_point.update_sync_point(
                 bookstack_record_sync_key,
-                {"timestamp": current_timestamp}
+                {"timestamp": current_timestamp},
             )
 
-    async def _sync_records_full(self, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
-        """
-        Sync all pages from BookStack as Record objects, handling new/updated/deleted records.
+    async def _sync_records_full(self, roles_details: dict[int, dict], users: list[AppUser]) -> None:
+        """Sync all pages from BookStack as Record objects, handling new/updated/deleted records.
         """
         self.logger.info("Starting sync for pages as records.")
 
-        batch_records: List[Tuple[FileRecord, List[Permission]]] = []
+        batch_records: list[tuple[FileRecord, list[Permission]]] = []
         offset = 0
 
         while True:
             response = await self.data_source.list_pages(count=self.batch_size, offset=offset)
 
             pages_data = {}
-            if response.success and response.data and 'content' in response.data:
+            if response.success and response.data and "content" in response.data:
                 try:
-                    pages_data = json.loads(response.data['content'])
+                    pages_data = json.loads(response.data["content"])
                 except json.JSONDecodeError:
                     self.logger.error(f"Failed to decode JSON content for pages: {response.data['content']}")
                     break
@@ -1533,9 +1515,8 @@ class BookStackConnector(BaseConnector):
 
         self.logger.info("✅ Finished syncing all page records.")
 
-    async def _process_bookstack_page(self, page: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> Optional[RecordUpdate]:
-        """
-        Process a single BookStack page, create a Record object, detect changes, and fetch its permissions.
+    async def _process_bookstack_page(self, page: dict, roles_details: dict[int, dict], users: list[AppUser]) -> RecordUpdate | None:
+        """Process a single BookStack page, create a Record object, detect changes, and fetch its permissions.
         Returns RecordUpdate object containing the record and change information.
         """
         try:
@@ -1549,7 +1530,7 @@ class BookStackConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_name=self.connector_name,
-                    external_id=f"page/{page_id}"
+                    external_id=f"page/{page_id}",
                 )
 
             # Detect changes
@@ -1582,7 +1563,7 @@ class BookStackConnector(BaseConnector):
             timestamp_ms = None
             updated_at_str = page.get("updated_at")
             if updated_at_str:
-                dt_obj = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
+                dt_obj = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
                 timestamp_ms = int(dt_obj.timestamp() * 1000)
 
             # 3. Create the FileRecord object
@@ -1610,7 +1591,7 @@ class BookStackConnector(BaseConnector):
             # 4. Fetch and parse permissions
             new_permissions = []
             permissions_response = await self.data_source.get_content_permissions(
-                content_type="page", content_id=page_id
+                content_type="page", content_id=page_id,
             )
             if permissions_response.success and permissions_response.data:
                 # new_permissions = await self._parse_bookstack_permissions(
@@ -1627,7 +1608,7 @@ class BookStackConnector(BaseConnector):
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "
-                    f"{permissions_response.error}"
+                    f"{permissions_response.error}",
                 )
 
             # Get old permissions if the record exists (you'll need to implement this)
@@ -1650,7 +1631,7 @@ class BookStackConnector(BaseConnector):
                 permissions_changed=permissions_changed,
                 old_permissions=old_permissions,
                 new_permissions=new_permissions,
-                external_record_id=f"page/{page_id}"
+                external_record_id=f"page/{page_id}",
             )
 
         except Exception as e:
@@ -1658,13 +1639,12 @@ class BookStackConnector(BaseConnector):
             return None
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """
-        Handle different types of record updates (new, updated, deleted).
+        """Handle different types of record updates (new, updated, deleted).
         """
         try:
             if record_update.is_deleted:
                 await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                    record_id=record_update.external_record_id,
                 )
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
@@ -1679,60 +1659,59 @@ class BookStackConnector(BaseConnector):
                     self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_updated_record_permissions(
                         record_update.record,
-                        record_update.new_permissions
+                        record_update.new_permissions,
                     )
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def _sync_records_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
-        """
-        Syncs records (pages) incrementally by processing create, update, and
+    async def _sync_records_incremental(self, last_sync_timestamp: str, roles_details: dict[int, dict], users: list[AppUser]) -> None:
+        """Syncs records (pages) incrementally by processing create, update, and
         delete events from the audit log since the last sync.
         """
         self.logger.info(f"Starting incremental record (page) sync from: {last_sync_timestamp}")
 
         # 1. Concurrently fetch all page-related events
         tasks = {
-            "create": self.data_source.list_audit_log(filter={'type': 'page_create', 'created_at:gte': last_sync_timestamp}),
-            "update": self.data_source.list_audit_log(filter={'type': 'page_update', 'created_at:gte': last_sync_timestamp}),
-            "permissions_update": self.data_source.list_audit_log(filter={'type': 'permissions_update', 'created_at:gte': last_sync_timestamp}),
-            "delete": self.data_source.list_audit_log(filter={'type': 'page_delete', 'created_at:gte': last_sync_timestamp}),
-            "move": self.data_source.list_audit_log(filter={'type': 'page_move', 'created_at:gte': last_sync_timestamp})
+            "create": self.data_source.list_audit_log(filter={"type": "page_create", "created_at:gte": last_sync_timestamp}),
+            "update": self.data_source.list_audit_log(filter={"type": "page_update", "created_at:gte": last_sync_timestamp}),
+            "permissions_update": self.data_source.list_audit_log(filter={"type": "permissions_update", "created_at:gte": last_sync_timestamp}),
+            "delete": self.data_source.list_audit_log(filter={"type": "page_delete", "created_at:gte": last_sync_timestamp}),
+            "move": self.data_source.list_audit_log(filter={"type": "page_move", "created_at:gte": last_sync_timestamp}),
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         event_responses = dict(zip(tasks.keys(), results))
 
         # 2. Process Create Events
         create_response = event_responses.get("create")
-        if create_response and create_response.success and create_response.data.get('data'):
+        if create_response and create_response.success and create_response.data.get("data"):
             self.logger.info(f"Found {len(create_response.data['data'])} new page(s) to create.")
-            for event in create_response.data['data']:
+            for event in create_response.data["data"]:
                 await self._handle_page_upsert_event(event, roles_details, users)
 
         # 3. Process Update Events
         update_response = event_responses.get("update")
-        if update_response and update_response.success and update_response.data.get('data'):
+        if update_response and update_response.success and update_response.data.get("data"):
             self.logger.info(f"Found {len(update_response.data['data'])} page(s) to update.")
-            for event in update_response.data['data']:
+            for event in update_response.data["data"]:
                 await self._handle_page_upsert_event(event, roles_details, users)
 
         permissions_update_response = event_responses.get("permissions_update")
-        if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
+        if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get("data"):
             self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) to update.")
-            for event in permissions_update_response.data['data']:
-                if event.get('loggable_type') == 'page':
+            for event in permissions_update_response.data["data"]:
+                if event.get("loggable_type") == "page":
                     await self._handle_page_upsert_event(event, roles_details, users)
 
         # 4. Process Delete Events
         delete_response = event_responses.get("delete")
-        if delete_response and delete_response.success and delete_response.data.get('data'):
+        if delete_response and delete_response.success and delete_response.data.get("data"):
             self.logger.info(f"Found {len(delete_response.data['data'])} page(s) to delete.")
             # for event in delete_response.data['data']:
             #     await self._handle_page_delete_event(event)
 
         # 5. Process Move Events
         move_response = event_responses.get("move")
-        if move_response and move_response.success and move_response.data.get('data'):
+        if move_response and move_response.success and move_response.data.get("data"):
             self.logger.info(f"Found {len(move_response.data['data'])} page(s) to move.")
             self.logger.warning("!! method not implemented yet !!")
             # for event in move_response.data['data']:
@@ -1740,9 +1719,8 @@ class BookStackConnector(BaseConnector):
 
         self.logger.info("✅ Finished incremental record sync.")
 
-    async def _handle_page_upsert_event(self, event: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
-        """
-        Handles a 'page_create' or 'page_update' event by fetching the page's
+    async def _handle_page_upsert_event(self, event: dict, roles_details: dict[int, dict], users: list[AppUser]) -> None:
+        """Handles a 'page_create' or 'page_update' event by fetching the page's
         latest details and calling the correct data processor method.
         """
         page_id, page_name = self._parse_id_and_name_from_event(event)
@@ -1758,7 +1736,7 @@ class BookStackConnector(BaseConnector):
             self.logger.warning(f"Could not fetch details for page ID {page_id}. Skipping.")
             return
 
-        json_content_str = page_response.data.get('content')
+        json_content_str = page_response.data.get("content")
         if not json_content_str:
             self.logger.warning(f"API response for page ID {page_id} is empty. Skipping.")
             return
@@ -1797,8 +1775,7 @@ class BookStackConnector(BaseConnector):
             await self._handle_record_updates(record_update)
 
     async def run_incremental_sync(self) -> None:
-        """
-        Runs an incremental sync based on last sync timestamp.
+        """Runs an incremental sync based on last sync timestamp.
         BookStack doesn't have a native incremental sync API, so we check for updates.
         """
         try:
@@ -1817,13 +1794,13 @@ class BookStackConnector(BaseConnector):
             self.logger.error(f"Error in BookStack incremental sync: {ex}", exc_info=True)
             raise
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
-        """
-        Handles webhook notifications from BookStack.
+    def handle_webhook_notification(self, notification: dict) -> None:
+        """Handles webhook notifications from BookStack.
         BookStack doesn't have webhooks by default, but this is here for future compatibility.
 
         Args:
             notification: The webhook notification payload
+
         """
         self.logger.info("BookStack webhook received.")
         # BookStack doesn't have native webhooks, so this is a placeholder
@@ -1831,8 +1808,7 @@ class BookStackConnector(BaseConnector):
         asyncio.create_task(self.run_incremental_sync())
 
     def cleanup(self) -> None:
-        """
-        Cleanup resources used by the connector.
+        """Cleanup resources used by the connector.
         """
         self.logger.info("Cleaning up BookStack connector resources.")
         self.data_source = None
@@ -1842,10 +1818,9 @@ class BookStackConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
     ) -> "BaseConnector":
-        """
-        Factory method to create a BookStack connector instance.
+        """Factory method to create a BookStack connector instance.
 
         Args:
             logger: Logger instance
@@ -1854,12 +1829,13 @@ class BookStackConnector(BaseConnector):
 
         Returns:
             Initialized BookStackConnector instance
+
         """
         data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
+            logger, data_store_provider, config_service,
         )
         await data_entities_processor.initialize()
 
         return BookStackConnector(
-            logger, data_entities_processor, data_store_provider, config_service
+            logger, data_entities_processor, data_store_provider, config_service,
         )

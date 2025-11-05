@@ -42,6 +42,7 @@ from app.utils.redis_util import build_redis_url
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
 class ContainerUtils:
     """Utility class for container operations"""
+
     def __init__(self) -> None:
         self.logger = create_logger("container_utils")
 
@@ -178,7 +179,7 @@ class ContainerUtils:
     ) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
-            logger=logger, processor=processor, arango_service=arango_service
+            logger=logger, processor=processor, arango_service=arango_service,
         )
         # Add any necessary async initialization
         return event_processor
@@ -190,7 +191,7 @@ class ContainerUtils:
     ) -> RedisScheduler:
         """Async factory for RedisScheduler"""
         redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
+            config_node_constants.REDIS.value,
         )
         if redis_config and isinstance(redis_config, dict):
             # Build Redis URL with password if provided
@@ -199,7 +200,7 @@ class ContainerUtils:
             redis_url=redis_url,
             logger=logger,
             config_service=config_service,
-            delay_hours=1
+            delay_hours=1,
         )
         return redis_scheduler
 

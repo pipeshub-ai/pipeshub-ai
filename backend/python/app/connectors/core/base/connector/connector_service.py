@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import Dict, Optional
 
 from fastapi.responses import StreamingResponse
 
@@ -16,6 +15,7 @@ from app.models.entities import Record
 
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
+
     logger: Logger
     data_entities_processor: DataSourceEntitiesProcessor
     data_store_provider: DataStoreProvider
@@ -41,7 +41,7 @@ class BaseConnector(ABC):
         NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         NotImplementedError("This method is not supported")
 
     @abstractmethod
@@ -57,7 +57,7 @@ class BaseConnector(ABC):
         NotImplementedError("This method is not supported")
 
     @abstractmethod
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         NotImplementedError("This method is not supported")
 
     @abstractmethod

@@ -1,4 +1,3 @@
-from typing import Tuple
 
 from langchain.chat_models.base import BaseChatModel
 
@@ -7,7 +6,7 @@ from app.config.constants.service import config_node_constants
 from app.utils.aimodels import get_generator_model
 
 
-async def get_llm(config_service: ConfigurationService, llm_configs = None) -> Tuple[BaseChatModel, dict]:
+async def get_llm(config_service: ConfigurationService, llm_configs = None) -> tuple[BaseChatModel, dict]:
     if not llm_configs:
         ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value,use_cache=False)
         llm_configs = ai_models["llm"]

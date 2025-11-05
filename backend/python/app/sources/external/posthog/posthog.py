@@ -1,12 +1,11 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.sources.client.posthog.posthog import PostHogClient, PostHogResponse
 
 
 class PostHogDataSource:
-    """
-    Complete PostHog GraphQL API client wrapper.
+    """Complete PostHog GraphQL API client wrapper.
     Auto-generated wrapper for PostHog analytics and product analytics operations.
 
     Coverage:
@@ -23,8 +22,10 @@ class PostHogDataSource:
 
     def __init__(self, posthog_client: PostHogClient) -> None:
         """Initialize PostHog data source.
+
         Args:
             posthog_client: PostHogClient instance
+
         """
         self._posthog_client = posthog_client
 
@@ -35,8 +36,8 @@ class PostHogDataSource:
     async def execute_query(
         self,
         query: str,
-        variables: Optional[Dict[str, Any]] = None,
-        operation_name: Optional[str] = None
+        variables: dict[str, Any] | None = None,
+        operation_name: str | None = None,
     ) -> PostHogResponse:
         """Execute a GraphQL query through the PostHog client
 
@@ -46,6 +47,7 @@ class PostHogDataSource:
             operation_name: Optional operation name
         Returns:
             PostHogResponse object
+
         """
         client = self._posthog_client.get_client()
         graphql_client = client.get_graphql_client()
@@ -59,27 +61,26 @@ class PostHogDataSource:
             response = await graphql_client.execute(
                 query=query,
                 variables=variables,
-                operation_name=operation_name
+                operation_name=operation_name,
             )
 
             if response.success:
                 return PostHogResponse(
                     success=True,
                     data=response.data,
-                    message=response.message
+                    message=response.message,
                 )
-            else:
-                return PostHogResponse(
-                    success=False,
-                    error=response.error,
-                    message=response.message
-                )
+            return PostHogResponse(
+                success=False,
+                error=response.error,
+                message=response.message,
+            )
         except Exception as e:
-            logging.error(f"Query execution failed: {str(e)}", exc_info=True)
+            logging.error(f"Query execution failed: {e!s}", exc_info=True)
             return PostHogResponse(
                 success=False,
                 error=str(e),
-                message=f"Query execution failed: {str(e)}"
+                message=f"Query execution failed: {e!s}",
             )
 
     # =============================================================================
@@ -88,12 +89,12 @@ class PostHogDataSource:
 
     async def events(
         self,
-        after: Optional[str] = None,
-        before: Optional[str] = None,
-        distinct_id: Optional[str] = None,
-        event: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None,
-        limit: Optional[int] = None
+        after: str | None = None,
+        before: str | None = None,
+        distinct_id: str | None = None,
+        event: str | None = None,
+        properties: dict[str, Any] | None = None,
+        limit: int | None = None,
     ) -> PostHogResponse:
         """Query events with filtering and pagination
 
@@ -109,6 +110,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if after is not None:
@@ -124,7 +126,7 @@ class PostHogDataSource:
         if limit is not None:
             variables["limit"] = limit
 
-        query = '''query Events($after: String, $before: String, $distinct_id: String, $event: String, $properties: JSON, $limit: Int) {
+        query = """query Events($after: String, $before: String, $distinct_id: String, $event: String, $properties: JSON, $limit: Int) {
                             events(after: $after, before: $before, distinct_id: $distinct_id, event: $event, properties: $properties, limit: $limit) {
                                 results {
                                     id
@@ -141,17 +143,17 @@ class PostHogDataSource:
                                 next
                                 previous
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="events"
+            operation_name="events",
         )
 
     async def event(
         self,
-        id: str
+        id: str,
     ) -> PostHogResponse:
         """Get single event by ID
 
@@ -162,12 +164,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Event($id: ID!) {
+        query = """query Event($id: ID!) {
                             event(id: $id) {
                                 id
                                 event
@@ -180,21 +183,21 @@ class PostHogDataSource:
                                     properties
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="event"
+            operation_name="event",
         )
 
     async def persons(
         self,
-        search: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None,
-        cohort: Optional[int] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        search: str | None = None,
+        properties: dict[str, Any] | None = None,
+        cohort: int | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Query persons with filtering
 
@@ -209,6 +212,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if search is not None:
@@ -222,7 +226,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Persons($search: String, $properties: JSON, $cohort: Int, $limit: Int, $offset: Int) {
+        query = """query Persons($search: String, $properties: JSON, $cohort: Int, $limit: Int, $offset: Int) {
                             persons(search: $search, properties: $properties, cohort: $cohort, limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -235,17 +239,17 @@ class PostHogDataSource:
                                 next
                                 previous
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="persons"
+            operation_name="persons",
         )
 
     async def person(
         self,
-        id: str
+        id: str,
     ) -> PostHogResponse:
         """Get person by ID
 
@@ -256,12 +260,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Person($id: ID!) {
+        query = """query Person($id: ID!) {
                             person(id: $id) {
                                 id
                                 name
@@ -270,18 +275,18 @@ class PostHogDataSource:
                                 created_at
                                 updated_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="person"
+            operation_name="person",
         )
 
     async def actions(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get all actions
 
@@ -293,6 +298,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if limit is not None:
@@ -300,7 +306,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Actions($limit: Int, $offset: Int) {
+        query = """query Actions($limit: Int, $offset: Int) {
                             actions(limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -316,17 +322,17 @@ class PostHogDataSource:
                                     updated_at
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="actions"
+            operation_name="actions",
         )
 
     async def action(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get action by ID
 
@@ -337,12 +343,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Action($id: Int!) {
+        query = """query Action($id: Int!) {
                             action(id: $id) {
                                 id
                                 name
@@ -356,18 +363,18 @@ class PostHogDataSource:
                                 created_at
                                 updated_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="action"
+            operation_name="action",
         )
 
     async def cohorts(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get all cohorts
 
@@ -379,6 +386,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if limit is not None:
@@ -386,7 +394,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Cohorts($limit: Int, $offset: Int) {
+        query = """query Cohorts($limit: Int, $offset: Int) {
                             cohorts(limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -398,17 +406,17 @@ class PostHogDataSource:
                                     created_at
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="cohorts"
+            operation_name="cohorts",
         )
 
     async def cohort(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get cohort by ID
 
@@ -419,12 +427,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Cohort($id: Int!) {
+        query = """query Cohort($id: Int!) {
                             cohort(id: $id) {
                                 id
                                 name
@@ -434,18 +443,18 @@ class PostHogDataSource:
                                 count
                                 created_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="cohort"
+            operation_name="cohort",
         )
 
     async def dashboards(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get all dashboards
 
@@ -457,6 +466,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if limit is not None:
@@ -464,7 +474,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Dashboards($limit: Int, $offset: Int) {
+        query = """query Dashboards($limit: Int, $offset: Int) {
                             dashboards(limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -479,17 +489,17 @@ class PostHogDataSource:
                                     created_at
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="dashboards"
+            operation_name="dashboards",
         )
 
     async def dashboard(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get dashboard by ID
 
@@ -500,12 +510,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Dashboard($id: Int!) {
+        query = """query Dashboard($id: Int!) {
                             dashboard(id: $id) {
                                 id
                                 name
@@ -518,20 +529,20 @@ class PostHogDataSource:
                                 }
                                 created_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="dashboard"
+            operation_name="dashboard",
         )
 
     async def insights(
         self,
-        dashboard: Optional[int] = None,
-        saved: Optional[bool] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        dashboard: int | None = None,
+        saved: bool | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get insights with filtering
 
@@ -545,6 +556,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if dashboard is not None:
@@ -556,7 +568,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Insights($dashboard: Int, $saved: Boolean, $limit: Int, $offset: Int) {
+        query = """query Insights($dashboard: Int, $saved: Boolean, $limit: Int, $offset: Int) {
                             insights(dashboard: $dashboard, saved: $saved, limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -566,17 +578,17 @@ class PostHogDataSource:
                                     created_at
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="insights"
+            operation_name="insights",
         )
 
     async def insight(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get insight by ID
 
@@ -587,12 +599,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Insight($id: Int!) {
+        query = """query Insight($id: Int!) {
                             insight(id: $id) {
                                 id
                                 name
@@ -600,21 +613,21 @@ class PostHogDataSource:
                                 result
                                 created_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="insight"
+            operation_name="insight",
         )
 
     async def trend(
         self,
-        events: List[Dict[str, Any]],
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None,
-        interval: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None
+        events: list[dict[str, Any]],
+        date_from: str | None = None,
+        date_to: str | None = None,
+        interval: str | None = None,
+        properties: dict[str, Any] | None = None,
     ) -> PostHogResponse:
         """Calculate trends for events
 
@@ -629,6 +642,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if events is not None:
@@ -642,7 +656,7 @@ class PostHogDataSource:
         if properties is not None:
             variables["properties"] = properties
 
-        query = '''query Trend($events: [JSON!]!, $date_from: String, $date_to: String, $interval: String, $properties: JSON) {
+        query = """query Trend($events: [JSON!]!, $date_from: String, $date_to: String, $interval: String, $properties: JSON) {
                             trend(events: $events, date_from: $date_from, date_to: $date_to, interval: $interval, properties: $properties) {
                                 result {
                                     labels
@@ -650,21 +664,21 @@ class PostHogDataSource:
                                     count
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="trend"
+            operation_name="trend",
         )
 
     async def funnel(
         self,
-        events: List[Dict[str, Any]],
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None,
-        funnel_window_interval: Optional[int] = None,
-        funnel_window_interval_unit: Optional[str] = None
+        events: list[dict[str, Any]],
+        date_from: str | None = None,
+        date_to: str | None = None,
+        funnel_window_interval: int | None = None,
+        funnel_window_interval_unit: str | None = None,
     ) -> PostHogResponse:
         """Calculate funnel for event sequence
 
@@ -679,6 +693,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if events is not None:
@@ -692,7 +707,7 @@ class PostHogDataSource:
         if funnel_window_interval_unit is not None:
             variables["funnel_window_interval_unit"] = funnel_window_interval_unit
 
-        query = '''query Funnel($events: [JSON!]!, $date_from: String, $date_to: String, $funnel_window_interval: Int, $funnel_window_interval_unit: String) {
+        query = """query Funnel($events: [JSON!]!, $date_from: String, $date_to: String, $funnel_window_interval: Int, $funnel_window_interval_unit: String) {
                             funnel(events: $events, date_from: $date_from, date_to: $date_to, funnel_window_interval: $funnel_window_interval, funnel_window_interval_unit: $funnel_window_interval_unit) {
                                 result {
                                     steps {
@@ -702,18 +717,18 @@ class PostHogDataSource:
                                     }
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="funnel"
+            operation_name="funnel",
         )
 
     async def feature_flags(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get all feature flags
 
@@ -725,6 +740,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if limit is not None:
@@ -732,7 +748,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query FeatureFlags($limit: Int, $offset: Int) {
+        query = """query FeatureFlags($limit: Int, $offset: Int) {
                             featureFlags(limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -743,17 +759,17 @@ class PostHogDataSource:
                                     created_at
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="feature_flags"
+            operation_name="feature_flags",
         )
 
     async def feature_flag(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get feature flag by ID
 
@@ -764,12 +780,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query FeatureFlag($id: Int!) {
+        query = """query FeatureFlag($id: Int!) {
                             featureFlag(id: $id) {
                                 id
                                 key
@@ -778,18 +795,18 @@ class PostHogDataSource:
                                 active
                                 created_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="feature_flag"
+            operation_name="feature_flag",
         )
 
     async def experiments(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get all experiments
 
@@ -801,6 +818,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if limit is not None:
@@ -808,7 +826,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Experiments($limit: Int, $offset: Int) {
+        query = """query Experiments($limit: Int, $offset: Int) {
                             experiments(limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -819,17 +837,17 @@ class PostHogDataSource:
                                     end_date
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="experiments"
+            operation_name="experiments",
         )
 
     async def experiment(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get experiment by ID
 
@@ -840,12 +858,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Experiment($id: Int!) {
+        query = """query Experiment($id: Int!) {
                             experiment(id: $id) {
                                 id
                                 name
@@ -854,21 +873,21 @@ class PostHogDataSource:
                                 start_date
                                 end_date
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="experiment"
+            operation_name="experiment",
         )
 
     async def session_recordings(
         self,
-        person_id: Optional[str] = None,
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        person_id: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get session recordings
 
@@ -883,6 +902,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if person_id is not None:
@@ -896,7 +916,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query SessionRecordings($person_id: String, $date_from: String, $date_to: String, $limit: Int, $offset: Int) {
+        query = """query SessionRecordings($person_id: String, $date_from: String, $date_to: String, $limit: Int, $offset: Int) {
                             sessionRecordings(person_id: $person_id, date_from: $date_from, date_to: $date_to, limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -907,17 +927,17 @@ class PostHogDataSource:
                                     end_time
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="session_recordings"
+            operation_name="session_recordings",
         )
 
     async def session_recording(
         self,
-        id: str
+        id: str,
     ) -> PostHogResponse:
         """Get session recording by ID
 
@@ -928,12 +948,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query SessionRecording($id: ID!) {
+        query = """query SessionRecording($id: ID!) {
                             sessionRecording(id: $id) {
                                 id
                                 distinct_id
@@ -943,12 +964,12 @@ class PostHogDataSource:
                                 end_time
                                 snapshot_data
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="session_recording"
+            operation_name="session_recording",
         )
 
     async def organization(self) -> PostHogResponse:
@@ -958,10 +979,11 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
 
-        query = '''query Organization {
+        query = """query Organization {
                             organization {
                                 id
                                 name
@@ -969,12 +991,12 @@ class PostHogDataSource:
                                 updated_at
                                 membership_level
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="organization"
+            operation_name="organization",
         )
 
     async def team(self) -> PostHogResponse:
@@ -984,28 +1006,29 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
 
-        query = '''query Team {
+        query = """query Team {
                             team {
                                 id
                                 name
                                 created_at
                                 updated_at
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="team"
+            operation_name="team",
         )
 
     async def plugins(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> PostHogResponse:
         """Get all plugins
 
@@ -1017,6 +1040,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if limit is not None:
@@ -1024,7 +1048,7 @@ class PostHogDataSource:
         if offset is not None:
             variables["offset"] = offset
 
-        query = '''query Plugins($limit: Int, $offset: Int) {
+        query = """query Plugins($limit: Int, $offset: Int) {
                             plugins(limit: $limit, offset: $offset) {
                                 results {
                                     id
@@ -1035,17 +1059,17 @@ class PostHogDataSource:
                                     enabled
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="plugins"
+            operation_name="plugins",
         )
 
     async def plugin(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Get plugin by ID
 
@@ -1056,12 +1080,13 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''query Plugin($id: Int!) {
+        query = """query Plugin($id: Int!) {
                             plugin(id: $id) {
                                 id
                                 name
@@ -1070,12 +1095,12 @@ class PostHogDataSource:
                                 config_schema
                                 enabled
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="plugin"
+            operation_name="plugin",
         )
 
     # =============================================================================
@@ -1086,8 +1111,8 @@ class PostHogDataSource:
         self,
         event: str,
         distinct_id: str,
-        properties: Optional[Dict[str, Any]] = None,
-        timestamp: Optional[str] = None
+        properties: dict[str, Any] | None = None,
+        timestamp: str | None = None,
     ) -> PostHogResponse:
         """Capture a new event
 
@@ -1101,6 +1126,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if event is not None:
@@ -1112,22 +1138,22 @@ class PostHogDataSource:
         if timestamp is not None:
             variables["timestamp"] = timestamp
 
-        query = '''mutation CaptureEvent($event: String!, $distinct_id: String!, $properties: JSON, $timestamp: String) {
+        query = """mutation CaptureEvent($event: String!, $distinct_id: String!, $properties: JSON, $timestamp: String) {
                             captureEvent(event: $event, distinct_id: $distinct_id, properties: $properties, timestamp: $timestamp) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="capture_event"
+            operation_name="capture_event",
         )
 
     async def person_update(
         self,
         id: str,
-        properties: Dict[str, Any]
+        properties: dict[str, Any],
     ) -> PostHogResponse:
         """Update person properties
 
@@ -1139,6 +1165,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1146,7 +1173,7 @@ class PostHogDataSource:
         if properties is not None:
             variables["properties"] = properties
 
-        query = '''mutation PersonUpdate($id: ID!, $properties: JSON!) {
+        query = """mutation PersonUpdate($id: ID!, $properties: JSON!) {
                             personUpdate(id: $id, properties: $properties) {
                                 person {
                                     id
@@ -1154,17 +1181,17 @@ class PostHogDataSource:
                                     properties
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="person_update"
+            operation_name="person_update",
         )
 
     async def person_delete(
         self,
-        id: str
+        id: str,
     ) -> PostHogResponse:
         """Delete a person
 
@@ -1175,28 +1202,29 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation PersonDelete($id: ID!) {
+        query = """mutation PersonDelete($id: ID!) {
                             personDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="person_delete"
+            operation_name="person_delete",
         )
 
     async def action_create(
         self,
         name: str,
-        steps: List[Dict[str, Any]],
-        description: Optional[str] = None
+        steps: list[dict[str, Any]],
+        description: str | None = None,
     ) -> PostHogResponse:
         """Create a new action
 
@@ -1209,6 +1237,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if name is not None:
@@ -1218,7 +1247,7 @@ class PostHogDataSource:
         if description is not None:
             variables["description"] = description
 
-        query = '''mutation ActionCreate($name: String!, $steps: [JSON!]!, $description: String) {
+        query = """mutation ActionCreate($name: String!, $steps: [JSON!]!, $description: String) {
                             actionCreate(name: $name, steps: $steps, description: $description) {
                                 action {
                                     id
@@ -1231,20 +1260,20 @@ class PostHogDataSource:
                                     }
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="action_create"
+            operation_name="action_create",
         )
 
     async def action_update(
         self,
         id: int,
-        name: Optional[str] = None,
-        steps: Optional[List[Dict[str, Any]]] = None,
-        description: Optional[str] = None
+        name: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
+        description: str | None = None,
     ) -> PostHogResponse:
         """Update an action
 
@@ -1258,6 +1287,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1269,7 +1299,7 @@ class PostHogDataSource:
         if description is not None:
             variables["description"] = description
 
-        query = '''mutation ActionUpdate($id: Int!, $name: String, $steps: [JSON!], $description: String) {
+        query = """mutation ActionUpdate($id: Int!, $name: String, $steps: [JSON!], $description: String) {
                             actionUpdate(id: $id, name: $name, steps: $steps, description: $description) {
                                 action {
                                     id
@@ -1277,17 +1307,17 @@ class PostHogDataSource:
                                     description
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="action_update"
+            operation_name="action_update",
         )
 
     async def action_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete an action
 
@@ -1298,28 +1328,29 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation ActionDelete($id: Int!) {
+        query = """mutation ActionDelete($id: Int!) {
                             actionDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="action_delete"
+            operation_name="action_delete",
         )
 
     async def cohort_create(
         self,
         name: str,
-        filters: Dict[str, Any],
-        is_static: Optional[bool] = None
+        filters: dict[str, Any],
+        is_static: bool | None = None,
     ) -> PostHogResponse:
         """Create a new cohort
 
@@ -1332,6 +1363,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if name is not None:
@@ -1341,7 +1373,7 @@ class PostHogDataSource:
         if is_static is not None:
             variables["is_static"] = is_static
 
-        query = '''mutation CohortCreate($name: String!, $filters: JSON!, $is_static: Boolean) {
+        query = """mutation CohortCreate($name: String!, $filters: JSON!, $is_static: Boolean) {
                             cohortCreate(name: $name, filters: $filters, is_static: $is_static) {
                                 cohort {
                                     id
@@ -1350,19 +1382,19 @@ class PostHogDataSource:
                                     is_static
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="cohort_create"
+            operation_name="cohort_create",
         )
 
     async def cohort_update(
         self,
         id: int,
-        name: Optional[str] = None,
-        filters: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> PostHogResponse:
         """Update a cohort
 
@@ -1375,6 +1407,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1384,7 +1417,7 @@ class PostHogDataSource:
         if filters is not None:
             variables["filters"] = filters
 
-        query = '''mutation CohortUpdate($id: Int!, $name: String, $filters: JSON) {
+        query = """mutation CohortUpdate($id: Int!, $name: String, $filters: JSON) {
                             cohortUpdate(id: $id, name: $name, filters: $filters) {
                                 cohort {
                                     id
@@ -1392,17 +1425,17 @@ class PostHogDataSource:
                                     filters
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="cohort_update"
+            operation_name="cohort_update",
         )
 
     async def cohort_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete a cohort
 
@@ -1413,28 +1446,29 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation CohortDelete($id: Int!) {
+        query = """mutation CohortDelete($id: Int!) {
                             cohortDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="cohort_delete"
+            operation_name="cohort_delete",
         )
 
     async def dashboard_create(
         self,
         name: str,
-        description: Optional[str] = None,
-        pinned: Optional[bool] = None
+        description: str | None = None,
+        pinned: bool | None = None,
     ) -> PostHogResponse:
         """Create a new dashboard
 
@@ -1447,6 +1481,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if name is not None:
@@ -1456,7 +1491,7 @@ class PostHogDataSource:
         if pinned is not None:
             variables["pinned"] = pinned
 
-        query = '''mutation DashboardCreate($name: String!, $description: String, $pinned: Boolean) {
+        query = """mutation DashboardCreate($name: String!, $description: String, $pinned: Boolean) {
                             dashboardCreate(name: $name, description: $description, pinned: $pinned) {
                                 dashboard {
                                     id
@@ -1465,20 +1500,20 @@ class PostHogDataSource:
                                     pinned
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="dashboard_create"
+            operation_name="dashboard_create",
         )
 
     async def dashboard_update(
         self,
         id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        pinned: Optional[bool] = None
+        name: str | None = None,
+        description: str | None = None,
+        pinned: bool | None = None,
     ) -> PostHogResponse:
         """Update a dashboard
 
@@ -1492,6 +1527,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1503,7 +1539,7 @@ class PostHogDataSource:
         if pinned is not None:
             variables["pinned"] = pinned
 
-        query = '''mutation DashboardUpdate($id: Int!, $name: String, $description: String, $pinned: Boolean) {
+        query = """mutation DashboardUpdate($id: Int!, $name: String, $description: String, $pinned: Boolean) {
                             dashboardUpdate(id: $id, name: $name, description: $description, pinned: $pinned) {
                                 dashboard {
                                     id
@@ -1511,17 +1547,17 @@ class PostHogDataSource:
                                     description
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="dashboard_update"
+            operation_name="dashboard_update",
         )
 
     async def dashboard_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete a dashboard
 
@@ -1532,29 +1568,30 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation DashboardDelete($id: Int!) {
+        query = """mutation DashboardDelete($id: Int!) {
                             dashboardDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="dashboard_delete"
+            operation_name="dashboard_delete",
         )
 
     async def insight_create(
         self,
         name: str,
-        filters: Dict[str, Any],
-        dashboard: Optional[int] = None,
-        description: Optional[str] = None
+        filters: dict[str, Any],
+        dashboard: int | None = None,
+        description: str | None = None,
     ) -> PostHogResponse:
         """Create a new insight
 
@@ -1568,6 +1605,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if name is not None:
@@ -1579,7 +1617,7 @@ class PostHogDataSource:
         if description is not None:
             variables["description"] = description
 
-        query = '''mutation InsightCreate($name: String!, $filters: JSON!, $dashboard: Int, $description: String) {
+        query = """mutation InsightCreate($name: String!, $filters: JSON!, $dashboard: Int, $description: String) {
                             insightCreate(name: $name, filters: $filters, dashboard: $dashboard, description: $description) {
                                 insight {
                                     id
@@ -1587,20 +1625,20 @@ class PostHogDataSource:
                                     filters
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="insight_create"
+            operation_name="insight_create",
         )
 
     async def insight_update(
         self,
         id: int,
-        name: Optional[str] = None,
-        filters: Optional[Dict[str, Any]] = None,
-        description: Optional[str] = None
+        name: str | None = None,
+        filters: dict[str, Any] | None = None,
+        description: str | None = None,
     ) -> PostHogResponse:
         """Update an insight
 
@@ -1614,6 +1652,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1625,7 +1664,7 @@ class PostHogDataSource:
         if description is not None:
             variables["description"] = description
 
-        query = '''mutation InsightUpdate($id: Int!, $name: String, $filters: JSON, $description: String) {
+        query = """mutation InsightUpdate($id: Int!, $name: String, $filters: JSON, $description: String) {
                             insightUpdate(id: $id, name: $name, filters: $filters, description: $description) {
                                 insight {
                                     id
@@ -1633,17 +1672,17 @@ class PostHogDataSource:
                                     filters
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="insight_update"
+            operation_name="insight_update",
         )
 
     async def insight_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete an insight
 
@@ -1654,29 +1693,30 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation InsightDelete($id: Int!) {
+        query = """mutation InsightDelete($id: Int!) {
                             insightDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="insight_delete"
+            operation_name="insight_delete",
         )
 
     async def feature_flag_create(
         self,
         key: str,
         name: str,
-        filters: Dict[str, Any],
-        active: Optional[bool] = None
+        filters: dict[str, Any],
+        active: bool | None = None,
     ) -> PostHogResponse:
         """Create a new feature flag
 
@@ -1690,6 +1730,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if key is not None:
@@ -1701,7 +1742,7 @@ class PostHogDataSource:
         if active is not None:
             variables["active"] = active
 
-        query = '''mutation FeatureFlagCreate($key: String!, $name: String!, $filters: JSON!, $active: Boolean) {
+        query = """mutation FeatureFlagCreate($key: String!, $name: String!, $filters: JSON!, $active: Boolean) {
                             featureFlagCreate(key: $key, name: $name, filters: $filters, active: $active) {
                                 featureFlag {
                                     id
@@ -1711,20 +1752,20 @@ class PostHogDataSource:
                                     active
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="feature_flag_create"
+            operation_name="feature_flag_create",
         )
 
     async def feature_flag_update(
         self,
         id: int,
-        name: Optional[str] = None,
-        filters: Optional[Dict[str, Any]] = None,
-        active: Optional[bool] = None
+        name: str | None = None,
+        filters: dict[str, Any] | None = None,
+        active: bool | None = None,
     ) -> PostHogResponse:
         """Update a feature flag
 
@@ -1738,6 +1779,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1749,7 +1791,7 @@ class PostHogDataSource:
         if active is not None:
             variables["active"] = active
 
-        query = '''mutation FeatureFlagUpdate($id: Int!, $name: String, $filters: JSON, $active: Boolean) {
+        query = """mutation FeatureFlagUpdate($id: Int!, $name: String, $filters: JSON, $active: Boolean) {
                             featureFlagUpdate(id: $id, name: $name, filters: $filters, active: $active) {
                                 featureFlag {
                                     id
@@ -1758,17 +1800,17 @@ class PostHogDataSource:
                                     active
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="feature_flag_update"
+            operation_name="feature_flag_update",
         )
 
     async def feature_flag_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete a feature flag
 
@@ -1779,28 +1821,29 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation FeatureFlagDelete($id: Int!) {
+        query = """mutation FeatureFlagDelete($id: Int!) {
                             featureFlagDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="feature_flag_delete"
+            operation_name="feature_flag_delete",
         )
 
     async def experiment_create(
         self,
         name: str,
         feature_flag: int,
-        parameters: Dict[str, Any]
+        parameters: dict[str, Any],
     ) -> PostHogResponse:
         """Create a new experiment
 
@@ -1813,6 +1856,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if name is not None:
@@ -1822,7 +1866,7 @@ class PostHogDataSource:
         if parameters is not None:
             variables["parameters"] = parameters
 
-        query = '''mutation ExperimentCreate($name: String!, $feature_flag: Int!, $parameters: JSON!) {
+        query = """mutation ExperimentCreate($name: String!, $feature_flag: Int!, $parameters: JSON!) {
                             experimentCreate(name: $name, feature_flag: $feature_flag, parameters: $parameters) {
                                 experiment {
                                     id
@@ -1831,19 +1875,19 @@ class PostHogDataSource:
                                     parameters
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="experiment_create"
+            operation_name="experiment_create",
         )
 
     async def experiment_update(
         self,
         id: int,
-        name: Optional[str] = None,
-        parameters: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        parameters: dict[str, Any] | None = None,
     ) -> PostHogResponse:
         """Update an experiment
 
@@ -1856,6 +1900,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1865,7 +1910,7 @@ class PostHogDataSource:
         if parameters is not None:
             variables["parameters"] = parameters
 
-        query = '''mutation ExperimentUpdate($id: Int!, $name: String, $parameters: JSON) {
+        query = """mutation ExperimentUpdate($id: Int!, $name: String, $parameters: JSON) {
                             experimentUpdate(id: $id, name: $name, parameters: $parameters) {
                                 experiment {
                                     id
@@ -1873,17 +1918,17 @@ class PostHogDataSource:
                                     parameters
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="experiment_update"
+            operation_name="experiment_update",
         )
 
     async def experiment_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete an experiment
 
@@ -1894,28 +1939,29 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation ExperimentDelete($id: Int!) {
+        query = """mutation ExperimentDelete($id: Int!) {
                             experimentDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="experiment_delete"
+            operation_name="experiment_delete",
         )
 
     async def annotation_create(
         self,
         content: str,
         date_marker: str,
-        dashboard_item: Optional[int] = None
+        dashboard_item: int | None = None,
     ) -> PostHogResponse:
         """Create an annotation
 
@@ -1928,6 +1974,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if content is not None:
@@ -1937,7 +1984,7 @@ class PostHogDataSource:
         if dashboard_item is not None:
             variables["dashboard_item"] = dashboard_item
 
-        query = '''mutation AnnotationCreate($content: String!, $date_marker: String!, $dashboard_item: Int) {
+        query = """mutation AnnotationCreate($content: String!, $date_marker: String!, $dashboard_item: Int) {
                             annotationCreate(content: $content, date_marker: $date_marker, dashboard_item: $dashboard_item) {
                                 annotation {
                                     id
@@ -1945,18 +1992,18 @@ class PostHogDataSource:
                                     date_marker
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="annotation_create"
+            operation_name="annotation_create",
         )
 
     async def annotation_update(
         self,
         id: int,
-        content: Optional[str] = None
+        content: str | None = None,
     ) -> PostHogResponse:
         """Update an annotation
 
@@ -1968,6 +2015,7 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
@@ -1975,24 +2023,24 @@ class PostHogDataSource:
         if content is not None:
             variables["content"] = content
 
-        query = '''mutation AnnotationUpdate($id: Int!, $content: String) {
+        query = """mutation AnnotationUpdate($id: Int!, $content: String) {
                             annotationUpdate(id: $id, content: $content) {
                                 annotation {
                                     id
                                     content
                                 }
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="annotation_update"
+            operation_name="annotation_update",
         )
 
     async def annotation_delete(
         self,
-        id: int
+        id: int,
     ) -> PostHogResponse:
         """Delete an annotation
 
@@ -2003,19 +2051,20 @@ class PostHogDataSource:
 
         Returns:
             PostHogResponse: The GraphQL response
+
         """
         variables = {}
         if id is not None:
             variables["id"] = id
 
-        query = '''mutation AnnotationDelete($id: Int!) {
+        query = """mutation AnnotationDelete($id: Int!) {
                             annotationDelete(id: $id) {
                                 success
                             }
-                        }'''
+                        }"""
 
         return await self.execute_query(
             query=query,
             variables=variables,
-            operation_name="annotation_delete"
+            operation_name="annotation_delete",
         )

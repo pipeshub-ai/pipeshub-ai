@@ -14,7 +14,6 @@ Reference: https://github.com/linkedin-developers/linkedin-api-python-client
 """
 
 import logging
-from typing import Dict, List, Optional
 
 from app.sources.client.linkedin.linkedin import LinkedInClient
 
@@ -44,6 +43,7 @@ class LinkedInDataSource:
         >>> response = ds.get_profile()
         >>> profile_data = response.entity
         >>> print(profile_data['id'], profile_data['firstName'])
+
     """
 
     def __init__(self, client: LinkedInClient) -> None:
@@ -51,6 +51,7 @@ class LinkedInDataSource:
 
         Args:
             client: LinkedInClient instance (wraps official SDK)
+
         """
         self.client = client
         self._restli_client = client.get_client()
@@ -76,14 +77,15 @@ class LinkedInDataSource:
             >>> user_data = response.entity
             >>> print(user_data['name'], user_data['email'])
             >>> user_id = user_data['sub']  # Use this as person ID
+
         """
         return self._restli_client.get(
             resource_path="/userinfo",
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
-    def get_profile(self, query_params: Optional[Dict[str, object]] = None) -> object:
+    def get_profile(self, query_params: dict[str, object] | None = None) -> object:
         """Get current authenticated member's profile (LEGACY - use get_userinfo instead)
 
         LinkedIn API: GET /me
@@ -102,17 +104,18 @@ class LinkedInDataSource:
             >>> # DEPRECATED - Use get_userinfo() instead
             >>> response = ds.get_profile()
             >>> print(response.entity['id'])
+
         """
         return self._restli_client.get(
             resource_path="/me",
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_profile_with_decoration(
         self,
-        projection: str = "(id,firstName,lastName,profilePicture(displayImage~:playableStreams))"
+        projection: str = "(id,firstName,lastName,profilePicture(displayImage~:playableStreams))",
     ) -> object:
         """Get profile with image decoration
 
@@ -128,18 +131,19 @@ class LinkedInDataSource:
         Example:
             >>> response = ds.get_profile_with_decoration()
             >>> image_data = response.entity.get('profilePicture', {}).get('displayImage~')
+
         """
         return self._restli_client.get(
             resource_path="/me",
             access_token=self.client.access_token,
             query_params={"projection": projection},
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_profile_by_id(
         self,
         person_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get profile by person ID
 
@@ -155,18 +159,19 @@ class LinkedInDataSource:
 
         Example:
             >>> response = ds.get_profile_by_id("AbCdEfG")
+
         """
         return self._restli_client.get(
             resource_path="/people/{id}",
             path_keys={"id": person_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_connections(
         self,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get member's connections
 
@@ -185,18 +190,19 @@ class LinkedInDataSource:
             ... )
             >>> for connection in response.elements:
             ...     print(connection['id'])
+
         """
         return self._restli_client.get_all(
             resource_path="/connections",
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def search_people(
         self,
         keywords: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Search for people by keywords
 
@@ -215,6 +221,7 @@ class LinkedInDataSource:
             ...     keywords="software engineer",
             ...     query_params={"start": 0, "count": 25}
             ... )
+
         """
         final_params = {"keywords": keywords}
         if query_params:
@@ -225,12 +232,12 @@ class LinkedInDataSource:
             finder_name="keywords",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_organization_acls(
         self,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get organization ACLs (access control lists)
 
@@ -247,12 +254,13 @@ class LinkedInDataSource:
             >>> response = ds.get_organization_acls()
             >>> for acl in response.elements:
             ...     print(acl['organization'], acl['role'])
+
         """
         return self._restli_client.get_all(
             resource_path="/organizationAcls",
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     # ========================================================================
@@ -265,7 +273,7 @@ class LinkedInDataSource:
         commentary: str,
         visibility: str = "PUBLIC",
         lifecycle_state: str = "PUBLISHED",
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Create a new post (using newer /posts API)
 
@@ -289,6 +297,7 @@ class LinkedInDataSource:
             ...     visibility="PUBLIC"
             ... )
             >>> post_id = response.entity_id
+
         """
         entity = {
             "author": author,
@@ -298,8 +307,8 @@ class LinkedInDataSource:
             "distribution": {
                 "feedDistribution": "MAIN_FEED",
                 "targetEntities": [],
-                "thirdPartyDistributionChannels": []
-            }
+                "thirdPartyDistributionChannels": [],
+            },
         }
 
         return self._restli_client.create(
@@ -307,7 +316,7 @@ class LinkedInDataSource:
             entity=entity,
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def create_ugc_post(
@@ -315,7 +324,7 @@ class LinkedInDataSource:
         author: str,
         text: str,
         visibility: str = "PUBLIC",
-        lifecycle_state: str = "PUBLISHED"
+        lifecycle_state: str = "PUBLISHED",
     ) -> object:
         """Create UGC post (legacy /ugcPosts API)
 
@@ -336,6 +345,7 @@ class LinkedInDataSource:
             ...     author="urn:li:person:AbCdEfG",
             ...     text="Legacy post format"
             ... )
+
         """
         entity = {
             "author": author,
@@ -343,25 +353,25 @@ class LinkedInDataSource:
             "specificContent": {
                 "com.linkedin.ugc.ShareContent": {
                     "shareCommentary": {"text": text},
-                    "shareMediaCategory": "NONE"
-                }
+                    "shareMediaCategory": "NONE",
+                },
             },
             "visibility": {
-                "com.linkedin.ugc.MemberNetworkVisibility": visibility
-            }
+                "com.linkedin.ugc.MemberNetworkVisibility": visibility,
+            },
         }
 
         return self._restli_client.create(
             resource_path="/ugcPosts",
             entity=entity,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_post(
         self,
         post_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get post by ID
 
@@ -378,19 +388,20 @@ class LinkedInDataSource:
         Example:
             >>> response = ds.get_post("urn:li:share:123456")
             >>> print(response.entity['commentary'])
+
         """
         return self._restli_client.get(
             resource_path="/posts/{id}",
             path_keys={"id": post_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def update_post(
         self,
         post_id: str,
-        patch_data: Dict[str, object]
+        patch_data: dict[str, object],
     ) -> object:
         """Update post with patch data
 
@@ -409,13 +420,14 @@ class LinkedInDataSource:
             ...     post_id="urn:li:share:123456",
             ...     patch_data={"$set": {"commentary": "Updated text"}}
             ... )
+
         """
         return self._restli_client.partial_update(
             resource_path="/posts/{id}",
             path_keys={"id": post_id},
             patch_set_object=patch_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def delete_post(self, post_id: str) -> object:
@@ -433,18 +445,19 @@ class LinkedInDataSource:
         Example:
             >>> response = ds.delete_post("urn:li:share:123456")
             >>> print(response.status_code)
+
         """
         return self._restli_client.delete(
             resource_path="/posts/{id}",
             path_keys={"id": post_id},
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_share_statistics(
         self,
         share_urn: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get statistics for a share/post
 
@@ -462,6 +475,7 @@ class LinkedInDataSource:
             >>> response = ds.get_share_statistics("urn:li:share:123456")
             >>> stats = response.entity
             >>> print(stats.get('likeCount'), stats.get('commentCount'))
+
         """
         final_params = {"q": "organizationalEntity", "organizationalEntity": share_urn}
         if query_params:
@@ -472,13 +486,13 @@ class LinkedInDataSource:
             finder_name="organizationalEntity",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def create_comment(
         self,
         post_urn: str,
-        comment_text: str
+        comment_text: str,
     ) -> object:
         """Create comment on a post
 
@@ -497,9 +511,10 @@ class LinkedInDataSource:
             ...     post_urn="urn:li:share:123456",
             ...     comment_text="Great post!"
             ... )
+
         """
         entity = {
-            "message": {"text": comment_text}
+            "message": {"text": comment_text},
         }
 
         return self._restli_client.create(
@@ -507,13 +522,13 @@ class LinkedInDataSource:
             path_keys={"postUrn": post_urn},
             entity=entity,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_comments(
         self,
         post_urn: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get comments on a post
 
@@ -531,13 +546,14 @@ class LinkedInDataSource:
             >>> response = ds.get_comments("urn:li:share:123456")
             >>> for comment in response.elements:
             ...     print(comment['message']['text'])
+
         """
         return self._restli_client.get_all(
             resource_path="/socialActions/{postUrn}/comments",
             path_keys={"postUrn": post_urn},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def like_post(self, post_urn: str) -> object:
@@ -554,13 +570,14 @@ class LinkedInDataSource:
 
         Example:
             >>> response = ds.like_post("urn:li:share:123456")
+
         """
         return self._restli_client.action(
             resource_path="/socialActions/{postUrn}/likes",
             path_keys={"postUrn": post_urn},
             action_name="like",
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def unlike_post(self, post_urn: str, like_id: str) -> object:
@@ -581,12 +598,13 @@ class LinkedInDataSource:
             ...     post_urn="urn:li:share:123456",
             ...     like_id="like123"
             ... )
+
         """
         return self._restli_client.delete(
             resource_path="/socialActions/{postUrn}/likes/{likeId}",
             path_keys={"postUrn": post_urn, "likeId": like_id},
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     # ========================================================================
@@ -595,7 +613,7 @@ class LinkedInDataSource:
 
     def get_organizations(
         self,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get organizations (all accessible)
 
@@ -612,18 +630,19 @@ class LinkedInDataSource:
             >>> response = ds.get_organizations()
             >>> for org in response.elements:
             ...     print(org['id'], org['localizedName'])
+
         """
         return self._restli_client.get_all(
             resource_path="/organizations",
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_organization(
         self,
         org_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get organization by ID
 
@@ -641,19 +660,20 @@ class LinkedInDataSource:
             >>> response = ds.get_organization("123456")
             >>> org = response.entity
             >>> print(org['localizedName'], org['websiteUrl'])
+
         """
         return self._restli_client.get(
             resource_path="/organizations/{id}",
             path_keys={"id": org_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def update_organization(
         self,
         org_id: str,
-        patch_data: Dict[str, object]
+        patch_data: dict[str, object],
     ) -> object:
         """Update organization with patch data
 
@@ -672,19 +692,20 @@ class LinkedInDataSource:
             ...     org_id="123456",
             ...     patch_data={"$set": {"localizedDescription": "New description"}}
             ... )
+
         """
         return self._restli_client.partial_update(
             resource_path="/organizations/{id}",
             path_keys={"id": org_id},
             patch_set_object=patch_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def search_organizations(
         self,
         keywords: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Search organizations by keywords
 
@@ -703,6 +724,7 @@ class LinkedInDataSource:
             ...     keywords="tech company",
             ...     query_params={"start": 0, "count": 25}
             ... )
+
         """
         final_params = {"search": {"keywords": {"values": [keywords]}}}
         if query_params:
@@ -713,13 +735,13 @@ class LinkedInDataSource:
             finder_name="search",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_organization_follower_statistics(
         self,
         org_urn: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get follower statistics for an organization
 
@@ -739,14 +761,15 @@ class LinkedInDataSource:
             ... )
             >>> stats = response.entity
             >>> print(stats.get('followerCountsByCountry'))
+
         """
         return self.get_follower_statistics(org_urn=org_urn, query_params=query_params)
 
     def get_organization_page_statistics(
         self,
         org_urn: str,
-        time_ranges: List[Dict[str, object]],
-        query_params: Optional[Dict[str, object]] = None
+        time_ranges: list[dict[str, object]],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get page statistics for an organization
 
@@ -769,15 +792,16 @@ class LinkedInDataSource:
             ...         "end": 1612137600000
             ...     }]
             ... )
+
         """
         return self.get_page_statistics(
-            org_urn=org_urn, time_ranges=time_ranges, query_params=query_params
+            org_urn=org_urn, time_ranges=time_ranges, query_params=query_params,
         )
 
     def get_organization_brands(
         self,
         org_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get brands associated with an organization
 
@@ -795,13 +819,14 @@ class LinkedInDataSource:
             >>> response = ds.get_organization_brands("123456")
             >>> for brand in response.elements:
             ...     print(brand['id'], brand['localizedName'])
+
         """
         return self._restli_client.get_all(
             resource_path="/organizations/{id}/brands",
             path_keys={"id": org_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     # ========================================================================
@@ -810,8 +835,8 @@ class LinkedInDataSource:
 
     def search_ad_accounts(
         self,
-        search_params: Dict[str, object],
-        paging_params: Optional[Dict[str, object]] = None
+        search_params: dict[str, object],
+        paging_params: dict[str, object] | None = None,
     ) -> object:
         """Search ad accounts by criteria
 
@@ -835,6 +860,7 @@ class LinkedInDataSource:
             ... )
             >>> for account in response.elements:
             ...     print(account['id'], account['name'])
+
         """
         final_params = {"search": search_params}
         if paging_params:
@@ -845,10 +871,10 @@ class LinkedInDataSource:
             finder_name="search",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
-    def create_ad_account(self, account_data: Dict[str, object]) -> object:
+    def create_ad_account(self, account_data: dict[str, object]) -> object:
         """Create a new ad account
 
         LinkedIn API: CREATE /adAccounts
@@ -869,18 +895,19 @@ class LinkedInDataSource:
             ...     "test": True
             ... })
             >>> account_id = response.entity_id
+
         """
         return self._restli_client.create(
             resource_path="/adAccounts",
             entity=account_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_ad_account(
         self,
         account_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get ad account by ID
 
@@ -898,19 +925,20 @@ class LinkedInDataSource:
             >>> response = ds.get_ad_account("123456")
             >>> account = response.entity
             >>> print(account['name'], account['status'])
+
         """
         return self._restli_client.get(
             resource_path="/adAccounts/{id}",
             path_keys={"id": account_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def update_ad_account(
         self,
         account_id: str,
-        patch_data: Dict[str, object]
+        patch_data: dict[str, object],
     ) -> object:
         """Update ad account
 
@@ -929,13 +957,14 @@ class LinkedInDataSource:
             ...     account_id="123456",
             ...     patch_data={"$set": {"name": "Updated Name"}}
             ... )
+
         """
         return self._restli_client.partial_update(
             resource_path="/adAccounts/{id}",
             path_keys={"id": account_id},
             patch_set_object=patch_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def delete_ad_account(self, account_id: str) -> object:
@@ -952,18 +981,19 @@ class LinkedInDataSource:
 
         Example:
             >>> response = ds.delete_ad_account("123456")
+
         """
         return self._restli_client.delete(
             resource_path="/adAccounts/{id}",
             path_keys={"id": account_id},
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def search_campaigns(
         self,
         account_urn: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Search campaigns by account
 
@@ -981,6 +1011,7 @@ class LinkedInDataSource:
             >>> response = ds.search_campaigns(
             ...     account_urn="urn:li:sponsoredAccount:123456"
             ... )
+
         """
         final_params = {"q": "account", "account": account_urn}
         if query_params:
@@ -991,10 +1022,10 @@ class LinkedInDataSource:
             finder_name="account",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
-    def create_campaign(self, campaign_data: Dict[str, object]) -> object:
+    def create_campaign(self, campaign_data: dict[str, object]) -> object:
         """Create ad campaign
 
         LinkedIn API: CREATE /adCampaigns
@@ -1013,18 +1044,19 @@ class LinkedInDataSource:
             ...     "type": "TEXT_AD",
             ...     "status": "DRAFT"
             ... })
+
         """
         return self._restli_client.create(
             resource_path="/adCampaigns",
             entity=campaign_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_campaign(
         self,
         campaign_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get campaign by ID
 
@@ -1040,19 +1072,20 @@ class LinkedInDataSource:
 
         Example:
             >>> response = ds.get_campaign("987654")
+
         """
         return self._restli_client.get(
             resource_path="/adCampaigns/{id}",
             path_keys={"id": campaign_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def batch_get_campaigns(
         self,
-        campaign_ids: List[str],
-        query_params: Optional[Dict[str, object]] = None
+        campaign_ids: list[str],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Batch get multiple campaigns
 
@@ -1070,19 +1103,20 @@ class LinkedInDataSource:
             >>> response = ds.batch_get_campaigns(["123", "456", "789"])
             >>> for campaign_id, result in response.results.items():
             ...     print(campaign_id, result.get('name'))
+
         """
         return self._restli_client.batch_get(
             resource_path="/adCampaigns",
             ids=campaign_ids,
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def update_campaign(
         self,
         campaign_id: str,
-        patch_data: Dict[str, object]
+        patch_data: dict[str, object],
     ) -> object:
         """Update campaign
 
@@ -1101,13 +1135,14 @@ class LinkedInDataSource:
             ...     campaign_id="987654",
             ...     patch_data={"$set": {"status": "ACTIVE"}}
             ... )
+
         """
         return self._restli_client.partial_update(
             resource_path="/adCampaigns/{id}",
             path_keys={"id": campaign_id},
             patch_set_object=patch_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def delete_campaign(self, campaign_id: str) -> object:
@@ -1124,18 +1159,19 @@ class LinkedInDataSource:
 
         Example:
             >>> response = ds.delete_campaign("987654")
+
         """
         return self._restli_client.delete(
             resource_path="/adCampaigns/{id}",
             path_keys={"id": campaign_id},
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def search_campaign_groups(
         self,
         account_urn: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Search campaign groups by account
 
@@ -1153,6 +1189,7 @@ class LinkedInDataSource:
             >>> response = ds.search_campaign_groups(
             ...     account_urn="urn:li:sponsoredAccount:123456"
             ... )
+
         """
         final_params = {"q": "account", "account": account_urn}
         if query_params:
@@ -1163,10 +1200,10 @@ class LinkedInDataSource:
             finder_name="account",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
-    def create_campaign_group(self, group_data: Dict[str, object]) -> object:
+    def create_campaign_group(self, group_data: dict[str, object]) -> object:
         """Create campaign group
 
         LinkedIn API: CREATE /adCampaignGroups
@@ -1184,18 +1221,19 @@ class LinkedInDataSource:
             ...     "name": "My Campaign Group",
             ...     "status": "DRAFT"
             ... })
+
         """
         return self._restli_client.create(
             resource_path="/adCampaignGroups",
             entity=group_data,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def batch_get_campaign_groups(
         self,
-        group_ids: List[str],
-        query_params: Optional[Dict[str, object]] = None
+        group_ids: list[str],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Batch get campaign groups (demonstrates query tunneling)
 
@@ -1216,19 +1254,20 @@ class LinkedInDataSource:
             >>> # Large batch automatically uses query tunneling
             >>> ids = [str(i) for i in range(1000000000, 1000000400)]
             >>> response = ds.batch_get_campaign_groups(ids)
+
         """
         return self._restli_client.batch_get(
             resource_path="/adCampaignGroups",
             ids=group_ids,
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_ad_analytics(
         self,
-        finder_params: Dict[str, object],
-        query_params: Optional[Dict[str, object]] = None
+        finder_params: dict[str, object],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get ad analytics data
 
@@ -1253,6 +1292,7 @@ class LinkedInDataSource:
             ...         "fields": ["impressions", "clicks", "costInLocalCurrency"]
             ...     }
             ... )
+
         """
         final_params = finder_params.copy()
         if query_params:
@@ -1263,7 +1303,7 @@ class LinkedInDataSource:
             finder_name="analytics",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     # ========================================================================
@@ -1273,8 +1313,8 @@ class LinkedInDataSource:
     def register_upload(
         self,
         owner: str,
-        recipes: List[str],
-        service_relationships: Optional[List[Dict[str, object]]] = None
+        recipes: list[str],
+        service_relationships: list[dict[str, object]] | None = None,
     ) -> object:
         """Register an upload to get upload URL
 
@@ -1296,12 +1336,13 @@ class LinkedInDataSource:
             ... )
             >>> upload_url = response.value['uploadMechanism']['...']['uploadUrl']
             >>> asset_urn = response.value['asset']
+
         """
         action_params = {
             "registerUploadRequest": {
                 "owner": owner,
-                "recipes": recipes
-            }
+                "recipes": recipes,
+            },
         }
         if service_relationships:
             action_params["registerUploadRequest"]["serviceRelationships"] = service_relationships
@@ -1311,14 +1352,14 @@ class LinkedInDataSource:
             action_name="registerUpload",
             action_params=action_params,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def register_video_upload(
         self,
         owner: str,
         file_size: int,
-        recipes: Optional[List[str]] = None
+        recipes: list[str] | None = None,
     ) -> object:
         """Register video upload
 
@@ -1339,12 +1380,13 @@ class LinkedInDataSource:
             ...     file_size=5242880,  # 5MB
             ...     recipes=["urn:li:digitalmediaRecipe:feedshare-video"]
             ... )
+
         """
         action_params = {
             "initializeUploadRequest": {
                 "owner": owner,
-                "fileSizeBytes": file_size
-            }
+                "fileSizeBytes": file_size,
+            },
         }
         if recipes:
             action_params["initializeUploadRequest"]["recipes"] = recipes
@@ -1354,13 +1396,13 @@ class LinkedInDataSource:
             action_name="initializeUpload",
             action_params=action_params,
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_asset(
         self,
         asset_id: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get asset by ID
 
@@ -1378,13 +1420,14 @@ class LinkedInDataSource:
             >>> response = ds.get_asset("urn:li:digitalmediaAsset:ABC123")
             >>> asset = response.entity
             >>> print(asset['status'], asset['mediaTypeFamily'])
+
         """
         return self._restli_client.get(
             resource_path="/assets/{id}",
             path_keys={"id": asset_id},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def delete_asset(self, asset_id: str) -> object:
@@ -1401,12 +1444,13 @@ class LinkedInDataSource:
 
         Example:
             >>> response = ds.delete_asset("urn:li:digitalmediaAsset:ABC123")
+
         """
         return self._restli_client.delete(
             resource_path="/assets/{id}",
             path_keys={"id": asset_id},
             access_token=self.client.access_token,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     # Note: For actual file upload to S3/Azure, use standard HTTP libraries
@@ -1420,8 +1464,8 @@ class LinkedInDataSource:
     def get_follower_statistics(
         self,
         org_urn: str,
-        time_ranges: Optional[List[Dict[str, object]]] = None,
-        query_params: Optional[Dict[str, object]] = None
+        time_ranges: list[dict[str, object]] | None = None,
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get detailed follower statistics
 
@@ -1444,6 +1488,7 @@ class LinkedInDataSource:
             ...         "end": 1612137600000
             ...     }]
             ... )
+
         """
         final_params = {"q": "organizationalEntity", "organizationalEntity": org_urn}
         if time_ranges:
@@ -1456,13 +1501,13 @@ class LinkedInDataSource:
             finder_name="organizationalEntity",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def batch_get_share_statistics(
         self,
-        share_urns: List[str],
-        query_params: Optional[Dict[str, object]] = None
+        share_urns: list[str],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Batch get share statistics for multiple shares
 
@@ -1483,20 +1528,21 @@ class LinkedInDataSource:
             ... ])
             >>> for urn, stats in response.results.items():
             ...     print(f"{urn}: {stats.get('likeCount')} likes")
+
         """
         return self._restli_client.batch_get(
             resource_path="/organizationalEntityShareStatistics",
             ids=share_urns,
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_page_statistics(
         self,
         org_urn: str,
-        time_ranges: List[Dict[str, object]],
-        query_params: Optional[Dict[str, object]] = None
+        time_ranges: list[dict[str, object]],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get page statistics for organization
 
@@ -1521,11 +1567,12 @@ class LinkedInDataSource:
             ... )
             >>> stats = response.elements[0]
             >>> print(stats.get('views'), stats.get('clicks'))
+
         """
         final_params = {
             "q": "organization",
             "organization": org_urn,
-            "timeIntervals": time_ranges
+            "timeIntervals": time_ranges,
         }
         if query_params:
             final_params.update(query_params)
@@ -1535,14 +1582,14 @@ class LinkedInDataSource:
             finder_name="organization",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_visitor_analytics(
         self,
         org_urn: str,
-        time_ranges: List[Dict[str, object]],
-        query_params: Optional[Dict[str, object]] = None
+        time_ranges: list[dict[str, object]],
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get visitor analytics for organization page
 
@@ -1563,11 +1610,12 @@ class LinkedInDataSource:
             ...     time_ranges=[{"start": 1609459200000, "end": 1612137600000}],
             ...     query_params={"metrics": ["VISITOR_DEMOGRAPHICS"]}
             ... )
+
         """
         final_params = {
             "q": "organization",
             "organization": org_urn,
-            "timeIntervals": time_ranges
+            "timeIntervals": time_ranges,
         }
         if query_params:
             final_params.update(query_params)
@@ -1577,13 +1625,13 @@ class LinkedInDataSource:
             finder_name="organization",
             access_token=self.client.access_token,
             query_params=final_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )
 
     def get_engagement_metrics(
         self,
         entity_urn: str,
-        query_params: Optional[Dict[str, object]] = None
+        query_params: dict[str, object] | None = None,
     ) -> object:
         """Get engagement metrics for an entity (post, article, etc.)
 
@@ -1603,11 +1651,12 @@ class LinkedInDataSource:
             ... )
             >>> metrics = response.entity
             >>> print(metrics.get('likes'), metrics.get('comments'))
+
         """
         return self._restli_client.get(
             resource_path="/socialMetadata/{entityUrn}",
             path_keys={"entityUrn": entity_urn},
             access_token=self.client.access_token,
             query_params=query_params,
-            version_string=self.client.version_string
+            version_string=self.client.version_string,
         )

@@ -18,16 +18,16 @@ class QdrantConfig:
             "api_key": self.api_key,
             "prefer_grpc": self.prefer_grpc,
             "https": self.https,
-            "timeout": self.timeout
+            "timeout": self.timeout,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'QdrantConfig':
+    def from_dict(cls, data: dict) -> "QdrantConfig":
         return cls(
             host=data.get("host", ""),
             port=data.get("port", 0),
             api_key=data.get("api_key", ""),
             prefer_grpc=data.get("prefer_grpc", True),
             https=data.get("https", False),
-            timeout=data.get("timeout", 180)
+            timeout=data.get("timeout", 180),
         )

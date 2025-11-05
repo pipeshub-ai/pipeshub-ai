@@ -1,6 +1,6 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -49,9 +49,9 @@ async def get_initialized_container() -> ConnectorAppContainer:
                 "app.api.routes.entity",
                 "app.connectors.api.middleware",
                 "app.core.signed_url",
-            ]
+            ],
         )
-        setattr(get_initialized_container, "_initialized", True)
+        get_initialized_container._initialized = True
         # Start token refresh service at app startup
         try:
             await startup_service.initialize(container.key_value_store(), await container.arango_service())
@@ -92,7 +92,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 continue
 
             logger.info(
-                "Processing organization %s with account type %s", org_id, accountType
+                "Processing organization %s with account type %s", org_id, accountType,
             )
 
             # Get users for this organization
@@ -112,7 +112,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             data_store_provider = ArangoDataStore(logger, arango_service)
 
             # Initialize connectors_map if not already initialized
-            if not hasattr(app_container, 'connectors_map'):
+            if not hasattr(app_container, "connectors_map"):
                 app_container.connectors_map = {}
 
             for app in enabled_apps:
@@ -131,7 +131,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                         name=connector_name,
                         logger=logger,
                         data_store_provider=data_store_provider,
-                        config_service=config_service
+                        config_service=config_service,
                     )
                     if connector:
                         # Store using both the original name and the processed name for compatibility
@@ -201,7 +201,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         return registry
 
     except Exception as e:
-        logger.error(f"❌ Error initializing connector registry: {str(e)}")
+        logger.error(f"❌ Error initializing connector registry: {e!s}")
         raise
 
 async def start_messaging_producer(app_container: ConnectorAppContainer) -> None:
@@ -217,7 +217,7 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         messaging_producer = MessagingFactory.create_producer(
             broker_type="kafka",
             logger=logger,
-            config=producer_config
+            config=producer_config,
         )
         await messaging_producer.initialize()
 
@@ -227,10 +227,10 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.info("✅ Messaging producer started and attached to container")
 
     except Exception as e:
-        logger.error(f"❌ Error starting messaging producer: {str(e)}")
+        logger.error(f"❌ Error starting messaging producer: {e!s}")
         raise
 
-async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
+async def start_kafka_consumers(app_container: ConnectorAppContainer) -> list:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -242,7 +242,7 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
         entity_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
-            config=entity_kafka_config
+            config=entity_kafka_config,
         )
         entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container)
         await entity_kafka_consumer.start(entity_message_handler)
@@ -255,7 +255,7 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
         sync_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
-            config=sync_kafka_config
+            config=sync_kafka_config,
         )
         sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container)
         await sync_kafka_consumer.start(sync_message_handler)
@@ -266,7 +266,7 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
         return consumers
 
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting Kafka consumers: {e!s}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -278,18 +278,17 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
 
 async def stop_kafka_consumers(container: ConnectorAppContainer) -> None:
     """Stop all Kafka consumers"""
-
     logger = container.logger()
-    consumers = getattr(container, 'kafka_consumers', [])
+    consumers = getattr(container, "kafka_consumers", [])
     for name, consumer in consumers:
         try:
             await consumer.stop()
             logger.info(f"✅ {name.title()} Kafka consumer stopped")
         except Exception as e:
-            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+            logger.error(f"❌ Error stopping {name} consumer: {e!s}")
 
     # Clear the consumers list
-    if hasattr(container, 'kafka_consumers'):
+    if hasattr(container, "kafka_consumers"):
         container.kafka_consumers = []
 
 async def stop_messaging_producer(container: ConnectorAppContainer) -> None:
@@ -298,14 +297,14 @@ async def stop_messaging_producer(container: ConnectorAppContainer) -> None:
 
     try:
         # Get the messaging producer from container
-        messaging_producer = getattr(container, 'messaging_producer', None)
+        messaging_producer = getattr(container, "messaging_producer", None)
         if messaging_producer:
             await messaging_producer.cleanup()
             logger.info("✅ Messaging producer stopped successfully")
         else:
             logger.info("No messaging producer to stop")
     except Exception as e:
-        logger.error(f"❌ Error stopping messaging producer: {str(e)}")
+        logger.error(f"❌ Error stopping messaging producer: {e!s}")
 
 async def shutdown_container_resources(container: ConnectorAppContainer) -> None:
     """Shutdown all container resources properly"""
@@ -327,7 +326,7 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         logger.info("✅ All container resources shut down successfully")
 
     except Exception as e:
-        logger.error(f"❌ Error during container resource shutdown: {str(e)}")
+        logger.error(f"❌ Error during container resource shutdown: {e!s}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -350,7 +349,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await start_messaging_producer(app_container)
         logger.info("✅ Messaging producer started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start messaging producer: {str(e)}")
+        logger.error(f"❌ Failed to start messaging producer: {e!s}")
         raise
 
     # Start all Kafka consumers centrally
@@ -359,7 +358,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_container.kafka_consumers = consumers
         logger.info("✅ All Kafka consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start Kafka consumers: {e!s}")
         raise
 
     # Resume sync services
@@ -371,7 +370,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await shutdown_container_resources(app_container)
     except Exception as e:
-        logger.error(f"❌ Error during application shutdown: {str(e)}")
+        logger.error(f"❌ Error during application shutdown: {e!s}")
 
 
 # Create FastAPI app with lifespan

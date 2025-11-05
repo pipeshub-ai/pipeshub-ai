@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleDocs:
     """Google Docs tool exposed to the agents using GoogleDocsDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Docs tool"""
         """
@@ -45,27 +46,27 @@ class GoogleDocs:
                 name="document_id",
                 type=ParameterType.STRING,
                 description="The ID of the document to retrieve",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="suggestions_view_mode",
                 type=ParameterType.STRING,
                 description="Mode for viewing suggestions (DEFAULT_FOR_CURRENT_ACCESS, SUGGESTIONS_INLINE)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_tabs_content",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include tabs content",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_document(
         self,
         document_id: str,
-        suggestions_view_mode: Optional[str] = None,
-        include_tabs_content: Optional[bool] = None
+        suggestions_view_mode: str | None = None,
+        include_tabs_content: bool | None = None,
     ) -> tuple[bool, str]:
         """Get a Google Docs document"""
         """
@@ -81,7 +82,7 @@ class GoogleDocs:
             document = self._run_async(self.client.documents_get(
                 documentId=document_id,
                 suggestionsViewMode=suggestions_view_mode,
-                includeTabsContent=include_tabs_content
+                includeTabsContent=include_tabs_content,
             ))
 
             return True, json.dumps(document)
@@ -97,20 +98,20 @@ class GoogleDocs:
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the document",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="document_id",
                 type=ParameterType.STRING,
                 description="Custom document ID (optional)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_document(
         self,
-        title: Optional[str] = None,
-        document_id: Optional[str] = None
+        title: str | None = None,
+        document_id: str | None = None,
     ) -> tuple[bool, str]:
         """Create a new Google Docs document"""
         """
@@ -132,7 +133,7 @@ class GoogleDocs:
             document = self._run_async(self.client.documents_create(
                 documentId=document_id,
                 title=title,
-                body=document_data
+                body=document_data,
             ))
 
             return True, json.dumps({
@@ -140,7 +141,7 @@ class GoogleDocs:
                 "title": document.get("title", ""),
                 "revision_id": document.get("revisionId", ""),
                 "url": f"https://docs.google.com/document/d/{document.get('documentId', '')}/edit",
-                "message": "Document created successfully"
+                "message": "Document created successfully",
             })
         except Exception as e:
             logger.error(f"Failed to create document: {e}")
@@ -154,28 +155,28 @@ class GoogleDocs:
                 name="document_id",
                 type=ParameterType.STRING,
                 description="The ID of the document to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="requests",
                 type=ParameterType.ARRAY,
                 description="List of update requests to apply",
                 required=False,
-                items={"type": "object"}
+                items={"type": "object"},
             ),
             ToolParameter(
                 name="write_control",
                 type=ParameterType.OBJECT,
                 description="Write control settings",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def batch_update_document(
         self,
         document_id: str,
-        requests: Optional[List[Dict[str, Any]]] = None,
-        write_control: Optional[Dict[str, Any]] = None
+        requests: list[dict[str, Any]] | None = None,
+        write_control: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Apply batch updates to a Google Docs document"""
         """
@@ -199,14 +200,14 @@ class GoogleDocs:
                 documentId=document_id,
                 requests=requests,
                 writeControl=write_control,
-                body=batch_update_data
+                body=batch_update_data,
             ))
 
             return True, json.dumps({
                 "document_id": document_id,
                 "revision_id": result.get("revisionId", ""),
                 "replies": result.get("replies", []),
-                "message": "Document updated successfully"
+                "message": "Document updated successfully",
             })
         except Exception as e:
             logger.error(f"Failed to batch update document: {e}")
@@ -220,27 +221,27 @@ class GoogleDocs:
                 name="document_id",
                 type=ParameterType.STRING,
                 description="The ID of the document",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="text",
                 type=ParameterType.STRING,
                 description="Text to insert",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="location_index",
                 type=ParameterType.INTEGER,
                 description="Index where to insert the text",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def insert_text(
         self,
         document_id: str,
         text: str,
-        location_index: Optional[int] = None
+        location_index: int | None = None,
     ) -> tuple[bool, str]:
         """Insert text into a Google Docs document"""
         """
@@ -259,17 +260,17 @@ class GoogleDocs:
             requests = [{
                 "insertText": {
                     "location": {
-                        "index": location_index
+                        "index": location_index,
                     },
-                    "text": text
-                }
+                    "text": text,
+                },
             }]
 
             # Use GoogleDocsDataSource method
             result = self._run_async(self.client.documents_batch_update(
                 documentId=document_id,
                 requests=requests,
-                body={"requests": requests}
+                body={"requests": requests},
             ))
 
             return True, json.dumps({
@@ -277,7 +278,7 @@ class GoogleDocs:
                 "text_inserted": text,
                 "location_index": location_index,
                 "revision_id": result.get("revisionId", ""),
-                "message": "Text inserted successfully"
+                "message": "Text inserted successfully",
             })
         except Exception as e:
             logger.error(f"Failed to insert text: {e}")
@@ -291,27 +292,27 @@ class GoogleDocs:
                 name="document_id",
                 type=ParameterType.STRING,
                 description="The ID of the document",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="old_text",
                 type=ParameterType.STRING,
                 description="Text to replace",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="new_text",
                 type=ParameterType.STRING,
                 description="New text to replace with",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def replace_text(
         self,
         document_id: str,
         old_text: str,
-        new_text: str
+        new_text: str,
     ) -> tuple[bool, str]:
         """Replace text in a Google Docs document"""
         """
@@ -327,17 +328,17 @@ class GoogleDocs:
             requests = [{
                 "replaceAllText": {
                     "containsText": {
-                        "text": old_text
+                        "text": old_text,
                     },
-                    "replaceText": new_text
-                }
+                    "replaceText": new_text,
+                },
             }]
 
             # Use GoogleDocsDataSource method
             result = self._run_async(self.client.documents_batch_update(
                 documentId=document_id,
                 requests=requests,
-                body={"requests": requests}
+                body={"requests": requests},
             ))
 
             return True, json.dumps({
@@ -346,7 +347,7 @@ class GoogleDocs:
                 "new_text": new_text,
                 "occurrences_changed": result.get("replies", [{}])[0].get("replaceAllText", {}).get("occurrencesChanged", 0),
                 "revision_id": result.get("revisionId", ""),
-                "message": "Text replaced successfully"
+                "message": "Text replaced successfully",
             })
         except Exception as e:
             logger.error(f"Failed to replace text: {e}")

@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime
 from logging import Logger
-from typing import Optional
 
 import aiohttp  # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
@@ -30,14 +29,14 @@ from app.utils.redis_util import build_redis_url
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_signed_url_api_call(signed_url: str) -> dict:
-    """
-    Make an API call with the JWT token.
+    """Make an API call with the JWT token.
 
     Args:
         signed_url (str): The signed URL to send the request to
 
     Returns:
         dict: The response from the API
+
     """
     try:
         async with aiohttp.ClientSession() as session:
@@ -54,7 +53,7 @@ class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
                 event_processor: EventProcessor,
-                scheduler: Optional[Scheduler] = None
+                scheduler: Scheduler | None = None,
                 ) -> None:
 
         self.logger = logger
@@ -95,14 +94,14 @@ class RecordEventHandler(BaseEventService):
                 return False
 
             record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
 
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
                 f"Virtual Record ID: {virtual_record_id} "
-                f"Extension: {extension}, Mime Type: {mime_type}"
+                f"Extension: {extension}, Mime Type: {mime_type}",
             )
 
             # Handle delete event
@@ -124,7 +123,7 @@ class RecordEventHandler(BaseEventService):
 
 
             if extension is None and mime_type != "text/gmail_content":
-                extension = payload.get("extension", None)
+                extension = payload.get("extension")
                 if extension is None:
                     record_name = payload.get("recordName")
                     if record_name and "." in record_name:
@@ -188,18 +187,18 @@ class RecordEventHandler(BaseEventService):
                 and extension not in supported_extensions
             ):
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴",
                 )
 
                 doc.update(
                     {
                         "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                         "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    }
+                    },
                 )
                 docs = [doc]
                 await self.event_processor.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    docs, CollectionNames.RECORDS.value,
                 )
 
                 return True
@@ -209,12 +208,12 @@ class RecordEventHandler(BaseEventService):
                 {
                     "indexingStatus": ProgressStatus.IN_PROGRESS.value,
                     "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                }
+                },
             )
 
             docs = [doc]
             await self.event_processor.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
+                docs, CollectionNames.RECORDS.value,
             )
 
             # Signed URL handling
@@ -228,15 +227,15 @@ class RecordEventHandler(BaseEventService):
                     self.logger.debug(f"Generated JWT token for message {message_id}")
 
                     response = await make_api_call(
-                        route=payload["signedUrlRoute"], token=token
+                        route=payload["signedUrlRoute"], token=token,
                     )
                     self.logger.debug(
-                        f"Received signed URL response for message {message_id}"
+                        f"Received signed URL response for message {message_id}",
                     )
 
                     event_data_for_processor = {
                         "eventType": event_type,
-                        "payload": payload # The original payload
+                        "payload": payload, # The original payload
                     }
 
                     if response.get("is_json"):
@@ -249,12 +248,12 @@ class RecordEventHandler(BaseEventService):
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                        f"Record: {record_id}, Time: {processing_time:.2f}s",
                     )
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = f"Failed to process signed URL: {e!s}"
                     raise Exception(error_msg)
 
             elif payload and payload.get("signedUrl"):
@@ -264,18 +263,18 @@ class RecordEventHandler(BaseEventService):
                         payload["buffer"] = response
                     event_data_for_processor = {
                         "eventType": event_type,
-                        "payload": payload # The original payload
+                        "payload": payload, # The original payload
                     }
                     await self.event_processor.on_event(event_data_for_processor)
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                        f"Record: {record_id}, Time: {processing_time:.2f}s",
                     )
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = f"Failed to process signed URL: {e!s}"
                     raise Exception(error_msg)
             else:
                 try:
@@ -290,12 +289,12 @@ class RecordEventHandler(BaseEventService):
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     response = await make_api_call(
-                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
+                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
                     )
 
                     event_data_for_processor = {
                         "eventType": event_type,
-                        "payload": payload
+                        "payload": payload,
                     }
 
                     event_data_for_processor["payload"]["buffer"] = response["data"]
@@ -304,28 +303,28 @@ class RecordEventHandler(BaseEventService):
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                        f"Record: {record_id}, Time: {processing_time:.2f}s",
                     )
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = f"Failed to process signed URL: {e!s}"
                     raise Exception(error_msg)
         except IndexingError as e:
             error_occurred = True
-            error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
+            error_msg = f"❌ Indexing error for record {record_id}: {e!s}"
             self.logger.error(error_msg, exc_info=True)
             raise Exception(error_msg)
         except Exception as e:
             error_occurred = True
-            error_msg = f"Error processing message {message_id}: {str(e)}"
+            error_msg = f"Error processing message {message_id}: {e!s}"
             self.logger.error(error_msg, exc_info=True)
             raise Exception(error_msg)
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
                 f"Message {message_id} processing completed in {processing_time:.2f}s. "
-                f"Success: {not error_occurred}"
+                f"Success: {not error_occurred}",
             )
 
             if error_occurred and record_id:
@@ -344,7 +343,7 @@ class RecordEventHandler(BaseEventService):
         if not redis_config or not isinstance(redis_config, dict):
             raise ValueError("Redis configuration not found")
         # Build Redis URL with password if provided
-        password = redis_config.get('password', '')
+        password = redis_config.get("password", "")
         if password:
             redis_url = f"redis://:{password}@{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
         else:
@@ -356,12 +355,12 @@ class RecordEventHandler(BaseEventService):
         record_id: str,
         indexing_status: str,
         extraction_status: str,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> None:
         """Update document status in Arango"""
         try:
             record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
             if not record:
                 self.logger.error(f"❌ Record {record_id} not found for status update")
@@ -374,7 +373,7 @@ class RecordEventHandler(BaseEventService):
                 {
                     "indexingStatus": indexing_status,
                     "extractionStatus": extraction_status,
-                }
+                },
             )
 
             if reason:
@@ -382,12 +381,12 @@ class RecordEventHandler(BaseEventService):
 
             docs = [doc]
             await self.event_processor.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
+                docs, CollectionNames.RECORDS.value,
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update document status: {str(e)}")
+            self.logger.error(f"❌ Failed to update document status: {e!s}")
 
     async def clean_event_handler(self) -> None:
         """Clean up the event handler"""

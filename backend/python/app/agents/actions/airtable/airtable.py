@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Dict, List, Optional, Tuple
+from collections.abc import Coroutine
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -25,13 +25,14 @@ class Airtable:
 
         Args:
             client: An initialized `AirtableClient` instance
+
         """
         self.client = AirtableDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -60,18 +61,18 @@ class Airtable:
     def _handle_response(
         self,
         success: bool,
-        data: Optional[dict],
-        error: Optional[str],
-        success_message: str
-    ) -> Tuple[bool, str]:
+        data: dict | None,
+        error: str | None,
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Standardize return shape (success flag, JSON string)."""
         if success:
             return True, json.dumps({
                 "message": success_message,
-                "data": data or {}
+                "data": data or {},
             })
         return False, json.dumps({
-            "error": error or "Unknown error"
+            "error": error or "Unknown error",
         })
 
     @tool(
@@ -82,37 +83,37 @@ class Airtable:
             ToolParameter(
                 name="base_id",
                 type=ParameterType.STRING,
-                description="Base ID (starts with 'app')"
+                description="Base ID (starts with 'app')",
             ),
             ToolParameter(
                 name="table_id_or_name",
                 type=ParameterType.STRING,
-                description="Table ID (starts with 'tbl') or table name"
+                description="Table ID (starts with 'tbl') or table name",
             ),
             ToolParameter(
                 name="records_json",
                 type=ParameterType.STRING,
-                description="JSON array of record objects: [{\"fields\": { ... }}]"
+                description='JSON array of record objects: [{"fields": { ... }}]',
             ),
             ToolParameter(
                 name="typecast",
                 type=ParameterType.BOOLEAN,
                 description="Enable Airtable typecasting",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with creation result"
+        returns="JSON with creation result",
     )
     def create_records(
         self,
         base_id: str,
         table_id_or_name: str,
         records_json: str,
-        typecast: Optional[bool] = None
-    ) -> Tuple[bool, str]:
+        typecast: bool | None = None,
+    ) -> tuple[bool, str]:
         try:
             try:
-                records: List[Dict[str, object]] = json.loads(records_json)
+                records: list[dict[str, object]] = json.loads(records_json)
                 if not isinstance(records, list):
                     raise ValueError("records_json must be a JSON array")
             except json.JSONDecodeError as exc:
@@ -123,15 +124,15 @@ class Airtable:
                     base_id=base_id,
                     table_id_or_name=table_id_or_name,
                     records=records,
-                    typecast=typecast
-                )
+                    typecast=typecast,
+                ),
             )
             # resp is AirtableResponse
             return self._handle_response(
                 getattr(resp, "success", False),
                 getattr(resp, "data", None),
                 getattr(resp, "error", None),
-                "Records created successfully"
+                "Records created successfully",
             )
         except Exception as e:
             logger.error(f"Error creating records: {e}")
@@ -145,40 +146,40 @@ class Airtable:
             ToolParameter(
                 name="base_id",
                 type=ParameterType.STRING,
-                description="Base ID (starts with 'app')"
+                description="Base ID (starts with 'app')",
             ),
             ToolParameter(
                 name="table_id_or_name",
                 type=ParameterType.STRING,
-                description="Table ID (starts with 'tbl') or table name"
+                description="Table ID (starts with 'tbl') or table name",
             ),
             ToolParameter(
                 name="record_id",
                 type=ParameterType.STRING,
-                description="Record ID (starts with 'rec')"
-            )
+                description="Record ID (starts with 'rec')",
+            ),
         ],
-        returns="JSON with record data"
+        returns="JSON with record data",
     )
     def get_record(
         self,
         base_id: str,
         table_id_or_name: str,
-        record_id: str
-    ) -> Tuple[bool, str]:
+        record_id: str,
+    ) -> tuple[bool, str]:
         try:
             resp = self._run_async(
                 self.client.get_record(
                     base_id=base_id,
                     table_id_or_name=table_id_or_name,
-                    record_id=record_id
-                )
+                    record_id=record_id,
+                ),
             )
             return self._handle_response(
                 getattr(resp, "success", False),
                 getattr(resp, "data", None),
                 getattr(resp, "error", None),
-                "Record fetched successfully"
+                "Record fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error getting record: {e}")
@@ -192,42 +193,42 @@ class Airtable:
             ToolParameter(
                 name="base_id",
                 type=ParameterType.STRING,
-                description="Base ID (starts with 'app')"
+                description="Base ID (starts with 'app')",
             ),
             ToolParameter(
                 name="table_id_or_name",
                 type=ParameterType.STRING,
-                description="Table ID (starts with 'tbl') or table name"
+                description="Table ID (starts with 'tbl') or table name",
             ),
             ToolParameter(
                 name="view",
                 type=ParameterType.STRING,
                 description="View name or ID to use",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter_by_formula",
                 type=ParameterType.STRING,
                 description="Airtable formula for filtering",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.NUMBER,
                 description="Number of records to fetch (max 100)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of records"
+        returns="JSON with list of records",
     )
     def list_records(
         self,
         base_id: str,
         table_id_or_name: str,
-        view: Optional[str] = None,
-        filter_by_formula: Optional[str] = None,
-        page_size: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        view: str | None = None,
+        filter_by_formula: str | None = None,
+        page_size: int | None = None,
+    ) -> tuple[bool, str]:
         try:
             resp = self._run_async(
                 self.client.list_records(
@@ -235,14 +236,14 @@ class Airtable:
                     table_id_or_name=table_id_or_name,
                     view=view,
                     filter_by_formula=filter_by_formula,
-                    page_size=page_size
-                )
+                    page_size=page_size,
+                ),
             )
             return self._handle_response(
                 getattr(resp, "success", False),
                 getattr(resp, "data", None),
                 getattr(resp, "error", None),
-                "Records fetched successfully"
+                "Records fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error listing records: {e}")
@@ -256,44 +257,44 @@ class Airtable:
             ToolParameter(
                 name="base_id",
                 type=ParameterType.STRING,
-                description="Base ID (starts with 'app')"
+                description="Base ID (starts with 'app')",
             ),
             ToolParameter(
                 name="table_id_or_name",
                 type=ParameterType.STRING,
-                description="Table ID (starts with 'tbl') or table name"
+                description="Table ID (starts with 'tbl') or table name",
             ),
             ToolParameter(
                 name="records_json",
                 type=ParameterType.STRING,
-                description="JSON array of records with id and fields"
+                description="JSON array of records with id and fields",
             ),
             ToolParameter(
                 name="typecast",
                 type=ParameterType.BOOLEAN,
                 description="Enable Airtable typecasting",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="destructive_update",
                 type=ParameterType.BOOLEAN,
                 description="Clear unspecified cell values",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with update result"
+        returns="JSON with update result",
     )
     def update_records(
         self,
         base_id: str,
         table_id_or_name: str,
         records_json: str,
-        typecast: Optional[bool] = None,
-        destructive_update: Optional[bool] = None
-    ) -> Tuple[bool, str]:
+        typecast: bool | None = None,
+        destructive_update: bool | None = None,
+    ) -> tuple[bool, str]:
         try:
             try:
-                records: List[Dict[str, object]] = json.loads(records_json)
+                records: list[dict[str, object]] = json.loads(records_json)
                 if not isinstance(records, list):
                     raise ValueError("records_json must be a JSON array")
             except json.JSONDecodeError as exc:
@@ -305,14 +306,14 @@ class Airtable:
                     table_id_or_name=table_id_or_name,
                     records=records,
                     typecast=typecast,
-                    destructive_update=destructive_update
-                )
+                    destructive_update=destructive_update,
+                ),
             )
             return self._handle_response(
                 getattr(resp, "success", False),
                 getattr(resp, "data", None),
                 getattr(resp, "error", None),
-                "Records updated successfully"
+                "Records updated successfully",
             )
         except Exception as e:
             logger.error(f"Error updating records: {e}")
@@ -326,27 +327,27 @@ class Airtable:
             ToolParameter(
                 name="base_id",
                 type=ParameterType.STRING,
-                description="Base ID (starts with 'app')"
+                description="Base ID (starts with 'app')",
             ),
             ToolParameter(
                 name="table_id_or_name",
                 type=ParameterType.STRING,
-                description="Table ID (starts with 'tbl') or table name"
+                description="Table ID (starts with 'tbl') or table name",
             ),
             ToolParameter(
                 name="record_ids",
                 type=ParameterType.STRING,
-                description="Comma-separated record IDs (e.g. rec1,rec2)"
-            )
+                description="Comma-separated record IDs (e.g. rec1,rec2)",
+            ),
         ],
-        returns="JSON with deletion result"
+        returns="JSON with deletion result",
     )
     def delete_records(
         self,
         base_id: str,
         table_id_or_name: str,
-        record_ids: str
-    ) -> Tuple[bool, str]:
+        record_ids: str,
+    ) -> tuple[bool, str]:
         try:
             records = [rid.strip() for rid in record_ids.split(",") if rid.strip()]
             if not records:
@@ -356,14 +357,14 @@ class Airtable:
                 self.client.delete_records(
                     base_id=base_id,
                     table_id_or_name=table_id_or_name,
-                    records=records
-                )
+                    records=records,
+                ),
             )
             return self._handle_response(
                 getattr(resp, "success", False),
                 getattr(resp, "data", None),
                 getattr(resp, "error", None),
-                "Records deleted successfully"
+                "Records deleted successfully",
             )
         except Exception as e:
             logger.error(f"Error deleting records: {e}")
@@ -377,48 +378,48 @@ class Airtable:
             ToolParameter(
                 name="base_id",
                 type=ParameterType.STRING,
-                description="Base ID (starts with 'app')"
+                description="Base ID (starts with 'app')",
             ),
             ToolParameter(
                 name="table_id_or_name",
                 type=ParameterType.STRING,
-                description="Table ID (starts with 'tbl') or table name"
+                description="Table ID (starts with 'tbl') or table name",
             ),
             ToolParameter(
                 name="filter_by_formula",
                 type=ParameterType.STRING,
-                description="Airtable formula to filter records"
+                description="Airtable formula to filter records",
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.NUMBER,
                 description="Number of records to fetch (max 100)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
     def search_records(
         self,
         base_id: str,
         table_id_or_name: str,
         filter_by_formula: str,
-        page_size: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        page_size: int | None = None,
+    ) -> tuple[bool, str]:
         try:
             resp = self._run_async(
                 self.client.list_records(
                     base_id=base_id,
                     table_id_or_name=table_id_or_name,
                     filter_by_formula=filter_by_formula,
-                    page_size=page_size
-                )
+                    page_size=page_size,
+                ),
             )
             return self._handle_response(
                 getattr(resp, "success", False),
                 getattr(resp, "data", None),
                 getattr(resp, "error", None),
-                "Search completed successfully"
+                "Search completed successfully",
             )
         except Exception as e:
             logger.error(f"Error searching records: {e}")

@@ -1,6 +1,5 @@
 import json
 import uuid
-from typing import List, Optional, Tuple, Union
 
 from docling.datamodel.document import DoclingDocument
 from jinja2 import Template
@@ -39,7 +38,7 @@ class TableSummary(BaseModel):
     summary: str = Field(description="Summary of the table")
     headers: list[str] = Field(description="Column headers of the table")
 
-class DoclingDocToBlocksConverter():
+class DoclingDocToBlocksConverter:
     def __init__(self, logger, config) -> None:
         self.logger = logger
         self.config = config
@@ -95,16 +94,16 @@ class DoclingDocToBlocksConverter():
     #     "tables": [
     # }
     #
-    # Todo: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
+    # TODO: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
     async def _process_content_in_order(self, doc: DoclingDocument) -> BlocksContainer|bool:
-        """
-        Process document content in proper reading order by following references.
+        """Process document content in proper reading order by following references.
 
         Args:
             doc_dict (dict): The document dictionary from Docling
 
         Returns:
             list: Ordered list of text items with their context
+
         """
         block_groups = []
         blocks = []
@@ -149,7 +148,7 @@ class DoclingDocToBlocksConverter():
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
 
 
-        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
+        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block | None:
             block = None
             if item.get("text") != "":
                 block = Block(
@@ -235,7 +234,7 @@ class DoclingDocToBlocksConverter():
                     index=len(blocks),
                     type=BlockType.IMAGE,
                     format=DataFormat.BASE64,
-                    data=item.get("image",None ),
+                    data=item.get("image"),
                     comments=[],
                     source_creation_date=None,
                     source_update_date=None,
@@ -313,9 +312,9 @@ class DoclingDocToBlocksConverter():
                     data={
                         "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
                         "row_number": i+1,
-                        "row":json.dumps(row)
+                        "row":json.dumps(row),
                     },
-                    citation_metadata=block_group.citation_metadata
+                    citation_metadata=block_group.citation_metadata,
                 )
                 # _enrich_metadata(block, row, doc_dict)
                 blocks.append(block)
@@ -405,12 +404,12 @@ class DoclingDocToBlocksConverter():
         return block_containers
 
 
-    async def _call_llm(self, messages) -> Union[str, dict, list]:
+    async def _call_llm(self, messages) -> str | dict | list:
         return await self.llm.ainvoke(messages)
 
     async def get_rows_text(
-        self, table_data: dict, table_summary: str, column_headers: list[str]
-    ) -> Tuple[List[str], List[List[dict]]]:
+        self, table_data: dict, table_summary: str, column_headers: list[str],
+    ) -> tuple[list[str], list[list[dict]]]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         table = table_data.get("grid")
         if table:
@@ -433,12 +432,12 @@ class DoclingDocToBlocksConverter():
 
                 # Get natural language text from LLM with retry
                 messages = row_text_prompt.format_messages(
-                    table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+                    table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2),
                 )
 
                 response = await self._call_llm(messages)
-                if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
+                if "</think>" in response.content:
+                    response.content = response.content.split("</think>")[-1]
                 # Try to extract JSON array from response
                 try:
                     # First try direct JSON parsing
@@ -465,8 +464,7 @@ class DoclingDocToBlocksConverter():
             return [], []
 
     async def get_table_summary_n_headers(self, table_markdown: str) -> TableSummary:
-        """
-        Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
+        """Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
         """
         try:
             # LLM prompt (reuse Excel's)
@@ -483,8 +481,8 @@ class DoclingDocToBlocksConverter():
                 {"role": "user", "content": rendered_form},
             ]
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                    response.content = response.content.split("</think>")[-1]
             response_text = response.content.strip()
             if response_text.startswith("```json"):
                 response_text = response_text.replace("```json", "", 1)
@@ -496,17 +494,17 @@ class DoclingDocToBlocksConverter():
                 parsed_response = self.parser.parse(response_text)
                 return parsed_response
             except Exception as parse_error:
-                self.logger.error(f"❌ Failed to parse response: {str(parse_error)}")
+                self.logger.error(f"❌ Failed to parse response: {parse_error!s}")
                 self.logger.error(f"Response content: {response_text}")
 
                 # Reflection: attempt to fix the validation issue by providing feedback to the LLM
                 try:
                     self.logger.info(
-                        "🔄 Attempting reflection to fix validation issues"
+                        "🔄 Attempting reflection to fix validation issues",
                     )
                     reflection_prompt = f"""
                     The previous response failed validation with the following error:
-                    {str(parse_error)}
+                    {parse_error!s}
 
                     The response was:
                     {response_text}
@@ -524,8 +522,8 @@ class DoclingDocToBlocksConverter():
 
                     # Use retry wrapper for reflection LLM call
                     reflection_response = await self._call_llm(reflection_messages)
-                    if '</think>' in reflection_response.content:
-                        reflection_response.content = reflection_response.content.split('</think>')[-1]
+                    if "</think>" in reflection_response.content:
+                        reflection_response.content = reflection_response.content.split("</think>")[-1]
                     reflection_text = reflection_response.content.strip()
 
                     # Clean the reflection response
@@ -543,22 +541,22 @@ class DoclingDocToBlocksConverter():
 
 
                     self.logger.info(
-                        "✅ Reflection successful - validation passed on second attempt"
+                        "✅ Reflection successful - validation passed on second attempt",
                     )
                     return parsed_reflection
 
                 except Exception as reflection_error:
                     self.logger.error(
-                        f"❌ Reflection attempt failed: {str(reflection_error)}"
+                        f"❌ Reflection attempt failed: {reflection_error!s}",
                     )
                     raise ValueError(
-                        f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
+                        f"Failed to parse LLM response and reflection attempt failed: {parse_error!s}",
                     )
         except Exception as e:
             self.logger.error(f"Error getting table summary from Docling: {e}")
             raise e
 
-    async def _call_llm(self, messages) -> Union[str, dict, list]:
+    async def _call_llm(self, messages) -> str | dict | list:
         if self.llm is None:
             self.llm,_ = await get_llm(self.config)
         return await self.llm.ainvoke(messages)

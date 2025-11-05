@@ -1,31 +1,32 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.sources.client.google.google import GoogleClient
 
 
 class GoogleAdminDataSource:
-    """
-    Auto-generated Google Admin SDK Directory API client wrapper.
+    """Auto-generated Google Admin SDK Directory API client wrapper.
     Uses Google SDK client internally for all operations.
     This class wraps all Google Admin SDK Directory API directory_v1 methods and provides
     a consistent interface while using the official Google SDK.
     """
+
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
     ) -> None:
-        """
-        Initialize with Google Admin SDK Directory API client.
+        """Initialize with Google Admin SDK Directory API client.
+
         Args:
             client: Google Admin SDK Directory API client from build('admin', 'directory_v1', credentials=credentials)
+
         """
         self.client = client
 
     async def chromeosdevices_action(
         self,
         customerId: str,
-        resourceId: str
-    ) -> Dict[str, Any]:
+        resourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Use [BatchChangeChromeOsDeviceStatus](https://developers.google.com/workspace/admin/directory/reference/rest/v1/customer.devices.chromeos/batchChangeStatus) instead. Takes an action that affects a Chrome OS Device. This includes deprovisioning, disabling, and re-enabling devices. *Warning:* * Deprovisioning a device will stop device policy syncing and remove device-level printers. After a device is deprovisioned, it must be wiped before it can be re-enrolled. * Lost or stolen devices should use the disable action. * Re-enabling a disabled device will consume a device license. If you do not have sufficient licenses available when completing the re-enable action, you will receive an error. For more information about deprovisioning and disabling devices, visit the [help center](https://support.google.com/chrome/a/answer/3523633).
 
         HTTP POST admin/directory/v1/customer/{customerId}/devices/chromeos/{resourceId}/action
@@ -36,16 +37,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if resourceId is not None:
-            kwargs['resourceId'] = resourceId
+            kwargs["resourceId"] = resourceId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.chromeosdevices().action(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().action(**kwargs) # type: ignore
@@ -55,8 +57,8 @@ class GoogleAdminDataSource:
         self,
         customerId: str,
         deviceId: str,
-        projection: Optional[str] = None
-    ) -> Dict[str, Any]:
+        projection: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a Chrome OS device's properties.
 
         HTTP GET admin/directory/v1/customer/{customerId}/devices/chromeos/{deviceId}
@@ -68,14 +70,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if deviceId is not None:
-            kwargs['deviceId'] = deviceId
+            kwargs["deviceId"] = deviceId
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
 
         request = self.client.chromeosdevices().get(**kwargs) # type: ignore
         return request.execute()
@@ -83,15 +86,15 @@ class GoogleAdminDataSource:
     async def chromeosdevices_list(
         self,
         customerId: str,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        orgUnitPath: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        projection: Optional[str] = None,
-        query: Optional[str] = None,
-        sortOrder: Optional[str] = None,
-        includeChildOrgunits: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        orgUnitPath: str | None = None,
+        pageToken: str | None = None,
+        projection: str | None = None,
+        query: str | None = None,
+        sortOrder: str | None = None,
+        includeChildOrgunits: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of Chrome OS devices within an account.
 
         HTTP GET admin/directory/v1/customer/{customerId}/devices/chromeos
@@ -109,26 +112,27 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
         if query is not None:
-            kwargs['query'] = query
+            kwargs["query"] = query
         if sortOrder is not None:
-            kwargs['sortOrder'] = sortOrder
+            kwargs["sortOrder"] = sortOrder
         if includeChildOrgunits is not None:
-            kwargs['includeChildOrgunits'] = includeChildOrgunits
+            kwargs["includeChildOrgunits"] = includeChildOrgunits
 
         request = self.client.chromeosdevices().list(**kwargs) # type: ignore
         return request.execute()
@@ -136,8 +140,8 @@ class GoogleAdminDataSource:
     async def chromeosdevices_move_devices_to_ou(
         self,
         customerId: str,
-        orgUnitPath: str
-    ) -> Dict[str, Any]:
+        orgUnitPath: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Moves or inserts multiple Chrome OS devices to an organizational unit. You can move up to 50 devices at once.
 
         HTTP POST admin/directory/v1/customer/{customerId}/devices/chromeos/moveDevicesToOu
@@ -148,16 +152,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.chromeosdevices().moveDevicesToOu(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().moveDevicesToOu(**kwargs) # type: ignore
@@ -167,8 +172,8 @@ class GoogleAdminDataSource:
         self,
         customerId: str,
         deviceId: str,
-        projection: Optional[str] = None
-    ) -> Dict[str, Any]:
+        projection: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a device's updatable properties, such as `annotatedUser`, `annotatedLocation`, `notes`, `orgUnitPath`, or `annotatedAssetId`. This method supports [patch semantics](https://developers.google.com/workspace/admin/directory/v1/guides/performance#patch).
 
         HTTP PATCH admin/directory/v1/customer/{customerId}/devices/chromeos/{deviceId}
@@ -180,18 +185,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if deviceId is not None:
-            kwargs['deviceId'] = deviceId
+            kwargs["deviceId"] = deviceId
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.chromeosdevices().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().patch(**kwargs) # type: ignore
@@ -201,8 +207,8 @@ class GoogleAdminDataSource:
         self,
         customerId: str,
         deviceId: str,
-        projection: Optional[str] = None
-    ) -> Dict[str, Any]:
+        projection: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a device's updatable properties, such as `annotatedUser`, `annotatedLocation`, `notes`, `orgUnitPath`, or `annotatedAssetId`.
 
         HTTP PUT admin/directory/v1/customer/{customerId}/devices/chromeos/{deviceId}
@@ -214,18 +220,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if deviceId is not None:
-            kwargs['deviceId'] = deviceId
+            kwargs["deviceId"] = deviceId
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.chromeosdevices().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().update(**kwargs) # type: ignore
@@ -234,8 +241,8 @@ class GoogleAdminDataSource:
     async def customer_devices_chromeos_issue_command(
         self,
         customerId: str,
-        deviceId: str
-    ) -> Dict[str, Any]:
+        deviceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Issues a command for the device to execute.
 
         HTTP POST admin/directory/v1/customer/{customerId}/devices/chromeos/{deviceId}:issueCommand
@@ -246,16 +253,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if deviceId is not None:
-            kwargs['deviceId'] = deviceId
+            kwargs["deviceId"] = deviceId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customer_devices_chromeos().issueCommand(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customer_devices_chromeos().issueCommand(**kwargs) # type: ignore
@@ -263,8 +271,8 @@ class GoogleAdminDataSource:
 
     async def customer_devices_chromeos_batch_change_status(
         self,
-        customerId: str
-    ) -> Dict[str, Any]:
+        customerId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Changes the status of a batch of ChromeOS devices. For more information about changing a ChromeOS device state [Repair, repurpose, or retire ChromeOS devices](https://support.google.com/chrome/a/answer/3523633).
 
         HTTP POST admin/directory/v1/customer/{customerId}/devices/chromeos:batchChangeStatus
@@ -274,14 +282,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customer_devices_chromeos().batchChangeStatus(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customer_devices_chromeos().batchChangeStatus(**kwargs) # type: ignore
@@ -291,8 +300,8 @@ class GoogleAdminDataSource:
         self,
         customerId: str,
         deviceId: str,
-        commandId: int
-    ) -> Dict[str, Any]:
+        commandId: int,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Gets command data a specific command issued to the device.
 
         HTTP GET admin/directory/v1/customer/{customerId}/devices/chromeos/{deviceId}/commands/{commandId}
@@ -304,14 +313,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if deviceId is not None:
-            kwargs['deviceId'] = deviceId
+            kwargs["deviceId"] = deviceId
         if commandId is not None:
-            kwargs['commandId'] = commandId
+            kwargs["commandId"] = commandId
 
         request = self.client.customer_devices_chromeos_commands().get(**kwargs) # type: ignore
         return request.execute()
@@ -319,8 +329,8 @@ class GoogleAdminDataSource:
     async def asps_delete(
         self,
         userKey: str,
-        codeId: int
-    ) -> Dict[str, Any]:
+        codeId: int,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes an ASP issued by a user.
 
         HTTP DELETE admin/directory/v1/users/{userKey}/asps/{codeId}
@@ -331,12 +341,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if codeId is not None:
-            kwargs['codeId'] = codeId
+            kwargs["codeId"] = codeId
 
         request = self.client.asps().delete(**kwargs) # type: ignore
         return request.execute()
@@ -344,8 +355,8 @@ class GoogleAdminDataSource:
     async def asps_get(
         self,
         userKey: str,
-        codeId: int
-    ) -> Dict[str, Any]:
+        codeId: int,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Gets information about an ASP issued by a user.
 
         HTTP GET admin/directory/v1/users/{userKey}/asps/{codeId}
@@ -356,20 +367,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if codeId is not None:
-            kwargs['codeId'] = codeId
+            kwargs["codeId"] = codeId
 
         request = self.client.asps().get(**kwargs) # type: ignore
         return request.execute()
 
     async def asps_list(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists the ASPs issued by a user.
 
         HTTP GET admin/directory/v1/users/{userKey}/asps
@@ -379,28 +391,30 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.asps().list(**kwargs) # type: ignore
         return request.execute()
 
-    async def channels_stop(self) -> Dict[str, Any]:
+    async def channels_stop(self) -> dict[str, Any]:
         """Google Admin SDK Directory API: Stops watching resources through this channel.
 
         HTTP POST admin/directory_v1/channels/stop
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.channels().stop(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channels().stop(**kwargs) # type: ignore
@@ -408,8 +422,8 @@ class GoogleAdminDataSource:
 
     async def customers_get(
         self,
-        customerKey: str
-    ) -> Dict[str, Any]:
+        customerKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a customer.
 
         HTTP GET admin/directory/v1/customers/{customerKey}
@@ -419,18 +433,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerKey is not None:
-            kwargs['customerKey'] = customerKey
+            kwargs["customerKey"] = customerKey
 
         request = self.client.customers().get(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_update(
         self,
-        customerKey: str
-    ) -> Dict[str, Any]:
+        customerKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a customer.
 
         HTTP PUT admin/directory/v1/customers/{customerKey}
@@ -440,14 +455,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerKey is not None:
-            kwargs['customerKey'] = customerKey
+            kwargs["customerKey"] = customerKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers().update(**kwargs) # type: ignore
@@ -455,8 +471,8 @@ class GoogleAdminDataSource:
 
     async def customers_patch(
         self,
-        customerKey: str
-    ) -> Dict[str, Any]:
+        customerKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Patches a customer.
 
         HTTP PATCH admin/directory/v1/customers/{customerKey}
@@ -466,14 +482,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerKey is not None:
-            kwargs['customerKey'] = customerKey
+            kwargs["customerKey"] = customerKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers().patch(**kwargs) # type: ignore
@@ -482,10 +499,10 @@ class GoogleAdminDataSource:
     async def customers_chrome_printers_list_printer_models(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        filter: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        filter: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists the supported printer models.
 
         HTTP GET admin/directory/v1/{+parent}/chrome/printers:listPrinterModels
@@ -498,16 +515,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if filter is not None:
-            kwargs['filter'] = filter
+            kwargs["filter"] = filter
 
         request = self.client.customers_chrome_printers().listPrinterModels(**kwargs) # type: ignore
         return request.execute()
@@ -515,12 +533,12 @@ class GoogleAdminDataSource:
     async def customers_chrome_printers_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        orgUnitId: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderBy: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        orgUnitId: str | None = None,
+        filter: str | None = None,
+        orderBy: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: List printers configs.
 
         HTTP GET admin/directory/v1/{+parent}/chrome/printers
@@ -535,28 +553,29 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if orgUnitId is not None:
-            kwargs['orgUnitId'] = orgUnitId
+            kwargs["orgUnitId"] = orgUnitId
         if filter is not None:
-            kwargs['filter'] = filter
+            kwargs["filter"] = filter
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
 
         request = self.client.customers_chrome_printers().list(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_chrome_printers_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Returns a `Printer` resource (printer's config).
 
         HTTP GET admin/directory/v1/{+name}
@@ -566,18 +585,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.customers_chrome_printers().get(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_chrome_printers_create(
         self,
-        parent: str
-    ) -> Dict[str, Any]:
+        parent: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a printer under given Organization Unit.
 
         HTTP POST admin/directory/v1/{+parent}/chrome/printers
@@ -587,14 +607,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printers().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().create(**kwargs) # type: ignore
@@ -602,8 +623,8 @@ class GoogleAdminDataSource:
 
     async def customers_chrome_printers_batch_create_printers(
         self,
-        parent: str
-    ) -> Dict[str, Any]:
+        parent: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates printers under given Organization Unit.
 
         HTTP POST admin/directory/v1/{+parent}/chrome/printers:batchCreatePrinters
@@ -613,14 +634,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printers().batchCreatePrinters(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().batchCreatePrinters(**kwargs) # type: ignore
@@ -629,9 +651,9 @@ class GoogleAdminDataSource:
     async def customers_chrome_printers_patch(
         self,
         name: str,
-        updateMask: Optional[str] = None,
-        clearMask: Optional[str] = None
-    ) -> Dict[str, Any]:
+        updateMask: str | None = None,
+        clearMask: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a `Printer` resource.
 
         HTTP PATCH admin/directory/v1/{+name}
@@ -643,18 +665,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
         if updateMask is not None:
-            kwargs['updateMask'] = updateMask
+            kwargs["updateMask"] = updateMask
         if clearMask is not None:
-            kwargs['clearMask'] = clearMask
+            kwargs["clearMask"] = clearMask
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().patch(**kwargs) # type: ignore
@@ -662,8 +685,8 @@ class GoogleAdminDataSource:
 
     async def customers_chrome_printers_delete(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a `Printer`.
 
         HTTP DELETE admin/directory/v1/{+name}
@@ -673,18 +696,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.customers_chrome_printers().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_chrome_printers_batch_delete_printers(
         self,
-        parent: str
-    ) -> Dict[str, Any]:
+        parent: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes printers in batch.
 
         HTTP POST admin/directory/v1/{+parent}/chrome/printers:batchDeletePrinters
@@ -694,14 +718,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printers().batchDeletePrinters(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().batchDeletePrinters(**kwargs) # type: ignore
@@ -710,12 +735,12 @@ class GoogleAdminDataSource:
     async def customers_chrome_print_servers_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        orgUnitId: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderBy: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        orgUnitId: str | None = None,
+        filter: str | None = None,
+        orderBy: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists print server configurations.
 
         HTTP GET admin/directory/v1/{+parent}/chrome/printServers
@@ -730,28 +755,29 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if orgUnitId is not None:
-            kwargs['orgUnitId'] = orgUnitId
+            kwargs["orgUnitId"] = orgUnitId
         if filter is not None:
-            kwargs['filter'] = filter
+            kwargs["filter"] = filter
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
 
         request = self.client.customers_chrome_printServers().list(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_chrome_print_servers_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Returns a print server's configuration.
 
         HTTP GET admin/directory/v1/{+name}
@@ -761,18 +787,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.customers_chrome_printServers().get(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_chrome_print_servers_create(
         self,
-        parent: str
-    ) -> Dict[str, Any]:
+        parent: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a print server.
 
         HTTP POST admin/directory/v1/{+parent}/chrome/printServers
@@ -782,14 +809,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printServers().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().create(**kwargs) # type: ignore
@@ -797,8 +825,8 @@ class GoogleAdminDataSource:
 
     async def customers_chrome_print_servers_batch_create_print_servers(
         self,
-        parent: str
-    ) -> Dict[str, Any]:
+        parent: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates multiple print servers.
 
         HTTP POST admin/directory/v1/{+parent}/chrome/printServers:batchCreatePrintServers
@@ -808,14 +836,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printServers().batchCreatePrintServers(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().batchCreatePrintServers(**kwargs) # type: ignore
@@ -824,8 +853,8 @@ class GoogleAdminDataSource:
     async def customers_chrome_print_servers_patch(
         self,
         name: str,
-        updateMask: Optional[str] = None
-    ) -> Dict[str, Any]:
+        updateMask: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a print server's configuration.
 
         HTTP PATCH admin/directory/v1/{+name}
@@ -836,16 +865,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
         if updateMask is not None:
-            kwargs['updateMask'] = updateMask
+            kwargs["updateMask"] = updateMask
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printServers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().patch(**kwargs) # type: ignore
@@ -853,8 +883,8 @@ class GoogleAdminDataSource:
 
     async def customers_chrome_print_servers_delete(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a print server.
 
         HTTP DELETE admin/directory/v1/{+name}
@@ -864,18 +894,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.customers_chrome_printServers().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def customers_chrome_print_servers_batch_delete_print_servers(
         self,
-        parent: str
-    ) -> Dict[str, Any]:
+        parent: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes multiple print servers.
 
         HTTP POST admin/directory/v1/{+parent}/chrome/printServers:batchDeletePrintServers
@@ -885,14 +916,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.customers_chrome_printServers().batchDeletePrintServers(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().batchDeletePrintServers(**kwargs) # type: ignore
@@ -901,8 +933,8 @@ class GoogleAdminDataSource:
     async def domain_aliases_delete(
         self,
         customer: str,
-        domainAliasName: str
-    ) -> Dict[str, Any]:
+        domainAliasName: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a domain Alias of the customer.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/domainaliases/{domainAliasName}
@@ -913,12 +945,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if domainAliasName is not None:
-            kwargs['domainAliasName'] = domainAliasName
+            kwargs["domainAliasName"] = domainAliasName
 
         request = self.client.domainAliases().delete(**kwargs) # type: ignore
         return request.execute()
@@ -926,8 +959,8 @@ class GoogleAdminDataSource:
     async def domain_aliases_get(
         self,
         customer: str,
-        domainAliasName: str
-    ) -> Dict[str, Any]:
+        domainAliasName: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a domain alias of the customer.
 
         HTTP GET admin/directory/v1/customer/{customer}/domainaliases/{domainAliasName}
@@ -938,20 +971,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if domainAliasName is not None:
-            kwargs['domainAliasName'] = domainAliasName
+            kwargs["domainAliasName"] = domainAliasName
 
         request = self.client.domainAliases().get(**kwargs) # type: ignore
         return request.execute()
 
     async def domain_aliases_insert(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Inserts a domain alias of the customer.
 
         HTTP POST admin/directory/v1/customer/{customer}/domainaliases
@@ -961,14 +995,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.domainAliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.domainAliases().insert(**kwargs) # type: ignore
@@ -977,8 +1012,8 @@ class GoogleAdminDataSource:
     async def domain_aliases_list(
         self,
         customer: str,
-        parentDomainName: Optional[str] = None
-    ) -> Dict[str, Any]:
+        parentDomainName: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists the domain aliases of the customer.
 
         HTTP GET admin/directory/v1/customer/{customer}/domainaliases
@@ -989,12 +1024,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if parentDomainName is not None:
-            kwargs['parentDomainName'] = parentDomainName
+            kwargs["parentDomainName"] = parentDomainName
 
         request = self.client.domainAliases().list(**kwargs) # type: ignore
         return request.execute()
@@ -1002,8 +1038,8 @@ class GoogleAdminDataSource:
     async def domains_delete(
         self,
         customer: str,
-        domainName: str
-    ) -> Dict[str, Any]:
+        domainName: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a domain of the customer.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/domains/{domainName}
@@ -1014,12 +1050,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if domainName is not None:
-            kwargs['domainName'] = domainName
+            kwargs["domainName"] = domainName
 
         request = self.client.domains().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1027,8 +1064,8 @@ class GoogleAdminDataSource:
     async def domains_get(
         self,
         customer: str,
-        domainName: str
-    ) -> Dict[str, Any]:
+        domainName: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a domain of the customer.
 
         HTTP GET admin/directory/v1/customer/{customer}/domains/{domainName}
@@ -1039,20 +1076,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if domainName is not None:
-            kwargs['domainName'] = domainName
+            kwargs["domainName"] = domainName
 
         request = self.client.domains().get(**kwargs) # type: ignore
         return request.execute()
 
     async def domains_insert(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Inserts a domain of the customer.
 
         HTTP POST admin/directory/v1/customer/{customer}/domains
@@ -1062,14 +1100,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.domains().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.domains().insert(**kwargs) # type: ignore
@@ -1077,8 +1116,8 @@ class GoogleAdminDataSource:
 
     async def domains_list(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists the domains of the customer.
 
         HTTP GET admin/directory/v1/customer/{customer}/domains
@@ -1088,18 +1127,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         request = self.client.domains().list(**kwargs) # type: ignore
         return request.execute()
 
     async def groups_delete(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a group.
 
         HTTP DELETE admin/directory/v1/groups/{groupKey}
@@ -1109,18 +1149,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         request = self.client.groups().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def groups_get(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a group's properties.
 
         HTTP GET admin/directory/v1/groups/{groupKey}
@@ -1130,28 +1171,30 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         request = self.client.groups().get(**kwargs) # type: ignore
         return request.execute()
 
-    async def groups_insert(self) -> Dict[str, Any]:
+    async def groups_insert(self) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a group.
 
         HTTP POST admin/directory/v1/groups
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.groups().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups().insert(**kwargs) # type: ignore
@@ -1159,15 +1202,15 @@ class GoogleAdminDataSource:
 
     async def groups_list(
         self,
-        customer: Optional[str] = None,
-        domain: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        query: Optional[str] = None,
-        sortOrder: Optional[str] = None,
-        userKey: Optional[str] = None
-    ) -> Dict[str, Any]:
+        customer: str | None = None,
+        domain: str | None = None,
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        query: str | None = None,
+        sortOrder: str | None = None,
+        userKey: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves all groups of a domain or of a user given a userKey (paginated).
 
         HTTP GET admin/directory/v1/groups
@@ -1184,32 +1227,33 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if domain is not None:
-            kwargs['domain'] = domain
+            kwargs["domain"] = domain
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if query is not None:
-            kwargs['query'] = query
+            kwargs["query"] = query
         if sortOrder is not None:
-            kwargs['sortOrder'] = sortOrder
+            kwargs["sortOrder"] = sortOrder
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.groups().list(**kwargs) # type: ignore
         return request.execute()
 
     async def groups_update(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a group's properties.
 
         HTTP PUT admin/directory/v1/groups/{groupKey}
@@ -1219,14 +1263,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.groups().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups().update(**kwargs) # type: ignore
@@ -1234,8 +1279,8 @@ class GoogleAdminDataSource:
 
     async def groups_patch(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a group's properties. This method supports [patch semantics](https://developers.google.com/workspace/admin/directory/v1/guides/performance#patch).
 
         HTTP PATCH admin/directory/v1/groups/{groupKey}
@@ -1245,14 +1290,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.groups().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups().patch(**kwargs) # type: ignore
@@ -1261,8 +1307,8 @@ class GoogleAdminDataSource:
     async def groups_aliases_delete(
         self,
         groupKey: str,
-        alias: str
-    ) -> Dict[str, Any]:
+        alias: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Removes an alias.
 
         HTTP DELETE admin/directory/v1/groups/{groupKey}/aliases/{alias}
@@ -1273,20 +1319,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if alias is not None:
-            kwargs['alias'] = alias
+            kwargs["alias"] = alias
 
         request = self.client.groups_aliases().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def groups_aliases_insert(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Adds an alias for the group.
 
         HTTP POST admin/directory/v1/groups/{groupKey}/aliases
@@ -1296,14 +1343,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.groups_aliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups_aliases().insert(**kwargs) # type: ignore
@@ -1311,8 +1359,8 @@ class GoogleAdminDataSource:
 
     async def groups_aliases_list(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists all aliases for a group.
 
         HTTP GET admin/directory/v1/groups/{groupKey}/aliases
@@ -1322,10 +1370,11 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         request = self.client.groups_aliases().list(**kwargs) # type: ignore
         return request.execute()
@@ -1333,8 +1382,8 @@ class GoogleAdminDataSource:
     async def members_delete(
         self,
         groupKey: str,
-        memberKey: str
-    ) -> Dict[str, Any]:
+        memberKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Removes a member from a group.
 
         HTTP DELETE admin/directory/v1/groups/{groupKey}/members/{memberKey}
@@ -1345,12 +1394,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if memberKey is not None:
-            kwargs['memberKey'] = memberKey
+            kwargs["memberKey"] = memberKey
 
         request = self.client.members().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1358,8 +1408,8 @@ class GoogleAdminDataSource:
     async def members_get(
         self,
         groupKey: str,
-        memberKey: str
-    ) -> Dict[str, Any]:
+        memberKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a group member's properties.
 
         HTTP GET admin/directory/v1/groups/{groupKey}/members/{memberKey}
@@ -1370,12 +1420,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if memberKey is not None:
-            kwargs['memberKey'] = memberKey
+            kwargs["memberKey"] = memberKey
 
         request = self.client.members().get(**kwargs) # type: ignore
         return request.execute()
@@ -1383,8 +1434,8 @@ class GoogleAdminDataSource:
     async def members_has_member(
         self,
         groupKey: str,
-        memberKey: str
-    ) -> Dict[str, Any]:
+        memberKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Checks whether the given user is a member of the group. Membership can be direct or nested, but if nested, the `memberKey` and `groupKey` must be entities in the same domain or an `Invalid input` error is returned. To check for nested memberships that include entities outside of the group's domain, use the [`checkTransitiveMembership()`](https://cloud.google.com/identity/docs/reference/rest/v1/groups.memberships/checkTransitiveMembership) method in the Cloud Identity Groups API.
 
         HTTP GET admin/directory/v1/groups/{groupKey}/hasMember/{memberKey}
@@ -1395,20 +1446,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if memberKey is not None:
-            kwargs['memberKey'] = memberKey
+            kwargs["memberKey"] = memberKey
 
         request = self.client.members().hasMember(**kwargs) # type: ignore
         return request.execute()
 
     async def members_insert(
         self,
-        groupKey: str
-    ) -> Dict[str, Any]:
+        groupKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Adds a user to the specified group.
 
         HTTP POST admin/directory/v1/groups/{groupKey}/members
@@ -1418,14 +1470,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.members().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.members().insert(**kwargs) # type: ignore
@@ -1434,11 +1487,11 @@ class GoogleAdminDataSource:
     async def members_list(
         self,
         groupKey: str,
-        includeDerivedMembership: Optional[bool] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        roles: Optional[str] = None
-    ) -> Dict[str, Any]:
+        includeDerivedMembership: bool | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        roles: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of all members in a group. This method times out after 60 minutes. For more information, see [Troubleshoot error codes](https://developers.google.com/workspace/admin/directory/v1/guides/troubleshoot-error-codes).
 
         HTTP GET admin/directory/v1/groups/{groupKey}/members
@@ -1452,18 +1505,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if includeDerivedMembership is not None:
-            kwargs['includeDerivedMembership'] = includeDerivedMembership
+            kwargs["includeDerivedMembership"] = includeDerivedMembership
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if roles is not None:
-            kwargs['roles'] = roles
+            kwargs["roles"] = roles
 
         request = self.client.members().list(**kwargs) # type: ignore
         return request.execute()
@@ -1471,8 +1525,8 @@ class GoogleAdminDataSource:
     async def members_update(
         self,
         groupKey: str,
-        memberKey: str
-    ) -> Dict[str, Any]:
+        memberKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates the membership of a user in the specified group.
 
         HTTP PUT admin/directory/v1/groups/{groupKey}/members/{memberKey}
@@ -1483,16 +1537,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if memberKey is not None:
-            kwargs['memberKey'] = memberKey
+            kwargs["memberKey"] = memberKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.members().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.members().update(**kwargs) # type: ignore
@@ -1501,8 +1556,8 @@ class GoogleAdminDataSource:
     async def members_patch(
         self,
         groupKey: str,
-        memberKey: str
-    ) -> Dict[str, Any]:
+        memberKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates the membership properties of a user in the specified group. This method supports [patch semantics](https://developers.google.com/workspace/admin/directory/v1/guides/performance#patch).
 
         HTTP PATCH admin/directory/v1/groups/{groupKey}/members/{memberKey}
@@ -1513,16 +1568,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if groupKey is not None:
-            kwargs['groupKey'] = groupKey
+            kwargs["groupKey"] = groupKey
         if memberKey is not None:
-            kwargs['memberKey'] = memberKey
+            kwargs["memberKey"] = memberKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.members().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.members().patch(**kwargs) # type: ignore
@@ -1531,8 +1587,8 @@ class GoogleAdminDataSource:
     async def mobiledevices_action(
         self,
         customerId: str,
-        resourceId: str
-    ) -> Dict[str, Any]:
+        resourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Takes an action that affects a mobile device. For example, remotely wiping a device.
 
         HTTP POST admin/directory/v1/customer/{customerId}/devices/mobile/{resourceId}/action
@@ -1543,16 +1599,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if resourceId is not None:
-            kwargs['resourceId'] = resourceId
+            kwargs["resourceId"] = resourceId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.mobiledevices().action(**kwargs, body=body) # type: ignore
         else:
             request = self.client.mobiledevices().action(**kwargs) # type: ignore
@@ -1561,8 +1618,8 @@ class GoogleAdminDataSource:
     async def mobiledevices_delete(
         self,
         customerId: str,
-        resourceId: str
-    ) -> Dict[str, Any]:
+        resourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Removes a mobile device.
 
         HTTP DELETE admin/directory/v1/customer/{customerId}/devices/mobile/{resourceId}
@@ -1573,12 +1630,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if resourceId is not None:
-            kwargs['resourceId'] = resourceId
+            kwargs["resourceId"] = resourceId
 
         request = self.client.mobiledevices().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1587,8 +1645,8 @@ class GoogleAdminDataSource:
         self,
         customerId: str,
         resourceId: str,
-        projection: Optional[str] = None
-    ) -> Dict[str, Any]:
+        projection: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a mobile device's properties.
 
         HTTP GET admin/directory/v1/customer/{customerId}/devices/mobile/{resourceId}
@@ -1600,14 +1658,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if resourceId is not None:
-            kwargs['resourceId'] = resourceId
+            kwargs["resourceId"] = resourceId
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
 
         request = self.client.mobiledevices().get(**kwargs) # type: ignore
         return request.execute()
@@ -1615,13 +1674,13 @@ class GoogleAdminDataSource:
     async def mobiledevices_list(
         self,
         customerId: str,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        projection: Optional[str] = None,
-        query: Optional[str] = None,
-        sortOrder: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        projection: str | None = None,
+        query: str | None = None,
+        sortOrder: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of all user-owned mobile devices for an account. To retrieve a list that includes company-owned devices, use the Cloud Identity [Devices API](https://cloud.google.com/identity/docs/concepts/overview-devices) instead. This method times out after 60 minutes. For more information, see [Troubleshoot error codes](https://developers.google.com/workspace/admin/directory/v1/guides/troubleshoot-error-codes).
 
         HTTP GET admin/directory/v1/customer/{customerId}/devices/mobile
@@ -1637,22 +1696,23 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
         if query is not None:
-            kwargs['query'] = query
+            kwargs["query"] = query
         if sortOrder is not None:
-            kwargs['sortOrder'] = sortOrder
+            kwargs["sortOrder"] = sortOrder
 
         request = self.client.mobiledevices().list(**kwargs) # type: ignore
         return request.execute()
@@ -1660,8 +1720,8 @@ class GoogleAdminDataSource:
     async def orgunits_delete(
         self,
         customerId: str,
-        orgUnitPath: str
-    ) -> Dict[str, Any]:
+        orgUnitPath: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Removes an organizational unit.
 
         HTTP DELETE admin/directory/v1/customer/{customerId}/orgunits/{+orgUnitPath}
@@ -1672,12 +1732,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
 
         request = self.client.orgunits().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1685,8 +1746,8 @@ class GoogleAdminDataSource:
     async def orgunits_get(
         self,
         customerId: str,
-        orgUnitPath: str
-    ) -> Dict[str, Any]:
+        orgUnitPath: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves an organizational unit.
 
         HTTP GET admin/directory/v1/customer/{customerId}/orgunits/{+orgUnitPath}
@@ -1697,20 +1758,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
 
         request = self.client.orgunits().get(**kwargs) # type: ignore
         return request.execute()
 
     async def orgunits_insert(
         self,
-        customerId: str
-    ) -> Dict[str, Any]:
+        customerId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Adds an organizational unit.
 
         HTTP POST admin/directory/v1/customer/{customerId}/orgunits
@@ -1720,14 +1782,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.orgunits().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.orgunits().insert(**kwargs) # type: ignore
@@ -1736,9 +1799,9 @@ class GoogleAdminDataSource:
     async def orgunits_list(
         self,
         customerId: str,
-        orgUnitPath: Optional[str] = None,
-        type: Optional[str] = None
-    ) -> Dict[str, Any]:
+        orgUnitPath: str | None = None,
+        type: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a list of all organizational units for an account.
 
         HTTP GET admin/directory/v1/customer/{customerId}/orgunits
@@ -1750,14 +1813,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
         if type is not None:
-            kwargs['type'] = type
+            kwargs["type"] = type
 
         request = self.client.orgunits().list(**kwargs) # type: ignore
         return request.execute()
@@ -1765,8 +1829,8 @@ class GoogleAdminDataSource:
     async def orgunits_update(
         self,
         customerId: str,
-        orgUnitPath: str
-    ) -> Dict[str, Any]:
+        orgUnitPath: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates an organizational unit.
 
         HTTP PUT admin/directory/v1/customer/{customerId}/orgunits/{+orgUnitPath}
@@ -1777,16 +1841,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.orgunits().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.orgunits().update(**kwargs) # type: ignore
@@ -1795,8 +1860,8 @@ class GoogleAdminDataSource:
     async def orgunits_patch(
         self,
         customerId: str,
-        orgUnitPath: str
-    ) -> Dict[str, Any]:
+        orgUnitPath: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates an organizational unit. This method supports [patch semantics](https://developers.google.com/workspace/admin/directory/v1/guides/performance#patch)
 
         HTTP PATCH admin/directory/v1/customer/{customerId}/orgunits/{+orgUnitPath}
@@ -1807,16 +1872,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if orgUnitPath is not None:
-            kwargs['orgUnitPath'] = orgUnitPath
+            kwargs["orgUnitPath"] = orgUnitPath
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.orgunits().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.orgunits().patch(**kwargs) # type: ignore
@@ -1824,8 +1890,8 @@ class GoogleAdminDataSource:
 
     async def privileges_list(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of all privileges for a customer.
 
         HTTP GET admin/directory/v1/customer/{customer}/roles/ALL/privileges
@@ -1835,10 +1901,11 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         request = self.client.privileges().list(**kwargs) # type: ignore
         return request.execute()
@@ -1846,8 +1913,8 @@ class GoogleAdminDataSource:
     async def role_assignments_delete(
         self,
         customer: str,
-        roleAssignmentId: str
-    ) -> Dict[str, Any]:
+        roleAssignmentId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a role assignment.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/roleassignments/{roleAssignmentId}
@@ -1858,12 +1925,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if roleAssignmentId is not None:
-            kwargs['roleAssignmentId'] = roleAssignmentId
+            kwargs["roleAssignmentId"] = roleAssignmentId
 
         request = self.client.roleAssignments().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1871,8 +1939,8 @@ class GoogleAdminDataSource:
     async def role_assignments_get(
         self,
         customer: str,
-        roleAssignmentId: str
-    ) -> Dict[str, Any]:
+        roleAssignmentId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a role assignment.
 
         HTTP GET admin/directory/v1/customer/{customer}/roleassignments/{roleAssignmentId}
@@ -1883,20 +1951,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if roleAssignmentId is not None:
-            kwargs['roleAssignmentId'] = roleAssignmentId
+            kwargs["roleAssignmentId"] = roleAssignmentId
 
         request = self.client.roleAssignments().get(**kwargs) # type: ignore
         return request.execute()
 
     async def role_assignments_insert(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a role assignment.
 
         HTTP POST admin/directory/v1/customer/{customer}/roleassignments
@@ -1906,14 +1975,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.roleAssignments().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roleAssignments().insert(**kwargs) # type: ignore
@@ -1922,12 +1992,12 @@ class GoogleAdminDataSource:
     async def role_assignments_list(
         self,
         customer: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        roleId: Optional[str] = None,
-        userKey: Optional[str] = None,
-        includeIndirectRoleAssignments: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        roleId: str | None = None,
+        userKey: str | None = None,
+        includeIndirectRoleAssignments: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of all roleAssignments.
 
         HTTP GET admin/directory/v1/customer/{customer}/roleassignments
@@ -1942,20 +2012,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if roleId is not None:
-            kwargs['roleId'] = roleId
+            kwargs["roleId"] = roleId
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if includeIndirectRoleAssignments is not None:
-            kwargs['includeIndirectRoleAssignments'] = includeIndirectRoleAssignments
+            kwargs["includeIndirectRoleAssignments"] = includeIndirectRoleAssignments
 
         request = self.client.roleAssignments().list(**kwargs) # type: ignore
         return request.execute()
@@ -1963,8 +2034,8 @@ class GoogleAdminDataSource:
     async def resources_buildings_delete(
         self,
         customer: str,
-        buildingId: str
-    ) -> Dict[str, Any]:
+        buildingId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a building.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/resources/buildings/{buildingId}
@@ -1975,12 +2046,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if buildingId is not None:
-            kwargs['buildingId'] = buildingId
+            kwargs["buildingId"] = buildingId
 
         request = self.client.resources_buildings().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1988,8 +2060,8 @@ class GoogleAdminDataSource:
     async def resources_buildings_get(
         self,
         customer: str,
-        buildingId: str
-    ) -> Dict[str, Any]:
+        buildingId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a building.
 
         HTTP GET admin/directory/v1/customer/{customer}/resources/buildings/{buildingId}
@@ -2000,12 +2072,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if buildingId is not None:
-            kwargs['buildingId'] = buildingId
+            kwargs["buildingId"] = buildingId
 
         request = self.client.resources_buildings().get(**kwargs) # type: ignore
         return request.execute()
@@ -2013,8 +2086,8 @@ class GoogleAdminDataSource:
     async def resources_buildings_insert(
         self,
         customer: str,
-        coordinatesSource: Optional[str] = None
-    ) -> Dict[str, Any]:
+        coordinatesSource: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Inserts a building.
 
         HTTP POST admin/directory/v1/customer/{customer}/resources/buildings
@@ -2025,16 +2098,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if coordinatesSource is not None:
-            kwargs['coordinatesSource'] = coordinatesSource
+            kwargs["coordinatesSource"] = coordinatesSource
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_buildings().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_buildings().insert(**kwargs) # type: ignore
@@ -2043,9 +2117,9 @@ class GoogleAdminDataSource:
     async def resources_buildings_list(
         self,
         customer: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a list of buildings for an account.
 
         HTTP GET admin/directory/v1/customer/{customer}/resources/buildings
@@ -2057,14 +2131,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
         request = self.client.resources_buildings().list(**kwargs) # type: ignore
         return request.execute()
@@ -2073,8 +2148,8 @@ class GoogleAdminDataSource:
         self,
         customer: str,
         buildingId: str,
-        coordinatesSource: Optional[str] = None
-    ) -> Dict[str, Any]:
+        coordinatesSource: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a building.
 
         HTTP PUT admin/directory/v1/customer/{customer}/resources/buildings/{buildingId}
@@ -2086,18 +2161,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if buildingId is not None:
-            kwargs['buildingId'] = buildingId
+            kwargs["buildingId"] = buildingId
         if coordinatesSource is not None:
-            kwargs['coordinatesSource'] = coordinatesSource
+            kwargs["coordinatesSource"] = coordinatesSource
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_buildings().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_buildings().update(**kwargs) # type: ignore
@@ -2107,8 +2183,8 @@ class GoogleAdminDataSource:
         self,
         customer: str,
         buildingId: str,
-        coordinatesSource: Optional[str] = None
-    ) -> Dict[str, Any]:
+        coordinatesSource: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Patches a building.
 
         HTTP PATCH admin/directory/v1/customer/{customer}/resources/buildings/{buildingId}
@@ -2120,18 +2196,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if buildingId is not None:
-            kwargs['buildingId'] = buildingId
+            kwargs["buildingId"] = buildingId
         if coordinatesSource is not None:
-            kwargs['coordinatesSource'] = coordinatesSource
+            kwargs["coordinatesSource"] = coordinatesSource
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_buildings().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_buildings().patch(**kwargs) # type: ignore
@@ -2140,8 +2217,8 @@ class GoogleAdminDataSource:
     async def resources_calendars_delete(
         self,
         customer: str,
-        calendarResourceId: str
-    ) -> Dict[str, Any]:
+        calendarResourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a calendar resource.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/resources/calendars/{calendarResourceId}
@@ -2152,12 +2229,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if calendarResourceId is not None:
-            kwargs['calendarResourceId'] = calendarResourceId
+            kwargs["calendarResourceId"] = calendarResourceId
 
         request = self.client.resources_calendars().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2165,8 +2243,8 @@ class GoogleAdminDataSource:
     async def resources_calendars_get(
         self,
         customer: str,
-        calendarResourceId: str
-    ) -> Dict[str, Any]:
+        calendarResourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a calendar resource.
 
         HTTP GET admin/directory/v1/customer/{customer}/resources/calendars/{calendarResourceId}
@@ -2177,20 +2255,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if calendarResourceId is not None:
-            kwargs['calendarResourceId'] = calendarResourceId
+            kwargs["calendarResourceId"] = calendarResourceId
 
         request = self.client.resources_calendars().get(**kwargs) # type: ignore
         return request.execute()
 
     async def resources_calendars_insert(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Inserts a calendar resource.
 
         HTTP POST admin/directory/v1/customer/{customer}/resources/calendars
@@ -2200,14 +2279,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_calendars().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_calendars().insert(**kwargs) # type: ignore
@@ -2216,11 +2296,11 @@ class GoogleAdminDataSource:
     async def resources_calendars_list(
         self,
         customer: str,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        query: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a list of calendar resources for an account.
 
         HTTP GET admin/directory/v1/customer/{customer}/resources/calendars
@@ -2234,18 +2314,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if query is not None:
-            kwargs['query'] = query
+            kwargs["query"] = query
 
         request = self.client.resources_calendars().list(**kwargs) # type: ignore
         return request.execute()
@@ -2253,8 +2334,8 @@ class GoogleAdminDataSource:
     async def resources_calendars_update(
         self,
         customer: str,
-        calendarResourceId: str
-    ) -> Dict[str, Any]:
+        calendarResourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a calendar resource. This method supports patch semantics, meaning you only need to include the fields you wish to update. Fields that are not present in the request will be preserved.
 
         HTTP PUT admin/directory/v1/customer/{customer}/resources/calendars/{calendarResourceId}
@@ -2265,16 +2346,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if calendarResourceId is not None:
-            kwargs['calendarResourceId'] = calendarResourceId
+            kwargs["calendarResourceId"] = calendarResourceId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_calendars().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_calendars().update(**kwargs) # type: ignore
@@ -2283,8 +2365,8 @@ class GoogleAdminDataSource:
     async def resources_calendars_patch(
         self,
         customer: str,
-        calendarResourceId: str
-    ) -> Dict[str, Any]:
+        calendarResourceId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Patches a calendar resource.
 
         HTTP PATCH admin/directory/v1/customer/{customer}/resources/calendars/{calendarResourceId}
@@ -2295,16 +2377,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if calendarResourceId is not None:
-            kwargs['calendarResourceId'] = calendarResourceId
+            kwargs["calendarResourceId"] = calendarResourceId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_calendars().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_calendars().patch(**kwargs) # type: ignore
@@ -2313,8 +2396,8 @@ class GoogleAdminDataSource:
     async def resources_features_delete(
         self,
         customer: str,
-        featureKey: str
-    ) -> Dict[str, Any]:
+        featureKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a feature.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/resources/features/{featureKey}
@@ -2325,12 +2408,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if featureKey is not None:
-            kwargs['featureKey'] = featureKey
+            kwargs["featureKey"] = featureKey
 
         request = self.client.resources_features().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2338,8 +2422,8 @@ class GoogleAdminDataSource:
     async def resources_features_get(
         self,
         customer: str,
-        featureKey: str
-    ) -> Dict[str, Any]:
+        featureKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a feature.
 
         HTTP GET admin/directory/v1/customer/{customer}/resources/features/{featureKey}
@@ -2350,20 +2434,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if featureKey is not None:
-            kwargs['featureKey'] = featureKey
+            kwargs["featureKey"] = featureKey
 
         request = self.client.resources_features().get(**kwargs) # type: ignore
         return request.execute()
 
     async def resources_features_insert(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Inserts a feature.
 
         HTTP POST admin/directory/v1/customer/{customer}/resources/features
@@ -2373,14 +2458,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_features().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().insert(**kwargs) # type: ignore
@@ -2389,9 +2475,9 @@ class GoogleAdminDataSource:
     async def resources_features_list(
         self,
         customer: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a list of features for an account.
 
         HTTP GET admin/directory/v1/customer/{customer}/resources/features
@@ -2403,14 +2489,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
         request = self.client.resources_features().list(**kwargs) # type: ignore
         return request.execute()
@@ -2418,8 +2505,8 @@ class GoogleAdminDataSource:
     async def resources_features_rename(
         self,
         customer: str,
-        oldName: str
-    ) -> Dict[str, Any]:
+        oldName: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Renames a feature.
 
         HTTP POST admin/directory/v1/customer/{customer}/resources/features/{oldName}/rename
@@ -2430,16 +2517,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if oldName is not None:
-            kwargs['oldName'] = oldName
+            kwargs["oldName"] = oldName
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_features().rename(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().rename(**kwargs) # type: ignore
@@ -2448,8 +2536,8 @@ class GoogleAdminDataSource:
     async def resources_features_update(
         self,
         customer: str,
-        featureKey: str
-    ) -> Dict[str, Any]:
+        featureKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a feature.
 
         HTTP PUT admin/directory/v1/customer/{customer}/resources/features/{featureKey}
@@ -2460,16 +2548,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if featureKey is not None:
-            kwargs['featureKey'] = featureKey
+            kwargs["featureKey"] = featureKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_features().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().update(**kwargs) # type: ignore
@@ -2478,8 +2567,8 @@ class GoogleAdminDataSource:
     async def resources_features_patch(
         self,
         customer: str,
-        featureKey: str
-    ) -> Dict[str, Any]:
+        featureKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Patches a feature.
 
         HTTP PATCH admin/directory/v1/customer/{customer}/resources/features/{featureKey}
@@ -2490,16 +2579,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if featureKey is not None:
-            kwargs['featureKey'] = featureKey
+            kwargs["featureKey"] = featureKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.resources_features().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().patch(**kwargs) # type: ignore
@@ -2508,8 +2598,8 @@ class GoogleAdminDataSource:
     async def roles_delete(
         self,
         customer: str,
-        roleId: str
-    ) -> Dict[str, Any]:
+        roleId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a role.
 
         HTTP DELETE admin/directory/v1/customer/{customer}/roles/{roleId}
@@ -2520,12 +2610,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if roleId is not None:
-            kwargs['roleId'] = roleId
+            kwargs["roleId"] = roleId
 
         request = self.client.roles().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2533,8 +2624,8 @@ class GoogleAdminDataSource:
     async def roles_get(
         self,
         customer: str,
-        roleId: str
-    ) -> Dict[str, Any]:
+        roleId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a role.
 
         HTTP GET admin/directory/v1/customer/{customer}/roles/{roleId}
@@ -2545,20 +2636,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if roleId is not None:
-            kwargs['roleId'] = roleId
+            kwargs["roleId"] = roleId
 
         request = self.client.roles().get(**kwargs) # type: ignore
         return request.execute()
 
     async def roles_insert(
         self,
-        customer: str
-    ) -> Dict[str, Any]:
+        customer: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a role.
 
         HTTP POST admin/directory/v1/customer/{customer}/roles
@@ -2568,14 +2660,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.roles().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().insert(**kwargs) # type: ignore
@@ -2584,9 +2677,9 @@ class GoogleAdminDataSource:
     async def roles_list(
         self,
         customer: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of all the roles in a domain.
 
         HTTP GET admin/directory/v1/customer/{customer}/roles
@@ -2598,14 +2691,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
         request = self.client.roles().list(**kwargs) # type: ignore
         return request.execute()
@@ -2613,8 +2707,8 @@ class GoogleAdminDataSource:
     async def roles_update(
         self,
         customer: str,
-        roleId: str
-    ) -> Dict[str, Any]:
+        roleId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a role.
 
         HTTP PUT admin/directory/v1/customer/{customer}/roles/{roleId}
@@ -2625,16 +2719,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if roleId is not None:
-            kwargs['roleId'] = roleId
+            kwargs["roleId"] = roleId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.roles().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().update(**kwargs) # type: ignore
@@ -2643,8 +2738,8 @@ class GoogleAdminDataSource:
     async def roles_patch(
         self,
         customer: str,
-        roleId: str
-    ) -> Dict[str, Any]:
+        roleId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Patches a role.
 
         HTTP PATCH admin/directory/v1/customer/{customer}/roles/{roleId}
@@ -2655,16 +2750,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if roleId is not None:
-            kwargs['roleId'] = roleId
+            kwargs["roleId"] = roleId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.roles().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().patch(**kwargs) # type: ignore
@@ -2673,8 +2769,8 @@ class GoogleAdminDataSource:
     async def schemas_delete(
         self,
         customerId: str,
-        schemaKey: str
-    ) -> Dict[str, Any]:
+        schemaKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a schema.
 
         HTTP DELETE admin/directory/v1/customer/{customerId}/schemas/{schemaKey}
@@ -2685,12 +2781,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if schemaKey is not None:
-            kwargs['schemaKey'] = schemaKey
+            kwargs["schemaKey"] = schemaKey
 
         request = self.client.schemas().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2698,8 +2795,8 @@ class GoogleAdminDataSource:
     async def schemas_get(
         self,
         customerId: str,
-        schemaKey: str
-    ) -> Dict[str, Any]:
+        schemaKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a schema.
 
         HTTP GET admin/directory/v1/customer/{customerId}/schemas/{schemaKey}
@@ -2710,20 +2807,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if schemaKey is not None:
-            kwargs['schemaKey'] = schemaKey
+            kwargs["schemaKey"] = schemaKey
 
         request = self.client.schemas().get(**kwargs) # type: ignore
         return request.execute()
 
     async def schemas_insert(
         self,
-        customerId: str
-    ) -> Dict[str, Any]:
+        customerId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a schema.
 
         HTTP POST admin/directory/v1/customer/{customerId}/schemas
@@ -2733,14 +2831,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.schemas().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.schemas().insert(**kwargs) # type: ignore
@@ -2748,8 +2847,8 @@ class GoogleAdminDataSource:
 
     async def schemas_list(
         self,
-        customerId: str
-    ) -> Dict[str, Any]:
+        customerId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves all schemas for a customer.
 
         HTTP GET admin/directory/v1/customer/{customerId}/schemas
@@ -2759,10 +2858,11 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
 
         request = self.client.schemas().list(**kwargs) # type: ignore
         return request.execute()
@@ -2770,8 +2870,8 @@ class GoogleAdminDataSource:
     async def schemas_patch(
         self,
         customerId: str,
-        schemaKey: str
-    ) -> Dict[str, Any]:
+        schemaKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Patches a schema.
 
         HTTP PATCH admin/directory/v1/customer/{customerId}/schemas/{schemaKey}
@@ -2782,16 +2882,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if schemaKey is not None:
-            kwargs['schemaKey'] = schemaKey
+            kwargs["schemaKey"] = schemaKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.schemas().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.schemas().patch(**kwargs) # type: ignore
@@ -2800,8 +2901,8 @@ class GoogleAdminDataSource:
     async def schemas_update(
         self,
         customerId: str,
-        schemaKey: str
-    ) -> Dict[str, Any]:
+        schemaKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a schema.
 
         HTTP PUT admin/directory/v1/customer/{customerId}/schemas/{schemaKey}
@@ -2812,16 +2913,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customerId is not None:
-            kwargs['customerId'] = customerId
+            kwargs["customerId"] = customerId
         if schemaKey is not None:
-            kwargs['schemaKey'] = schemaKey
+            kwargs["schemaKey"] = schemaKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.schemas().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.schemas().update(**kwargs) # type: ignore
@@ -2830,8 +2932,8 @@ class GoogleAdminDataSource:
     async def tokens_delete(
         self,
         userKey: str,
-        clientId: str
-    ) -> Dict[str, Any]:
+        clientId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes all access tokens issued by a user for an application.
 
         HTTP DELETE admin/directory/v1/users/{userKey}/tokens/{clientId}
@@ -2842,12 +2944,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if clientId is not None:
-            kwargs['clientId'] = clientId
+            kwargs["clientId"] = clientId
 
         request = self.client.tokens().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2855,8 +2958,8 @@ class GoogleAdminDataSource:
     async def tokens_get(
         self,
         userKey: str,
-        clientId: str
-    ) -> Dict[str, Any]:
+        clientId: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Gets information about an access token issued by a user.
 
         HTTP GET admin/directory/v1/users/{userKey}/tokens/{clientId}
@@ -2867,20 +2970,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if clientId is not None:
-            kwargs['clientId'] = clientId
+            kwargs["clientId"] = clientId
 
         request = self.client.tokens().get(**kwargs) # type: ignore
         return request.execute()
 
     async def tokens_list(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Returns the set of tokens specified user has issued to 3rd party applications.
 
         HTTP GET admin/directory/v1/users/{userKey}/tokens
@@ -2890,18 +2994,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.tokens().list(**kwargs) # type: ignore
         return request.execute()
 
     async def two_step_verification_turn_off(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Turns off 2-Step Verification for user.
 
         HTTP POST admin/directory/v1/users/{userKey}/twoStepVerification/turnOff
@@ -2911,14 +3016,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.twoStepVerification().turnOff(**kwargs, body=body) # type: ignore
         else:
             request = self.client.twoStepVerification().turnOff(**kwargs) # type: ignore
@@ -2926,8 +3032,8 @@ class GoogleAdminDataSource:
 
     async def users_delete(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Deletes a user.
 
         HTTP DELETE admin/directory/v1/users/{userKey}
@@ -2937,10 +3043,11 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.users().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2948,10 +3055,10 @@ class GoogleAdminDataSource:
     async def users_get(
         self,
         userKey: str,
-        customFieldMask: Optional[str] = None,
-        projection: Optional[str] = None,
-        viewType: Optional[str] = None
-    ) -> Dict[str, Any]:
+        customFieldMask: str | None = None,
+        projection: str | None = None,
+        viewType: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a user.
 
         HTTP GET admin/directory/v1/users/{userKey}
@@ -2964,24 +3071,25 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if customFieldMask is not None:
-            kwargs['customFieldMask'] = customFieldMask
+            kwargs["customFieldMask"] = customFieldMask
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
         if viewType is not None:
-            kwargs['viewType'] = viewType
+            kwargs["viewType"] = viewType
 
         request = self.client.users().get(**kwargs) # type: ignore
         return request.execute()
 
     async def users_insert(
         self,
-        resolveConflictAccount: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        resolveConflictAccount: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Creates a user. Mutate calls immediately following user creation might sometimes fail as the user isn't fully created due to propagation delay in our backends. Check the error details for the "User creation is not complete" message to see if this is the case. Retrying the calls after some time can help in this case. If `resolveConflictAccount` is set to `true`, a `202` response code means that a conflicting unmanaged account exists and was invited to join the organization. A `409` response code means that a conflicting account exists so the user wasn't created based on the [handling unmanaged user accounts](https://support.google.com/a/answer/11112794) option selected.
 
         HTTP POST admin/directory/v1/users
@@ -2991,14 +3099,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if resolveConflictAccount is not None:
-            kwargs['resolveConflictAccount'] = resolveConflictAccount
+            kwargs["resolveConflictAccount"] = resolveConflictAccount
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().insert(**kwargs) # type: ignore
@@ -3006,19 +3115,19 @@ class GoogleAdminDataSource:
 
     async def users_list(
         self,
-        customFieldMask: Optional[str] = None,
-        customer: Optional[str] = None,
-        domain: Optional[str] = None,
-        event: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        projection: Optional[str] = None,
-        query: Optional[str] = None,
-        showDeleted: Optional[str] = None,
-        sortOrder: Optional[str] = None,
-        viewType: Optional[str] = None
-    ) -> Dict[str, Any]:
+        customFieldMask: str | None = None,
+        customer: str | None = None,
+        domain: str | None = None,
+        event: str | None = None,
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        projection: str | None = None,
+        query: str | None = None,
+        showDeleted: str | None = None,
+        sortOrder: str | None = None,
+        viewType: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves a paginated list of either deleted users or all users in a domain.
 
         HTTP GET admin/directory/v1/users
@@ -3039,40 +3148,41 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if customFieldMask is not None:
-            kwargs['customFieldMask'] = customFieldMask
+            kwargs["customFieldMask"] = customFieldMask
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if domain is not None:
-            kwargs['domain'] = domain
+            kwargs["domain"] = domain
         if event is not None:
-            kwargs['event'] = event
+            kwargs["event"] = event
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
         if query is not None:
-            kwargs['query'] = query
+            kwargs["query"] = query
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if sortOrder is not None:
-            kwargs['sortOrder'] = sortOrder
+            kwargs["sortOrder"] = sortOrder
         if viewType is not None:
-            kwargs['viewType'] = viewType
+            kwargs["viewType"] = viewType
 
         request = self.client.users().list(**kwargs) # type: ignore
         return request.execute()
 
     async def users_make_admin(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Makes a user a super administrator.
 
         HTTP POST admin/directory/v1/users/{userKey}/makeAdmin
@@ -3082,14 +3192,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().makeAdmin(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().makeAdmin(**kwargs) # type: ignore
@@ -3097,8 +3208,8 @@ class GoogleAdminDataSource:
 
     async def users_patch(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a user using patch semantics. The update method should be used instead, because it also supports patch semantics and has better performance. If you're mapping an external identity to a Google identity, use the [`update`](https://developers.google.com/workspace/admin/directory/v1/reference/users/update) method instead of the `patch` method. This method is unable to clear fields that contain repeated objects (`addresses`, `phones`, etc). Use the update method instead.
 
         HTTP PATCH admin/directory/v1/users/{userKey}
@@ -3108,14 +3219,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().patch(**kwargs) # type: ignore
@@ -3123,8 +3235,8 @@ class GoogleAdminDataSource:
 
     async def users_undelete(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Undeletes a deleted user.
 
         HTTP POST admin/directory/v1/users/{userKey}/undelete
@@ -3134,14 +3246,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().undelete(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().undelete(**kwargs) # type: ignore
@@ -3149,8 +3262,8 @@ class GoogleAdminDataSource:
 
     async def users_update(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Updates a user. This method supports patch semantics, meaning that you only need to include the fields you wish to update. Fields that are not present in the request will be preserved, and fields set to `null` will be cleared. For repeating fields that contain arrays, individual items in the array can't be patched piecemeal; they must be supplied in the request body with the desired values for all items. See the [user accounts guide](https://developers.google.com/workspace/admin/directory/v1/guides/manage-users#update_user) for more information.
 
         HTTP PUT admin/directory/v1/users/{userKey}
@@ -3160,14 +3273,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().update(**kwargs) # type: ignore
@@ -3175,19 +3289,19 @@ class GoogleAdminDataSource:
 
     async def users_watch(
         self,
-        domain: Optional[str] = None,
-        customer: Optional[str] = None,
-        event: Optional[str] = None,
-        customFieldMask: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        projection: Optional[str] = None,
-        query: Optional[str] = None,
-        showDeleted: Optional[str] = None,
-        sortOrder: Optional[str] = None,
-        viewType: Optional[str] = None
-    ) -> Dict[str, Any]:
+        domain: str | None = None,
+        customer: str | None = None,
+        event: str | None = None,
+        customFieldMask: str | None = None,
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        projection: str | None = None,
+        query: str | None = None,
+        showDeleted: str | None = None,
+        sortOrder: str | None = None,
+        viewType: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Watches for changes in users list.
 
         HTTP POST admin/directory/v1/users/watch
@@ -3208,36 +3322,37 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if domain is not None:
-            kwargs['domain'] = domain
+            kwargs["domain"] = domain
         if customer is not None:
-            kwargs['customer'] = customer
+            kwargs["customer"] = customer
         if event is not None:
-            kwargs['event'] = event
+            kwargs["event"] = event
         if customFieldMask is not None:
-            kwargs['customFieldMask'] = customFieldMask
+            kwargs["customFieldMask"] = customFieldMask
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if projection is not None:
-            kwargs['projection'] = projection
+            kwargs["projection"] = projection
         if query is not None:
-            kwargs['query'] = query
+            kwargs["query"] = query
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if sortOrder is not None:
-            kwargs['sortOrder'] = sortOrder
+            kwargs["sortOrder"] = sortOrder
         if viewType is not None:
-            kwargs['viewType'] = viewType
+            kwargs["viewType"] = viewType
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().watch(**kwargs) # type: ignore
@@ -3245,8 +3360,8 @@ class GoogleAdminDataSource:
 
     async def users_sign_out(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Signs a user out of all web and device sessions and reset their sign-in cookies. User will have to sign in by authenticating again.
 
         HTTP POST admin/directory/v1/users/{userKey}/signOut
@@ -3256,14 +3371,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users().signOut(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().signOut(**kwargs) # type: ignore
@@ -3272,8 +3388,8 @@ class GoogleAdminDataSource:
     async def users_aliases_delete(
         self,
         userKey: str,
-        alias: str
-    ) -> Dict[str, Any]:
+        alias: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Removes an alias.
 
         HTTP DELETE admin/directory/v1/users/{userKey}/aliases/{alias}
@@ -3284,20 +3400,21 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if alias is not None:
-            kwargs['alias'] = alias
+            kwargs["alias"] = alias
 
         request = self.client.users_aliases().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def users_aliases_insert(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Adds an alias.
 
         HTTP POST admin/directory/v1/users/{userKey}/aliases
@@ -3307,14 +3424,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users_aliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_aliases().insert(**kwargs) # type: ignore
@@ -3323,8 +3441,8 @@ class GoogleAdminDataSource:
     async def users_aliases_list(
         self,
         userKey: str,
-        event: Optional[str] = None
-    ) -> Dict[str, Any]:
+        event: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Lists all aliases for a user.
 
         HTTP GET admin/directory/v1/users/{userKey}/aliases
@@ -3335,12 +3453,13 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if event is not None:
-            kwargs['event'] = event
+            kwargs["event"] = event
 
         request = self.client.users_aliases().list(**kwargs) # type: ignore
         return request.execute()
@@ -3348,8 +3467,8 @@ class GoogleAdminDataSource:
     async def users_aliases_watch(
         self,
         userKey: str,
-        event: Optional[str] = None
-    ) -> Dict[str, Any]:
+        event: str | None = None,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Watches for changes in users list.
 
         HTTP POST admin/directory/v1/users/{userKey}/aliases/watch
@@ -3360,16 +3479,17 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
         if event is not None:
-            kwargs['event'] = event
+            kwargs["event"] = event
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users_aliases().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_aliases().watch(**kwargs) # type: ignore
@@ -3377,8 +3497,8 @@ class GoogleAdminDataSource:
 
     async def users_photos_delete(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Removes the user's photo.
 
         HTTP DELETE admin/directory/v1/users/{userKey}/photos/thumbnail
@@ -3388,18 +3508,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.users_photos().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def users_photos_get(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Retrieves the user's photo.
 
         HTTP GET admin/directory/v1/users/{userKey}/photos/thumbnail
@@ -3409,18 +3530,19 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.users_photos().get(**kwargs) # type: ignore
         return request.execute()
 
     async def users_photos_update(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Adds a photo for the user.
 
         HTTP PUT admin/directory/v1/users/{userKey}/photos/thumbnail
@@ -3430,14 +3552,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users_photos().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_photos().update(**kwargs) # type: ignore
@@ -3445,8 +3568,8 @@ class GoogleAdminDataSource:
 
     async def users_photos_patch(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Adds a photo for the user. This method supports [patch semantics](https://developers.google.com/workspace/admin/directory/v1/guides/performance#patch).
 
         HTTP PATCH admin/directory/v1/users/{userKey}/photos/thumbnail
@@ -3456,14 +3579,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.users_photos().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_photos().patch(**kwargs) # type: ignore
@@ -3471,8 +3595,8 @@ class GoogleAdminDataSource:
 
     async def verification_codes_generate(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Generates new backup verification codes for the user.
 
         HTTP POST admin/directory/v1/users/{userKey}/verificationCodes/generate
@@ -3482,14 +3606,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.verificationCodes().generate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.verificationCodes().generate(**kwargs) # type: ignore
@@ -3497,8 +3622,8 @@ class GoogleAdminDataSource:
 
     async def verification_codes_invalidate(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Invalidates the current backup verification codes for the user.
 
         HTTP POST admin/directory/v1/users/{userKey}/verificationCodes/invalidate
@@ -3508,14 +3633,15 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.verificationCodes().invalidate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.verificationCodes().invalidate(**kwargs) # type: ignore
@@ -3523,8 +3649,8 @@ class GoogleAdminDataSource:
 
     async def verification_codes_list(
         self,
-        userKey: str
-    ) -> Dict[str, Any]:
+        userKey: str,
+    ) -> dict[str, Any]:
         """Google Admin SDK Directory API: Returns the current set of valid backup verification codes for the specified user.
 
         HTTP GET admin/directory/v1/users/{userKey}/verificationCodes
@@ -3534,10 +3660,11 @@ class GoogleAdminDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if userKey is not None:
-            kwargs['userKey'] = userKey
+            kwargs["userKey"] = userKey
 
         request = self.client.verificationCodes().list(**kwargs) # type: ignore
         return request.execute()

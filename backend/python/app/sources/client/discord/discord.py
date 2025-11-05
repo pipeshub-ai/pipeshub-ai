@@ -1,4 +1,4 @@
-from typing import Any, Optional, Union
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -11,11 +11,11 @@ class DiscordResponse(BaseModel):
     """Standardized Discord API response wrapper using Pydantic"""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: Optional[Union[dict[str, object], list[object]]] = Field(
-        None, description="Response data from Discord API (dict or list)"
+    data: dict[str, object] | list[object] | None = Field(
+        None, description="Response data from Discord API (dict or list)",
     )
-    error: Optional[str] = Field(None, description="Error message if the call failed")
-    message: Optional[str] = Field(None, description="Additional message information")
+    error: str | None = Field(None, description="Error message if the call failed")
+    message: str | None = Field(None, description="Additional message information")
 
     class Config:
         """Pydantic configuration"""
@@ -62,7 +62,7 @@ class DiscordTokenConfig(BaseModel):
     """Configuration for Discord REST client via bot token"""
 
     token: str = Field(..., description="The bot token to use for authentication")
-    base_url: Optional[str] = Field(
+    base_url: str | None = Field(
         default="https://discord.com/api/v10",
         description="The base URL of the Discord API",
     )
@@ -135,6 +135,7 @@ class DiscordClient(IClient):
 
         Returns:
             DiscordClient instance
+
         """
         try:
             config = await cls._get_connector_config(logger, config_service)
@@ -152,7 +153,7 @@ class DiscordClient(IClient):
                     raise ValueError(f"Invalid auth type: {auth_type}")
             return cls(client)
         except Exception as e:
-            logger.error(f"Failed to build Discord client from services: {str(e)}")
+            logger.error(f"Failed to build Discord client from services: {e!s}")
             raise
 
     @staticmethod

@@ -11,8 +11,7 @@ class HTMLParser:
         self.converter = DocumentConverter()
 
     def parse_string(self, html_content: str) -> bytes:
-        """
-        Parse HTML content from a string.
+        """Parse HTML content from a string.
 
         Args:
             html_content (str): HTML content as a string
@@ -22,6 +21,7 @@ class HTMLParser:
 
         Raises:
             ValueError: If parsing fails
+
         """
         # Convert string to bytes
         html_bytes = html_content.encode("utf-8")
@@ -29,8 +29,7 @@ class HTMLParser:
 
 
     def parse_file(self, file_path: str) -> DoclingDocument:
-        """
-        Parse HTML content from a file.
+        """Parse HTML content from a file.
 
         Args:
             file_path (str): Path to the HTML file
@@ -40,6 +39,7 @@ class HTMLParser:
 
         Raises:
             ValueError: If parsing fails
+
         """
         result = self.converter.convert(file_path)
 
@@ -49,29 +49,29 @@ class HTMLParser:
         return result.document
 
     def get_base_url_from_html(self, soup: BeautifulSoup) -> str | None:
-        """
-        Extract base URL from HTML document using multiple fallback strategies.
+        """Extract base URL from HTML document using multiple fallback strategies.
 
         Args:
             soup: BeautifulSoup object
 
         Returns:
             Base URL as string, or None if not found
+
         """
         # Strategy 1: Look for <base> tag
-        base_tag = soup.find('base', href=True)
+        base_tag = soup.find("base", href=True)
         if base_tag:
-            return base_tag['href']
+            return base_tag["href"]
 
         # Strategy 2: Look for canonical link
-        canonical = soup.find('link', rel='canonical', href=True)
+        canonical = soup.find("link", rel="canonical", href=True)
         if canonical:
-            canonical_url = canonical['href']
+            canonical_url = canonical["href"]
             parsed = urlparse(canonical_url)
             return f"{parsed.scheme}://{parsed.netloc}"
 
         # Strategy 3: Look for any absolute URL in the document
-        for tag_name, attr in [('link', 'href'), ('script', 'src'), ('img', 'src'), ('a', 'href')]:
+        for tag_name, attr in [("link", "href"), ("script", "src"), ("img", "src"), ("a", "href")]:
             for tag in soup.find_all(tag_name):
                 if tag.get(attr):
                     url = tag[attr]
@@ -83,8 +83,7 @@ class HTMLParser:
 
 
     def replace_relative_image_urls(self, html_string) -> str:
-        """
-        Replace all relative image URLs with absolute URLs.
+        """Replace all relative image URLs with absolute URLs.
         Absolute URLs are left unchanged.
         Base URL is automatically extracted from the HTML document.
 
@@ -93,9 +92,10 @@ class HTMLParser:
 
         Returns:
             Modified HTML string with absolute image URLs
+
         """
         # Parse HTML
-        soup = BeautifulSoup(html_string, 'html.parser')
+        soup = BeautifulSoup(html_string, "html.parser")
         # Get base URL from HTML
         base_url = self.get_base_url_from_html(soup)
 
@@ -105,18 +105,18 @@ class HTMLParser:
 
 
         # Find all img tags
-        images = soup.find_all('img')
+        images = soup.find_all("img")
 
         # Replace relative URLs with absolute URLs
         for img in images:
-            if img.get('src'):
-                original_url = img['src']
+            if img.get("src"):
+                original_url = img["src"]
                 parsed = urlparse(original_url)
 
                 # Only replace if it's a relative URL (no scheme)
                 if not parsed.scheme:
                     absolute_url = urljoin(base_url, original_url)
-                    img['src'] = absolute_url
+                    img["src"] = absolute_url
 
         return str(soup)
 

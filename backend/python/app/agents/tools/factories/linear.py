@@ -1,5 +1,4 @@
-"""
-Client factories for Linear.
+"""Client factories for Linear.
 """
 
 
@@ -15,8 +14,7 @@ class LinearClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger, state=None) -> LinearClient:
         """Create Linear client instance"""
-
         return await LinearClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

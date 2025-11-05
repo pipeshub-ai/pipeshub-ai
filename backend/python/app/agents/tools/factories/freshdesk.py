@@ -1,5 +1,4 @@
-"""
-Client factories for FreshDesk.
+"""Client factories for FreshDesk.
 """
 
 
@@ -15,8 +14,7 @@ class FreshDeskClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> FreshDeskClient:
         """Create FreshDesk client instance"""
-
         return await FreshDeskClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )
