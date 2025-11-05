@@ -693,6 +693,7 @@ class AppUserGroup(BaseModel):
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
+    description: Optional[str] = Field(default=None, description="Description of the user group")
 
     def to_arango_base_user_group(self) -> Dict[str, Any]:
         """

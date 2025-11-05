@@ -207,9 +207,12 @@ class OneDriveConnector(BaseConnector):
             # Get existing record if any
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                connector_name=self.connector_name,
-                external_id=item.id
-            )
+                    connector_name=self.connector_name,
+                    external_id=item.id
+                )
+                existing_file_record = await tx_store.get_file_record_by_id(existing_record.id)
+
+            print("\n !!!!!!!! new item ", item.name)
 
             # Detect changes
             is_new = existing_record is None
@@ -220,18 +223,22 @@ class OneDriveConnector(BaseConnector):
 
             if existing_record:
                 # Check for metadata changes
+                print("!!!!!!!! existing_record ", existing_record)
                 if (existing_record.external_revision_id != item.e_tag or
                     existing_record.record_name != item.name or
                     existing_record.updated_at != int(item.last_modified_date_time.timestamp() * 1000)):
                     metadata_changed = True
                     is_updated = True
-
-                # Check for content changes (different hash)
-                if item.file and hasattr(item.file, 'hashes'):
-                    current_hash = item.file.hashes.quick_xor_hash if item.file.hashes else None
-                    if existing_record.quick_xor_hash != current_hash:
-                        content_changed = True
-                        is_updated = True
+                
+                
+                if existing_file_record:
+                    # Check for content changes (different hash)
+                    if item.file and hasattr(item.file, 'hashes'):
+                        current_hash = item.file.hashes.quick_xor_hash if item.file.hashes else None
+                        if existing_file_record.quick_xor_hash != current_hash:
+                            print("\n\n\n !!!!!!!!!!!!!! content changed:" )
+                            content_changed = True
+                            is_updated = True
 
             # Create/update file record
             signed_url = None
@@ -275,6 +282,9 @@ class OneDriveConnector(BaseConnector):
             if file_record.is_file and file_record.extension is None:
                 return None
 
+            print("\n\n\n!!!!!!! item:", item.name)
+            print("!!!!!!! item details:", item)
+
             # Get current permissions
             permission_result = await self.msgraph_client.get_file_permission(
                 item.parent_reference.drive_id if item.parent_reference else None,
@@ -307,22 +317,25 @@ class OneDriveConnector(BaseConnector):
         """
         permissions = []
 
+        print("!!!!!!! msgraph_permissions:", msgraph_permissions)
+
         for perm in msgraph_permissions:
             try:
                 # Handle user permissions
-                if hasattr(perm, 'granted_to') and perm.granted_to:
-                    if hasattr(perm.granted_to, 'user') and perm.granted_to.user:
-                        user = perm.granted_to.user
+                if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
+                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
+                        user = perm.granted_to_v2.user
                         permissions.append(Permission(
                             external_id=user.id,
                             email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
                             type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
                             entity_type=EntityType.USER
                         ))
+                    
 
                 # Handle group permissions
-                if hasattr(perm, 'granted_to_identities') and perm.granted_to_identities:
-                    for identity in perm.granted_to_identities:
+                if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
+                    for identity in perm.granted_to_identities_v2:
                         if hasattr(identity, 'group') and identity.group:
                             group = identity.group
                             permissions.append(Permission(
@@ -361,6 +374,8 @@ class OneDriveConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
                 continue
+        
+        print("!!!!!!! permissions:", permissions)
 
         return permissions
 
@@ -459,9 +474,8 @@ class OneDriveConnector(BaseConnector):
                         source_user_group_id=group.id,
                         app_name=self.connector_name,
                         name=group.display_name,
-                        mail=group.mail or group.user_principal_name,
                         description=group.description,
-                        created_at_timestamp=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
+                        source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
                     )
 
                     # Create permissions for group members
@@ -471,7 +485,7 @@ class OneDriveConnector(BaseConnector):
                             source_user_id=member.id,
                             email=member.mail or member.user_principal_name,
                             full_name=member.display_name,
-                            created_at_timestamp=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
+                            source_created_at=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
                             app_name=self.connector_name,
                         )
                         app_users.append(app_user)
@@ -528,14 +542,15 @@ class OneDriveConnector(BaseConnector):
                         await self._handle_record_updates(record_update)
                         continue
 
+                    # Handle updates
+                    if record_update.is_updated:
+                        await self._handle_record_updates(record_update)
+                        continue
+
                     if file_record:
                         # Add to batch
                         batch_records.append((file_record, permissions))
                         batch_count += 1
-
-                        # Handle updates if needed
-                        if record_update.is_updated:
-                            await self._handle_record_updates(record_update)
 
                         # Process batch when it reaches the size limit
                         if batch_count >= self.batch_size:
@@ -597,6 +612,9 @@ class OneDriveConnector(BaseConnector):
                 user for user in users
                 if user.email and user.email.lower() in active_user_emails
             ]
+
+            print("\n\n !!!!!!!!!! users_to_sync", users_to_sync)
+            print("\n\n !!!!!!!!!! users", users)
 
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
 
