@@ -5,7 +5,6 @@ from typing import List, Literal
 
 import aiohttp
 import jwt
-from app.utils.chat_helpers import count_tokens_text
 import numpy as np
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
@@ -33,6 +32,7 @@ from app.config.constants.service import (
 )
 from app.modules.extraction.prompt_template import prompt
 from app.modules.transformers.document_extraction import DocumentClassification
+from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
