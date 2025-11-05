@@ -1,6 +1,6 @@
 import logging
 from dataclasses import asdict, dataclass
-from typing import List
+from typing import List, Union
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import storage
@@ -13,7 +13,6 @@ from app.sources.client.iclient import IClient
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
 
-
 # --- 1. The Real SDK Client Wrapper ---
 # This class directly wraps the official SDK, similar to SlackRESTClientViaToken
 class GoogleCloudRESTClientViaServiceAccount:
@@ -22,7 +21,7 @@ class GoogleCloudRESTClientViaServiceAccount:
     It is initialized using a service account JSON file.
     """
 
-    def __init__(self, service_account_json_path: str):
+    def __init__(self, service_account_json_path: str) -> None:
         try:
             self.client = storage.Client.from_service_account_json(
                 service_account_json_path
@@ -45,7 +44,7 @@ class GoogleCloudRESTClientViaServiceAccount:
         """
         return self.client
 
-    def list_buckets(self) -> list[Bucket]:
+    def list_buckets(self) -> List[Bucket]:
         """
         Lists all buckets the service account has access to.
         """
@@ -105,7 +104,7 @@ class GoogleCloudRESTClientViaServiceAccount:
 # --- 2. Stub/Placeholder Client Classes (to match the project pattern) ---
 # These are like SlackRESTClientViaUsernamePassword
 class GoogleCloudRESTClientViaUsernamePassword:
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str, password: str) -> None:
         logger.warning("Google Cloud Storage does not support username/password auth.")
         raise NotImplementedError
 
@@ -114,7 +113,7 @@ class GoogleCloudRESTClientViaUsernamePassword:
 
 
 class GoogleCloudRESTClientViaApiKey:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str) -> None:
         logger.warning(
             "Google Cloud Storage does not support simple API Key auth. Use a Service Account."
         )
@@ -181,9 +180,11 @@ class GoogleCloudClient(IClient):
 
     def __init__(
         self,
-        client: GoogleCloudRESTClientViaServiceAccount
-        | GoogleCloudRESTClientViaUsernamePassword
-        | GoogleCloudRESTClientViaApiKey,
+        client: Union[
+            GoogleCloudRESTClientViaServiceAccount,
+            GoogleCloudRESTClientViaUsernamePassword,
+            GoogleCloudRESTClientViaApiKey,
+        ],
     ) -> None:
         """
         Initialize with a GCS client object.
@@ -192,11 +193,11 @@ class GoogleCloudClient(IClient):
 
     def get_client(
         self,
-    ) -> (
-        GoogleCloudRESTClientViaServiceAccount
-        | GoogleCloudRESTClientViaUsernamePassword
-        | GoogleCloudRESTClientViaApiKey
-    ):
+    ) -> Union[
+        GoogleCloudRESTClientViaServiceAccount,
+        GoogleCloudRESTClientViaUsernamePassword,
+        GoogleCloudRESTClientViaApiKey,
+    ]:
         """
         Return the raw client object.
         """
@@ -206,14 +207,21 @@ class GoogleCloudClient(IClient):
         """
         Return the underlying official SDK client.
         """
-        return self.client.get_storage_client()
+        # Note: The client methods list_buckets, list_blobs, download_blob_as_text are on
+        # the wrapper class, not the storage.Client object returned here.
+        # This method is primarily used internally by the client wrapper itself.
+        if isinstance(self.client, GoogleCloudRESTClientViaServiceAccount):
+            return self.client.get_storage_client()
+        raise NotImplementedError("Cannot get storage client for stubbed auth types.")
 
     @classmethod
     def build_with_config(
         cls,
-        config: GoogleCloudServiceAccountConfig
-        | GoogleCloudUsernamePasswordConfig
-        | GoogleCloudApiKeyConfig,
+        config: Union[
+            GoogleCloudServiceAccountConfig,
+            GoogleCloudUsernamePasswordConfig,
+            GoogleCloudApiKeyConfig,
+        ],
     ) -> "GoogleCloudClient":
         """
         Build GoogleCloudClient with a configuration object.

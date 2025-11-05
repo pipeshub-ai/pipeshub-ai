@@ -1,14 +1,9 @@
-# app/sources/external/google_cloud/example.py
-
 import logging
 import os
 import sys
+from typing import Optional
 
-# Add the project root to the path to allow imports from 'app'
-# FIX: Go up four levels (..) instead of three to reach 'backend/python'
-project_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 sys.path.insert(0, project_root)
 
 try:
@@ -42,13 +37,13 @@ logger = logging.getLogger(__name__)
 # export GCS_TEST_BUCKET_NAME="your-test-bucket-name"
 # export GCS_TEST_FILE_NAME="your-test-file.txt"
 
-SERVICE_ACCOUNT_PATH = os.environ.get("GCS_SERVICE_ACCOUNT_PATH")
-TEST_BUCKET = os.environ.get("GCS_TEST_BUCKET_NAME")
-TEST_FILE = os.environ.get("GCS_TEST_FILE_NAME")
+SERVICE_ACCOUNT_PATH: Optional[str] = os.environ.get("GCS_SERVICE_ACCOUNT_PATH")
+TEST_BUCKET: Optional[str] = os.environ.get("GCS_TEST_BUCKET_NAME")
+TEST_FILE: Optional[str] = os.environ.get("GCS_TEST_FILE_NAME")
 # ---------------------
 
 
-def main():
+def main() -> None:
     """
     Run the example to test the GoogleCloudDataSource.
     """
