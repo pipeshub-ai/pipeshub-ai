@@ -384,7 +384,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         # Process sentences using the lines
         sentences = self._merge_lines_to_sentences(block_lines)
         processed_sentences = []
-        block_text = "\n ".join(sentence["sentence"] for sentence in sentences)
+        block_text = " ".join(sentence["sentence"] for sentence in sentences)
         for sentence in sentences:
             sentence_data = {
                 "content": sentence["sentence"],
@@ -398,7 +398,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         # Create paragraph from block
         paragraph = {
-            "content": " ".join(block_text).strip(),
+            "content": block_text.strip(),
             "bounding_box": self._normalize_bbox(
                 block["bbox"], page_width, page_height,
             ),

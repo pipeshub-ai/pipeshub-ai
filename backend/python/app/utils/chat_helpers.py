@@ -1278,6 +1278,7 @@ def count_tokens_text(text: str,enc) -> int:
             return len(enc.encode(text))
         except Exception:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
+            pass
 
     # Fallback heuristic: ~4 chars per token
     return max(1, len(text) // 4)

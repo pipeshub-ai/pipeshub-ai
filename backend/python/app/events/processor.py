@@ -717,6 +717,8 @@ class Processor:
             paragraphs = ocr_result.get("paragraphs", [])
             sentences = ocr_result.get("sentences", [])
             if paragraphs:
+
+
                 # Join all paragraph content with newlines
                 paragraphs_text = "\n ".join(
                     p["content"].strip()
@@ -738,7 +740,7 @@ class Processor:
                     domain_metadata = record
                     ocr_result["metadata"] = {**record, **file}
                 except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {e!s}")
+                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
                     domain_metadata = None
                     ocr_result["metadata"] = None
 
@@ -775,7 +777,7 @@ class Processor:
                     {
                         "text": s["content"].strip(),
                         "metadata": {
-                            **ocr_result.get("metadata"),
+                            **(ocr_result.get("metadata") or {}),
                             "recordId": recordId,
                             "blockText": s["block_text"],
                             "blockType": BLOCK_TYPE_MAP.get(s.get("block_type", 0)),
