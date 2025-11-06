@@ -1,7 +1,7 @@
 // components/upload/simplified-upload-manager.tsx
 import { Icon } from '@iconify/react';
 import { useDropzone } from 'react-dropzone';
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useRef, useState, useMemo, useEffect } from 'react';
 import cloudIcon from '@iconify-icons/mdi/cloud-upload';
 import folderIcon from '@iconify-icons/mdi/folder-outline';
 import filePlusIcon from '@iconify-icons/mdi/file-plus-outline';
@@ -59,8 +59,8 @@ const FolderInput = React.forwardRef<HTMLInputElement, FolderInputProps>((props,
   <input {...props} ref={ref} />
 ));
 
-// Maximum file size: 30MB in bytes
-const MAX_FILE_SIZE = 30 * 1024 * 1024;
+// Default maximum file size: 30MB in bytes (overridden by platform settings)
+const DEFAULT_MAX_FILE_SIZE = 30 * 1024 * 1024;
 
 export default function UploadManager({
   open,
@@ -75,10 +75,36 @@ export default function UploadManager({
   const [files, setFiles] = useState<ProcessedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState<{
+    currentBatch: number;
+    totalBatches: number;
+    uploadedFiles: number;
+    totalFiles: number;
+  } | null>(null);
   const [uploadError, setUploadError] = useState<{ show: boolean; message: string }>({
     show: false,
     message: '',
   });
+  const [maxFileSize, setMaxFileSize] = useState<number>(DEFAULT_MAX_FILE_SIZE);
+
+  // Load platform settings for max upload size
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await axios.get('/api/v1/configurationManager/platform/settings');
+        const value = Number(res.data?.fileUploadMaxSizeBytes);
+        if (mounted && Number.isFinite(value) && value > 0) {
+          setMaxFileSize(value);
+        }
+      } catch (_e) {
+        // ignore and keep default
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // Refs for file inputs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -128,7 +154,7 @@ export default function UploadManager({
           file,
           path,
           lastModified: file.lastModified || Date.now(),
-          isOversized: file.size > MAX_FILE_SIZE,
+          isOversized: file.size > maxFileSize,
         };
       });
 
@@ -185,6 +211,29 @@ export default function UploadManager({
     }
   };
 
+  // Batch upload configuration
+  const MAX_FILES_PER_REQUEST = 1000; // backend route limit
+  const BATCH_SIZE = 50; // safe per-request files count
+  const CONCURRENCY = 3; // parallel requests
+
+  const chunkArray = <T,>(arr: T[], size: number): T[][] => {
+    if (size <= 0) return [arr];
+    const chunks: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+    return chunks;
+  };
+
+  const buildFormDataForBatch = (batchFiles: ProcessedFile[], kbId: string): FormData => {
+    const formData = new FormData();
+    formData.append('kb_id', kbId);
+    batchFiles.forEach((processedFile) => {
+      formData.append('files', processedFile.file);
+      formData.append('file_paths', processedFile.path);
+      formData.append('last_modified', processedFile.lastModified.toString());
+    });
+    return formData;
+  };
+
   const handleUpload = async () => {
     if (files.length === 0) {
       setUploadError({ show: true, message: 'Please select at least one file to upload.' });
@@ -198,7 +247,7 @@ export default function UploadManager({
     if (fileStats.oversized > 0) {
       setUploadError({
         show: true,
-        message: `Cannot upload: ${fileStats.oversized} file(s) exceed the 30MB limit. Please remove them to continue.`,
+        message: `Cannot upload: ${fileStats.oversized} file(s) exceed the ${formatFileSize(maxFileSize)} limit. Please remove them to continue.`,
       });
       return;
     }
@@ -206,56 +255,126 @@ export default function UploadManager({
     setUploading(true);
     setUploadError({ show: false, message: '' });
     setUploadProgress(0);
+    setUploadStatus(null);
 
     try {
-      const formData = new FormData();
+      // Prepare batches
+      const valid = fileStats.validFiles;
+      const perRequest = Math.min(BATCH_SIZE, MAX_FILES_PER_REQUEST);
+      const batches = chunkArray(valid, perRequest);
+      const totalFiles = valid.length;
+      const totalBatches = batches.length;
 
-      // Add knowledge base ID
-      formData.append('kb_id', knowledgeBaseId);
-
-      // Add files with their metadata (only valid files)
-      fileStats.validFiles.forEach((processedFile) => {
-        // Add the actual file
-        formData.append('files', processedFile.file);
-
-        // Add metadata for each file
-        formData.append(`file_paths`, processedFile.path);
-        formData.append(`last_modified`, processedFile.lastModified.toString());
+      // Initialize status
+      setUploadStatus({
+        currentBatch: 0,
+        totalBatches,
+        uploadedFiles: 0,
+        totalFiles,
       });
 
       const url = folderId
         ? `/api/v1/knowledgebase/${knowledgeBaseId}/folder/${folderId}/upload`
         : `/api/v1/knowledgebase/${knowledgeBaseId}/upload`;
 
-      // Track upload progress
-      const response = await axios.post(url, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total) {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            setUploadProgress(percentCompleted);
+      // Track batch progress: completed batches and in-progress batches
+      const completedBatches = new Set<number>();
+      const batchFileCounts = batches.map((b) => b.length);
+      const batchProgress: Record<number, number> = {}; // batch index -> progress 0-100
+
+      const updateProgress = () => {
+        // Calculate files from completed batches
+        const completedFiles = Array.from(completedBatches).reduce(
+          (sum, idx) => sum + batchFileCounts[idx],
+          0
+        );
+
+        // Calculate files from in-progress batches
+        const inProgressFiles = Object.entries(batchProgress).reduce((sum, [idx, progress]) => {
+          if (!completedBatches.has(Number(idx))) {
+            return sum + (batchFileCounts[Number(idx)] * progress) / 100;
           }
-        },
-      });
+          return sum;
+        }, 0);
+
+        const totalProgress = completedFiles + inProgressFiles;
+        const overallProgress = Math.min(100, Math.round((totalProgress / totalFiles) * 100));
+        setUploadProgress(overallProgress);
+
+        // Find the highest batch index being processed
+        const activeBatches = Object.keys(batchProgress)
+          .map(Number)
+          .filter((idx) => !completedBatches.has(idx));
+        const maxActiveBatch = activeBatches.length > 0 ? Math.max(...activeBatches) : -1;
+
+        setUploadStatus({
+          currentBatch: maxActiveBatch >= 0 ? maxActiveBatch + 1 : totalBatches,
+          totalBatches,
+          uploadedFiles: Math.floor(totalProgress),
+          totalFiles,
+        });
+      };
+
+      // Concurrency-controlled workers
+      let nextIndex = 0;
+      const worker = async () => {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const idx = nextIndex;
+          nextIndex += 1;
+          if (idx >= batches.length) break;
+          const batch = batches[idx];
+          const formData = buildFormDataForBatch(batch, knowledgeBaseId);
+
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await axios.post(url, formData, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+              onUploadProgress: (progressEvent) => {
+                if (progressEvent.total) {
+                  const batchProgressPercent = Math.round(
+                    (progressEvent.loaded * 100) / progressEvent.total
+                  );
+                  batchProgress[idx] = batchProgressPercent;
+                  updateProgress();
+                }
+              },
+            });
+            completedBatches.add(idx);
+            delete batchProgress[idx];
+            updateProgress();
+          } catch (err) {
+            delete batchProgress[idx];
+            throw err;
+          }
+        }
+      };
+
+      const workers = Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => worker());
+      await Promise.all(workers);
 
       setUploadProgress(100);
+      setUploadStatus({
+        currentBatch: totalBatches,
+        totalBatches,
+        uploadedFiles: totalFiles,
+        totalFiles,
+      });
 
-      // Show success message
-      const uploadResult = response.data;
-      const successMessage =
-        uploadResult.message ||
-        `Successfully uploaded ${fileStats.valid} file${fileStats.valid > 1 ? 's' : ''}.`;
-
-      onUploadSuccess(successMessage);
+      const successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      await onUploadSuccess(successMessage);
       handleClose();
     } catch (error: any) {
+      // Use processed error message from axios interceptor if available
+      const errorMessage =
+        error?.message ||
+        error?.response?.data?.message ||
+        'Failed to upload files. Please try again.';
       setUploadError({
         show: true,
-        message:
-          error.response?.data?.message ||
-          error.message ||
-          'Failed to upload files. Please try again.',
+        message: errorMessage,
       });
+      setUploadStatus(null);
     } finally {
       setUploading(false);
     }
@@ -266,6 +385,7 @@ export default function UploadManager({
       setFiles([]);
       setUploadError({ show: false, message: '' });
       setUploadProgress(0);
+      setUploadStatus(null);
       onClose();
     }
   };
@@ -358,7 +478,7 @@ export default function UploadManager({
           }}
         >
           {formatFileSize(processedFile.file.size)}
-          {processedFile.isOversized && ' • Exceeds 30MB limit'}
+          {processedFile.isOversized && ` • Exceeds ${formatFileSize(maxFileSize)} limit`}
         </Typography>
       </Box>
 
@@ -687,7 +807,7 @@ export default function UploadManager({
             >
               {files.length > 0
                 ? `${files.length} ${files.length === 1 ? 'file' : 'files'} selected • Add more or remove to adjust`
-                : 'Select files or folders to upload • Max 30MB per file'}
+                : `Select files or folders to upload • Max ${formatFileSize(maxFileSize)} per file`}
             </Typography>
           </Box>
           <IconButton
@@ -718,10 +838,14 @@ export default function UploadManager({
         >
           <CircularProgress size={56} thickness={3.6} sx={{ mb: 3 }} />
           <Typography variant="h6" fontWeight={600} sx={{ mb: 1, fontSize: '1rem' }}>
-            Uploading {fileStats.valid} {fileStats.valid === 1 ? 'file' : 'files'}
+            {uploadStatus
+              ? `Uploading ${uploadStatus.uploadedFiles} of ${uploadStatus.totalFiles} ${uploadStatus.totalFiles === 1 ? 'file' : 'files'}`
+              : `Uploading ${fileStats.valid} ${fileStats.valid === 1 ? 'file' : 'files'}`}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3, fontSize: '0.875rem' }}>
-            Please wait while we process your upload
+            {uploadStatus && uploadStatus.totalBatches > 1
+              ? `Processing batch ${uploadStatus.currentBatch} of ${uploadStatus.totalBatches} • Please wait while we process your upload`
+              : 'Please wait while we process your upload'}
           </Typography>
           <Box sx={{ width: '100%', maxWidth: '420px' }}>
             <LinearProgress
@@ -736,13 +860,24 @@ export default function UploadManager({
                 },
               }}
             />
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ mt: 1, display: 'block', textAlign: 'center', fontSize: '0.75rem' }}
-            >
-              {Math.round(uploadProgress)}%
-            </Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 1 }}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ fontSize: '0.75rem' }}
+              >
+                {uploadStatus
+                  ? `${uploadStatus.uploadedFiles} / ${uploadStatus.totalFiles} files`
+                  : `${Math.round(uploadProgress)}%`}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ fontSize: '0.75rem' }}
+              >
+                {Math.round(uploadProgress)}%
+              </Typography>
+            </Stack>
           </Box>
         </DialogContent>
       ) : (

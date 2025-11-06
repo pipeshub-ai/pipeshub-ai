@@ -30,6 +30,7 @@ const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
+const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const ConnectorSettings = lazy(
   () => import('src/pages/dashboard/account/connectors/connector-settings')
 );
@@ -365,6 +366,14 @@ export const dashboardRoutes = [
                       <BusinessAdminOnlyRoute component={AiModelsSettings} />
                     ),
                   },
+                  {
+                    path: 'platform',
+                    element: CONFIG.auth.skip ? (
+                      <PlatformSettings />
+                    ) : (
+                      <BusinessAdminOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
                 ],
               },
             ],
@@ -470,6 +479,14 @@ export const dashboardRoutes = [
                       <AiModelsSettings />
                     ) : (
                       <IndividualOnlyRoute component={AiModelsSettings} />
+                    ),
+                  },
+                  {
+                    path: 'platform',
+                    element: CONFIG.auth.skip ? (
+                      <PlatformSettings />
+                    ) : (
+                      <IndividualOnlyRoute component={PlatformSettings} />
                     ),
                   },
                 ],

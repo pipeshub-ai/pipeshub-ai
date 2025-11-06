@@ -51,6 +51,7 @@ import {
   AIServiceCommand,
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -393,6 +394,99 @@ export const getSmtpConfig =
       next(error);
     }
   };
+
+// Platform settings
+export const setPlatformSettings =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { fileUploadMaxSizeBytes, featureFlags } = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedPlatformSettings = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify({ fileUploadMaxSizeBytes, featureFlags, updatedAt: new Date().toISOString() }));
+      
+      await keyValueStoreService.set<string>(
+        configPaths.platform.settings,
+        encryptedPlatformSettings,
+      );
+
+      res.status(200).json({ message: 'Platform settings saved' }).end();
+    } catch (error: any) {
+      logger.error('Error setting platform settings', { error });
+      next(error);
+    }
+  };
+
+export const getPlatformSettings =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encrypted = await keyValueStoreService.get<string>(
+        configPaths.platform.settings,
+      );
+
+      const defaults = {
+        fileUploadMaxSizeBytes: 30 * 1024 * 1024,
+        featureFlags: {} as Record<string, boolean>,
+      };
+
+      let stored: any = null;
+      if (encrypted) {
+        try {
+          const decrypted = EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encrypted);
+          stored = JSON.parse(decrypted);
+        } catch (e) {
+          logger.warn('Failed to decrypt/parse platform settings; using defaults', { error: e });
+        }
+      }
+
+      const base = stored && typeof stored === 'object' ? stored : {};
+
+      const settings = {
+        fileUploadMaxSizeBytes:
+          typeof base.fileUploadMaxSizeBytes === 'number' && base.fileUploadMaxSizeBytes > 0
+            ? base.fileUploadMaxSizeBytes
+            : defaults.fileUploadMaxSizeBytes,
+        featureFlags: (() => {
+          const current: Record<string, boolean> =
+            base.featureFlags && typeof base.featureFlags === 'object' ? base.featureFlags : {};
+          // Ensure all known flags are present with a default
+          for (const def of PLATFORM_FEATURE_FLAGS) {
+            if (typeof current[def.key] === 'undefined') {
+              current[def.key] = !!def.defaultEnabled;
+            }
+          }
+          return current;
+        })(),
+      };
+
+      res.status(200).json(settings).end();
+    } catch (error: any) {
+      logger.error('Error getting platform settings', { error });
+      next(error);
+    }
+  };
+
+export const getAvailablePlatformFeatureFlags =
+  () =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    _next: NextFunction,
+  ) => {
+    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+  };
+
 
 export const getAzureAdAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>

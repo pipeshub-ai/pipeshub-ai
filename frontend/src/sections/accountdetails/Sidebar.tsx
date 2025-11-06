@@ -59,7 +59,7 @@ export default function Sidebar() {
   };
 
   // Settings submenu items - common for both account types
-  const commonSettingsOptions = [
+  const settingsOptions = [
     {
       name: 'Authentication',
       icon: shieldLockIcon,
@@ -80,13 +80,13 @@ export default function Sidebar() {
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,
     },
+    {
+      name: 'Platform',
+      icon: cogIcon,
+      path: `${baseUrl}/settings/platform`,
+    },
   ];
 
-  // Business-specific settings options
-  const businessSettingsOptions = [...commonSettingsOptions];
-
-  // Use the appropriate settings options based on account type
-  const settingsOptions = isBusiness ? businessSettingsOptions : commonSettingsOptions;
 
   return (
     <Drawer

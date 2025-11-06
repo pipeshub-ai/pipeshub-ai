@@ -27,6 +27,7 @@ from typing import Optional
 
 from app.services.featureflag.interfaces.config import IConfigProvider
 from app.services.featureflag.provider.env import EnvFileProvider
+from app.services.featureflag.provider.etcd import EtcdProvider
 
 DEFAULT_ENV_PATH = '../../../.env'
 
@@ -88,6 +89,24 @@ class FeatureFlagService:
         """Reset singleton instance (useful for testing)"""
         with cls._lock:
             cls._instance = None
+
+    @classmethod
+    def init_with_etcd_provider(
+        cls,
+        provider: EtcdProvider,
+    ) -> 'FeatureFlagService':
+        """
+        Initialize the singleton to use EtcdProvider as the provider.
+
+        The provider is refreshed once during initialization.
+        """
+        with cls._lock:
+            try:
+                provider.refresh()
+            except Exception:
+                pass
+            cls._instance = cls(provider)
+            return cls._instance
 
     def is_feature_enabled(self, flag_name: str, default: bool = False) -> bool:
         """

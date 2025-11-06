@@ -88,6 +88,22 @@ class ConnectorRegistry:
 
         # Store discovered connectors metadata
         self._connectors: Dict[str, Dict[str, Any]] = {}
+        # Beta-only connectors (hidden when beta flag is disabled)
+        # These should correspond to the human-readable metadata 'name' values
+        self._beta_only_app_names = set([
+            "Slack",
+            "Calendar",
+            "Meet",
+            "Forms",
+            "Slides",
+            "Docs",
+            "Zendesk",
+            "Linear",
+            "S3",
+            "Notion",
+            "Airtable",
+            "Azure Blob",
+        ])
 
     async def _get_arango_service(self) -> ArangoService:
         """Get the arango service, initializing it if needed"""
@@ -386,6 +402,26 @@ class ConnectorRegistry:
                 self.logger.debug(f"Could not get DB status for {app_name}: {e}")
 
             connectors.append(connector_info)
+
+        # Runtime filter based on feature flag
+        try:
+            feature_flag_service = await self.container.feature_flag_service()
+            # Ensure we have the latest values
+            try:
+                feature_flag_service.refresh()
+            except Exception:
+                pass
+            from app.services.featureflag.config.config import CONFIG
+            beta_enabled = feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS)
+            if not beta_enabled:
+                connectors = [
+                    c for c in connectors
+                    if c.get('name') not in self._beta_only_app_names
+                ]
+        except Exception as e:
+            # On any failure, return unfiltered list (fail-open)
+            self.logger.debug(f"Feature flag filtering skipped due to error: {e}")
+
         return connectors
 
     async def get_active_connector(self) -> List[Dict[str, Any]]:
