@@ -5,11 +5,11 @@ from typing import Any, Dict, Optional, Union
 
 try:
     # Async GCS client
-    from gcloud.aio.storage import Storage  # type: ignore
-    from google.oauth2 import service_account  # type: ignore
-    from google.auth.credentials import Credentials  # type: ignore
     import aiohttp  # type: ignore
-except ImportError as e:
+    from gcloud.aio.storage import Storage  # type: ignore
+    from google.auth.credentials import Credentials  # type: ignore
+    from google.oauth2 import service_account  # type: ignore
+except ImportError:
     raise ImportError(
         "gcloud-aio-storage or google-auth is not installed. Please install with `pip install gcloud-aio-storage google-auth`."
     )
@@ -43,6 +43,10 @@ class GCSResponse:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
+
+
+# HTTP status codes used
+HTTP_CONFLICT = 409
 
 
 @dataclass
@@ -160,7 +164,7 @@ class GCSRESTClient:
                             if resp.status in (200, 201):
                                 return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "created"}, message=f"Bucket \"{bucket_name}\" created successfully (emulator)")
                             # If already exists, treat as exists
-                            if resp.status == 409:
+                            if resp.status == HTTP_CONFLICT:
                                 return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists (emulator)")
                             text = await resp.text()
                             raise GCSBucketError(f"Emulator bucket create failed: HTTP {resp.status} {text}", bucket_name=bucket_name)
