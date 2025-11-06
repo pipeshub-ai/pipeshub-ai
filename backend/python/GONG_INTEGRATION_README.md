@@ -165,10 +165,16 @@ export GONG_ACCESS_KEY_SECRET="your_access_key_secret_here"
 
 ## 🧪 Testing
 
-Run the integration tests:
+Run the syntax validation tests:
 ```bash
 cd backend/python
-python test_gong_integration.py
+python test_gong_compilation.py
+```
+
+Run the structure validation tests:
+```bash
+cd backend/python
+python test_gong_structure.py
 ```
 
 Run the examples (requires valid credentials):
@@ -181,39 +187,44 @@ python -m app.sources.external.gong.example
 
 ## 🔄 Error Handling
 
-The integration includes comprehensive error handling:
+The integration includes standard HTTP error handling:
 
-- **Connection errors**: Automatic retry with exponential backoff
-- **Rate limiting**: Respects `Retry-After` headers
-- **Authentication errors**: Clear error messages
-- **API errors**: Proper HTTP status code handling
-- **Timeout handling**: Configurable request timeouts
+- **HTTP errors**: Proper status code handling via HTTPResponse
+- **Authentication errors**: 401/403 responses with clear messages
+- **API errors**: Error details in response body
+- **Connection errors**: Network-level error handling
+- **Timeout handling**: Configurable via HTTPClient
 
 ## 📈 Performance Features
 
-- **Connection pooling**: Reuses HTTP connections
-- **Concurrent requests**: Supports async operations
-- **Pagination**: Automatic handling of paginated responses
-- **Rate limiting**: Built-in respect for API limits
-- **Caching**: Session-level caching of connections
+- **HTTP connection management**: Handled by httpx AsyncClient
+- **Async operations**: Full async/await support
+- **Pagination support**: Manual pagination via cursor parameters
+- **Type safety**: Full type hints for better IDE support
+- **Modular design**: Separate client and data source layers
 
 ## 🛠️ Configuration Options
 
 ### GongClient Configuration
 ```python
-client = GongClient(
+from app.sources.client.gong.gong import GongClient, GongApiKeyConfig
+
+# Configuration using dataclass
+config = GongApiKeyConfig(
     access_key="your_key",
     access_key_secret="your_secret",
-    timeout=30,           # Request timeout in seconds
-    max_retries=3,        # Maximum retry attempts
-    retry_delay=1.0       # Base delay between retries
+    ssl=True  # Default: True
 )
+
+# Build client with configuration
+client = GongClient.build_with_config(config)
 ```
 
-### Connection Limits
-- **Total connections**: 100
-- **Per-host connections**: 30
-- **Request timeout**: 30 seconds (configurable)
+### HTTPClient Settings
+The underlying HTTP client uses these defaults:
+- **Request timeout**: 30 seconds
+- **Follow redirects**: True
+- **Connection pooling**: Managed by httpx
 
 ## 🔮 Future Enhancements
 
