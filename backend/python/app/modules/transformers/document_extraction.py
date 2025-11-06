@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import Literal
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
@@ -21,22 +21,22 @@ class SubCategories(BaseModel):
     level3: str = Field(description="Level 3 subcategory")
 
 class DocumentClassification(BaseModel):
-    departments: List[str] = Field(
-        description="The list of departments this document belongs to", max_items=3
+    departments: list[str] = Field(
+        description="The list of departments this document belongs to", max_items=3,
     )
     category: str = Field(description="Main category this document belongs to")
     subcategories: SubCategories = Field(
-        description="Nested subcategories for the document"
+        description="Nested subcategories for the document",
     )
-    languages: List[str] = Field(
-        description="List of languages detected in the document"
+    languages: list[str] = Field(
+        description="List of languages detected in the document",
     )
     sentiment: SentimentType = Field(description="Overall sentiment of the document")
     confidence_score: float = Field(
-        description="Confidence score of the classification", ge=0, le=1
+        description="Confidence score of the classification", ge=0, le=1,
     )
-    topics: List[str] = Field(
-        description="List of key topics/themes extracted from the document"
+    topics: list[str] = Field(
+        description="List of key topics/themes extracted from the document",
     )
     summary: str = Field(description="Summary of the document")
 
@@ -66,7 +66,7 @@ class DocumentExtraction(Transformer):
             sub_category_level_3=document_classification.subcategories.level3,
         )
 
-    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool) -> List[dict]:
+    def _prepare_content(self, blocks: list[Block], is_multimodal_llm: bool) -> list[dict]:
         MAX_TOKENS = 30000
         MAX_IMAGES = 50
         total_tokens = 0
@@ -101,7 +101,7 @@ class DocumentExtraction(Transformer):
                 if block.data:
                     candidate = {
                         "type": "text",
-                        "text": block.data if block.data else ""
+                        "text": block.data if block.data else "",
                     }
                     increment = count_tokens(candidate["text"])
                     if total_tokens + increment > MAX_TOKENS:
@@ -130,8 +130,8 @@ class DocumentExtraction(Transformer):
                             candidate = {
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": image_data
-                                }
+                                    "url": image_data,
+                                },
                             }
                             # Images are provider-specific for token accounting; treat as zero-text here
                             content.append(candidate)
@@ -152,7 +152,7 @@ class DocumentExtraction(Transformer):
                         table_row_text = str(block.data)
                     candidate = {
                         "type": "text",
-                        "text": table_row_text if table_row_text else ""
+                        "text": table_row_text if table_row_text else "",
                     }
                     increment = count_tokens(candidate["text"])
                     if total_tokens + increment > MAX_TOKENS:
@@ -164,10 +164,9 @@ class DocumentExtraction(Transformer):
         return content
 
     async def extract_metadata(
-        self, blocks: List[Block], org_id: str
+        self, blocks: list[Block], org_id: str,
     ) -> DocumentClassification:
-        """
-        Extract metadata from document content.
+        """Extract metadata from document content.
         """
         self.logger.info("🎯 Extracting domain metadata")
         self.llm, config= await get_llm(self.config_service)
@@ -185,7 +184,7 @@ class DocumentExtraction(Transformer):
             )
 
             filled_prompt = prompt_for_document_extraction.replace(
-                "{department_list}", department_list
+                "{department_list}", department_list,
             ).replace("{sentiment_list}", sentiment_list)
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
 
@@ -199,12 +198,12 @@ class DocumentExtraction(Transformer):
             message_content = [
                 {
                     "type": "text",
-                    "text": filled_prompt
+                    "text": filled_prompt,
                 },
                 {
                     "type": "text",
-                    "text": "Document Content: "
-                }
+                    "text": "Document Content: ",
+                },
             ]
             # Add the multimodal content
             message_content.extend(content)
@@ -229,17 +228,17 @@ class DocumentExtraction(Transformer):
                 return parsed_response
 
             except Exception as parse_error:
-                self.logger.error(f"❌ Failed to parse response: {str(parse_error)}")
+                self.logger.error(f"❌ Failed to parse response: {parse_error!s}")
                 self.logger.error(f"Response content: {response_text}")
 
                 # Reflection: attempt to fix the validation issue by providing feedback to the LLM
                 try:
                     self.logger.info(
-                        "🔄 Attempting reflection to fix validation issues"
+                        "🔄 Attempting reflection to fix validation issues",
                     )
                     reflection_prompt = f"""
                     The previous response failed validation with the following error:
-                    {str(parse_error)}
+                    {parse_error!s}
 
                     The response was:
                     {response_text}
@@ -272,18 +271,18 @@ class DocumentExtraction(Transformer):
                     parsed_reflection = self.parser.parse(reflection_text)
 
                     self.logger.info(
-                        "✅ Reflection successful - validation passed on second attempt"
+                        "✅ Reflection successful - validation passed on second attempt",
                     )
                     return parsed_reflection
                 except Exception as reflection_error:
                     self.logger.error(
-                        f"❌ Reflection attempt failed: {str(reflection_error)}"
+                        f"❌ Reflection attempt failed: {reflection_error!s}",
                     )
                     raise ValueError(
-                        f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
+                        f"Failed to parse LLM response and reflection attempt failed: {parse_error!s}",
                     )
         except Exception as e:
-            self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
+            self.logger.error(f"❌ Error during metadata extraction: {e!s}")
             raise
 
     async def _call_llm(self, messages) -> dict | None:
@@ -291,7 +290,7 @@ class DocumentExtraction(Transformer):
         return await self.llm.ainvoke(messages)
 
 
-    async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
+    async def process_document(self, blocks: list[Block], org_id: str) -> DocumentClassification:
             self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
             return await self.extract_metadata(blocks, org_id)
 

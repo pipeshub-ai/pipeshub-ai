@@ -24,25 +24,21 @@ class DocumentProcessingError(IndexingError):
 class EmbeddingError(IndexingError):
     """Raised when there's an error creating embeddings"""
 
-    pass
 
 
 class VectorStoreError(IndexingError):
     """Raised when there's an error interacting with the vector store"""
 
-    pass
 
 
 class MetadataProcessingError(IndexingError):
     """Raised when there's an error processing document metadata"""
 
-    pass
 
 
 class ChunkingError(IndexingError):
     """Raised when there's an error during document chunking"""
 
-    pass
 
 
 class EmbeddingDeletionError(IndexingError):
@@ -61,10 +57,8 @@ class EmbeddingDeletionError(IndexingError):
 class ExtractionError(IndexingError):
     """Raised when there's an error extracting content"""
 
-    pass
 
 
 class ProcessingError(IndexingError):
     """Raised when there's an error processing the document"""
 
-    pass

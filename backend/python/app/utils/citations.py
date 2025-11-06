@@ -1,7 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import get_enhanced_metadata
@@ -10,7 +10,7 @@ from app.utils.chat_helpers import get_enhanced_metadata
 @dataclass
 class ChatDocCitation:
     content: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
     chunkindex: int
 
 
@@ -62,14 +62,12 @@ def fix_json_string(json_str) -> str:
 
 
 
-def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]],records: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
-    """
-    Normalize citation numbers in answer text to be sequential (1,2,3...)
+def normalize_citations_and_chunks(answer_text: str, final_results: list[dict[str, Any]],records: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
     """
-
     # Extract all citation numbers from the answer text
-    citation_pattern = r'\[R(\d+)-(\d+)\]'
+    citation_pattern = r"\[R(\d+)-(\d+)\]"
     matches = re.findall(citation_pattern, answer_text)
 
     if not matches:
@@ -193,7 +191,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]],records: List[Dict[str, Any]]=None,from_agent:bool = False) -> Dict[str, Any]:
+def process_citations(llm_response, documents: list[dict[str, Any]],records: list[dict[str, Any]]=None,from_agent:bool = False) -> dict[str, Any]:
     if records is None:
         records = []
     """
@@ -237,12 +235,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],records: Lis
                         response_data = json.loads(potential_json)
                     else:
                         return {
-                            "error": f"Failed to parse LLM response: {str(e)}",
+                            "error": f"Failed to parse LLM response: {e!s}",
                             "raw_response": response_content,
                         }
                 except Exception as nested_e:
                     return {
-                        "error": f"Failed to parse LLM response: {str(e)}, Nested error: {str(nested_e)}",
+                        "error": f"Failed to parse LLM response: {e!s}, Nested error: {nested_e!s}",
                         "raw_response": response_content,
                     }
         else:
@@ -270,7 +268,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],records: Lis
                 normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents,records)
             result = {
                 "answer": normalized_answer,
-                "citations": citations
+                "citations": citations,
             }
 
         return result
@@ -278,20 +276,19 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],records: Lis
     except Exception as e:
         import traceback
         return {
-            "error": f"Citation processing failed: {str(e)}",
+            "error": f"Citation processing failed: {e!s}",
             "traceback": traceback.format_exc(),
             "raw_response": llm_response,
         }
 
 
-def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
-    """
-    Normalize citation numbers in answer text to be sequential (1,2,3...)
+def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
     """
     # Extract all citation numbers from the answer text
     # Match both regular square brackets [1] and Chinese brackets 【1】
-    citation_pattern = r'[\[【](\d+)[\]】]'
+    citation_pattern = r"[\[【](\d+)[\]】]"
     matches = re.findall(citation_pattern, answer_text)
 
     if not matches:

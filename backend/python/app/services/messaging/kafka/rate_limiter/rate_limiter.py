@@ -28,8 +28,7 @@ class RateLimiter:
                 self.last_check = now
 
                 # Cap tokens at the maximum rate
-                if self.tokens > self.rate:
-                    self.tokens = self.rate
+                self.tokens = min(self.tokens, self.rate)
 
                 if self.tokens >= 1:
                     # Consume a token

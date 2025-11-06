@@ -1,7 +1,7 @@
 import logging
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 
@@ -27,9 +27,10 @@ class GraphMode(str, Enum):
 @dataclass
 class MSGraphResponse:
     """Standardized response wrapper for Microsoft Graph operations."""
+
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
+    data: Any | None = None
+    error: str | None = None
 
     def __post_init__(self) -> None:
         """Validate response state."""
@@ -44,10 +45,10 @@ class MSGraphClientViaUsernamePassword:
         password: The password to use for authentication
         token_type: The type of token to use for authentication
     """
+
     def __init__(self, username: str, password: str, client_id: str, tenant_id: str, mode: GraphMode = GraphMode.APP) -> None:
         self.mode = mode
         #TODO: Implement
-        pass
 
     def get_ms_graph_service_client(self) -> GraphServiceClient:
         return self.client
@@ -59,7 +60,6 @@ class MSGraphClientWithCertificatePath:
     def __init__(self, certificate_path: str, tenant_id: str, client_id: str, mode: GraphMode = GraphMode.APP) -> None:
         self.mode = mode
         #TODO: Implement
-        pass
 
     def get_ms_graph_service_client(self) -> GraphServiceClient:
         return self.client
@@ -73,8 +73,8 @@ class MSGraphClientWithClientIdSecret:
         client_id: str,
         client_secret: str,
         tenant_id: str,
-        scopes: List[str] = ["https://graph.microsoft.com/.default"],
-        mode: GraphMode = GraphMode.APP
+        scopes: list[str] = ["https://graph.microsoft.com/.default"],
+        mode: GraphMode = GraphMode.APP,
     ) -> None:
         self.mode = mode
         if mode == GraphMode.DELEGATED:
@@ -83,7 +83,7 @@ class MSGraphClientWithClientIdSecret:
             credential = InteractiveBrowserCredential(
                 client_id=client_id,
                 tenant_id=tenant_id,
-                redirect_uri="http://localhost:8080" #TODO: change to the actual redirect uri
+                redirect_uri="http://localhost:8080", #TODO: change to the actual redirect uri
                 # No client_secret needed for public clients doing delegated auth
             )
             auth_provider = AzureIdentityAuthenticationProvider(credential, scopes=scopes)
@@ -113,6 +113,7 @@ class MSGraphUsernamePasswordConfig:
         client_id: The client id to use for authentication
         tenant_id: The tenant id to use for authentication
     """
+
     username: str
     password: str
     client_id: str
@@ -133,6 +134,7 @@ class MSGraphClientWithClientIdSecretConfig:
         client_secret: The client secret to use for authentication
         tenant_id: The tenant id to use for authentication
     """
+
     client_id: str
     client_secret: str
     tenant_id: str
@@ -152,6 +154,7 @@ class MSGraphClientWithCertificatePathConfig:
         tenant_id: The tenant id to use for authentication
         client_id: The client id to use for authentication
     """
+
     certificate_path: str
     tenant_id: str
     client_id: str
@@ -181,13 +184,14 @@ class MSGraphClient(IClient):
     def build_with_config(
         cls,
         config: MSGraphUsernamePasswordConfig | MSGraphClientWithClientIdSecretConfig | MSGraphClientWithCertificatePathConfig, #type:ignore
-        mode: GraphMode = GraphMode.APP) -> 'MSGraphClient':
-        """
-        Build MSGraphClient with configuration (placeholder for future OAuth2/enterprise support)
+        mode: GraphMode = GraphMode.APP) -> "MSGraphClient":
+        """Build MSGraphClient with configuration (placeholder for future OAuth2/enterprise support)
+
         Args:
             config: MSGraphConfigBase instance
         Returns:
             MSGraphClient instance with placeholder implementation
+
         """
         return cls(config.create_client(mode))
 
@@ -198,16 +202,17 @@ class MSGraphClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         mode: GraphMode = GraphMode.APP,
-    ) -> 'MSGraphClient':
-        """
-        Build MSGraphClient using configuration service
+    ) -> "MSGraphClient":
+        """Build MSGraphClient using configuration service
         Args:
             service_name: Service name
             logger: Logger instance
             config_service: Configuration service instance
             mode: Graph mode (APP or DELEGATED)
+
         Returns:
             MSGraphClient instance
+
         """
         try:
             # Get Microsoft Graph configuration from the configuration service
@@ -254,11 +259,11 @@ class MSGraphClient(IClient):
             return cls(client, mode)
 
         except Exception as e:
-            logger.error(f"Failed to build Microsoft Graph client from services: {str(e)}")
+            logger.error(f"Failed to build Microsoft Graph client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService) -> dict[str, Any]:
         """Fetch connector config from etcd for Microsoft Graph."""
         try:
             config = await config_service.get_config(f"/services/connectors/{service_name}/config")

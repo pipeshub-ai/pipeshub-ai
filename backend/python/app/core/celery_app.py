@@ -31,7 +31,7 @@ class CeleryApp:
         """Configure Celery application"""
         try:
             redis_config = await self.config_service.get_config(
-                config_node_constants.REDIS.value
+                config_node_constants.REDIS.value,
             )
             if not redis_config or not isinstance(redis_config, dict):
                 raise ValueError("Redis configuration not found")
@@ -52,7 +52,7 @@ class CeleryApp:
             self.start_beat()
             self.logger.info("✅ Celery app configured successfully")
         except Exception as e:
-            self.logger.error(f"❌ Failed to configure Celery app: {str(e)}")
+            self.logger.error(f"❌ Failed to configure Celery app: {e!s}")
             raise
 
     async def setup_schedules(self) -> None:
@@ -78,9 +78,9 @@ class CeleryApp:
                     "task": "app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch",
                     "schedule": interval_seconds,
                     "options": {
-                        "expires": expiration_seconds
-                    }
-                }
+                        "expires": expiration_seconds,
+                    },
+                },
             }
 
             self.logger.info("📋 Celery beat configuration:")
@@ -90,7 +90,7 @@ class CeleryApp:
 
             self.logger.info("✅ Watch scheduling configured successfully")
         except Exception as e:
-            self.logger.error(f"❌ Failed to setup watch scheduling: {str(e)}")
+            self.logger.error(f"❌ Failed to setup watch scheduling: {e!s}")
             self.logger.exception("Detailed error information:")
             raise
 
@@ -107,9 +107,9 @@ class CeleryApp:
         def _worker() -> None:
             self.logger.info("🚀 Starting Celery worker...")
             argv = [
-                'worker',
-                '--pool=solo',
-                '--traceback'
+                "worker",
+                "--pool=solo",
+                "--traceback",
             ]
             self.app.worker_main(argv)
 
@@ -125,7 +125,7 @@ class CeleryApp:
             # ]
             self.app.Beat(
                 app=self.app,
-                loglevel='INFO'
+                loglevel="INFO",
             ).run()
 
         threading.Thread(target=_beat, daemon=True).start()

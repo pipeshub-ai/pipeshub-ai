@@ -1,5 +1,4 @@
-"""
-Client factories for PostHog.
+"""Client factories for PostHog.
 """
 
 
@@ -15,8 +14,7 @@ class PostHogClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> PostHogClient:
         """Create PostHog client instance"""
-
         return await PostHogClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

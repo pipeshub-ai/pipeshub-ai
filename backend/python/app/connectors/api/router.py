@@ -5,9 +5,10 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
 import google.oauth2.credentials
 import jwt
@@ -88,20 +89,20 @@ async def get_arango_service(request: Request) -> BaseArangoService:
     arango_service = await container.arango_service()
     return arango_service
 
-async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
+async def get_drive_webhook_handler(request: Request) -> AbstractDriveWebhookHandler | None:
     try:
         container: ConnectorAppContainer = request.app.container
         drive_webhook_handler = container.drive_webhook_handler()
         return drive_webhook_handler
     except Exception as e:
-        logger.warning(f"Failed to get drive webhook handler: {str(e)}")
+        logger.warning(f"Failed to get drive webhook handler: {e!s}")
         return None
 
-def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
+def _parse_comma_separated_str(value: str | None) -> list[str] | None:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
         return None
-    return [item.strip() for item in value.split(',') if item.strip()]
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 def _sanitize_app_name(app_name: str) -> str:
     return app_name.replace(" ", "").lower()
@@ -120,7 +121,7 @@ async def handle_drive_webhook(request: Request, background_tasks: BackgroundTas
 
         if drive_webhook_handler is None:
             logger.warning(
-                "Drive webhook handler not yet initialized - skipping webhook processing"
+                "Drive webhook handler not yet initialized - skipping webhook processing",
             )
             return {
                 "status": "skipped",
@@ -143,25 +144,24 @@ async def handle_drive_webhook(request: Request, background_tasks: BackgroundTas
         # Process notification in background
         if resource_state != "sync":
             background_tasks.add_task(
-                drive_webhook_handler.process_notification, headers
+                drive_webhook_handler.process_notification, headers,
             )
             return {"status": "accepted"}
-        else:
-            logger.info("Received sync verification request")
-            return {"status": "sync_verified"}
+        logger.info("Received sync verification request")
+        return {"status": "sync_verified"}
 
     except Exception as e:
         logger.error("Error processing webhook: %s", str(e))
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
 
 
-async def get_gmail_webhook_handler(request: Request) -> Optional[AbstractGmailWebhookHandler]:
+async def get_gmail_webhook_handler(request: Request) -> AbstractGmailWebhookHandler | None:
     try:
         container: ConnectorAppContainer = request.app.container
         gmail_webhook_handler = container.gmail_webhook_handler()
         return gmail_webhook_handler
     except Exception as e:
-        logger.warning(f"Failed to get gmail webhook handler: {str(e)}")
+        logger.warning(f"Failed to get gmail webhook handler: {e!s}")
         return None
 
 
@@ -175,7 +175,7 @@ async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTas
 
         if gmail_webhook_handler is None:
             logger.warning(
-                "Gmail webhook handler not yet initialized - skipping webhook processing"
+                "Gmail webhook handler not yet initialized - skipping webhook processing",
             )
             return {
                 "status": "skipped",
@@ -210,7 +210,7 @@ async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTas
                 logger.error("Error processing message data: %s", str(e))
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Invalid message data format: {str(e)}",
+                    detail=f"Invalid message data format: {e!s}",
                 )
         else:
             logger.warning("No data found in message")
@@ -220,12 +220,12 @@ async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTas
         logger.error("Invalid JSON in webhook body: %s", str(e))
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"Invalid JSON format: {str(e)}",
+            detail=f"Invalid JSON format: {e!s}",
         )
     except Exception as e:
         logger.error("Error processing webhook: %s", str(e))
         raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e),
         )
 
 
@@ -252,51 +252,51 @@ async def get_signed_url(
         # Return as JSON instead of plain text
         return {"signedUrl": signed_url}
     except Exception as e:
-        logger.error(f"Error getting signed URL: {repr(e)}")
+        logger.error(f"Error getting signed URL: {e!r}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
 
 
-async def get_google_docs_parser(request: Request) -> Optional[GoogleDocsParser]:
+async def get_google_docs_parser(request: Request) -> GoogleDocsParser | None:
     try:
         container: ConnectorAppContainer = request.app.container
         google_docs_parser = container.google_docs_parser()
         return google_docs_parser
     except Exception as e:
-        logger.warning(f"Failed to get google docs parser: {str(e)}")
+        logger.warning(f"Failed to get google docs parser: {e!s}")
         return None
 
 
-async def get_google_sheets_parser(request: Request) -> Optional[GoogleSheetsParser]:
+async def get_google_sheets_parser(request: Request) -> GoogleSheetsParser | None:
     try:
         container: ConnectorAppContainer = request.app.container
         google_sheets_parser = container.google_sheets_parser()
         return google_sheets_parser
     except Exception as e:
-        logger.warning(f"Failed to get google sheets parser: {str(e)}")
+        logger.warning(f"Failed to get google sheets parser: {e!s}")
         return None
 
 
-async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesParser]:
+async def get_google_slides_parser(request: Request) -> GoogleSlidesParser | None:
     try:
         container: ConnectorAppContainer = request.app.container
         google_slides_parser = container.google_slides_parser()
         return google_slides_parser
     except Exception as e:
-        logger.warning(f"Failed to get google slides parser: {str(e)}")
+        logger.warning(f"Failed to get google slides parser: {e!s}")
         return None
 
 @router.delete("/api/v1/delete/record/{record_id}")
 @inject
 async def handle_record_deletion(
-    record_id: str, arango_service=Depends(Provide[ConnectorAppContainer.arango_service])
-) -> Optional[dict]:
+    record_id: str, arango_service=Depends(Provide[ConnectorAppContainer.arango_service]),
+) -> dict | None:
     try:
         response = await arango_service.delete_records_and_relations(
-            record_id, hard_delete=True
+            record_id, hard_delete=True,
         )
         if not response:
             raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Record with ID {record_id} not found"
+                status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Record with ID {record_id} not found",
             )
         return {
             "status": "success",
@@ -306,10 +306,10 @@ async def handle_record_deletion(
     except HTTPException as he:
         raise he  # Re-raise HTTP exceptions as-is
     except Exception as e:
-        logger.error(f"Error deleting record: {str(e)}")
+        logger.error(f"Error deleting record: {e!s}")
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Internal server error while deleting record: {str(e)}",
+            detail=f"Internal server error while deleting record: {e!s}",
         )
 
 @router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
@@ -318,10 +318,9 @@ async def stream_record_internal(
     request: Request,
     record_id: str,
     arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
-    """
-    Stream a record to the client.
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict | StreamingResponse | None:
+    """Stream a record to the client.
     """
     try:
         logger.info(f"Stream Record Start: {time.time()}")
@@ -334,7 +333,7 @@ async def stream_record_internal(
         # Extract the token
         token = auth_header.split(" ")[1]
         secret_keys = await config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
+            config_node_constants.SECRET_KEYS.value,
         )
         jwt_secret = secret_keys.get("scopedJwtSecret")
         payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
@@ -344,7 +343,7 @@ async def stream_record_internal(
 
         org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
         record_task = arango_service.get_record_by_id(
-            record_id
+            record_id,
         )
         org, record = await asyncio.gather(org_task, record_task)
 
@@ -357,7 +356,7 @@ async def stream_record_internal(
         container: ConnectorAppContainer = request.app.container
         if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
             endpoints = await config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+                config_node_constants.ENDPOINTS.value,
             )
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
             buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
@@ -367,14 +366,14 @@ async def stream_record_internal(
             }
             token = await generate_jwt(config_service, jwt_payload)
             response = await make_api_call(
-                route=buffer_url, token=token
+                route=buffer_url, token=token,
             )
             return response["data"]
         connector = container.connectors_map.get(connector_name)
         if not connector:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector '{connector_name}' not found"
+                detail=f"Connector '{connector_name}' not found",
             )
         buffer = await connector.stream_record(record)
         return buffer
@@ -400,8 +399,8 @@ async def download_file(
     signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
     arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
     google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict | StreamingResponse | None:
     try:
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
@@ -415,10 +414,10 @@ async def download_file(
         if payload.record_id != record_id:
             logger.error(
                 f"""Token does not match requested file: {
-                         payload.record_id} != {record_id}"""
+                         payload.record_id} != {record_id}""",
             )
             raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Token does not match requested file"
+                status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Token does not match requested file",
             )
 
         # Get org details to determine account type
@@ -428,7 +427,7 @@ async def download_file(
 
         # Get record details
         record = await arango_service.get_record_by_id(
-            record_id
+            record_id,
         )
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
@@ -452,7 +451,7 @@ async def download_file(
                 drive_service = build("drive", "v3", credentials=creds)
 
                 file = await arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
+                    record_id, CollectionNames.FILES.value,
                 )
                 if not file:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
@@ -462,21 +461,21 @@ async def download_file(
                     logger.info("🚀 Processing Google Slides")
                     google_slides_parser = await get_google_slides_parser(request)
                     await google_slides_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
+                        user_email, org_id, user_id, app_name=connector.lower(),
                     )
                     result = await google_slides_parser.process_presentation(file_id)
 
                     # Convert result to JSON and return as StreamingResponse
                     json_data = json.dumps(result).encode("utf-8")
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
+                        iter([json_data]), media_type="application/json",
                     )
 
                 if mime_type == "application/vnd.google-apps.document":
                     logger.info("🚀 Processing Google Docs")
                     google_docs_parser = await get_google_docs_parser(request)
                     await google_docs_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
+                        user_email, org_id, user_id, app_name=connector.lower(),
                     )
                     content = await google_docs_parser.parse_doc_content(file_id)
                     all_content, headers, footers = (
@@ -491,19 +490,19 @@ async def download_file(
                     # Convert result to JSON and return as StreamingResponse
                     json_data = json.dumps(result).encode("utf-8")
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
+                        iter([json_data]), media_type="application/json",
                     )
 
                 if mime_type == "application/vnd.google-apps.spreadsheet":
                     logger.info("🚀 Processing Google Sheets")
                     google_sheets_parser = await get_google_sheets_parser(request)
                     await google_sheets_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
+                        user_email, org_id, user_id, app_name=connector.lower(),
                     )
                     llm, _ = await get_llm(config_service)
                     # List and process spreadsheets
                     parsed_result = await google_sheets_parser.parse_spreadsheet(
-                        file_id
+                        file_id,
                     )
                     all_sheet_results = []
                     for sheet_idx, sheet in enumerate(parsed_result["sheets"], 1):
@@ -512,7 +511,7 @@ async def download_file(
                         # Process sheet with summaries
                         sheet_data = (
                             await google_sheets_parser.process_sheet_with_summaries(
-                                llm, sheet_name, file_id
+                                llm, sheet_name, file_id,
                             )
                         )
                         if sheet_data is None:
@@ -529,7 +528,7 @@ async def download_file(
                     json_data = json.dumps(result).encode("utf-8")
                     logger.info("Streaming Google Sheets result")
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
+                        iter([json_data]), media_type="application/json",
                     )
 
                 # Enhanced logging for regular file download
@@ -555,31 +554,31 @@ async def download_file(
                         yield file_buffer.read()
 
                     except Exception as download_error:
-                        logger.error(f"Download failed: {repr(download_error)}")
+                        logger.error(f"Download failed: {download_error!r}")
                         if hasattr(download_error, "response"):
                             logger.error(
-                                f"Response status: {download_error.response.status_code}"
+                                f"Response status: {download_error.response.status_code}",
                             )
                             logger.error(
-                                f"Response content: {download_error.response.content}"
+                                f"Response content: {download_error.response.content}",
                             )
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail=f"File download failed: {repr(download_error)}",
+                            detail=f"File download failed: {download_error!r}",
                         )
                     finally:
                         file_buffer.close()
 
                 # Return streaming response with proper headers
                 headers = {
-                    "Content-Disposition": f'attachment; filename="{record.record_name}"'
+                    "Content-Disposition": f'attachment; filename="{record.record_name}"',
                 }
 
                 return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                    file_stream(), media_type=mime_type, headers=headers,
                 )
 
-            elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 file_id = external_record_id
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
                 gmail_service = build("gmail", "v1", credentials=creds)
@@ -627,7 +626,7 @@ async def download_file(
                                             .execute()
                                         )
                                     except Exception as access_error:
-                                        if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
+                                        if hasattr(access_error, "resp") and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                                             logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                             # Get messageIdHeader from the original mail
@@ -644,7 +643,7 @@ async def download_file(
                                             if not message_id_header:
                                                 raise HTTPException(
                                                     status_code=HttpStatusCode.NOT_FOUND.value,
-                                                    detail="Original mail not found"
+                                                    detail="Original mail not found",
                                                 )
 
                                             # Find all mails with the same messageIdHeader
@@ -675,13 +674,13 @@ async def download_file(
                                                         message_id = related_message_id  # Update message_id to use the accessible one
                                                         break
                                                 except Exception as e:
-                                                    logger.warning(f"Failed to fetch message with ID {related_message_id}: {str(e)}")
+                                                    logger.warning(f"Failed to fetch message with ID {related_message_id}: {e!s}")
                                                     continue
 
                                             if not message:
                                                 raise HTTPException(
                                                     status_code=HttpStatusCode.NOT_FOUND.value,
-                                                    detail="No accessible messages found."
+                                                    detail="No accessible messages found.",
                                                 )
                                         else:
                                             raise access_error
@@ -702,10 +701,10 @@ async def download_file(
                                         raise Exception("Part ID not found in message")
 
                                 except Exception as e:
-                                    logger.error(f"Error extracting attachment ID: {str(e)}")
+                                    logger.error(f"Error extracting attachment ID: {e!s}")
                                     raise HTTPException(
                                         status_code=HttpStatusCode.BAD_REQUEST.value,
-                                        detail=f"Invalid attachment ID format: {str(e)}"
+                                        detail=f"Invalid attachment ID format: {e!s}",
                                     )
 
                             # Try to get the attachment with potential fallback message_id
@@ -718,10 +717,10 @@ async def download_file(
                                     .execute()
                                 )
                             except Exception as attachment_error:
-                                if hasattr(attachment_error, 'resp') and attachment_error.resp.status == HttpStatusCode.NOT_FOUND.value:
+                                if hasattr(attachment_error, "resp") and attachment_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                                     raise HTTPException(
                                         status_code=HttpStatusCode.NOT_FOUND.value,
-                                        detail="Attachment not found in accessible messages"
+                                        detail="Attachment not found in accessible messages",
                                     )
                                 raise attachment_error
 
@@ -731,7 +730,7 @@ async def download_file(
 
                         except Exception as gmail_error:
                             logger.info(
-                                f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
+                                f"Failed to get attachment from Gmail: {gmail_error!s}, trying Drive...",
                             )
 
                             # Try to get the file from Drive as fallback
@@ -739,7 +738,7 @@ async def download_file(
                             try:
                                 drive_service = build("drive", "v3", credentials=creds)
                                 request = drive_service.files().get_media(
-                                    fileId=file_id
+                                    fileId=file_id,
                                 )
                                 downloader = MediaIoBaseDownload(file_buffer, request)
 
@@ -747,7 +746,7 @@ async def download_file(
                                 while not done:
                                     status, done = downloader.next_chunk()
                                     logger.info(
-                                        f"Download {int(status.progress() * 100)}%."
+                                        f"Download {int(status.progress() * 100)}%.",
                                     )
 
                                     # Yield current chunk and reset buffer
@@ -758,7 +757,7 @@ async def download_file(
 
                             except Exception as drive_error:
                                 logger.error(
-                                    f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
+                                    f"Failed to get file from both Gmail and Drive. Gmail error: {gmail_error!s}, Drive error: {drive_error!s}",
                                 )
                                 raise HTTPException(
                                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -768,32 +767,31 @@ async def download_file(
                                 file_buffer.close()
 
                     except Exception as e:
-                        logger.error(f"Error in attachment stream: {str(e)}")
+                        logger.error(f"Error in attachment stream: {e!s}")
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail=f"Error streaming attachment: {str(e)}",
+                            detail=f"Error streaming attachment: {e!s}",
                         )
 
                 return StreamingResponse(
-                    attachment_stream(), media_type="application/octet-stream"
+                    attachment_stream(), media_type="application/octet-stream",
                 )
 
-            else:
-                connector_name = connector.lower().replace(" ", "")
-                container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map.get(connector_name)
-                if not connector:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Connector '{connector_name}' not found"
-                    )
-                buffer = await connector.stream_record(record)
-                return buffer
+            connector_name = connector.lower().replace(" ", "")
+            container: ConnectorAppContainer = request.app.container
+            connector: BaseConnector = container.connectors_map.get(connector_name)
+            if not connector:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=f"Connector '{connector_name}' not found",
+                )
+            buffer = await connector.stream_record(record)
+            return buffer
 
         except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}")
+            logger.error(f"Error downloading file: {e!s}")
             raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {e!s}",
             )
 
     except HTTPException as e:
@@ -809,13 +807,12 @@ async def download_file(
 async def stream_record(
     request: Request,
     record_id: str,
-    convertTo: Optional[str] = None,
+    convertTo: str | None = None,
     arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
     google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
-    """
-    Stream a record to the client.
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict | StreamingResponse | None:
+    """Stream a record to the client.
     """
     try:
         try:
@@ -829,7 +826,7 @@ async def stream_record(
             # Extract the token
             token = auth_header.split(" ")[1]
             secret_keys = await config_service.get_config(
-                config_node_constants.SECRET_KEYS.value
+                config_node_constants.SECRET_KEYS.value,
             )
             jwt_secret = secret_keys.get("jwtSecret")
             payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
@@ -847,7 +844,7 @@ async def stream_record(
 
         org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
         record_task = arango_service.get_record_by_id(
-            record_id
+            record_id,
         )
         org, record = await asyncio.gather(org_task, record_task)
 
@@ -878,7 +875,7 @@ async def stream_record(
                 drive_service = build("drive", "v3", credentials=creds)
                 file_name = record.record_name
                 file = await arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
+                    record_id, CollectionNames.FILES.value,
                 )
                 if not file:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
@@ -899,7 +896,7 @@ async def stream_record(
                             while not done:
                                 status, done = downloader.next_chunk()
                                 logger.info(
-                                    f"Download {int(status.progress() * 100)}%."
+                                    f"Download {int(status.progress() * 100)}%.",
                                 )
 
                         # Convert to PDF
@@ -911,7 +908,7 @@ async def stream_record(
                                 with open(pdf_path, "rb") as pdf_file:
                                     yield await asyncio.to_thread(pdf_file.read)
                             except Exception as e:
-                                logger.error(f"Error reading PDF file: {str(e)}")
+                                logger.error(f"Error reading PDF file: {e!s}")
                                 raise HTTPException(
                                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                                     detail="Error reading converted PDF file",
@@ -921,7 +918,7 @@ async def stream_record(
                             file_iterator(),
                             media_type="application/pdf",
                             headers={
-                                "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
+                                "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"',
                             },
                         )
 
@@ -957,7 +954,7 @@ async def stream_record(
 
                             except Exception as chunk_error:
                                 logger.error(
-                                    f"Error streaming chunk: {str(chunk_error)}"
+                                    f"Error streaming chunk: {chunk_error!s}",
                                 )
                                 raise HTTPException(
                                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -965,9 +962,9 @@ async def stream_record(
                                 )
 
                     except Exception as stream_error:
-                        logger.error(f"Error in file stream: {str(stream_error)}")
+                        logger.error(f"Error in file stream: {stream_error!s}")
                         raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error setting up file stream"
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error setting up file stream",
                         )
                     finally:
                         buffer.close()
@@ -976,13 +973,13 @@ async def stream_record(
                 # Return streaming response with proper headers
                 headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
                 return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                    file_stream(), media_type=mime_type, headers=headers,
                 )
 
-            elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 file_id = external_record_id
                 logger.info(
-                    f"Handling Gmail request for record_id: {record_id}, type: {recordType}"
+                    f"Handling Gmail request for record_id: {record_id}, type: {recordType}",
                 )
                 gmail_service = build("gmail", "v1", credentials=creds)
 
@@ -997,7 +994,7 @@ async def stream_record(
                                 .execute()
                             )
                         except Exception as access_error:
-                            if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
+                            if hasattr(access_error, "resp") and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                                 logger.info(f"Message not found with ID {file_id}, searching for related messages...")
 
                                 # Get messageIdHeader from the original mail
@@ -1014,7 +1011,7 @@ async def stream_record(
                                 if not message_id_header:
                                     raise HTTPException(
                                         status_code=HttpStatusCode.NOT_FOUND.value,
-                                        detail="Original mail not found"
+                                        detail="Original mail not found",
                                     )
 
                                 # Find all mails with the same messageIdHeader
@@ -1044,13 +1041,13 @@ async def stream_record(
                                             logger.info(f"Found accessible message with ID: {related_id}")
                                             break
                                     except Exception as e:
-                                        logger.warning(f"Failed to fetch message with ID {related_id}: {str(e)}")
+                                        logger.warning(f"Failed to fetch message with ID {related_id}: {e!s}")
                                         continue
 
                                 if not message:
                                     raise HTTPException(
                                         status_code=HttpStatusCode.NOT_FOUND.value,
-                                        detail="No accessible messages found."
+                                        detail="No accessible messages found.",
                                     )
                             else:
                                 raise access_error
@@ -1084,7 +1081,7 @@ async def stream_record(
                         mail_content_base64 = extract_body(message.get("payload", {}))
                         # Decode the Gmail URL-safe base64 encoded content; errors are replaced to avoid issues with malformed text
                         mail_content = base64.urlsafe_b64decode(
-                            mail_content_base64.encode("ASCII")
+                            mail_content_base64.encode("ASCII"),
                         ).decode("utf-8", errors="replace")
 
                         # Async generator to stream only the mail content
@@ -1093,12 +1090,12 @@ async def stream_record(
 
                         # Return the streaming response with only the mail body
                         return StreamingResponse(
-                            message_stream(), media_type="text/plain"
+                            message_stream(), media_type="text/plain",
                         )
                     except Exception as mail_error:
-                        logger.error(f"Failed to fetch mail content: {str(mail_error)}")
+                        logger.error(f"Failed to fetch mail content: {mail_error!s}")
                         raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch mail content"
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch mail content",
                         )
 
                 # Handle attachment download
@@ -1106,7 +1103,7 @@ async def stream_record(
 
                 # Get file metadata first
                 file = await arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
+                    record_id, CollectionNames.FILES.value,
                 )
                 if not file:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
@@ -1153,7 +1150,7 @@ async def stream_record(
                                     .execute()
                                 )
                             except Exception as access_error:
-                                if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
+                                if hasattr(access_error, "resp") and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                                     logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                     # Get messageIdHeader from the original mail
@@ -1170,7 +1167,7 @@ async def stream_record(
                                     if not message_id_header:
                                         raise HTTPException(
                                             status_code=HttpStatusCode.NOT_FOUND.value,
-                                            detail="Original mail not found"
+                                            detail="Original mail not found",
                                         )
 
                                     # Find all mails with the same messageIdHeader
@@ -1201,13 +1198,13 @@ async def stream_record(
                                                 message_id = related_message_id  # Update message_id to use the accessible one
                                                 break
                                         except Exception as e:
-                                            logger.warning(f"Failed to fetch message with ID {related_message_id}: {str(e)}")
+                                            logger.warning(f"Failed to fetch message with ID {related_message_id}: {e!s}")
                                             continue
 
                                     if not message:
                                         raise HTTPException(
                                             status_code=HttpStatusCode.NOT_FOUND.value,
-                                            detail="No accessible messages found."
+                                            detail="No accessible messages found.",
                                         )
                                 else:
                                     raise access_error
@@ -1228,10 +1225,10 @@ async def stream_record(
                                 raise Exception("Part ID not found in message")
 
                         except Exception as e:
-                            logger.error(f"Error extracting attachment ID: {str(e)}")
+                            logger.error(f"Error extracting attachment ID: {e!s}")
                             raise HTTPException(
                                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                                detail=f"Invalid attachment ID format: {str(e)}"
+                                detail=f"Invalid attachment ID format: {e!s}",
                             )
 
                     # Try to get the attachment with potential fallback message_id
@@ -1244,10 +1241,10 @@ async def stream_record(
                             .execute()
                         )
                     except Exception as attachment_error:
-                        if hasattr(attachment_error, 'resp') and attachment_error.resp.status == HttpStatusCode.NOT_FOUND.value:
+                        if hasattr(attachment_error, "resp") and attachment_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                             raise HTTPException(
                                 status_code=HttpStatusCode.NOT_FOUND.value,
-                                detail="Attachment not found in accessible messages"
+                                detail="Attachment not found in accessible messages",
                             )
                         raise attachment_error
 
@@ -1268,18 +1265,18 @@ async def stream_record(
                                 open(pdf_path, "rb"),
                                 media_type="application/pdf",
                                 headers={
-                                    "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
+                                    "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"',
                                 },
                             )
 
                     # Return original file if no conversion requested
                     return StreamingResponse(
-                        iter([file_data]), media_type="application/octet-stream"
+                        iter([file_data]), media_type="application/octet-stream",
                     )
 
                 except Exception as gmail_error:
                     logger.info(
-                        f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
+                        f"Failed to get attachment from Gmail: {gmail_error!s}, trying Drive...",
                     )
 
                     # Try Drive as fallback
@@ -1293,7 +1290,7 @@ async def stream_record(
                                 # Download from Drive to temp file
                                 with open(temp_file_path, "wb") as f:
                                     request = drive_service.files().get_media(
-                                        fileId=file_id
+                                        fileId=file_id,
                                     )
                                     downloader = MediaIoBaseDownload(f, request)
 
@@ -1301,31 +1298,31 @@ async def stream_record(
                                     while not done:
                                         status, done = downloader.next_chunk()
                                         logger.info(
-                                            f"Download {int(status.progress() * 100)}%."
+                                            f"Download {int(status.progress() * 100)}%.",
                                         )
 
                                 # Convert to PDF
                                 pdf_path = await convert_to_pdf(
-                                    temp_file_path, temp_dir
+                                    temp_file_path, temp_dir,
                                 )
                                 return StreamingResponse(
                                     open(pdf_path, "rb"),
                                     media_type="application/pdf",
                                     headers={
-                                        "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
+                                        "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"',
                                     },
                                 )
 
 
                         headers = {
-                            "Content-Disposition": f'attachment; filename="{file_name}"'
+                            "Content-Disposition": f'attachment; filename="{file_name}"',
                         }
 
                         # Use the same streaming logic as Drive downloads
                         async def file_stream() -> AsyncGenerator[bytes, None]:
                             try:
                                 request = drive_service.files().get_media(
-                                    fileId=file_id
+                                    fileId=file_id,
                                 )
                                 buffer = io.BytesIO()
                                 downloader = MediaIoBaseDownload(buffer, request)
@@ -1336,7 +1333,7 @@ async def stream_record(
                                         status, done = downloader.next_chunk()
                                         if status:
                                             logger.debug(
-                                                f"Download progress: {int(status.progress() * 100)}%"
+                                                f"Download progress: {int(status.progress() * 100)}%",
                                             )
 
                                         buffer.seek(0)
@@ -1352,7 +1349,7 @@ async def stream_record(
 
                                     except Exception as chunk_error:
                                         logger.error(
-                                            f"Error streaming chunk: {str(chunk_error)}"
+                                            f"Error streaming chunk: {chunk_error!s}",
                                         )
                                         raise HTTPException(
                                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -1361,7 +1358,7 @@ async def stream_record(
 
                             except Exception as stream_error:
                                 logger.error(
-                                    f"Error in file stream: {str(stream_error)}"
+                                    f"Error in file stream: {stream_error!s}",
                                 )
                                 raise HTTPException(
                                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -1371,12 +1368,12 @@ async def stream_record(
                                 buffer.close()
 
                         return StreamingResponse(
-                            file_stream(), media_type=mime_type, headers=headers
+                            file_stream(), media_type=mime_type, headers=headers,
                         )
 
                     except Exception as drive_error:
                         logger.error(
-                            f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
+                            f"Failed to get file from both Gmail and Drive. Gmail error: {gmail_error!s}, Drive error: {drive_error!s}",
                         )
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -1389,14 +1386,14 @@ async def stream_record(
                 if not connector:
                     raise HTTPException(
                         status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Connector '{connector_name}' not found"
+                        detail=f"Connector '{connector_name}' not found",
                     )
                 buffer = await connector.stream_record(record)
                 return buffer
         except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}")
+            logger.error(f"Error downloading file: {e!s}")
             raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {e!s}",
             )
 
     except HTTPException as e:
@@ -1436,7 +1433,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
                     try:
                         conversion_output, conversion_error = await asyncio.wait_for(
-                            process.communicate(), timeout=30.0
+                            process.communicate(), timeout=30.0,
                         )
                     except asyncio.TimeoutError:
                         process.terminate()
@@ -1445,10 +1442,10 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         except asyncio.TimeoutError:
                             process.kill()
                         logger.error(
-                            "LibreOffice conversion timed out after 30 seconds"
+                            "LibreOffice conversion timed out after 30 seconds",
                         )
                         raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out"
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out",
                         )
 
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
@@ -1458,12 +1455,12 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
                         logger.error(error_msg)
                         raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF"
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF",
                         )
 
                     if not os.path.exists(pdf_path):
                         raise FileNotFoundError(
-                            "PDF conversion failed - output file not found"
+                            "PDF conversion failed - output file not found",
                         )
 
                     async def file_iterator() -> AsyncGenerator[bytes, None]:
@@ -1471,7 +1468,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                             with open(pdf_path, "rb") as pdf_file:
                                 yield await asyncio.to_thread(pdf_file.read)
                         except Exception as e:
-                            logger.error(f"Error reading PDF file: {str(e)}")
+                            logger.error(f"Error reading PDF file: {e!s}")
                             raise HTTPException(
                                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                                 detail="Error reading converted PDF file",
@@ -1481,7 +1478,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         file_iterator(),
                         media_type="application/pdf",
                         headers={
-                            "Content-Disposition": f"attachment; filename={pdf_filename}"
+                            "Content-Disposition": f"attachment; filename={pdf_filename}",
                         },
                     )
 
@@ -1489,9 +1486,9 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                     logger.error(str(e))
                     raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
                 except Exception as e:
-                    logger.error(f"Conversion error: {str(e)}")
+                    logger.error(f"Conversion error: {e!s}")
                     raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Conversion error: {str(e)}"
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Conversion error: {e!s}",
                     )
         finally:
             await file.close()
@@ -1499,19 +1496,19 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
     raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid conversion request")
 
 
-async def get_admin_webhook_handler(request: Request) -> Optional[AdminWebhookHandler]:
+async def get_admin_webhook_handler(request: Request) -> AdminWebhookHandler | None:
     try:
         container: ConnectorAppContainer = request.app.container
         admin_webhook_handler = container.admin_webhook_handler()
         return admin_webhook_handler
     except Exception as e:
-        logger.warning(f"Failed to get admin webhook handler: {str(e)}")
+        logger.warning(f"Failed to get admin webhook handler: {e!s}")
         return None
 
 
 @router.post("/admin/webhook")
 @inject
-async def handle_admin_webhook(request: Request, background_tasks: BackgroundTasks) -> Optional[Dict[str, Any]]:
+async def handle_admin_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any] | None:
     """Handle incoming webhook notifications from Google Workspace Admin"""
     try:
         verifier = WebhookAuthVerifier(logger)
@@ -1522,7 +1519,7 @@ async def handle_admin_webhook(request: Request, background_tasks: BackgroundTas
 
         if admin_webhook_handler is None:
             logger.warning(
-                "Admin webhook handler not yet initialized - skipping webhook processing"
+                "Admin webhook handler not yet initialized - skipping webhook processing",
             )
             return {
                 "status": "skipped",
@@ -1535,7 +1532,7 @@ async def handle_admin_webhook(request: Request, background_tasks: BackgroundTas
         except json.JSONDecodeError:
             # This might be a verification request
             logger.info(
-                "Received request with empty/invalid JSON body - might be verification request"
+                "Received request with empty/invalid JSON body - might be verification request",
             )
             return {"status": "accepted", "message": "Verification request received"}
 
@@ -1545,25 +1542,25 @@ async def handle_admin_webhook(request: Request, background_tasks: BackgroundTas
         events = body.get("events", [])
         if not events:
             raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value, detail="No events found in webhook body"
+                status_code=HttpStatusCode.BAD_REQUEST.value, detail="No events found in webhook body",
             )
 
         event_type = events[0].get("name")  # We'll process the first event
         if not event_type:
             raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value, detail="Missing event name in webhook body"
+                status_code=HttpStatusCode.BAD_REQUEST.value, detail="Missing event name in webhook body",
             )
 
         # Process notification in background
         background_tasks.add_task(
-            admin_webhook_handler.process_notification, event_type, body
+            admin_webhook_handler.process_notification, event_type, body,
         )
         return {"status": "accepted"}
 
     except Exception as e:
         logger.error("Error processing webhook: %s", str(e))
         raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e),
         )
 
 
@@ -1590,7 +1587,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         # Add timeout to communicate
         try:
             conversion_output, conversion_error = await asyncio.wait_for(
-                process.communicate(), timeout=30.0
+                process.communicate(), timeout=30.0,
             )
         except asyncio.TimeoutError:
             # Make sure to terminate the process if it times out
@@ -1609,16 +1606,15 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 
         if os.path.exists(pdf_path):
             return pdf_path
-        else:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion failed - output file not found"
-            )
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion failed - output file not found",
+        )
     except asyncio.TimeoutError:
         # This catch is for any other timeout that might occur
         logger.error("Timeout during PDF conversion")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
     except Exception as conv_error:
-        logger.error(f"Error during conversion: {str(conv_error)}")
+        logger.error(f"Error during conversion: {conv_error!s}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
 
@@ -1628,7 +1624,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
         service_creds_lock = container.service_creds_lock()
 
         async with service_creds_lock:
-            if not hasattr(container, 'service_creds_cache'):
+            if not hasattr(container, "service_creds_cache"):
                 container.service_creds_cache = {}
                 logger.info("Created service credentials cache")
 
@@ -1651,7 +1647,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
             credentials_json = await google_token_handler.get_enterprise_token(org_id,app_name=connector)
             credentials = service_account.Credentials.from_service_account_info(
-                credentials_json, scopes=SCOPES
+                credentials_json, scopes=SCOPES,
             )
             credentials = credentials.with_subject(user["email"])
 
@@ -1662,9 +1658,9 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
             return credentials
 
     except Exception as e:
-        logger.error(f"Error getting service account credentials: {str(e)}")
+        logger.error(f"Error getting service account credentials: {e!s}")
         raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing service account credentials"
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing service account credentials",
         )
 
 async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
@@ -1674,7 +1670,7 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
         user_creds_lock = container.user_creds_lock()
 
         async with user_creds_lock:
-            if not hasattr(container, 'user_creds_cache'):
+            if not hasattr(container, "user_creds_cache"):
                 container.user_creds_cache = {}
                 logger.info("Created user credentials cache")
 
@@ -1693,12 +1689,11 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
                     if expiry and (expiry - buffer_time) > now:
                         logger.info(f"User credentials cache hit: {cache_key}")
                         return creds
-                    else:
-                        logger.info(f"User credentials expired or expiring soon for {cache_key}")
-                        # Remove expired credentials from cache
-                        container.user_creds_cache.pop(cache_key, None)
+                    logger.info(f"User credentials expired or expiring soon for {cache_key}")
+                    # Remove expired credentials from cache
+                    container.user_creds_cache.pop(cache_key, None)
                 except Exception as e:
-                    logger.error(f"Failed to check credentials for {cache_key}: {str(e)}")
+                    logger.error(f"Failed to check credentials for {cache_key}: {e!s}")
                     container.user_creds_cache.pop(cache_key, None)
             # Cache miss or expired - create new credentials
             logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
@@ -1746,7 +1741,7 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
 
             # Update token expiry time - make it timezone-naive for Google client compatibility
             token_expiry = datetime.fromtimestamp(
-                creds_data.get("access_token_expiry_time", 0) / 1000, timezone.utc
+                creds_data.get("access_token_expiry_time", 0) / 1000, timezone.utc,
             ).replace(tzinfo=None)  # Convert to naive UTC for Google client compatibility
             new_creds.expiry = token_expiry
 
@@ -1757,12 +1752,12 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             return new_creds
 
     except Exception as e:
-        logger.error(f"Error getting user credentials: {str(e)}")
+        logger.error(f"Error getting user credentials: {e!s}")
         # Remove from cache if there's an error
-        if hasattr(container, 'user_creds_cache'):
+        if hasattr(container, "user_creds_cache"):
             container.user_creds_cache.pop(cache_key, None)
         raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials"
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials",
         )
 
 
@@ -1773,20 +1768,19 @@ async def get_records(
     arango_service: BaseArangoService = Depends(get_arango_service),
     page: int = 1,
     limit: int = 20,
-    search: Optional[str] = None,
-    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
+    search: str | None = None,
+    record_types: str | None = Query(None, description="Comma-separated list of record types"),
+    origins: str | None = Query(None, description="Comma-separated list of origins"),
+    connectors: str | None = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: str | None = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: str | None = Query(None, description="Comma-separated list of permissions"),
+    date_from: int | None = None,
+    date_to: int | None = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     source: str = "all",
-) -> Optional[Dict]:
-    """
-    List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
+) -> dict | None:
+    """List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
     """
     try:
         container = request.app.container
@@ -1803,14 +1797,14 @@ async def get_records(
             return {
                 "success": False,
                 "code": 404,
-                "reason": f"User not found for user_id: {user_id}"
+                "reason": f"User not found for user_id: {user_id}",
             }
-        user_key = user.get('_key')
+        user_key = user.get("_key")
 
         skip = (page - 1) * limit
         sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
         sort_by = sort_by if sort_by in [
-            "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
+            "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus",
         ] else "createdAtTimestamp"
 
         # Parse comma-separated strings into lists
@@ -1863,10 +1857,10 @@ async def get_records(
             "filters": {
                 "applied": applied_filters,
                 "available": available_filters,
-            }
+            },
         }
     except Exception as e:
-        logger.error(f"❌ Failed to list all records: {str(e)}")
+        logger.error(f"❌ Failed to list all records: {e!s}")
         return {
             "records": [],
             "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
@@ -1880,9 +1874,8 @@ async def get_record_by_id(
     record_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Optional[Dict]:
-    """
-    Check if the current user has access to a specific record
+) -> dict | None:
+    """Check if the current user has access to a specific record
     """
     try:
         container = request.app.container
@@ -1898,12 +1891,11 @@ async def get_record_by_id(
         logger.info(f"🚀 has_access: {has_access}")
         if has_access:
             return has_access
-        else:
-            raise HTTPException(
-                status_code=404, detail="You do not have access to this record"
-            )
+        raise HTTPException(
+            status_code=404, detail="You do not have access to this record",
+        )
     except Exception as e:
-        logger.error(f"Error checking record access: {str(e)}")
+        logger.error(f"Error checking record access: {e!s}")
         raise HTTPException(status_code=500, detail="Failed to check record access")
 
 @router.delete("/api/v1/records/{record_id}")
@@ -1912,9 +1904,8 @@ async def delete_record(
     record_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict:
-    """
-    Delete a specific record with permission validation
+) -> dict:
+    """Delete a specific record with permission validation
     """
     try:
         container = request.app.container
@@ -1924,7 +1915,7 @@ async def delete_record(
 
         result = await arango_service.delete_record(
             record_id=record_id,
-            user_id=user_id
+            user_id=user_id,
         )
 
         if result["success"]:
@@ -1934,22 +1925,21 @@ async def delete_record(
                 "message": f"Record {record_id} deleted successfully",
                 "recordId": record_id,
                 "connector": result.get("connector"),
-                "timestamp": result.get("timestamp")
+                "timestamp": result.get("timestamp"),
             }
-        else:
-            logger.error(f"❌ Failed to delete record {record_id}: {result.get('reason')}")
-            raise HTTPException(
-                status_code=result.get("code", 500),
-                detail=result.get("reason", "Failed to delete record")
-            )
+        logger.error(f"❌ Failed to delete record {record_id}: {result.get('reason')}")
+        raise HTTPException(
+            status_code=result.get("code", 500),
+            detail=result.get("reason", "Failed to delete record"),
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error deleting record {record_id}: {str(e)}")
+        logger.error(f"❌ Error deleting record {record_id}: {e!s}")
         raise HTTPException(
             status_code=500,
-            detail=f"Internal server error while deleting record: {str(e)}"
+            detail=f"Internal server error while deleting record: {e!s}",
         )
 
 @router.post("/api/v1/records/{record_id}/reindex")
@@ -1958,9 +1948,8 @@ async def reindex_single_record(
     record_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict:
-    """
-    Reindex a single record with permission validation
+) -> dict:
+    """Reindex a single record with permission validation
     """
     try:
         container = request.app.container
@@ -1974,7 +1963,7 @@ async def reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
-            request=request
+            request=request,
         )
 
         if result["success"]:
@@ -1986,22 +1975,21 @@ async def reindex_single_record(
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
                 "eventPublished": result.get("eventPublished"),
-                "userRole": result.get("userRole")
+                "userRole": result.get("userRole"),
             }
-        else:
-            logger.error(f"❌ Failed to reindex record {record_id}: {result.get('reason')}")
-            raise HTTPException(
-                status_code=result.get("code", 500),
-                detail=result.get("reason", "Failed to reindex record")
-            )
+        logger.error(f"❌ Failed to reindex record {record_id}: {result.get('reason')}")
+        raise HTTPException(
+            status_code=result.get("code", 500),
+            detail=result.get("reason", "Failed to reindex record"),
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error reindexing record {record_id}: {str(e)}")
+        logger.error(f"❌ Error reindexing record {record_id}: {e!s}")
         raise HTTPException(
             status_code=500,
-            detail=f"Internal server error while reindexing record: {str(e)}"
+            detail=f"Internal server error while reindexing record: {e!s}",
         )
 
 @router.post("/api/v1/records/reindex-failed")
@@ -2009,9 +1997,8 @@ async def reindex_single_record(
 async def reindex_failed_records(
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict:
-    """
-    Reindex all failed records for a specific connector with permission validation
+) -> dict:
+    """Reindex all failed records for a specific connector with permission validation
     """
     try:
         container = request.app.container
@@ -2026,8 +2013,8 @@ async def reindex_failed_records(
         result = await arango_service.reindex_failed_connector_records(
             user_id=user_id,
             org_id=org_id,
-            connector=request_body.get('connector'),
-            origin=request_body.get('origin')
+            connector=request_body.get("connector"),
+            origin=request_body.get("origin"),
         )
 
         if result["success"]:
@@ -2038,46 +2025,43 @@ async def reindex_failed_records(
                 "connector": result.get("connector"),
                 "origin": result.get("origin"),
                 "userPermissionLevel": result.get("user_permission_level"),
-                "eventPublished": result.get("event_published")
+                "eventPublished": result.get("event_published"),
             }
-        else:
-            logger.error(f"❌ Failed to reindex failed records: {result.get('reason')}")
-            raise HTTPException(
-                status_code=result.get("code", 500),
-                detail=result.get("reason", "Failed to reindex failed records")
-            )
+        logger.error(f"❌ Failed to reindex failed records: {result.get('reason')}")
+        raise HTTPException(
+            status_code=result.get("code", 500),
+            detail=result.get("reason", "Failed to reindex failed records"),
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error reindexing failed records: {str(e)}")
+        logger.error(f"❌ Error reindexing failed records: {e!s}")
         raise HTTPException(
             status_code=500,
-            detail=f"Internal server error while reindexing failed records: {str(e)}"
+            detail=f"Internal server error while reindexing failed records: {e!s}",
         )
 
 @router.get("/api/v1/stats")
 async def get_connector_stats_endpoint(
     org_id: str,
     connector: str,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-)-> Dict[str, Any]:
+    arango_service: BaseArangoService = Depends(get_arango_service),
+)-> dict[str, Any]:
     result = await arango_service.get_connector_stats(org_id, connector)
 
     if result["success"]:
         return {"success": True, "data": result["data"]}
-    else:
-        raise HTTPException(status_code=500, detail=result["message"])
+    raise HTTPException(status_code=500, detail=result["message"])
 
 
 @router.get("/api/v1/connectors/config/{app_name}")
 async def get_connector_config(
     app_name: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
-    """
-    Retrieve connector configuration using registry metadata and etcd (no DB requirement).
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> dict[str, Any]:
+    """Retrieve connector configuration using registry metadata and etcd (no DB requirement).
     """
     try:
         container = request.app.container
@@ -2095,7 +2079,7 @@ async def get_connector_config(
             config_service = container.config_service()
             filtered_app_name = _sanitize_app_name(app_name)
             config_key: str = f"/services/connectors/{filtered_app_name}/config"
-            config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
+            config: dict[str, Any] | None = await config_service.get_config(config_key)
         except Exception as e:
             logger.error(f"Failed to load config from etcd for {app_name}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
@@ -2105,7 +2089,7 @@ async def get_connector_config(
         config = config.copy() if config else {"auth": {}, "sync": {}, "filters": {}}
         config.pop("credentials", None)
         config.pop("oauth", None)
-        response_dict: Dict[str, Any] = {
+        response_dict: dict[str, Any] = {
             "name": registry_entry["name"],
             "appGroupId": registry_entry.get("appGroupId"),
             "appGroup": registry_entry.get("appGroup"),
@@ -2133,9 +2117,8 @@ async def get_connector_config(
 @router.get("/api/v1/connectors")
 async def get_connectors(
     request: Request,
-) -> Dict[str, Any]:
-    """
-    Retrieve all available connectors.
+) -> dict[str, Any]:
+    """Retrieve all available connectors.
 
     Args:
         request: FastAPI request object
@@ -2145,25 +2128,24 @@ async def get_connectors(
 
     Raises:
         HTTPException: 404 if no connectors found
+
     """
     connector_registry = request.app.state.connector_registry
-    result: Optional[List[Dict[str, Any]]] = await connector_registry.get_all_connectors()
+    result: list[dict[str, Any]] | None = await connector_registry.get_all_connectors()
 
     if result:
         return {"success": True, "connectors": result}
-    else:
-        raise HTTPException(status_code=404, detail="No connectors found")
+    raise HTTPException(status_code=404, detail="No connectors found")
 
 @router.get("/api/v1/connectors/active")
 async def get_active_connector(
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Get active connectors.
+) -> dict[str, Any]:
+    """Get active connectors.
     """
     connector_registry = request.app.state.connector_registry
-    result: List[Dict[str, Any]] = await connector_registry.get_active_connector()
+    result: list[dict[str, Any]] = await connector_registry.get_active_connector()
     return {"success": True, "connectors": result}
 
 
@@ -2171,22 +2153,20 @@ async def get_active_connector(
 async def get_inactive_connector(
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Get inactive connectors.
+) -> dict[str, Any]:
+    """Get inactive connectors.
     """
     connector_registry = request.app.state.connector_registry
-    result: List[Dict[str, Any]] = await connector_registry.get_inactive_connector()
+    result: list[dict[str, Any]] = await connector_registry.get_inactive_connector()
     return {"success": True, "connectors": result}
 
 @router.get("/api/v1/connectors/schema/{app_name}")
 async def get_connector_schema(
     app_name: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
-    """
-    Retrieve connector schema from database config.
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> dict[str, Any]:
+    """Retrieve connector schema from database config.
 
     Args:
         app_name: Name of the connector
@@ -2198,12 +2178,13 @@ async def get_connector_schema(
 
     Raises:
         HTTPException: 404 if connector not found
+
     """
     container = request.app.container
     logger = container.logger()
     logger.info(f"Getting connector schema for {app_name}")
     connector_registry = request.app.state.connector_registry
-    result: Optional[Dict[str, Any]] = await connector_registry.get_connector_by_name(app_name)
+    result: dict[str, Any] | None = await connector_registry.get_connector_by_name(app_name)
     if not result:
         raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
 
@@ -2217,11 +2198,10 @@ async def get_connector_schema(
 async def get_oauth_authorization_url(
     app_name: str,
     request: Request,
-    base_url: Optional[str] = Query(None),
+    base_url: str | None = Query(None),
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Get OAuth authorization URL for a connector.
+) -> dict[str, Any]:
+    """Get OAuth authorization URL for a connector.
 
     Args:
         app_name: Name of the connector
@@ -2230,6 +2210,7 @@ async def get_oauth_authorization_url(
 
     Returns:
         Dict containing authorization URL and state
+
     """
     container = request.app.container
     logger = container.logger()
@@ -2242,7 +2223,7 @@ async def get_oauth_authorization_url(
             raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
 
         # Check if it's an OAuth connector
-        if (registry_entry.get('authType') or '').upper() not in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
+        if (registry_entry.get("authType") or "").upper() not in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
             raise HTTPException(status_code=400, detail=f"Connector {app_name} does not support OAuth")
 
         # Get OAuth configuration from etcd
@@ -2250,16 +2231,16 @@ async def get_oauth_authorization_url(
         filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
-        if not config or not config.get('auth'):
+        if not config or not config.get("auth"):
             raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
 
-        auth_config = config['auth']
+        auth_config = config["auth"]
 
         # Get OAuth configuration from registry metadata
-        connector_auth_config = registry_entry.get('config', {}).get('auth', {})
-        redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
-        token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
+        connector_auth_config = registry_entry.get("config", {}).get("auth", {})
+        redirect_uri = connector_auth_config.get("redirectUri", "")
+        authorize_url = auth_config.get("authorizeUrl") or connector_auth_config.get("authorizeUrl", "")
+        token_url = auth_config.get("tokenUrl") or connector_auth_config.get("tokenUrl", "")
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
@@ -2274,9 +2255,9 @@ async def get_oauth_authorization_url(
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
-            endpoint_keys = '/services/endpoints'
+            endpoint_keys = "/services/endpoints"
             endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            base_url = endpoints.get("frontendPublicUrl", "http://localhost:3001")
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
         oauth_config = get_oauth_config(app_name, auth_config)
@@ -2286,17 +2267,17 @@ async def get_oauth_authorization_url(
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config",
         )
         # Generate authorization URL using OAuth provider
         # Add provider-specific parameters to ensure refresh_token is issued where applicable
         extra_params = {}
-        if app_name.upper() in ['DRIVE', 'GMAIL']:
+        if app_name.upper() in ["DRIVE", "GMAIL"]:
             # Google requires these for refresh_token on repeated consents
             extra_params.update({
-                'access_type': 'offline',
-                'prompt': 'consent',
-                'include_granted_scopes': 'true',
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true",
             })
 
         auth_url = await oauth_provider.start_authorization(**extra_params)
@@ -2305,14 +2286,14 @@ async def get_oauth_authorization_url(
         await oauth_provider.close()
 
         # Add tenant-specific parameters for Microsoft
-        if app_name.upper() == 'ONEDRIVE':
+        if app_name.upper() == "ONEDRIVE":
             # Add Microsoft-specific parameters
             from urllib.parse import parse_qs, urlencode, urlparse
             parsed_url = urlparse(auth_url)
             params = parse_qs(parsed_url.query)
-            params['response_mode'] = ['query']
-            if (registry_entry.get('authType') or '').upper() == 'OAUTH_ADMIN_CONSENT':
-                params['prompt'] = ['admin_consent']
+            params["response_mode"] = ["query"]
+            if (registry_entry.get("authType") or "").upper() == "OAUTH_ADMIN_CONSENT":
+                params["prompt"] = ["admin_consent"]
 
             # Rebuild URL with additional parameters
             auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(params, doseq=True)}"
@@ -2321,29 +2302,29 @@ async def get_oauth_authorization_url(
         from urllib.parse import parse_qs, urlparse
         parsed_url = urlparse(auth_url)
         query_params = parse_qs(parsed_url.query)
-        state = query_params.get('state', [None])[0]
+        state = query_params.get("state", [None])[0]
 
         return {
             "success": True,
             "authorizationUrl": auth_url,
-            "state": state
+            "state": state,
         }
 
     except Exception as e:
-        logger.error(f"Error generating OAuth URL for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate OAuth URL: {str(e)}")
+        logger.error(f"Error generating OAuth URL for {app_name}: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate OAuth URL: {e!s}")
 
 
 @router.get("/api/v1/connectors/{app_name}/oauth/callback")
 async def handle_oauth_callback(
     app_name: str,
     request: Request,
-    code: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-    error: Optional[str] = Query(None),
-    base_url: Optional[str] = Query(None),
+    code: str | None = Query(None),
+    state: str | None = Query(None),
+    error: str | None = Query(None),
+    base_url: str | None = Query(None),
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """GET callback handler for OAuth redirects.
     This endpoint processes the OAuth callback and redirects to the frontend with the result.
     """
@@ -2400,17 +2381,17 @@ async def handle_oauth_callback(
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
-        if not config or not config.get('auth'):
+        if not config or not config.get("auth"):
             logger.error(f"OAuth configuration not found for {app_name}")
             return {"success": False, "error": "config_not_found", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=config_not_found"}
 
-        auth_config = config['auth']
+        auth_config = config["auth"]
 
         # Get OAuth configuration from registry metadata
-        connector_auth_config = registry_entry.get('config', {}).get('auth', {})
-        redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
-        token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
+        connector_auth_config = registry_entry.get("config", {}).get("auth", {})
+        redirect_uri = connector_auth_config.get("redirectUri", "")
+        authorize_url = auth_config.get("authorizeUrl") or connector_auth_config.get("authorizeUrl", "")
+        token_url = auth_config.get("tokenUrl") or connector_auth_config.get("tokenUrl", "")
 
         if not redirect_uri:
             return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
@@ -2425,9 +2406,9 @@ async def handle_oauth_callback(
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
-            endpoint_keys = '/services/endpoints'
+            endpoint_keys = "/services/endpoints"
             endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            base_url = endpoints.get("frontendPublicUrl", "http://localhost:3001")
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
         oauth_config = get_oauth_config(app_name, auth_config)
@@ -2436,7 +2417,7 @@ async def handle_oauth_callback(
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config",
         )
 
         # Exchange code for token using OAuth provider (ensure cleanup)
@@ -2490,14 +2471,14 @@ async def handle_oauth_callback(
         return {"success": True, "redirect_url": redirect_url}
 
     except Exception as e:
-        logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
+        logger.error(f"Error handling OAuth GET callback for {app_name}: {e!s}")
         connector_name = app_name
         if base_url and len(base_url) > 0:
             base_url = f"{base_url.rstrip('/')}/"
         else:
-            endpoint_keys = '/services/endpoints'
+            endpoint_keys = "/services/endpoints"
             endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            base_url = endpoints.get("frontendPublicUrl", "http://localhost:3001")
             base_url = f"{base_url.rstrip('/')}/"
         try:
             orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
@@ -2515,9 +2496,8 @@ async def handle_oauth_callback(
         return {"success": False, "error": "server_error", "redirect_url": error_url}
 
 
-async def get_connector_filter_options_from_config(app_name: str, connector_config: Dict[str, Any], token_or_credentials: OAuthToken | Dict[str, Any], config_service) -> Dict[str, Any]:
-    """
-    Get filter options for a connector based on its configuration by calling dynamic endpoints.
+async def get_connector_filter_options_from_config(app_name: str, connector_config: dict[str, Any], token_or_credentials: OAuthToken | dict[str, Any], config_service) -> dict[str, Any]:
+    """Get filter options for a connector based on its configuration by calling dynamic endpoints.
 
     Args:
         app_name: Name of the connector
@@ -2527,10 +2507,11 @@ async def get_connector_filter_options_from_config(app_name: str, connector_conf
 
     Returns:
         Dict containing available filter options
+
     """
     try:
         # Get filter endpoints from connector config
-        filter_endpoints = connector_config.get('config', {}).get('filters', {}).get('endpoints', {})
+        filter_endpoints = connector_config.get("config", {}).get("filters", {}).get("endpoints", {})
 
         if not filter_endpoints:
             return {}
@@ -2550,21 +2531,20 @@ async def get_connector_filter_options_from_config(app_name: str, connector_conf
                         filter_options[filter_type] = options
 
             except Exception as e:
-                print(f"Error fetching {filter_type} for {app_name}: {str(e)}")
+                print(f"Error fetching {filter_type} for {app_name}: {e!s}")
                 # Fallback to static options for this filter type
                 filter_options[filter_type] = await _get_static_filter_options(app_name, filter_type)
 
         return filter_options
 
     except Exception as e:
-        print(f"Error getting filter options for {app_name}: {str(e)}")
+        print(f"Error getting filter options for {app_name}: {e!s}")
         # Return hardcoded fallback options
         return await _get_fallback_filter_options(app_name)
 
 
-async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_or_credentials: OAuthToken | Dict[str, Any], app_name: str) -> List[Dict[str, str]]:
-    """
-    Fetch filter options from a dynamic API endpoint.
+async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_or_credentials: OAuthToken | dict[str, Any], app_name: str) -> list[dict[str, str]]:
+    """Fetch filter options from a dynamic API endpoint.
 
     Args:
         endpoint: API endpoint URL
@@ -2574,39 +2554,37 @@ async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_
 
     Returns:
         List of filter options with value and label
-    """
 
+    """
     import aiohttp
 
     headers = {}
 
     # Set up authentication headers based on token type
-    if hasattr(token_or_credentials, 'access_token'):
+    if hasattr(token_or_credentials, "access_token"):
         # OAuth token
-        headers['Authorization'] = f"Bearer {token_or_credentials.access_token}"
+        headers["Authorization"] = f"Bearer {token_or_credentials.access_token}"
     elif isinstance(token_or_credentials, dict):
         # API token or other credentials
-        if 'access_token' in token_or_credentials:
-            headers['Authorization'] = f"Bearer {token_or_credentials['access_token']}"
-        elif 'api_token' in token_or_credentials:
-            headers['Authorization'] = f"Bearer {token_or_credentials['api_token']}"
-        elif 'token' in token_or_credentials:
-            headers['Authorization'] = f"Bearer {token_or_credentials['token']}"
+        if "access_token" in token_or_credentials:
+            headers["Authorization"] = f"Bearer {token_or_credentials['access_token']}"
+        elif "api_token" in token_or_credentials:
+            headers["Authorization"] = f"Bearer {token_or_credentials['api_token']}"
+        elif "token" in token_or_credentials:
+            headers["Authorization"] = f"Bearer {token_or_credentials['token']}"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(endpoint, headers=headers) as response:
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = await response.json()
                 return _parse_filter_response(data, filter_type, app_name)
-            else:
-                print(f"API call failed for {filter_type}: {response.status}")
-                return []
+            print(f"API call failed for {filter_type}: {response.status}")
+            return []
     return []
 
 
-def _parse_filter_response(data: Dict[str, Any], filter_type: str, app_name: str) -> List[Dict[str, str]]:
-    """
-    Parse API response to extract filter options.
+def _parse_filter_response(data: dict[str, Any], filter_type: str, app_name: str) -> list[dict[str, str]]:
+    """Parse API response to extract filter options.
 
     Args:
         data: API response data
@@ -2615,67 +2593,67 @@ def _parse_filter_response(data: Dict[str, Any], filter_type: str, app_name: str
 
     Returns:
         List of filter options with value and label
+
     """
     options = []
 
     try:
-        if app_name.upper() == 'GMAIL' and filter_type == 'labels':
+        if app_name.upper() == "GMAIL" and filter_type == "labels":
             # Gmail labels API response
-            labels = data.get('labels', [])
+            labels = data.get("labels", [])
             for label in labels:
-                if label.get('type') == 'user':  # Only user-created labels, not system labels
+                if label.get("type") == "user":  # Only user-created labels, not system labels
                     options.append({
-                        "value": label['id'],
-                        "label": label['name']
+                        "value": label["id"],
+                        "label": label["name"],
                     })
 
-        elif app_name.upper() == 'DRIVE' and filter_type == 'folders':
+        elif app_name.upper() == "DRIVE" and filter_type == "folders":
             # Google Drive folders API response
-            files = data.get('files', [])
+            files = data.get("files", [])
             for file in files:
                 options.append({
-                    "value": file['id'],
-                    "label": file['name']
+                    "value": file["id"],
+                    "label": file["name"],
                 })
 
-        elif app_name.upper() == 'ONEDRIVE' and filter_type == 'folders':
+        elif app_name.upper() == "ONEDRIVE" and filter_type == "folders":
             # OneDrive folders API response
-            items = data.get('value', [])
+            items = data.get("value", [])
             for item in items:
-                if item.get('folder'):
+                if item.get("folder"):
                     options.append({
-                        "value": item['id'],
-                        "label": item['name']
+                        "value": item["id"],
+                        "label": item["name"],
                     })
 
-        elif app_name.upper() == 'SLACK' and filter_type == 'channels':
+        elif app_name.upper() == "SLACK" and filter_type == "channels":
             # Slack channels API response
-            channels = data.get('channels', [])
+            channels = data.get("channels", [])
             for channel in channels:
-                if not channel.get('is_archived'):
+                if not channel.get("is_archived"):
                     options.append({
-                        "value": channel['id'],
-                        "label": f"#{channel['name']}"
+                        "value": channel["id"],
+                        "label": f"#{channel['name']}",
                     })
 
-        elif app_name.upper() == 'CONFLUENCE' and filter_type == 'spaces':
+        elif app_name.upper() == "CONFLUENCE" and filter_type == "spaces":
             # Confluence spaces API response
-            spaces = data.get('results', [])
+            spaces = data.get("results", [])
             for space in spaces:
                 options.append({
-                    "value": space['key'],
-                    "label": space['name']
+                    "value": space["key"],
+                    "label": space["name"],
                 })
 
     except Exception as e:
-        print(f"Error parsing {filter_type} response for {app_name}: {str(e)}")
+        print(f"Error parsing {filter_type} response for {app_name}: {e!s}")
 
     return options
 
 
-async def _get_static_filter_options(app_name: str, filter_type: str) -> List[Dict[str, str]]:
-    """
-    Get static filter options for connectors that don't have dynamic endpoints.
+async def _get_static_filter_options(app_name: str, filter_type: str) -> list[dict[str, str]]:
+    """Get static filter options for connectors that don't have dynamic endpoints.
 
     Args:
         app_name: Name of the connector
@@ -2683,79 +2661,80 @@ async def _get_static_filter_options(app_name: str, filter_type: str) -> List[Di
 
     Returns:
         List of static filter options
+
     """
-    if filter_type == 'fileTypes':
+    if filter_type == "fileTypes":
         return [
             {"value": "document", "label": "Documents"},
             {"value": "spreadsheet", "label": "Spreadsheets"},
             {"value": "presentation", "label": "Presentations"},
             {"value": "pdf", "label": "PDFs"},
             {"value": "image", "label": "Images"},
-            {"value": "video", "label": "Videos"}
+            {"value": "video", "label": "Videos"},
         ]
-    elif filter_type == 'contentTypes':
+    if filter_type == "contentTypes":
         return [
             {"value": "page", "label": "Pages"},
             {"value": "blogpost", "label": "Blog Posts"},
             {"value": "comment", "label": "Comments"},
-            {"value": "attachment", "label": "Attachments"}
+            {"value": "attachment", "label": "Attachments"},
         ]
 
     return []
 
 
-async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str, str]]]:
-    """
-    Get hardcoded fallback filter options when dynamic fetching fails.
+async def _get_fallback_filter_options(app_name: str) -> dict[str, list[dict[str, str]]]:
+    """Get hardcoded fallback filter options when dynamic fetching fails.
 
     Args:
         app_name: Name of the connector
 
     Returns:
         Dict containing fallback filter options
+
     """
     fallback_options = {
-        'GMAIL': {
+        "GMAIL": {
             "labels": [
                 {"value": "INBOX", "label": "Inbox"},
                 {"value": "SENT", "label": "Sent"},
                 {"value": "DRAFT", "label": "Draft"},
                 {"value": "SPAM", "label": "Spam"},
-                {"value": "TRASH", "label": "Trash"}
-            ]
+                {"value": "TRASH", "label": "Trash"},
+            ],
         },
-        'DRIVE': {
+        "DRIVE": {
             "fileTypes": [
                 {"value": "document", "label": "Documents"},
                 {"value": "spreadsheet", "label": "Spreadsheets"},
                 {"value": "presentation", "label": "Presentations"},
                 {"value": "pdf", "label": "PDFs"},
                 {"value": "image", "label": "Images"},
-                {"value": "video", "label": "Videos"}
-            ]
+                {"value": "video", "label": "Videos"},
+            ],
         },
-        'ONEDRIVE': {
+        "ONEDRIVE": {
             "fileTypes": [
                 {"value": "document", "label": "Documents"},
                 {"value": "spreadsheet", "label": "Spreadsheets"},
                 {"value": "presentation", "label": "Presentations"},
                 {"value": "pdf", "label": "PDFs"},
                 {"value": "image", "label": "Images"},
-                {"value": "video", "label": "Videos"}
-            ]
+                {"value": "video", "label": "Videos"},
+            ],
         },
-        'SLACK': {
+        "SLACK": {
             "channels": [
                 {"value": "general", "label": "#general"},
-                {"value": "random", "label": "#random"}
-            ]
+                {"value": "random", "label": "#random"},
+            ],
         },
-        'CONFLUENCE': {
+        "CONFLUENCE": {
             "spaces": [
                 {"value": "DEMO", "label": "Demo Space"},
-                {"value": "DOCS", "label": "Documentation"}
-            ]
-        }
+                {"value": "DOCS", "label": "Documentation"},
+            ],
+        },
     }
 
     return fallback_options.get(app_name.upper(), {})
@@ -2766,9 +2745,8 @@ async def get_connector_filters(
     app_name: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Get filter options for a connector based on its authentication type.
+) -> dict[str, Any]:
+    """Get filter options for a connector based on its authentication type.
 
     Args:
         app_name: Name of the connector
@@ -2777,6 +2755,7 @@ async def get_connector_filters(
 
     Returns:
         Dict containing available filter options
+
     """
     container = request.app.container
     logger = container.logger()
@@ -2793,38 +2772,38 @@ async def get_connector_filters(
 
         # Get credentials based on auth type
         config_service = container.config_service()
-        auth_type = (connector_config.get('authType') or '').upper()
+        auth_type = (connector_config.get("authType") or "").upper()
         filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         token_or_credentials = None
 
-        if auth_type == 'OAUTH':
+        if auth_type == "OAUTH":
             # Only OAUTH requires user-specific OAuth credentials
-            if not config or not config.get('credentials'):
+            if not config or not config.get("credentials"):
                 raise HTTPException(status_code=400, detail=f"OAuth credentials not found for {app_name}. Please authenticate first.")
 
             # Create token object
-            token_or_credentials = OAuthToken.from_dict(config['credentials'])
+            token_or_credentials = OAuthToken.from_dict(config["credentials"])
 
-        elif auth_type == 'OAUTH_ADMIN_CONSENT':
+        elif auth_type == "OAUTH_ADMIN_CONSENT":
             # OAUTH_ADMIN_CONSENT doesn't require user tokens, use configured auth values
-            if not config or not config.get('auth'):
+            if not config or not config.get("auth"):
                 raise HTTPException(status_code=400, detail=f"Connector configuration not found for {app_name}. Please configure first.")
-            token_or_credentials = config.get('auth', {})
+            token_or_credentials = config.get("auth", {})
 
-        elif auth_type == 'API_TOKEN':
+        elif auth_type == "API_TOKEN":
             # Get API token from config
-            if not config or not config.get('auth'):
+            if not config or not config.get("auth"):
                 raise HTTPException(status_code=400, detail=f"API token configuration not found for {app_name}. Please configure first.")
-            token_or_credentials = config.get('auth', {})
+            token_or_credentials = config.get("auth", {})
 
-        elif auth_type == 'USERNAME_PASSWORD':
+        elif auth_type == "USERNAME_PASSWORD":
             # Get username/password from config
-            if not config or not config.get('auth'):
+            if not config or not config.get("auth"):
                 raise HTTPException(status_code=400, detail=f"Authentication configuration not found for {app_name}. Please configure first.")
-            token_or_credentials = config.get('auth', {})
+            token_or_credentials = config.get("auth", {})
 
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported authentication type: {auth_type}")
@@ -2834,12 +2813,12 @@ async def get_connector_filters(
 
         return {
             "success": True,
-            "filterOptions": filter_options
+            "filterOptions": filter_options,
         }
 
     except Exception as e:
-        logger.error(f"Error getting filter options for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get filter options: {str(e)}")
+        logger.error(f"Error getting filter options for {app_name}: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to get filter options: {e!s}")
 
 
 @router.post("/api/v1/connectors/{app_name}/filters")
@@ -2847,9 +2826,8 @@ async def save_connector_filters(
     app_name: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Save filter selections for a connector.
+) -> dict[str, Any]:
+    """Save filter selections for a connector.
 
     Args:
         app_name: Name of the connector
@@ -2858,13 +2836,14 @@ async def save_connector_filters(
 
     Returns:
         Dict containing success status
+
     """
     container = request.app.container
     logger = container.logger()
 
     try:
         body = await request.json()
-        filter_selections = body.get('filters', {})
+        filter_selections = body.get("filters", {})
 
         if not filter_selections:
             raise HTTPException(status_code=400, detail="No filter selections provided")
@@ -2879,31 +2858,30 @@ async def save_connector_filters(
             config = {}
 
         # Update filters in config
-        if 'filters' not in config:
-            config['filters'] = {}
+        if "filters" not in config:
+            config["filters"] = {}
 
-        config['filters']['values'] = filter_selections
+        config["filters"]["values"] = filter_selections
 
         # Save updated config
         await config_service.set_config(config_key, config)
 
         return {
             "success": True,
-            "message": "Filter selections saved successfully"
+            "message": "Filter selections saved successfully",
         }
 
     except Exception as e:
-        logger.error(f"Error saving filter selections for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to save filter selections: {str(e)}")
+        logger.error(f"Error saving filter selections for {app_name}: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to save filter selections: {e!s}")
 
 @router.put("/api/v1/connectors/config/{app_name}")
 async def update_connector_config(
     app_name: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Update connector configuration including authentication, sync, and filter settings.
+) -> dict[str, Any]:
+    """Update connector configuration including authentication, sync, and filter settings.
 
     Args:
         app_name: Name of the connector application
@@ -2915,14 +2893,15 @@ async def update_connector_config(
 
     Raises:
         HTTPException: 400 if invalid JSON, 404 if connector config not found
+
     """
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
     try:
-        body_dict: Dict[str, Any] = await request.json()
+        body_dict: dict[str, Any] = await request.json()
         logger.info(f"Body dict: {body_dict}")
-        base_url = body_dict.get('base_url', '')
+        base_url = body_dict.get("base_url", "")
     except Exception as e:
         logger.error(f"Failed to parse request body for {app_name}: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
@@ -2939,12 +2918,10 @@ async def update_connector_config(
             pass
 
         # Build new config from incoming sections only
-        merged_config: Dict[str, Any] = {}
+        merged_config: dict[str, Any] = {}
 
         for section in ["auth", "sync", "filters"]:
-            if section in body_dict and isinstance(body_dict[section], dict):
-                merged_config[section] = body_dict[section]
-            elif section in body_dict:
+            if (section in body_dict and isinstance(body_dict[section], dict)) or section in body_dict:
                 merged_config[section] = body_dict[section]
 
         # Explicitly clear credentials and oauth state on config updates so
@@ -2961,26 +2938,26 @@ async def update_connector_config(
             logger.warning(f"App may already exist in database for {app_name}: {e}")
 
         app_doc = await connector_registry.get_connector_by_name(app_name)
-        auth_type = app_doc.get('authType', '')
-        connector_config = app_doc.get('config', {})
+        auth_type = app_doc.get("authType", "")
+        connector_config = app_doc.get("config", {})
 
-        redirect_uri = connector_config.get('auth', {}).get('redirectUri', '')
+        redirect_uri = connector_config.get("auth", {}).get("redirectUri", "")
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
-            endpoint_keys = '/services/endpoints'
+            endpoint_keys = "/services/endpoints"
             endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            base_url = endpoints.get("frontendPublicUrl", "http://localhost:3001")
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
         # Ensure OAuth static metadata from registry is present in etcd config
-        auth_meta = connector_config.get('auth', {})
-        if 'auth' not in merged_config or not isinstance(merged_config['auth'], dict):
-            merged_config['auth'] = {}
+        auth_meta = connector_config.get("auth", {})
+        if "auth" not in merged_config or not isinstance(merged_config["auth"], dict):
+            merged_config["auth"] = {}
 
-        merged_config['auth']['authorizeUrl'] = merged_config['auth'].get('authorizeUrl') or auth_meta.get('authorizeUrl', '')
-        merged_config['auth']['tokenUrl'] = merged_config['auth'].get('tokenUrl') or auth_meta.get('tokenUrl', '')
-        merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
+        merged_config["auth"]["authorizeUrl"] = merged_config["auth"].get("authorizeUrl") or auth_meta.get("authorizeUrl", "")
+        merged_config["auth"]["tokenUrl"] = merged_config["auth"].get("tokenUrl") or auth_meta.get("tokenUrl", "")
+        merged_config["auth"]["scopes"] = auth_meta.get("scopes", [])
         merged_config["auth"]["redirectUri"] = redirect_uri
         merged_config["auth"]["authType"] = auth_type
 
@@ -2999,7 +2976,7 @@ async def update_connector_config(
         logger.error(f"Failed to store config in etcd for {app_name}: {e}")
         raise HTTPException(
                 status_code=500,
-                detail=f"Internal error updating connector config for {app_name}"
+                detail=f"Internal error updating connector config for {app_name}",
         )
 
 
@@ -3008,9 +2985,8 @@ async def toggle_connector(
     app_name: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Toggle connector active status and trigger sync events.
+) -> dict[str, Any]:
+    """Toggle connector active status and trigger sync events.
 
     Args:
         app_name: Name of the connector to toggle
@@ -3022,13 +2998,14 @@ async def toggle_connector(
 
     Raises:
         HTTPException: 404 if org/connector not found, 500 for internal errors
+
     """
     container = request.app.container
     logger = container.logger()
     producer = container.messaging_producer
     connector_registry = request.app.state.connector_registry
 
-    user_info: Dict[str, Optional[str]] = {
+    user_info: dict[str, str | None] = {
         "orgId": request.state.user.get("orgId"),
         "userId": request.state.user.get("userId"),
     }
@@ -3087,13 +3064,12 @@ async def toggle_connector(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
                             detail="Connector must be configured before enabling",
                         )
-                else:
-                    if not app.get("isConfigured", False):
-                        logger.error(f"Connector {app_name} must be configured before enabling")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail="Connector must be configured before enabling",
-                        )
+                elif not app.get("isConfigured", False):
+                    logger.error(f"Connector {app_name} must be configured before enabling")
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail="Connector must be configured before enabling",
+                    )
         except HTTPException:
             raise
         except Exception as prereq_err:
@@ -3106,7 +3082,7 @@ async def toggle_connector(
 
             updates = {
                 "isActive": not current_status,
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
             success = await connector_registry.update_connector(app_name, updates)
@@ -3121,7 +3097,7 @@ async def toggle_connector(
             # Re-raise HTTP exceptions to preserve status codes
             raise
         except Exception as e:
-            logger.error(f"❌ Failed to update connector {app_name}: {str(e)}")
+            logger.error(f"❌ Failed to update connector {app_name}: {e!s}")
             raise HTTPException(status_code=500, detail=f"Failed to update connector {app_name}")
 
         # Prepare event messaging
@@ -3132,7 +3108,7 @@ async def toggle_connector(
         credentials_route: str = f"api/v1/configurationManager/internal/connectors/{filtered_app_name}/config"
 
         # Build message payload
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "orgId": user_info["orgId"],
             "appGroup": app["appGroup"],
             "appGroupId": app["appGroupId"],
@@ -3141,14 +3117,14 @@ async def toggle_connector(
             "syncAction": "immediate",
         }
 
-        message: Dict[str, Any] = {
-            'eventType': event_type,
-            'payload': payload,
-            'timestamp': get_epoch_timestamp_in_ms()
+        message: dict[str, Any] = {
+            "eventType": event_type,
+            "payload": payload,
+            "timestamp": get_epoch_timestamp_in_ms(),
         }
 
         # Send message to sync-events topic
-        await producer.send_message(topic='entity-events', message=message)
+        await producer.send_message(topic="entity-events", message=message)
 
         return {"success": True, "message": f"Connector {app_name} toggled successfully"}
 

@@ -1,6 +1,6 @@
 import base64
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any
 from urllib.parse import urlencode
 
 from pydantic import BaseModel  # type: ignore
@@ -15,12 +15,13 @@ from app.sources.client.iclient import IClient
 
 class ServiceNowResponse(BaseModel):
     """Standardized ServiceNow API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -31,11 +32,14 @@ class ServiceNowResponse(BaseModel):
 
 class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
     """ServiceNow REST client via username and password (Basic Auth)
+
     Args:
         instance_url: The ServiceNow instance URL (e.g., https://dev12345.service-now.com)
         username: The username to use for authentication
         password: The password to use for authentication
+
     """
+
     def __init__(self, instance_url: str, username: str, password: str) -> None:
         # Encode credentials for Basic auth
         credentials = f"{username}:{password}"
@@ -43,7 +47,7 @@ class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
 
         # Initialize with empty token and override headers
         super().__init__("", "")
-        self.instance_url = instance_url.rstrip('/')
+        self.instance_url = instance_url.rstrip("/")
         self.base_url = f"{self.instance_url}"
         self.username = username
 
@@ -64,18 +68,21 @@ class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
 
 class ServiceNowRESTClientViaToken(HTTPClient):
     """ServiceNow REST client via Bearer Token (for pre-existing access tokens)
+
     Args:
         instance_url: The ServiceNow instance URL
         token: The bearer token to use for authentication
+
     """
+
     def __init__(self, instance_url: str, token: str) -> None:
         super().__init__(token, "Bearer")
-        self.instance_url = instance_url.rstrip('/')
+        self.instance_url = instance_url.rstrip("/")
         self.base_url = f"{self.instance_url}/api/now"
 
         self.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         })
 
     def get_base_url(self) -> str:
@@ -94,9 +101,10 @@ class ServiceNowRESTClientViaAPIKey(HTTPClient):
         api_key: The API key to use for authentication
         header_name: The header name for the API key (default: x-sn-apikey)
     """
+
     def __init__(self, instance_url: str, api_key: str, header_name: str = "x-sn-apikey") -> None:
         super().__init__("", "")
-        self.instance_url = instance_url.rstrip('/')
+        self.instance_url = instance_url.rstrip("/")
         self.base_url = f"{self.instance_url}/api/now"
         self.api_key = api_key
         self.header_name = header_name
@@ -104,7 +112,7 @@ class ServiceNowRESTClientViaAPIKey(HTTPClient):
         self.headers = {
             header_name: api_key,
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
 
     def get_base_url(self) -> str:
@@ -124,16 +132,17 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         client_secret: The OAuth client secret
         access_token: Optional existing access token
     """
+
     def __init__(
         self,
         instance_url: str,
         client_id: str,
         client_secret: str,
-        access_token: Optional[str] = None
+        access_token: str | None = None,
     ) -> None:
         super().__init__(access_token or "", "Bearer")
 
-        self.instance_url = instance_url.rstrip('/')
+        self.instance_url = instance_url.rstrip("/")
         self.base_url = f"{self.instance_url}/api/now"
         self.oauth_token_url = f"{self.instance_url}/oauth_token.do"
         self.client_id = client_id
@@ -142,7 +151,7 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
 
         self.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         })
 
         self._oauth_completed = access_token is not None
@@ -159,7 +168,7 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         """Check if OAuth flow has been completed"""
         return self._oauth_completed
 
-    async def fetch_token(self) -> Optional[str]:
+    async def fetch_token(self) -> str | None:
         """Fetch access token using client credentials grant
         Returns:
             Access token from OAuth exchange
@@ -167,14 +176,14 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         data = {
             "grant_type": "client_credentials",
             "client_id": self.client_id,
-            "client_secret": self.client_secret
+            "client_secret": self.client_secret,
         }
 
         request = HTTPRequest(
             method="POST",
             url=self.oauth_token_url,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            body=data
+            body=data,
         )
 
 
@@ -203,17 +212,18 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         redirect_uri: The redirect URI for OAuth flow
         access_token: Optional existing access token
     """
+
     def __init__(
         self,
         instance_url: str,
         client_id: str,
         client_secret: str,
         redirect_uri: str,
-        access_token: Optional[str] = None
+        access_token: str | None = None,
     ) -> None:
         super().__init__(access_token or "", "Bearer")
 
-        self.instance_url = instance_url.rstrip('/')
+        self.instance_url = instance_url.rstrip("/")
         self.base_url = f"{self.instance_url}/api/now"
         self.oauth_auth_url = f"{self.instance_url}/oauth_auth.do"
         self.oauth_token_url = f"{self.instance_url}/oauth_token.do"
@@ -221,11 +231,11 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
         self.access_token = access_token
-        self.refresh_token: Optional[str] = None
+        self.refresh_token: str | None = None
 
         self.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         })
 
         self._oauth_completed = access_token is not None
@@ -242,19 +252,21 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         """Check if OAuth flow has been completed"""
         return self._oauth_completed
 
-    def get_authorization_url(self, state: Optional[str] = None, scope: str = "useraccount") -> str:
+    def get_authorization_url(self, state: str | None = None, scope: str = "useraccount") -> str:
         """Generate OAuth authorization URL
         Args:
             state: Optional state parameter for security
             scope: OAuth scopes (default: useraccount)
+
         Returns:
             Authorization URL
+
         """
         params = {
             "response_type": "code",
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
-            "scope": scope
+            "scope": scope,
         }
 
         if state:
@@ -262,7 +274,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
 
         return f"{self.oauth_auth_url}?{urlencode(params)}"
 
-    async def initiate_oauth_flow(self, authorization_code: str) -> Optional[str]:
+    async def initiate_oauth_flow(self, authorization_code: str) -> str | None:
         """Complete OAuth flow with authorization code
         Args:
             authorization_code: The code received from OAuth callback
@@ -271,12 +283,14 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         """
         return await self._exchange_code_for_token(authorization_code)
 
-    async def refresh_access_token(self, refresh_token: Optional[str] = None) -> Optional[str]:
+    async def refresh_access_token(self, refresh_token: str | None = None) -> str | None:
         """Refresh OAuth access token
         Args:
             refresh_token: The refresh token (uses stored token if not provided)
+
         Returns:
             New access token
+
         """
         token_to_use = refresh_token or self.refresh_token
 
@@ -287,14 +301,14 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
             "grant_type": "refresh_token",
             "refresh_token": token_to_use,
             "client_id": self.client_id,
-            "client_secret": self.client_secret
+            "client_secret": self.client_secret,
         }
 
         request = HTTPRequest(
             method="POST",
             url=self.oauth_token_url,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
@@ -312,7 +326,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
 
         return self.access_token
 
-    async def _exchange_code_for_token(self, code: str) -> Optional[str]:
+    async def _exchange_code_for_token(self, code: str) -> str | None:
         """Exchange authorization code for access token
         Args:
             code: Authorization code from callback
@@ -324,14 +338,14 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
             "code": code,
             "redirect_uri": self.redirect_uri,
             "client_id": self.client_id,
-            "client_secret": self.client_secret
+            "client_secret": self.client_secret,
         }
 
         request = HTTPRequest(
             method="POST",
             url=self.oauth_token_url,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
@@ -354,6 +368,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
 class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
     """ServiceNow REST client via OAuth 2.0 Resource Owner Password Credentials
     Note: This flow is not recommended by ServiceNow and should be avoided in production.It's incompatible with MFA and violates OAuth security best practices.
+
     Args:
         instance_url: The ServiceNow instance URL
         client_id: The OAuth client ID
@@ -361,7 +376,9 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
         username: The resource owner username
         password: The resource owner password
         access_token: Optional existing access token
+
     """
+
     def __init__(
         self,
         instance_url: str,
@@ -369,11 +386,11 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
         client_secret: str,
         username: str,
         password: str,
-        access_token: Optional[str] = None
+        access_token: str | None = None,
     ) -> None:
         super().__init__(access_token or "", "Bearer")
 
-        self.instance_url = instance_url.rstrip('/')
+        self.instance_url = instance_url.rstrip("/")
         self.base_url = f"{self.instance_url}/api/now"
         self.oauth_token_url = f"{self.instance_url}/oauth_token.do"
         self.client_id = client_id
@@ -384,7 +401,7 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
 
         self.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         })
 
         self._oauth_completed = access_token is not None
@@ -401,7 +418,7 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
         """Check if OAuth flow has been completed"""
         return self._oauth_completed
 
-    async def fetch_token(self) -> Optional[str]:
+    async def fetch_token(self) -> str | None:
         """Fetch access token using password grant
         Returns:
             Access token from OAuth exchange
@@ -411,14 +428,14 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
             "username": self.username,
             "password": self.password,
             "client_id": self.client_id,
-            "client_secret": self.client_secret
+            "client_secret": self.client_secret,
         }
 
         request = HTTPRequest(
             method="POST",
             url=self.oauth_token_url,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
@@ -446,6 +463,7 @@ class ServiceNowUsernamePasswordConfig:
         password: The password to use for authentication
         ssl: Whether to use SSL (always True for ServiceNow)
     """
+
     instance_url: str
     username: str
     password: str
@@ -455,7 +473,7 @@ class ServiceNowUsernamePasswordConfig:
         return ServiceNowRESTClientViaUsernamePassword(
             self.instance_url,
             self.username,
-            self.password
+            self.password,
         )
 
     def to_dict(self) -> dict:
@@ -471,6 +489,7 @@ class ServiceNowTokenConfig:
         token: The bearer token to use for authentication
         ssl: Whether to use SSL (always True for ServiceNow)
     """
+
     instance_url: str
     token: str
     ssl: bool = True
@@ -492,6 +511,7 @@ class ServiceNowAPIKeyConfig:
         header_name: The header name for the API key (default: x-sn-apikey)
         ssl: Whether to use SSL (always True for ServiceNow)
     """
+
     instance_url: str
     api_key: str
     header_name: str = "x-sn-apikey"
@@ -501,7 +521,7 @@ class ServiceNowAPIKeyConfig:
         return ServiceNowRESTClientViaAPIKey(
             self.instance_url,
             self.api_key,
-            self.header_name
+            self.header_name,
         )
 
     def to_dict(self) -> dict:
@@ -519,10 +539,11 @@ class ServiceNowOAuthClientCredentialsConfig:
         access_token: Optional existing access token
         ssl: Whether to use SSL (always True for ServiceNow)
     """
+
     instance_url: str
     client_id: str
     client_secret: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
     ssl: bool = True
 
     def create_client(self) -> ServiceNowRESTClientViaOAuthClientCredentials:
@@ -530,7 +551,7 @@ class ServiceNowOAuthClientCredentialsConfig:
             self.instance_url,
             self.client_id,
             self.client_secret,
-            self.access_token
+            self.access_token,
         )
 
     def to_dict(self) -> dict:
@@ -549,11 +570,12 @@ class ServiceNowOAuthAuthorizationCodeConfig:
         access_token: Optional existing access token
         ssl: Whether to use SSL (always True for ServiceNow)
     """
+
     instance_url: str
     client_id: str
     client_secret: str
     redirect_uri: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
     ssl: bool = True
 
     def create_client(self) -> ServiceNowRESTClientViaOAuthAuthorizationCode:
@@ -562,7 +584,7 @@ class ServiceNowOAuthAuthorizationCodeConfig:
             self.client_id,
             self.client_secret,
             self.redirect_uri,
-            self.access_token
+            self.access_token,
         )
 
     def to_dict(self) -> dict:
@@ -583,12 +605,13 @@ class ServiceNowOAuthROPCConfig:
         access_token: Optional existing access token
         ssl: Whether to use SSL (always True for ServiceNow)
     """
+
     instance_url: str
     client_id: str
     client_secret: str
     username: str
     password: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
     ssl: bool = True
 
     def create_client(self) -> ServiceNowRESTClientViaOAuthROPC:
@@ -598,7 +621,7 @@ class ServiceNowOAuthROPCConfig:
             self.client_secret,
             self.username,
             self.password,
-            self.access_token
+            self.access_token,
         )
 
     def to_dict(self) -> dict:
@@ -611,26 +634,12 @@ class ServiceNowClient(IClient):
 
     def __init__(
         self,
-        client: Union[
-            ServiceNowRESTClientViaUsernamePassword,
-            ServiceNowRESTClientViaToken,
-            ServiceNowRESTClientViaAPIKey,
-            ServiceNowRESTClientViaOAuthClientCredentials,
-            ServiceNowRESTClientViaOAuthAuthorizationCode,
-            ServiceNowRESTClientViaOAuthROPC
-        ]
+        client: ServiceNowRESTClientViaUsernamePassword | ServiceNowRESTClientViaToken | ServiceNowRESTClientViaAPIKey | ServiceNowRESTClientViaOAuthClientCredentials | ServiceNowRESTClientViaOAuthAuthorizationCode | ServiceNowRESTClientViaOAuthROPC,
     ) -> None:
         """Initialize with a ServiceNow client object"""
         self.client = client
 
-    def get_client(self) -> Union[
-        ServiceNowRESTClientViaUsernamePassword,
-        ServiceNowRESTClientViaToken,
-        ServiceNowRESTClientViaAPIKey,
-        ServiceNowRESTClientViaOAuthClientCredentials,
-        ServiceNowRESTClientViaOAuthAuthorizationCode,
-        ServiceNowRESTClientViaOAuthROPC
-    ]:
+    def get_client(self) -> ServiceNowRESTClientViaUsernamePassword | ServiceNowRESTClientViaToken | ServiceNowRESTClientViaAPIKey | ServiceNowRESTClientViaOAuthClientCredentials | ServiceNowRESTClientViaOAuthAuthorizationCode | ServiceNowRESTClientViaOAuthROPC:
         """Return the ServiceNow client object"""
         return self.client
 
@@ -645,14 +654,7 @@ class ServiceNowClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: Union[
-            ServiceNowUsernamePasswordConfig,
-            ServiceNowTokenConfig,
-            ServiceNowAPIKeyConfig,
-            ServiceNowOAuthClientCredentialsConfig,
-            ServiceNowOAuthAuthorizationCodeConfig,
-            ServiceNowOAuthROPCConfig
-        ]
+        config: ServiceNowUsernamePasswordConfig | ServiceNowTokenConfig | ServiceNowAPIKeyConfig | ServiceNowOAuthClientCredentialsConfig | ServiceNowOAuthAuthorizationCodeConfig | ServiceNowOAuthROPCConfig,
     ) -> "ServiceNowClient":
         """Build ServiceNowClient with configuration
         Args:
@@ -685,18 +687,18 @@ class ServiceNowClient(IClient):
                 client = ServiceNowRESTClientViaUsernamePassword(
                     instance_url=auth_config.get("instanceUrl"),
                     username=auth_config.get("username"),
-                    password=auth_config.get("password")
+                    password=auth_config.get("password"),
                 )
             elif auth_type == "TOKEN":
                 client = ServiceNowRESTClientViaToken(
                     instance_url=auth_config.get("instanceUrl"),
-                    token=auth_config.get("token")
+                    token=auth_config.get("token"),
                 )
             elif auth_type == "API_KEY":
                 client = ServiceNowRESTClientViaAPIKey(
                     instance_url=auth_config.get("instanceUrl"),
                     api_key=auth_config.get("apiKey"),
-                    header_name=auth_config.get("headerName", "x-sn-apikey")
+                    header_name=auth_config.get("headerName", "x-sn-apikey"),
                 )
             elif auth_type == "OAUTH_CLIENT_CREDENTIALS":
                 credentials_config = auth_config.get("credentials", {})
@@ -704,7 +706,7 @@ class ServiceNowClient(IClient):
                     instance_url=auth_config.get("instanceUrl"),
                     client_id=auth_config.get("clientId"),
                     client_secret=auth_config.get("clientSecret"),
-                    access_token=credentials_config.get("access_token")
+                    access_token=credentials_config.get("access_token"),
                 )
             elif auth_type == "OAUTH_AUTHORIZATION_CODE":
                 credentials_config = auth_config.get("credentials", {})
@@ -713,7 +715,7 @@ class ServiceNowClient(IClient):
                     client_id=auth_config.get("clientId"),
                     client_secret=auth_config.get("clientSecret"),
                     redirect_uri=auth_config.get("redirectUri"),
-                    access_token=credentials_config.get("access_token")
+                    access_token=credentials_config.get("access_token"),
                 )
             elif auth_type == "OAUTH_ROPC":
                 credentials_config = auth_config.get("credentials", {})
@@ -723,17 +725,17 @@ class ServiceNowClient(IClient):
                     client_secret=auth_config.get("clientSecret"),
                     username=auth_config.get("username"),
                     password=auth_config.get("password"),
-                    access_token=credentials_config.get("access_token")
+                    access_token=credentials_config.get("access_token"),
                 )
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")
             return cls(client=client)
         except Exception as e:
-            logger.error(f"Failed to build ServiceNow client from services: {str(e)}")
+            logger.error(f"Failed to build ServiceNow client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger, config_service: ConfigurationService) -> dict[str, Any]:
         """Fetch connector config from etcd for ServiceNow."""
         try:
             config = await config_service.get_config("/services/connectors/servicenow/config")

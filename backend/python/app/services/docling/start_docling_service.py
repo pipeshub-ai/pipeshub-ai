@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Startup script for the Docling service
+"""Startup script for the Docling service
 This can be used to run the service directly without Docker
 """
 

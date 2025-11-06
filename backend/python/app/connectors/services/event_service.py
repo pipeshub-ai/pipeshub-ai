@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from dependency_injector import providers
 
@@ -25,7 +25,7 @@ class EventService:
         self.arango_service = arango_service
         self.app_container = app_container
 
-    async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+    async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
             connector_name = event_type.split(".")[0]
@@ -34,19 +34,16 @@ class EventService:
             event_type = event_type.split(".")[1]
             if event_type == "init":
                 return await self._handle_init(connector_name, payload)
-            elif event_type == "start":
+            if event_type == "start" or event_type.lower() == "resync":
                 return await self._handle_start_sync(connector_name, payload)
-            elif event_type.lower() == "resync":
-                return await self._handle_start_sync(connector_name, payload)
-            else:
-                self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {event_type}")
-                return False
+            self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {event_type}")
+            return False
 
         except Exception as e:
             self.logger.error(f"Error handling {connector_name.capitalize()} connector event {event_type}: {e}", exc_info=True)
             return False
 
-    async def _handle_init(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_init(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Initializes the event service connector and its dependencies."""
         try:
             org_id = payload.get("orgId")
@@ -63,7 +60,7 @@ class EventService:
                 name=connector_name,
                 logger=self.logger,
                 data_store_provider=data_store_provider,
-                config_service=config_service
+                config_service=config_service,
             )
 
             if not connector:
@@ -78,7 +75,7 @@ class EventService:
                 getattr(self.app_container, connector_key).override(providers.Object(connector))
             else:
                 # Store in connectors_map if specific connector attribute doesn't exist
-                if not hasattr(self.app_container, 'connectors_map'):
+                if not hasattr(self.app_container, "connectors_map"):
                     self.app_container.connectors_map = {}
                 self.app_container.connectors_map[connector_name] = connector
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
@@ -87,7 +84,7 @@ class EventService:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
             return False
 
-    async def _handle_start_sync(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_start_sync(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -104,19 +101,18 @@ class EventService:
 
                 if hasattr(self.app_container, connector_key):
                     connector = getattr(self.app_container, connector_key)()
-                elif hasattr(self.app_container, 'connectors_map'):
+                elif hasattr(self.app_container, "connectors_map"):
                     connector = self.app_container.connectors_map.get(connector_name)
 
                 if connector:
                     asyncio.create_task(connector.run_sync())
                     self.logger.info(f"Started sync for {connector_name} connector")
                     return True
-                else:
-                    self.logger.error(f"{connector_name.capitalize()} connector not initialized")
-                    return False
+                self.logger.error(f"{connector_name.capitalize()} connector not initialized")
+                return False
             except Exception as e:
-                self.logger.error(f"Failed to get {connector_name.capitalize()} connector: {str(e)}")
+                self.logger.error(f"Failed to get {connector_name.capitalize()} connector: {e!s}")
                 return False
         except Exception as e:
-            self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {str(e)}")
+            self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {e!s}")
             return False

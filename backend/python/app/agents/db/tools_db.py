@@ -1,5 +1,4 @@
-"""
-Tools Database Manager for ArangoDB
+"""Tools Database Manager for ArangoDB
 Manages tool storage and retrieval with ctag-based caching for efficient updates.
 """
 
@@ -7,7 +6,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from app.agents.tools.models import Tool
 from app.agents.tools.registry import ToolRegistry
@@ -26,13 +25,13 @@ class ToolNode:
         app_name: str,
         tool_name: str,
         description: str,
-        parameters: List[Dict],
-        returns: Optional[str],
-        examples: List[Dict],
-        tags: List[str],
+        parameters: list[dict],
+        returns: str | None,
+        examples: list[dict],
+        tags: list[str],
         ctag: str,
         created_at: str,
-        updated_at: str
+        updated_at: str,
     ) -> None:
         self.tool_id = tool_id
         self.app_name = app_name
@@ -46,7 +45,7 @@ class ToolNode:
         self.created_at = created_at
         self.updated_at = updated_at
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for ArangoDB storage"""
         return {
             "_key": self.tool_id,
@@ -59,11 +58,11 @@ class ToolNode:
             "tags": self.tags,
             "ctag": self.ctag,
             "created_at": self.created_at,
-            "updated_at": self.updated_at
+            "updated_at": self.updated_at,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ToolNode':
+    def from_dict(cls, data: dict[str, Any]) -> "ToolNode":
         """Create ToolNode from dictionary"""
         return cls(
             tool_id=data["_key"],
@@ -76,7 +75,7 @@ class ToolNode:
             tags=data.get("tags", []),
             ctag=data["ctag"],
             created_at=data["created_at"],
-            updated_at=data["updated_at"]
+            updated_at=data["updated_at"],
         )
 
     def validate(self) -> bool:
@@ -88,7 +87,7 @@ class ToolNode:
             self.description,
             self.ctag,
             self.created_at,
-            self.updated_at
+            self.updated_at,
         ])
 
     @property
@@ -105,22 +104,22 @@ class ConnectorCtag:
         self.ctag = ctag
         self.last_updated = last_updated
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for ArangoDB storage"""
         return {
             "_key": self.connector_name,
             "connector_name": self.connector_name,
             "ctag": self.ctag,
-            "last_updated": self.last_updated
+            "last_updated": self.last_updated,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ConnectorCtag':
+    def from_dict(cls, data: dict[str, Any]) -> "ConnectorCtag":
         """Create ConnectorCtag from dictionary"""
         return cls(
             connector_name=data["connector_name"],
             ctag=data["ctag"],
-            last_updated=data["last_updated"]
+            last_updated=data["last_updated"],
         )
 
     def validate(self) -> bool:
@@ -128,7 +127,7 @@ class ConnectorCtag:
         return all([
             self.connector_name,
             self.ctag,
-            self.last_updated
+            self.last_updated,
         ])
 
     @property
@@ -147,7 +146,7 @@ class ToolsDBManager:
         self.ctag_collection_name = "tools_ctags"
 
     @classmethod
-    async def create(cls, logger: logging.Logger, config_service: Union[ArangoConfig, ConfigurationService]) -> 'ToolsDBManager':
+    async def create(cls, logger: logging.Logger, config_service: ArangoConfig | ConfigurationService) -> "ToolsDBManager":
         """Create and initialize ToolsDBManager"""
         graph_service = await GraphDBFactory.create_service("arango", logger, config_service)
         if not graph_service:
@@ -182,21 +181,21 @@ class ToolsDBManager:
             await self.graph_service.create_index(
                 self.collection_name,
                 ["app_name", "tool_name"],
-                "persistent"
+                "persistent",
             )
 
             # Index on ctag for change detection
             await self.graph_service.create_index(
                 self.collection_name,
                 ["ctag"],
-                "persistent"
+                "persistent",
             )
 
             # Index on tags for tag-based searches
             await self.graph_service.create_index(
                 self.collection_name,
                 ["tags"],
-                "persistent"
+                "persistent",
             )
 
         except Exception as e:
@@ -210,7 +209,7 @@ class ToolsDBManager:
             "parameters": [param.to_json_serializable_dict() for param in tool.parameters],
             "returns": tool.returns,
             "examples": tool.examples,
-            "tags": tool.tags
+            "tags": tool.tags,
         }, sort_keys=True)
 
         return hashlib.md5(content.encode()).hexdigest()
@@ -260,7 +259,7 @@ class ToolsDBManager:
                 tags=tool.tags,
                 ctag=new_ctag,
                 created_at=existing_tool.created_at if existing_tool else datetime.utcnow().isoformat(),
-                updated_at=datetime.utcnow().isoformat()
+                updated_at=datetime.utcnow().isoformat(),
             )
 
             await self._upsert_tool(tool_node)
@@ -278,7 +277,7 @@ class ToolsDBManager:
             # Use upsert operation (insert if not exists, update if exists)
             await self.graph_service.upsert_document(
                 self.collection_name,
-                tool_node.to_dict()
+                tool_node.to_dict(),
             )
 
         except Exception as e:
@@ -291,26 +290,26 @@ class ToolsDBManager:
             ctag_node = ConnectorCtag(
                 connector_name=connector_name,
                 ctag=ctag,
-                last_updated=datetime.utcnow().isoformat()
+                last_updated=datetime.utcnow().isoformat(),
             )
 
             await self.graph_service.upsert_document(
                 self.ctag_collection_name,
-                ctag_node.to_dict()
+                ctag_node.to_dict(),
             )
 
         except Exception as e:
             self.logger.error(f"Failed to update connector ctag for {connector_name}: {e}")
             raise
 
-    async def get_tool(self, app_name: str, tool_name: str) -> Optional[ToolNode]:
+    async def get_tool(self, app_name: str, tool_name: str) -> ToolNode | None:
         """Get a tool from ArangoDB"""
         try:
             tool_id = self._generate_tool_id(app_name, tool_name)
 
             result = await self.graph_service.get_document(
                 self.collection_name,
-                tool_id
+                tool_id,
             )
 
             if result:
@@ -321,7 +320,7 @@ class ToolsDBManager:
             self.logger.error(f"Failed to get tool {app_name}.{tool_name}: {e}")
             return None
 
-    async def get_tools_by_app(self, app_name: str) -> List[ToolNode]:
+    async def get_tools_by_app(self, app_name: str) -> list[ToolNode]:
         """Get all tools for a specific app"""
         try:
             query = f"""
@@ -339,7 +338,7 @@ class ToolsDBManager:
             self.logger.error(f"Failed to get tools for app {app_name}: {e}")
             return []
 
-    async def get_tools_by_tag(self, tag: str) -> List[ToolNode]:
+    async def get_tools_by_tag(self, tag: str) -> list[ToolNode]:
         """Get all tools with a specific tag"""
         try:
             query = f"""
@@ -357,7 +356,7 @@ class ToolsDBManager:
             self.logger.error(f"Failed to get tools by tag {tag}: {e}")
             return []
 
-    async def search_tools(self, search_term: str) -> List[ToolNode]:
+    async def search_tools(self, search_term: str) -> list[ToolNode]:
         """Search tools by description, name, or tags"""
         try:
             query = f"""
@@ -378,12 +377,12 @@ class ToolsDBManager:
             self.logger.error(f"Failed to search tools with term {search_term}: {e}")
             return []
 
-    async def get_connector_ctag(self, connector_name: str) -> Optional[str]:
+    async def get_connector_ctag(self, connector_name: str) -> str | None:
         """Get the current ctag for a connector"""
         try:
             result = await self.graph_service.get_document(
                 self.ctag_collection_name,
-                connector_name
+                connector_name,
             )
 
             if result:
@@ -394,7 +393,7 @@ class ToolsDBManager:
             self.logger.error(f"Failed to get ctag for connector {connector_name}: {e}")
             return None
 
-    async def get_all_tools(self) -> List[ToolNode]:
+    async def get_all_tools(self) -> list[ToolNode]:
         """Get all tools from ArangoDB"""
         try:
             query = f"""
@@ -418,7 +417,7 @@ class ToolsDBManager:
 
             await self.graph_service.delete_document(
                 self.collection_name,
-                tool_id
+                tool_id,
             )
 
             self.logger.info(f"Successfully deleted tool {app_name}.{tool_name}")

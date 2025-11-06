@@ -6,7 +6,6 @@ import threading
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, Optional
 
 from arango.database import TransactionDatabase
 
@@ -82,24 +81,20 @@ class BaseGmailSyncService(ABC):
     @abstractmethod
     async def connect_services(self, org_id: str) -> bool:
         """Connect to required services"""
-        pass
 
     @abstractmethod
     async def initialize(self, org_id) -> bool:
         """Initialize sync service"""
-        pass
 
     @abstractmethod
     async def perform_initial_sync(
-        self, org_id, action: str = "start", resume_hierarchy: Dict = None
+        self, org_id, action: str = "start", resume_hierarchy: dict = None,
     ) -> bool:
         """Perform initial sync"""
-        pass
 
     @abstractmethod
     async def resync_gmail(self, org_id, user) -> bool:
         """Resync a user's Google Gmail"""
-        pass
 
     async def start(self, org_id) -> bool:
         self.logger.info("🚀 Starting Gmail sync, Action: start")
@@ -111,7 +106,7 @@ class BaseGmailSyncService(ABC):
                 for user in users:
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(),
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -123,7 +118,7 @@ class BaseGmailSyncService(ABC):
 
                     if current_state == "PAUSED":
                         self.logger.warning(
-                            "💥 Gmail sync is paused, use resume to continue"
+                            "💥 Gmail sync is paused, use resume to continue",
                         )
                         return False
 
@@ -137,14 +132,14 @@ class BaseGmailSyncService(ABC):
 
                 # Start fresh sync
                 self._sync_task = asyncio.create_task(
-                    self.perform_initial_sync(org_id, action="start")
+                    self.perform_initial_sync(org_id, action="start"),
                 )
 
                 self.logger.info("✅ Gmail sync service started")
                 return True
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to start Gmail sync service: {str(e)}")
+                self.logger.error(f"❌ Failed to start Gmail sync service: {e!s}")
                 return False
 
     async def pause(self, org_id) -> bool:
@@ -156,7 +151,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(),
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -170,7 +165,7 @@ class BaseGmailSyncService(ABC):
 
                     # Update state in Arango
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(),
                     )
 
                     # Cancel current sync task
@@ -185,7 +180,7 @@ class BaseGmailSyncService(ABC):
                 return True
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to pause Gmail sync service: {str(e)}")
+                self.logger.error(f"❌ Failed to pause Gmail sync service: {e!s}")
                 return False
 
     async def resume(self, org_id) -> bool:
@@ -197,7 +192,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(),
                     )
                     if not sync_state:
                         self.logger.warning("⚠️ No user found, starting fresh")
@@ -210,7 +205,7 @@ class BaseGmailSyncService(ABC):
 
                     if current_state != "PAUSED":
                         self.logger.warning(
-                            "💥 Gmail sync was not paused, use start instead"
+                            "💥 Gmail sync was not paused, use start instead",
                         )
                         return False
 
@@ -219,14 +214,14 @@ class BaseGmailSyncService(ABC):
 
                 # Start sync with resume state
                 self._sync_task = asyncio.create_task(
-                    self.perform_initial_sync(org_id, action="resume")
+                    self.perform_initial_sync(org_id, action="resume"),
                 )
 
                 self.logger.info("✅ Gmail sync service resumed")
                 return True
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to resume Gmail sync service: {str(e)}")
+                self.logger.error(f"❌ Failed to resume Gmail sync service: {e!s}")
                 return False
 
     async def _should_stop(self, org_id) -> bool:
@@ -236,13 +231,13 @@ class BaseGmailSyncService(ABC):
             users = await self.arango_service.get_users(org_id=org_id)
             for user in users:
                 current_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 if current_state:
                     current_state = current_state.get("syncState")
                     if current_state == "IN_PROGRESS":
                         await self.arango_service.update_user_sync_state(
-                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(),
                         )
                         self.logger.info("✅ Gmail sync state updated before stopping")
                         return True
@@ -256,7 +251,7 @@ class BaseGmailSyncService(ABC):
             self.logger.info("⏹️ Stop requested, halting batch processing")
             return False
         self.logger.info(
-            "🚀 Starting batch processing with %d items", len(metadata_list)
+            "🚀 Starting batch processing with %d items", len(metadata_list),
         )
 
         # Run the entire batch processing in a separate thread under a cross-thread lock
@@ -272,8 +267,7 @@ class BaseGmailSyncService(ABC):
             return asyncio.run(self._process_batch_sync(metadata_list, org_id))
 
     async def _process_batch_sync(self, metadata_list, org_id) -> bool | None:
-        """
-        The function is divided into 4 phases:
+        """The function is divided into 4 phases:
         Phase 1: Collect all IDs from metadata
         Phase 2: Bulk database lookups (3-6 queries total)
         Phase 3: Build records using cached lookups (NO queries)
@@ -325,7 +319,7 @@ class BaseGmailSyncService(ABC):
                 "✅ Collected: %d messages, %d attachments, %d unique emails",
                 len(all_message_ids),
                 len(all_attachment_ids),
-                len(all_emails)
+                len(all_emails),
             )
 
             # ============================================
@@ -344,13 +338,13 @@ class BaseGmailSyncService(ABC):
                 try:
                     results = self.arango_service.db.aql.execute(
                         query,
-                        bind_vars={"message_ids": all_message_ids}
+                        bind_vars={"message_ids": all_message_ids},
                     )
                     existing_messages_map = {r["id"]: r["key"] for r in results}
                     self.logger.info(
                         "✅ Found %d/%d existing messages",
                         len(existing_messages_map),
-                        len(all_message_ids)
+                        len(all_message_ids),
                     )
                 except Exception as e:
                     self.logger.error("❌ Error checking existing messages: %s", str(e))
@@ -366,13 +360,13 @@ class BaseGmailSyncService(ABC):
                 try:
                     results = self.arango_service.db.aql.execute(
                         query,
-                        bind_vars={"attachment_ids": all_attachment_ids}
+                        bind_vars={"attachment_ids": all_attachment_ids},
                     )
                     existing_attachments_map = {r["id"]: r["key"] for r in results}
                     self.logger.info(
                         "✅ Found %d/%d existing attachments",
                         len(existing_attachments_map),
-                        len(all_attachment_ids)
+                        len(all_attachment_ids),
                     )
                 except Exception as e:
                     self.logger.error("❌ Error checking existing attachments: %s", str(e))
@@ -381,12 +375,12 @@ class BaseGmailSyncService(ABC):
             entity_lookup_map = {}
             if all_emails:
                 entity_lookup_map = await self.arango_service.bulk_get_entity_ids_by_email(
-                    list(all_emails)
+                    list(all_emails),
                 )
                 self.logger.info(
                     "✅ Found %d/%d existing entities",
                     len(entity_lookup_map),
-                    len(all_emails)
+                    len(all_emails),
                 )
 
             # BULK CREATE: Create missing people records (1 query)
@@ -394,7 +388,7 @@ class BaseGmailSyncService(ABC):
             if emails_needing_people:
                 self.logger.info(
                     "➕ Creating %d new people records",
-                    len(emails_needing_people)
+                    len(emails_needing_people),
                 )
 
                 people_docs = [
@@ -405,14 +399,14 @@ class BaseGmailSyncService(ABC):
                 try:
                     # Try bulk insert first
                     self.arango_service.db.collection(
-                        CollectionNames.PEOPLE.value
+                        CollectionNames.PEOPLE.value,
                     ).insert_many(people_docs, overwrite=False, silent=False)
                     # Add to lookup map
                     for doc in people_docs:
                         entity_lookup_map[doc["email"]] = (
                             doc["_key"],
                             CollectionNames.PEOPLE.value,
-                            "USER"
+                            "USER",
                         )
                     self.logger.info("✅ Successfully created people records")
 
@@ -423,12 +417,12 @@ class BaseGmailSyncService(ABC):
                     for doc in people_docs:
                         try:
                             self.arango_service.db.collection(
-                                CollectionNames.PEOPLE.value
+                                CollectionNames.PEOPLE.value,
                             ).insert(doc, overwrite=False)
                             entity_lookup_map[doc["email"]] = (
                                 doc["_key"],
                                 CollectionNames.PEOPLE.value,
-                                "USER"
+                                "USER",
                             )
                         except Exception as e:
                             self.logger.error("❌ Error creating people records: %s", str(e))
@@ -436,14 +430,14 @@ class BaseGmailSyncService(ABC):
                             try:
                                 existing = self.arango_service.db.aql.execute(
                                     "FOR doc IN people FILTER doc.email == @email RETURN doc._key",
-                                    bind_vars={"email": doc["email"]}
+                                    bind_vars={"email": doc["email"]},
                                 )
                                 existing_key = next(existing, None)
                                 if existing_key:
                                     entity_lookup_map[doc["email"]] = (
                                         existing_key,
                                         CollectionNames.PEOPLE.value,
-                                        "USER"
+                                        "USER",
                                     )
                             except Exception as fetch_error:
                                 self.logger.error("❌ Failed to fetch existing person: %s", fetch_error)
@@ -867,7 +861,6 @@ class BaseGmailSyncService(ABC):
                             txn.abort_transaction()
                         except Exception as e:
                             self.logger.error("❌ Error aborting transaction: %s", str(e))
-                            pass
                     self.logger.error("❌ Failed to process batch data: %s", str(e))
                     return False
 
@@ -887,7 +880,7 @@ class BaseGmailSyncService(ABC):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: list(self.arango_service.db.aql.execute(query, bind_vars=bind_vars or {}))
+            lambda: list(self.arango_service.db.aql.execute(query, bind_vars=bind_vars or {})),
         )
 
     async def _check_collection_has_document_async(self, collection_name: str, document_id: str) -> bool:
@@ -895,7 +888,7 @@ class BaseGmailSyncService(ABC):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: self.arango_service.db.collection(collection_name).has(document_id)
+            lambda: self.arango_service.db.collection(collection_name).has(document_id),
         )
 
     async def _begin_transaction_async(self, read_collections: list, write_collections: list) -> TransactionDatabase:
@@ -905,8 +898,8 @@ class BaseGmailSyncService(ABC):
             None,
             lambda: self.arango_service.db.begin_transaction(
                 read=read_collections,
-                write=write_collections
-            )
+                write=write_collections,
+            ),
         )
 
     async def _commit_transaction_async(self, transaction) -> None:
@@ -934,7 +927,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         celery_app,
     ) -> None:
         super().__init__(
-            logger, config_service, arango_service, change_handler, kafka_service, celery_app
+            logger, config_service, arango_service, change_handler, kafka_service, celery_app,
         )
         self.gmail_admin_service = gmail_admin_service
 
@@ -954,23 +947,23 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.error("❌ Enterprise service connection failed: %s", str(e))
             return False
 
-    async def setup_changes_watch(self, org_id: str, user_email: str) -> Optional[Dict]:
+    async def setup_changes_watch(self, org_id: str, user_email: str) -> dict | None:
         """Set up changes.watch after initial sync"""
         try:
             # Set up watch
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email,
             )
             self.logger.info("👀 Setting up Gmail changes watch for user %s", user_email)
             channel_history = await self.arango_service.get_channel_history_id(
-                user_email
+                user_email,
             )
             if not channel_history:
                 self.logger.info("No channel history found for user %s", user_email)
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.ENTERPRISE.value)
                 if not watch:
                     self.logger.warning(
-                        "Changes watch not created for user: %s", user_email
+                        "Changes watch not created for user: %s", user_email,
                     )
                     return None
                 return watch
@@ -986,12 +979,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.ENTERPRISE.value)
                 if not watch:
                     self.logger.warning(
-                        "Changes watch not created for user: %s", user_email
+                        "Changes watch not created for user: %s", user_email,
                     )
                     return None
                 return watch
             self.logger.info(
-                "✅ Changes watch set up successfully for user: %s", user_email
+                "✅ Changes watch set up successfully for user: %s", user_email,
             )
             return channel_history
 
@@ -1003,7 +996,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         """Stop changes watch"""
         try:
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email,
             )
             stopped = await user_service.stop_gmail_user_watch(user_email)
             return stopped
@@ -1026,11 +1019,11 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 for user in enterprise_users:
                     # Add sync state to user info
                     user_id = await self.arango_service.get_entity_id_by_email(
-                        user["email"]
+                        user["email"],
                     )
                     if not user_id:
                         await self.arango_service.batch_upsert_nodes(
-                            [user], collection=CollectionNames.USERS.value
+                            [user], collection=CollectionNames.USERS.value,
                         )
 
             # List and store groups
@@ -1040,11 +1033,11 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                 for group in groups:
                     group_id = await self.arango_service.get_entity_id_by_email(
-                        group["email"]
+                        group["email"],
                     )
                     if not group_id:
                         await self.arango_service.batch_upsert_nodes(
-                            [group], collection=CollectionNames.GROUPS.value
+                            [group], collection=CollectionNames.GROUPS.value,
                         )
 
             # Create relationships between users and groups in belongsTo collection
@@ -1053,7 +1046,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 try:
                     # Get group members for each group
                     group_members = await self.gmail_admin_service.list_group_members(
-                        group["email"]
+                        group["email"],
                     )
 
                     for member in group_members:
@@ -1149,14 +1142,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 self.logger.info(f"Found enterprise user {user['email']}, continuing with sync")
 
                 sync_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 current_state = (
                     sync_state.get("syncState") if sync_state else "NOT_STARTED"
                 )
                 if current_state == "IN_PROGRESS":
                     self.logger.warning(
-                        f"Sync is currently RUNNING for user {user['email']}. Pausing it."
+                        f"Sync is currently RUNNING for user {user['email']}. Pausing it.",
                     )
                     await self.arango_service.update_user_sync_state(
                         user["email"],
@@ -1165,22 +1158,21 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     )
 
                 self.logger.info(
-                    "🚀 Setting up changes watch for user %s", user["email"]
+                    "🚀 Setting up changes watch for user %s", user["email"],
                 )
 
                 try:
                     channel_data = await self.setup_changes_watch(org_id, user["email"])
                     if not channel_data:
                         self.logger.warning(
-                            "Changes watch not created for user: %s", user["email"]
+                            "Changes watch not created for user: %s", user["email"],
                         )
                         continue
-                    else:
-                        await self.arango_service.store_channel_history_id(
-                            channel_data["historyId"],
-                            channel_data["expiration"],
-                            user["email"],
-                        )
+                    await self.arango_service.store_channel_history_id(
+                        channel_data["historyId"],
+                        channel_data["expiration"],
+                        user["email"],
+                    )
 
                     self.logger.info(
                         "✅ Changes watch set up successfully for user: %s",
@@ -1232,7 +1224,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
 
                 sync_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 if sync_state is None:
                     apps = await self.arango_service.get_org_apps(org_id)
@@ -1256,17 +1248,17 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 current_state = sync_state.get("syncState")
                 if current_state == "COMPLETED":
                     self.logger.info(
-                        "💥 Gmail sync is already completed for user %s", user["email"]
+                        "💥 Gmail sync is already completed for user %s", user["email"],
                     )
                     try:
                         if not await self.resync_gmail(org_id, user):
                             self.logger.error(
-                                f"Failed to resync gmail for user {user['email']}"
+                                f"Failed to resync gmail for user {user['email']}",
                             )
                             continue
                     except Exception as e:
                         self.logger.error(
-                            f"Error processing user {user['email']}: {str(e)}"
+                            f"Error processing user {user['email']}: {e!s}",
                         )
                         continue
 
@@ -1281,7 +1273,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 # Stop checks
                 if await self._should_stop(org_id):
                     self.logger.info(
-                        "Sync stopped during user %s processing", user["email"]
+                        "Sync stopped during user %s processing", user["email"],
                     )
                     await self.arango_service.update_user_sync_state(
                         user["email"],
@@ -1292,11 +1284,11 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                 # Initialize user service
                 user_service = await self.gmail_admin_service.create_gmail_user_service(
-                    user["email"]
+                    user["email"],
                 )
                 if not user_service:
                     self.logger.warning(
-                        "❌ Failed to create user service for user: %s", user["email"]
+                        "❌ Failed to create user service for user: %s", user["email"],
                     )
                     continue
 
@@ -1324,7 +1316,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                 for message in messages_full:
                     attachments_for_message = await user_service.list_attachments_async(
-                        message, org_id, user, account_type
+                        message, org_id, user, account_type,
                     )
                     attachments.extend(attachments_for_message)
                     attachment_ids = [
@@ -1383,7 +1375,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     # Stop check before each batch
                     if await self._should_stop(org_id):
                         self.logger.info(
-                            f"Sync stopped during batch processing at index {i}"
+                            f"Sync stopped during batch processing at index {i}",
                         )
                         # Save current state before stopping
                         return False
@@ -1409,7 +1401,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                         if not current_thread_messages:
                             self.logger.warning(
-                                "❌ 1. No messages found for thread %s", thread["id"]
+                                "❌ 1. No messages found for thread %s", thread["id"],
                             )
                             continue
 
@@ -1422,7 +1414,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         # Process each message
                         for message in current_thread_messages:
                             message_attachments = await user_service.list_attachments(
-                                message, org_id, user, account_type
+                                message, org_id, user, account_type,
                             )
                             if message_attachments:
                                 self.logger.debug(
@@ -1434,7 +1426,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                             # Add message with its attachments
                             thread_messages.append(
-                                {"message": message, "attachments": message_attachments}
+                                {"message": message, "attachments": message_attachments},
                             )
 
                         # Prepare complete thread metadata
@@ -1455,18 +1447,18 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         batch_metadata.append(metadata)
 
                     self.logger.info(
-                        "✅ Completed batch processing: %s threads", len(batch_metadata)
+                        "✅ Completed batch processing: %s threads", len(batch_metadata),
                     )
 
                     # Process the batch metadata
                     if not await self.process_batch(batch_metadata, org_id):
                         self.logger.warning(
-                            "Failed to process batch starting at index %s", i
+                            "Failed to process batch starting at index %s", i,
                         )
                         continue
 
                     endpoints = await self.config_service.get_config(
-                        config_node_constants.ENDPOINTS.value
+                        config_node_constants.ENDPOINTS.value,
                     )
                     connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
@@ -1475,7 +1467,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         for message_data in metadata["messages"]:
                             message = message_data["message"]
                             message_key = await self.arango_service.get_key_by_external_message_id(
-                                message["id"]
+                                message["id"],
                             )
                             user_id = user["userId"]
 
@@ -1496,13 +1488,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                     message.get(
                                         "internalDate",
                                         get_epoch_timestamp_in_ms(),
-                                    )
+                                    ),
                                 ),
                                 "modifiedAtSourceTimestamp": int(
                                     message.get(
                                         "internalDate",
                                         get_epoch_timestamp_in_ms(),
-                                    )
+                                    ),
                                 ),
                             }
                             await self.kafka_service.send_event_to_kafka(message_event)
@@ -1515,14 +1507,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         for attachment in metadata["attachments"]:
                             attachment_key = (
                                 await self.arango_service.get_key_by_attachment_id(
-                                    attachment["attachment_id"]
+                                    attachment["attachment_id"],
                                 )
                             )
                             attachment_event = {
                                 "orgId": org_id,
                                 "recordId": attachment_key,
                                 "recordName": attachment.get(
-                                    "filename", "Unnamed Attachment"
+                                    "filename", "Unnamed Attachment",
                                 ),
                                 "recordType": RecordTypes.ATTACHMENT.value,
                                 "recordVersion": 0,
@@ -1531,14 +1523,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
                                 "origin": OriginTypes.CONNECTOR.value,
                                 "mimeType": attachment.get(
-                                    "mimeType", "application/octet-stream"
+                                    "mimeType", "application/octet-stream",
                                 ),
                                 "size": attachment.get("size", 0),
                                 "createdAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                                 "modifiedAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                             }
                             await self.kafka_service.send_event_to_kafka(
-                                attachment_event
+                                attachment_event,
                             )
                             self.logger.info(
                                 "📨 Sent Kafka Indexing event for attachment %s",
@@ -1558,9 +1550,9 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower(),
                 )
-            self.logger.error(f"❌ Initial sync failed: {str(e)}")
+            self.logger.error(f"❌ Initial sync failed: {e!s}")
             return False
 
     async def sync_specific_user(self, user_email: str) -> bool:
@@ -1570,18 +1562,18 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Verify user exists in the database
             sync_state = await self.arango_service.get_user_sync_state(
-                user_email, Connectors.GOOGLE_MAIL.value.lower()
+                user_email, Connectors.GOOGLE_MAIL.value.lower(),
             )
             current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
             if current_state == "IN_PROGRESS":
                 self.logger.warning(
-                    "💥 Gmail sync is already running for user %s", user_email
+                    "💥 Gmail sync is already running for user %s", user_email,
                 )
                 return False
 
             user_id = await self.arango_service.get_entity_id_by_email(user_email)
             user = await self.arango_service.get_document(
-                user_id, CollectionNames.USERS.value
+                user_id, CollectionNames.USERS.value,
             )
             org_id = user["orgId"]
 
@@ -1610,7 +1602,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_MAIL.value
+                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_MAIL.value,
             )
 
             account_type = await self.arango_service.get_account_type(org_id)
@@ -1621,14 +1613,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Create user service instance
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email,
             )
             if not user_service:
                 self.logger.error(
-                    "❌ Failed to create Gmail service for user %s", user_email
+                    "❌ Failed to create Gmail service for user %s", user_email,
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 return False
 
@@ -1637,7 +1629,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 channel_data = await self.setup_changes_watch(org_id, user["email"])
                 if not channel_data:
                     self.logger.warning(
-                        "Changes watch not created for user: %s", user["email"]
+                        "Changes watch not created for user: %s", user["email"],
                     )
                 else:
                     await self.arango_service.store_channel_history_id(
@@ -1647,7 +1639,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     )
 
                 self.logger.info(
-                    "✅ Changes watch set up successfully for user: %s", user["email"]
+                    "✅ Changes watch set up successfully for user: %s", user["email"],
                 )
 
             except Exception as e:
@@ -1677,7 +1669,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             if not threads:
                 self.logger.info("No threads found for user %s", user_email)
                 await self.arango_service.update_user_sync_state(
-                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 return True
 
@@ -1692,7 +1684,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                 # Get attachments for message
                 attachments_for_message = await user_service.list_attachments_async(
-                    message_data, org_id, user, account_type
+                    message_data, org_id, user, account_type,
                 )
                 attachments.extend(attachments_for_message)
                 attachment_ids = [
@@ -1731,7 +1723,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 else [headers.get("Bcc")] if headers.get("Bcc") else []
                             ),
                         ],
-                    }
+                    },
                 )
 
             # Process threads in batches
@@ -1739,10 +1731,10 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             for i in range(0, len(threads), batch_size):
                 if await self._should_stop(org_id):
                     self.logger.info(
-                        "Sync stopped during batch processing at index %s", i
+                        "Sync stopped during batch processing at index %s", i,
                     )
                     await self.arango_service.update_user_sync_state(
-                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower(),
                     )
                     return False
 
@@ -1761,14 +1753,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                     if not current_thread_messages:
                         self.logger.warning(
-                            "❌ No messages found for thread %s", thread["id"]
+                            "❌ No messages found for thread %s", thread["id"],
                         )
                         continue
 
                     # Process messages in thread
                     for message in current_thread_messages:
                         message_attachments = await user_service.list_attachments(
-                            message, org_id, user, account_type
+                            message, org_id, user, account_type,
                         )
                         if message_attachments:
                             thread_attachments.extend(message_attachments)
@@ -1787,12 +1779,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 # Process batch
                 if not await self.process_batch(batch_metadata, org_id):
                     self.logger.warning(
-                        "Failed to process batch starting at index %s", i
+                        "Failed to process batch starting at index %s", i,
                     )
                     continue
 
                 endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
                 connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
@@ -1803,7 +1795,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         message = message_data["message"]
                         message_key = (
                             await self.arango_service.get_key_by_external_message_id(
-                                message["id"]
+                                message["id"],
                             )
                         )
                         user_id = user["userId"]
@@ -1825,32 +1817,32 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 message.get(
                                     "internalDate",
                                     get_epoch_timestamp_in_ms(),
-                                )
+                                ),
                             ),
                             "modifiedAtSourceTimestamp": int(
                                 message.get(
                                     "internalDate",
                                     get_epoch_timestamp_in_ms(),
-                                )
+                                ),
                             ),
                         }
                         await self.kafka_service.send_event_to_kafka(message_event)
                         self.logger.info(
-                            "📨 Sent Kafka Indexing event for message %s", message_key
+                            "📨 Sent Kafka Indexing event for message %s", message_key,
                         )
 
                     # Attachment events
                     for attachment in metadata["attachments"]:
                         attachment_key = (
                             await self.arango_service.get_key_by_attachment_id(
-                                attachment["attachment_id"]
+                                attachment["attachment_id"],
                             )
                         )
                         attachment_event = {
                             "orgId": org_id,
                             "recordId": attachment_key,
                             "recordName": attachment.get(
-                                "filename", "Unnamed Attachment"
+                                "filename", "Unnamed Attachment",
                             ),
                             "recordType": RecordTypes.ATTACHMENT.value,
                             "recordVersion": 0,
@@ -1859,7 +1851,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             "connectorName": Connectors.GOOGLE_MAIL.value,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": attachment.get(
-                                "mimeType", "application/octet-stream"
+                                "mimeType", "application/octet-stream",
                             ),
                             "createdAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                             "modifiedAtSourceTimestamp": get_epoch_timestamp_in_ms(),
@@ -1872,14 +1864,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(),
             )
             self.logger.info("✅ Successfully completed sync for user %s", user_email)
             return True
 
         except Exception as e:
             await self.arango_service.update_user_sync_state(
-                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower(),
             )
             self.logger.error("❌ Failed to sync user %s: %s", user_email, str(e))
             return False
@@ -1901,18 +1893,18 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 return True
 
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user["email"]
+                user["email"],
             )
 
             channel_history = await self.arango_service.get_channel_history_id(
-                user["email"]
+                user["email"],
             )
             if not channel_history:
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
                 return True
 
             changes = await user_service.fetch_gmail_changes_async(
-                user["email"], channel_history["historyId"]
+                user["email"], channel_history["historyId"],
             )
 
             # Check if changes is valid and has history items
@@ -1920,19 +1912,19 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 self.logger.info(f"📝 Changes found for user {user['email']}")
                 try:
                     await self.change_handler.process_changes(
-                        user_service, changes, org_id, user
+                        user_service, changes, org_id, user,
                     )
 
                     # Update history ID after successful processing
                     await self.arango_service.store_channel_history_id(
                         changes["historyId"],
                         channel_history["expiration"],
-                        user["email"]
+                        user["email"],
                     )
                     self.logger.info(f"🚀 Updated historyId for user {user['email']}")
 
                 except Exception as e:
-                    self.logger.error(f"Error processing changes: {str(e)}")
+                    self.logger.error(f"Error processing changes: {e!s}")
                     return False
             else:
                 self.logger.info("ℹ️ No changes found for user %s", user["email"])
@@ -1940,7 +1932,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             return True
 
         except Exception as e:
-            self.logger.error(f"Error resyncing Gmail for user {user['email']}: {str(e)}")
+            self.logger.error(f"Error resyncing Gmail for user {user['email']}: {e!s}")
             return False
 
     async def reindex_failed_records(self, org_id) -> bool | None:
@@ -1974,12 +1966,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 """,
                 bind_vars={
                     "org_id": org_id,
-                    "connector_name": Connectors.GOOGLE_MAIL.value
-                }
+                    "connector_name": Connectors.GOOGLE_MAIL.value,
+                },
             )
 
             endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+                config_node_constants.ENDPOINTS.value,
             )
             connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
@@ -2004,7 +1996,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         "connectorName": Connectors.GOOGLE_MAIL.value,
                         "origin": OriginTypes.CONNECTOR.value,
                         "createdAtSourceTimestamp": record.get("sourceCreatedAtTimestamp"),
-                        "modifiedAtSourceTimestamp": record.get("sourceLastModifiedTimestamp")
+                        "modifiedAtSourceTimestamp": record.get("sourceLastModifiedTimestamp"),
                     }
 
                     # Send event for each active user with permissions
@@ -2020,12 +2012,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 event.update({
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user['userId']}/gmail/record/{record['_key']}/signedUrl",
                                     "mimeType": "text/gmail_content",
-                                    "body": message_body
+                                    "body": message_body,
                                 })
                             elif record["recordType"] == RecordTypes.FILE.value:
                                 event.update({
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user['userId']}/gmail/record/{record['_key']}/signedUrl",
-                                    "mimeType": record.get("mimeType", "application/octet-stream")
+                                    "mimeType": record.get("mimeType", "application/octet-stream"),
                                 })
 
                             await self.kafka_service.send_event_to_kafka(event)
@@ -2033,18 +2025,18 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             self.logger.debug(f"✅ Sent reindex event for record {record['_key']} with user {user['email']}")
 
                         except Exception as e:
-                            self.logger.error(f"❌ Error sending event for user {user['email']}: {str(e)}")
+                            self.logger.error(f"❌ Error sending event for user {user['email']}: {e!s}")
                             continue
 
                 except Exception as e:
-                    self.logger.error(f"❌ Error processing record {record['_key']}: {str(e)}")
+                    self.logger.error(f"❌ Error processing record {record['_key']}: {e!s}")
                     continue
 
             self.logger.info(f"✅ Successfully sent reindex events for {count} records")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error reindexing failed records: {str(e)}")
+            self.logger.error(f"❌ Error reindexing failed records: {e!s}")
             return False
 
 
@@ -2062,7 +2054,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         celery_app,
     ) -> None:
         super().__init__(
-            logger, config_service, arango_service, change_handler, kafka_service, celery_app
+            logger, config_service, arango_service, change_handler, kafka_service, celery_app,
         )
         self.gmail_user_service = gmail_user_service
 
@@ -2087,7 +2079,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Connect to Google Gmail
             if not await self.gmail_user_service.connect_individual_user(
-                org_id, user_id
+                org_id, user_id,
             ):
                 raise Exception("Failed to connect to Gmail API")
 
@@ -2101,23 +2093,23 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             self.logger.error("❌ Individual service connection failed: %s", str(e))
             return False
 
-    async def setup_changes_watch(self, org_id: str, user_email: str) -> Optional[Dict]:
+    async def setup_changes_watch(self, org_id: str, user_email: str) -> dict | None:
         """Set up changes.watch after initial sync"""
         try:
             # Set up watch
             user_service = self.gmail_user_service
             self.logger.info("👀 Setting up changes watch for user %s", user_email)
             channel_history = await self.arango_service.get_channel_history_id(
-                user_email
+                user_email,
             )
             if not channel_history:
                 self.logger.info(
-                    "🚀 Creating new changes watch for user %s", user_email
+                    "🚀 Creating new changes watch for user %s", user_email,
                 )
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.INDIVIDUAL.value)
                 if not watch:
                     self.logger.warning(
-                        "Changes watch not created for user: %s", user_email
+                        "Changes watch not created for user: %s", user_email,
                     )
                     return None
                 return watch
@@ -2132,12 +2124,12 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.INDIVIDUAL.value)
                 if not watch:
                     self.logger.warning(
-                        "Changes watch not created for user: %s", user_email
+                        "Changes watch not created for user: %s", user_email,
                     )
                     return None
                 return watch
             self.logger.info(
-                "✅ Changes watch set up successfully for user: %s", user_email
+                "✅ Changes watch set up successfully for user: %s", user_email,
             )
             return channel_history
 
@@ -2167,37 +2159,37 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             if user_info:
                 # Add sync state to user info
                 user_id = await self.arango_service.get_entity_id_by_email(
-                    user_info[0]["email"]
+                    user_info[0]["email"],
                 )
                 if not user_id:
                     await self.arango_service.batch_upsert_nodes(
-                        user_info, collection=CollectionNames.USERS.value
+                        user_info, collection=CollectionNames.USERS.value,
                     )
                 user_info = user_info[0]
 
             # Check if sync is already running
             sync_state = await self.arango_service.get_user_sync_state(
-                user_info["email"], Connectors.GOOGLE_MAIL.value.lower()
+                user_info["email"], Connectors.GOOGLE_MAIL.value.lower(),
             )
             current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
             if current_state == "IN_PROGRESS":
                 self.logger.warning(
-                    f"Gmail sync is currently RUNNING for user {user_info['email']}. Pausing it."
+                    f"Gmail sync is currently RUNNING for user {user_info['email']}. Pausing it.",
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(),
                 )
 
             try:
                 self.logger.info(
-                    "🚀 Setting up changes watch for user %s", user_info["email"]
+                    "🚀 Setting up changes watch for user %s", user_info["email"],
                 )
                 channel_data = await self.setup_changes_watch(
-                    org_id, user_info["email"]
+                    org_id, user_info["email"],
                 )
                 if not channel_data:
                     self.logger.warning(
-                        "Changes watch not created for user: %s", user_info["email"]
+                        "Changes watch not created for user: %s", user_info["email"],
                     )
 
                 else:
@@ -2227,7 +2219,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to initialize individual Gmail sync: %s", str(e)
+                "❌ Failed to initialize individual Gmail sync: %s", str(e),
             )
             return False
 
@@ -2242,7 +2234,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             user = user[0]
 
             sync_state = await self.arango_service.get_user_sync_state(
-                user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], Connectors.GOOGLE_MAIL.value.lower(),
             )
             if sync_state is None:
                 apps = await self.arango_service.get_org_apps(org_id)
@@ -2266,7 +2258,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             current_state = sync_state.get("syncState")
             if current_state == "COMPLETED":
                 self.logger.info(
-                    "💥 Gmail sync is already completed for user %s", user["email"]
+                    "💥 Gmail sync is already completed for user %s", user["email"],
                 )
 
                 try:
@@ -2275,7 +2267,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         return False
                 except Exception as e:
                     self.logger.error(
-                        f"Error processing user {user['email']}: {str(e)}"
+                        f"Error processing user {user['email']}: {e!s}",
                     )
                     return False
 
@@ -2284,15 +2276,15 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             account_type = await self.arango_service.get_account_type(org_id)
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower(),
             )
 
             if await self._should_stop(org_id):
                 self.logger.info(
-                    "Sync stopped during user %s processing", user["email"]
+                    "Sync stopped during user %s processing", user["email"],
                 )
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 return False
 
@@ -2321,7 +2313,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             if not threads:
                 self.logger.info(f"No threads found for user {user['email']}")
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(),
                 )
                 return False
 
@@ -2332,7 +2324,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             for message in messages_full:
                 attachments_for_message = await user_service.list_attachments_async(
-                    message, org_id, user, account_type
+                    message, org_id, user, account_type,
                 )
                 attachments.extend(attachments_for_message)
                 attachment_ids = [
@@ -2368,7 +2360,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     ],
                 }
                 self.logger.info(
-                    "🚀 Mail Permission for message %s: %s", message["id"], permission
+                    "🚀 Mail Permission for message %s: %s", message["id"], permission,
                 )
 
                 permissions.append(permission)
@@ -2380,10 +2372,10 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             for i in range(start_batch, len(threads), batch_size):
                 if await self._should_stop(org_id):
                     self.logger.info(
-                        f"Sync stopped during batch processing at index {i}"
+                        f"Sync stopped during batch processing at index {i}",
                     )
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(),
                     )
                     return False
 
@@ -2402,14 +2394,14 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
                     if not current_thread_messages:
                         self.logger.warning(
-                            "❌ No messages found for thread %s", thread["id"]
+                            "❌ No messages found for thread %s", thread["id"],
                         )
                         continue
 
                     # Process messages in thread
                     for message in current_thread_messages:
                         message_attachments = await user_service.list_attachments(
-                            message, org_id, user, account_type
+                            message, org_id, user, account_type,
                         )
                         if message_attachments:
                             thread_attachments.extend(message_attachments)
@@ -2428,7 +2420,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 # Process batch
                 if not await self.process_batch(batch_metadata, org_id):
                     self.logger.warning(
-                        f"Failed to process batch starting at index {i}"
+                        f"Failed to process batch starting at index {i}",
                     )
                     continue
 
@@ -2436,7 +2428,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 self.logger.info("🚀 Preparing events for Kafka for batch %s", i)
 
                 endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
                 connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
@@ -2446,7 +2438,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         message = message_data["message"]
                         message_key = (
                             await self.arango_service.get_key_by_external_message_id(
-                                message["id"]
+                                message["id"],
                             )
                         )
 
@@ -2468,32 +2460,32 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                                 message.get(
                                     "internalDate",
                                     get_epoch_timestamp_in_ms(),
-                                )
+                                ),
                             ),
                             "modifiedAtSourceTimestamp": int(
                                 message.get(
                                     "internalDate",
                                     get_epoch_timestamp_in_ms(),
-                                )
+                                ),
                             ),
                         }
                         await self.kafka_service.send_event_to_kafka(message_event)
                         self.logger.info(
-                            "📨 Sent Kafka Indexing event for message %s", message_key
+                            "📨 Sent Kafka Indexing event for message %s", message_key,
                         )
 
                     # Attachment events
                     for attachment in metadata["attachments"]:
                         attachment_key = (
                             await self.arango_service.get_key_by_attachment_id(
-                                attachment["attachment_id"]
+                                attachment["attachment_id"],
                             )
                         )
                         attachment_event = {
                             "orgId": org_id,
                             "recordId": attachment_key,
                             "recordName": attachment.get(
-                                "filename", "Unnamed Attachment"
+                                "filename", "Unnamed Attachment",
                             ),
                             "recordType": RecordTypes.ATTACHMENT.value,
                             "recordVersion": 0,
@@ -2502,7 +2494,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                             "connectorName": Connectors.GOOGLE_MAIL.value,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": attachment.get(
-                                "mimeType", "application/octet-stream"
+                                "mimeType", "application/octet-stream",
                             ),
                             "createdAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                             "modifiedAtSourceTimestamp": get_epoch_timestamp_in_ms(),
@@ -2515,7 +2507,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(),
             )
 
             self.is_completed = True
@@ -2524,9 +2516,9 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower(),
                 )
-            self.logger.error(f"❌ Initial sync failed: {str(e)}")
+            self.logger.error(f"❌ Initial sync failed: {e!s}")
             return False
 
     async def resync_gmail(self, org_id, user) -> bool | None:
@@ -2535,14 +2527,14 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             self.logger.info(f"Resyncing Gmail for user {user['email']}")
 
             channel_history = await self.arango_service.get_channel_history_id(
-                user["email"]
+                user["email"],
             )
             if not channel_history:
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
-                return
+                return None
 
             changes = await user_service.fetch_gmail_changes_async(
-                user["email"], channel_history["historyId"]
+                user["email"], channel_history["historyId"],
             )
 
             # Check if changes is valid and has history items
@@ -2550,19 +2542,19 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 self.logger.info(f"📝 Changes found for user {user['email']}")
                 try:
                     await self.change_handler.process_changes(
-                        user_service, changes, org_id, user
+                        user_service, changes, org_id, user,
                     )
 
                     # Update history ID after successful processing
                     await self.arango_service.store_channel_history_id(
                         changes["historyId"],
                         channel_history["expiration"],
-                        user["email"]
+                        user["email"],
                     )
                     self.logger.info(f"🚀 Updated historyId for user {user['email']}")
 
                 except Exception as e:
-                    self.logger.error(f"Error processing changes: {str(e)}")
+                    self.logger.error(f"Error processing changes: {e!s}")
                     return False
             else:
                 self.logger.info("ℹ️ No changes found for user %s", user["email"])
@@ -2570,7 +2562,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             return True
 
         except Exception as e:
-            self.logger.error(f"Error resyncing Gmail for user {user['email']}: {str(e)}")
+            self.logger.error(f"Error resyncing Gmail for user {user['email']}: {e!s}")
             return False
 
     async def reindex_failed_records(self, org_id) -> bool | None:
@@ -2589,12 +2581,12 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 """,
                 bind_vars={
                     "org_id": org_id,
-                    "connector_name": Connectors.GOOGLE_MAIL.value
-                }
+                    "connector_name": Connectors.GOOGLE_MAIL.value,
+                },
             )
 
             endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+                config_node_constants.ENDPOINTS.value,
             )
             connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
@@ -2623,19 +2615,19 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         "connectorName": Connectors.GOOGLE_MAIL.value,
                         "origin": OriginTypes.CONNECTOR.value,
                         "createdAtSourceTimestamp": record.get("sourceCreatedAtTimestamp"),
-                        "modifiedAtSourceTimestamp": record.get("sourceLastModifiedTimestamp")
+                        "modifiedAtSourceTimestamp": record.get("sourceLastModifiedTimestamp"),
                     }
 
                     # Add type-specific fields
                     if record["recordType"] == RecordTypes.MAIL.value:
                         event.update({
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{record['_key']}/signedUrl",
-                            "mimeType": "text/gmail_content"
+                            "mimeType": "text/gmail_content",
                         })
                     elif record["recordType"] == RecordTypes.FILE.value:
                         event.update({
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{record['_key']}/signedUrl",
-                            "mimeType": record.get("mimeType", "application/octet-stream")
+                            "mimeType": record.get("mimeType", "application/octet-stream"),
                         })
 
                     # Send event to Kafka
@@ -2644,12 +2636,12 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     self.logger.debug(f"✅ Sent reindex event for record {record['_key']}")
 
                 except Exception as e:
-                    self.logger.error(f"❌ Error processing record {record['_key']}: {str(e)}")
+                    self.logger.error(f"❌ Error processing record {record['_key']}: {e!s}")
                     continue
 
             self.logger.info(f"✅ Successfully sent reindex events for {count} failed records")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error reindexing failed records: {str(e)}")
+            self.logger.error(f"❌ Error reindexing failed records: {e!s}")
             return False

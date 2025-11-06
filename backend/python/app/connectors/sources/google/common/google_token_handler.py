@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Dict
 
 import aiohttp
 from tenacity import (
@@ -25,19 +24,19 @@ class GoogleTokenHandler:
         self.arango_service = arango_service
         self.key_value_store = key_value_store
 
-    async def _get_connector_config(self, app_name: str) -> Dict:
+    async def _get_connector_config(self, app_name: str) -> dict:
         """Fetch connector config from etcd for the given app."""
         try:
             filtered_app_name = app_name.replace(" ", "").lower()
             config = await self.config_service.get_config(
-                f"/services/connectors/{filtered_app_name}/config"
+                f"/services/connectors/{filtered_app_name}/config",
             )
             return config or {}
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector config for {app_name}: {e}")
             return {}
 
-    async def get_individual_credentials_from_config(self, app_name: str) -> Dict:
+    async def get_individual_credentials_from_config(self, app_name: str) -> dict:
         """Get individual OAuth credentials stored in etcd for the connector."""
         config = await self._get_connector_config(app_name)
         creds = config.get("credentials") or {}
@@ -45,7 +44,7 @@ class GoogleTokenHandler:
             self.logger.info(f"No individual credentials found in config for {app_name}")
         return creds
 
-    async def get_enterprise_credentials_from_config(self, app_name: str) -> Dict:
+    async def get_enterprise_credentials_from_config(self, app_name: str) -> dict:
         """Get enterprise/service account credentials stored in etcd for the connector."""
         config = await self._get_connector_config(app_name)
         auth = config.get("auth") or {}
@@ -71,11 +70,11 @@ class GoogleTokenHandler:
             if creds:
                 # Return a merged view including client info for SDK constructors
                 merged = dict(creds)
-                merged['clientId'] = auth_cfg.get("clientId")
-                merged['clientSecret'] = auth_cfg.get("clientSecret")
+                merged["clientId"] = auth_cfg.get("clientId")
+                merged["clientSecret"] = auth_cfg.get("clientSecret")
                 return merged
         except Exception as e:
-            self.logger.error(f"❌ Failed to get individual token for {app_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to get individual token for {app_name}: {e!s}")
             raise
 
     @retry(
@@ -116,13 +115,13 @@ class GoogleTokenHandler:
                 redirect_uri=auth_cfg.get("redirectUri", ""),
                 authorize_url=auth_cfg.get("authorizeUrl", ""),
                 token_url=auth_cfg.get("tokenUrl", ""),
-                scope=' '.join(auth_cfg.get("scopes", [])) if auth_cfg.get("scopes") else ''
+                scope=" ".join(auth_cfg.get("scopes", [])) if auth_cfg.get("scopes") else "",
             )
 
             provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,  # type: ignore
-                credentials_path=config_key
+                credentials_path=config_key,
             )
 
             try:
@@ -137,7 +136,7 @@ class GoogleTokenHandler:
             self.logger.info("✅ Successfully refreshed access token for %s", app_name)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to refresh token for {app_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to refresh token for {app_name}: {e!s}")
             raise
 
     @retry(

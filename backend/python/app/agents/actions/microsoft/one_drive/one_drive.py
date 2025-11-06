@@ -2,7 +2,6 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -16,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class OneDrive:
     """OneDrive tool exposed to the agents"""
+
     def __init__(self, client: MSGraphClient) -> None:
         """Initialize the OneDrive tool"""
         """
@@ -51,56 +51,56 @@ class OneDrive:
                 name="search",
                 type=ParameterType.STRING,
                 description="Search query for drives",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter query for drives",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="orderby",
                 type=ParameterType.STRING,
                 description="Order by field",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="skip",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_drives(
         self,
-        search: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        select: Optional[str] = None,
-        expand: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        search: str | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+    ) -> tuple[bool, str]:
         """Get OneDrive drives"""
         """
         Args:
@@ -123,13 +123,12 @@ class OneDrive:
                 select=select,
                 expand=expand,
                 top=top,
-                skip=skip
+                skip=skip,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_drives: {e}")
             return False, json.dumps({"error": str(e)})
@@ -143,28 +142,28 @@ class OneDrive:
                 name="drive_id",
                 type=ParameterType.STRING,
                 description="The ID of the drive to get",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_drive(
         self,
         drive_id: str,
-        select: Optional[str] = None,
-        expand: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        select: str | None = None,
+        expand: str | None = None,
+    ) -> tuple[bool, str]:
         """Get a specific OneDrive drive"""
         """
         Args:
@@ -179,13 +178,12 @@ class OneDrive:
             response = self._run_async(self.client.drives_drive_get_drive(
                 drive_id=drive_id,
                 select=select,
-                expand=expand
+                expand=expand,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_drive: {e}")
             return False, json.dumps({"error": str(e)})
@@ -199,63 +197,63 @@ class OneDrive:
                 name="drive_id",
                 type=ParameterType.STRING,
                 description="The ID of the drive",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="search",
                 type=ParameterType.STRING,
                 description="Search query for files",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter query for files",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="orderby",
                 type=ParameterType.STRING,
                 description="Order by field",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="skip",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_files(
         self,
         drive_id: str,
-        search: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        select: Optional[str] = None,
-        expand: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        search: str | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+    ) -> tuple[bool, str]:
         """Get files from a OneDrive drive"""
         """
         Args:
@@ -282,13 +280,12 @@ class OneDrive:
                 select=select,
                 expand=expand,
                 top=top,
-                skip=skip
+                skip=skip,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_files: {e}")
             return False, json.dumps({"error": str(e)})
@@ -302,35 +299,35 @@ class OneDrive:
                 name="drive_id",
                 type=ParameterType.STRING,
                 description="The ID of the drive",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="item_id",
                 type=ParameterType.STRING,
                 description="The ID of the file",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_file(
         self,
         drive_id: str,
         item_id: str,
-        select: Optional[str] = None,
-        expand: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        select: str | None = None,
+        expand: str | None = None,
+    ) -> tuple[bool, str]:
         """Get a specific file from OneDrive"""
         """
         Args:
@@ -347,13 +344,12 @@ class OneDrive:
                 drive_id=drive_id,
                 driveItem_id=item_id,
                 select=select,
-                expand=expand
+                expand=expand,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_file: {e}")
             return False, json.dumps({"error": str(e)})
@@ -367,35 +363,35 @@ class OneDrive:
                 name="drive_id",
                 type=ParameterType.STRING,
                 description="The ID of the drive",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="file_name",
                 type=ParameterType.STRING,
                 description="Name of the file to upload",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="Content of the file to upload",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="parent_folder_id",
                 type=ParameterType.STRING,
                 description="ID of parent folder (optional, defaults to root)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def upload_file(
         self,
         drive_id: str,
         file_name: str,
         content: str,
-        parent_folder_id: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        parent_folder_id: str | None = None,
+    ) -> tuple[bool, str]:
         """Upload a file to OneDrive"""
         """
         Args:
@@ -415,14 +411,13 @@ class OneDrive:
                 request_body={
                     "name": file_name,
                     "file": {},
-                    "@microsoft.graph.sourceUrl": f"data:text/plain;base64,{base64.b64encode(content.encode('utf-8')).decode('utf-8')}"
-                }
+                    "@microsoft.graph.sourceUrl": f"data:text/plain;base64,{base64.b64encode(content.encode('utf-8')).decode('utf-8')}",
+                },
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in upload_file: {e}")
             return False, json.dumps({"error": str(e)})
@@ -436,21 +431,21 @@ class OneDrive:
                 name="drive_id",
                 type=ParameterType.STRING,
                 description="The ID of the drive",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="item_id",
                 type=ParameterType.STRING,
                 description="The ID of the file to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def delete_file(
         self,
         drive_id: str,
-        item_id: str
-    ) -> Tuple[bool, str]:
+        item_id: str,
+    ) -> tuple[bool, str]:
         """Delete a file from OneDrive"""
         """
         Args:
@@ -463,13 +458,12 @@ class OneDrive:
             # Use OneDriveDataSource method
             response = self._run_async(self.client.drives_delete_items(
                 drive_id=drive_id,
-                driveItem_id=item_id
+                driveItem_id=item_id,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in delete_file: {e}")
             return False, json.dumps({"error": str(e)})

@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import StreamWriter
@@ -56,14 +56,14 @@ MAX_TOOLS_PER_ITERATION = 5
 # ============================================================================
 
 def _detect_tool_success(result: object) -> bool:
-    """
-    Properly detect if a tool execution was successful.
+    """Properly detect if a tool execution was successful.
     Handles JSON responses, tuples, and string responses.
 
     Args:
         result: Tool execution result
     Returns:
         True if successful, False otherwise
+
     """
     # Handle tuple format (success, data)
     if isinstance(result, tuple) and len(result) == TUPLE_RESULT_LEN:
@@ -75,7 +75,7 @@ def _detect_tool_success(result: object) -> bool:
 
     # Try to parse as JSON for more accurate detection
     try:
-        if result_str.strip().startswith('{'):
+        if result_str.strip().startswith("{"):
             import json
             data = json.loads(result_str)
 
@@ -141,7 +141,7 @@ def _detect_tool_success(result: object) -> bool:
         "status_code: 400",
         "status_code: 500",
         "http/1.1 400",
-        "http/1.1 500"
+        "http/1.1 500",
     ]
 
     if any(indicator in result_lower for indicator in error_indicators):
@@ -155,9 +155,8 @@ def _detect_tool_success(result: object) -> bool:
     return True
 
 
-def analyze_tool_results_generic(all_tool_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Generic analysis of tool results to provide intelligent context to the LLM.
+def analyze_tool_results_generic(all_tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Generic analysis of tool results to provide intelligent context to the LLM.
     This replaces hardcoded tool-specific logic with dynamic analysis.
     """
     if not all_tool_results:
@@ -166,7 +165,7 @@ def analyze_tool_results_generic(all_tool_results: List[Dict[str, Any]]) -> Dict
             "data_available": {},
             "repetition_warnings": [],
             "successful_tools": [],
-            "failed_tools": []
+            "failed_tools": [],
         }
 
     # Analyze tool execution patterns
@@ -219,13 +218,12 @@ def analyze_tool_results_generic(all_tool_results: List[Dict[str, Any]]) -> Dict
         "successful_tools": list(set(successful_tools)),
         "failed_tools": list(set(failed_tools)),
         "tool_counts": tool_counts,
-        "total_executions": len(all_tool_results)
+        "total_executions": len(all_tool_results),
     }
 
 
-def analyze_tool_data_content(tool_name: str, tool_result: str) -> Dict[str, Any]:
-    """
-    Analyze tool result content to determine what data is available.
+def analyze_tool_data_content(tool_name: str, tool_result: str) -> dict[str, Any]:
+    """Analyze tool result content to determine what data is available.
     **FULLY GENERIC** - works for ANY tool by analyzing structure and patterns.
     """
     result_str = str(tool_result)
@@ -241,7 +239,7 @@ def analyze_tool_data_content(tool_name: str, tool_result: str) -> Dict[str, Any
     # Detect structured data (JSON, dict, list)
     try:
         import json
-        parsed = json.loads(result_str) if result_str.strip().startswith('{') or result_str.strip().startswith('[') else None
+        parsed = json.loads(result_str) if result_str.strip().startswith("{") or result_str.strip().startswith("[") else None
         if parsed:
             data_types.append("structured_data")
             # Analyze JSON structure generically
@@ -257,15 +255,15 @@ def analyze_tool_data_content(tool_name: str, tool_result: str) -> Dict[str, Any
         pass
 
     # Detect if result contains array/list patterns (even if not valid JSON)
-    if '[' in result_str and ']' in result_str:
+    if "[" in result_str and "]" in result_str:
         data_types.append("list_pattern")
 
     # Detect if result contains multiple key-value patterns
-    if result_str.count(':') > KEY_VALUE_PATTERN_MIN_COUNT or result_str.count('=') > KEY_VALUE_PATTERN_MIN_COUNT:
+    if result_str.count(":") > KEY_VALUE_PATTERN_MIN_COUNT or result_str.count("=") > KEY_VALUE_PATTERN_MIN_COUNT:
         data_types.append("key_value_data")
 
     # Detect URLs/links
-    if 'http://' in result_lower or 'https://' in result_lower:
+    if "http://" in result_lower or "https://" in result_lower:
         data_types.append("contains_links")
 
     # Determine next possible actions based on tool name patterns (generic)
@@ -296,13 +294,12 @@ def analyze_tool_data_content(tool_name: str, tool_result: str) -> Dict[str, Any
         "data_types": data_types,
         "next_actions": next_actions,
         "has_data": len(data_types) > 0,
-        "result_preview": str(tool_result)[:RESULT_PREVIEW_MAX_LEN] + "..." if len(str(tool_result)) > RESULT_PREVIEW_MAX_LEN else str(tool_result)
+        "result_preview": str(tool_result)[:RESULT_PREVIEW_MAX_LEN] + "..." if len(str(tool_result)) > RESULT_PREVIEW_MAX_LEN else str(tool_result),
     }
 
 
-def get_tool_results_summary(tool_results: List[Dict[str, Any]]) -> str:
-    """
-    Simple summary of tool results for LLM context.
+def get_tool_results_summary(tool_results: list[dict[str, Any]]) -> str:
+    """Simple summary of tool results for LLM context.
     """
     if not tool_results:
         return "No tools have been executed yet."
@@ -341,17 +338,15 @@ def _determine_query_intent(query_lower: str) -> str:
     """Determine the user's intent from their query."""
     if any(word in query_lower for word in ["list", "show", "get", "fetch", "find"]):
         return "data_retrieval"
-    elif any(word in query_lower for word in ["send", "create", "add", "post"]):
+    if any(word in query_lower for word in ["send", "create", "add", "post"]):
         return "action_request"
-    elif any(word in query_lower for word in ["who", "what", "when", "where", "how"]):
+    if any(word in query_lower for word in ["who", "what", "when", "where", "how"]):
         return "information_query"
-    else:
-        return "general_query"
+    return "general_query"
 
 
 def build_simple_tool_context(state: ChatState) -> str:
-    """
-    Build explicit tool context that clearly shows what data the LLM has.
+    """Build explicit tool context that clearly shows what data the LLM has.
     """
     all_tool_results = state.get("all_tool_results", [])
 
@@ -388,7 +383,7 @@ def build_simple_tool_context(state: ChatState) -> str:
         "\n\n## 📊 TOOL EXECUTION SUMMARY",
         f"**Total Tools Executed**: {len(all_tool_results)}",
         f"**Successful Tools**: {len(successful_tools)}",
-        f"**Failed Tools**: {len(failed_tools)}"
+        f"**Failed Tools**: {len(failed_tools)}",
     ]
 
     # Show what data is available - GENERIC display
@@ -421,7 +416,7 @@ def build_simple_tool_context(state: ChatState) -> str:
 
             extracted_info = []
             try:
-                if result_str.strip().startswith('{'):
+                if result_str.strip().startswith("{"):
                     data = json.loads(result_str)
 
                     if isinstance(data, dict):
@@ -442,21 +437,21 @@ def build_simple_tool_context(state: ChatState) -> str:
                                 value_str = str(value)
 
                                 # Identify IDs by key pattern (any field with "id" in name)
-                                if key_lower.endswith('_id') or key_lower == 'id' or 'id' in key_lower:
+                                if key_lower.endswith("_id") or key_lower == "id" or "id" in key_lower:
                                     # Only include if it looks like an ID (UUID, long string, etc.)
-                                    if len(value_str) > ID_VALUE_MIN_LENGTH or '-' in value_str:
+                                    if len(value_str) > ID_VALUE_MIN_LENGTH or "-" in value_str:
                                         id_fields.append(f"{key}: {value_str[:40]}")
 
                                 # Identify names/titles by key pattern (common descriptive fields)
-                                elif any(name_key in key_lower for name_key in ['name', 'title', 'label', 'summary', 'subject', 'topic']):
+                                elif any(name_key in key_lower for name_key in ["name", "title", "label", "summary", "subject", "topic"]):
                                     name_fields.append(f"{key}: {value_str[:50]}")
 
                                 # Identify other important fields by value pattern (URLs, codes, etc.)
-                                elif any(pattern in value_str.lower() for pattern in ['http://', 'https://', '.com', '.org', 'meet.', 'zoom.']):
+                                elif any(pattern in value_str.lower() for pattern in ["http://", "https://", ".com", ".org", "meet.", "zoom."]):
                                     other_important.append(f"{key}: {value_str[:60]}")
 
                                 # Identify status/type/object fields
-                                elif key_lower in ['status', 'type', 'object', 'kind', 'category']:
+                                elif key_lower in ["status", "type", "object", "kind", "category"]:
                                     other_important.append(f"{key}: {value_str}")
 
                             # Combine in priority order: IDs first, then names, then others
@@ -530,7 +525,7 @@ def build_simple_tool_context(state: ChatState) -> str:
                     failed_tool_details[tool_name] = {
                         "count": 0,
                         "error": str(result.get("result", ""))[:300],
-                        "args": result.get("args", {})
+                        "args": result.get("args", {}),
                     }
                 failed_tool_details[tool_name]["count"] += 1
 
@@ -575,7 +570,7 @@ def build_simple_tool_context(state: ChatState) -> str:
             context_parts.append("📝 **ACTION**: Provide your final response summarizing what was created/retrieved")
             context_parts.append("❌ **DO NOT**: Continue calling the same tools - you will create duplicates")
 
-        unique_tool_types = set([tool.split('.')[0] for tool in successful_tools])  # Count distinct tool categories
+        unique_tool_types = set([tool.split(".")[0] for tool in successful_tools])  # Count distinct tool categories
         data_richness_score = len(data_summary)  # How many tools returned rich data
 
         if len(successful_tools) >= COMPREHENSIVE_SUCCESS_MIN and data_richness_score >= COMPREHENSIVE_SUCCESS_MIN and len(unique_tool_types) >= COMPREHENSIVE_TYPES_MIN:
@@ -635,7 +630,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             "the second", "the first", "the third", "next one", "previous",
             "can you elaborate", "more details", "explain further", "what else",
             "continue", "go on", "expand on", "about that", "about it",
-            "more info", "details on"
+            "more info", "details on",
         ]
 
         # Check for pronouns that suggest follow-ups
@@ -654,7 +649,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             "comparison": ["compare", "vs", "versus", "difference between", "better than", "contrast"],
             "aggregation": ["all", "every", "each", "summarize", "total", "average", "list"],
             "creation": ["create", "make", "generate", "build", "draft", "compose"],
-            "action": ["send", "email", "notify", "schedule", "update", "delete"]
+            "action": ["send", "email", "notify", "schedule", "update", "delete"],
         }
 
         detected_complexity = []
@@ -672,7 +667,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             "our", "my", "company", "organization", "internal",
             "knowledge base", "documents", "files", "emails",
             "data", "records", "slack", "drive", "confluence",
-            "jira", "policy", "procedure", "team", "project"
+            "jira", "policy", "procedure", "team", "project",
         ]
 
         needs_internal_data = False
@@ -681,7 +676,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             if previous_conversations:
                 last_response = previous_conversations[-1].get("content", "")
                 # If last response had citations or knowledge, might not need new retrieval
-                needs_internal_data = not re.search(r'\s*\[\d+\]', last_response)  # More robustly check for citations
+                needs_internal_data = not re.search(r"\s*\[\d+\]", last_response)  # More robustly check for citations
             else:
                 needs_internal_data = False
             logger.info(f"Follow-up detected - needs new retrieval: {needs_internal_data}")
@@ -699,7 +694,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             "is_complex": is_complex,
             "complexity_types": detected_complexity,
             "requires_beautiful_formatting": True,  # Always format beautifully
-            "reasoning": f"Follow-up: {is_follow_up}, Complex: {is_complex}, Types: {detected_complexity}"
+            "reasoning": f"Follow-up: {is_follow_up}, Complex: {is_complex}, Types: {detected_complexity}",
         }
 
         logger.info(f"📊 Query analysis: follow_up={is_follow_up}, complex={is_complex}, data_needed={needs_internal_data}")
@@ -709,7 +704,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
         return state
 
     except Exception as e:
-        logger.error(f"Error in query analysis: {str(e)}", exc_info=True)
+        logger.error(f"Error in query analysis: {e!s}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -790,7 +785,7 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
         return state
 
     except Exception as e:
-        logger.error(f"Error in retrieval: {str(e)}", exc_info=True)
+        logger.error(f"Error in retrieval: {e!s}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -810,7 +805,7 @@ async def get_user_info_node(state: ChatState) -> ChatState:
 
         return state
     except Exception as e:
-        logger.error(f"Error in get_user_info_node: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_user_info_node: {e!s}", exc_info=True)
         return state
 
 
@@ -877,7 +872,7 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
         return state
 
     except Exception as e:
-        logger.error(f"Error preparing prompt: {str(e)}", exc_info=True)
+        logger.error(f"Error preparing prompt: {e!s}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -912,7 +907,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
             state["failed_tool_count"] = failed_count
             if logger:
                 logger.debug(f"Tool counts → success: {successful_count}, failed: {failed_count}")
-            unique_tool_categories = set([r.get("tool_name", "").split('.')[0] for r in all_tool_results if r.get("status") == "success"])
+            unique_tool_categories = set([r.get("tool_name", "").split(".")[0] for r in all_tool_results if r.get("status") == "success"])
 
             # Check recent failures (last N tool calls)
             recent_tool_results = all_tool_results[-RECENT_FAILURE_WINDOW:] if len(all_tool_results) >= RECENT_FAILURE_WINDOW else all_tool_results
@@ -952,7 +947,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
                 state["loop_detected"] = False
                 state["loop_reason"] = f"Comprehensive data available - {successful_count} successful tool executions from multiple categories"
                 return state
-            elif allow_retry:
+            if allow_retry:
                 logger.info(f"✅ Allowing agent to continue despite comprehensive data - retry needed for {recent_failures} failure(s)")
                 # Don't set force_final_response - allow agent to run and create retry tool calls
 
@@ -1034,7 +1029,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         cleaned_messages = _clean_message_history(state["messages"])
 
         # Check context length before LLM call
-        total_chars = sum(len(str(msg.content)) for msg in cleaned_messages if hasattr(msg, 'content'))
+        total_chars = sum(len(str(msg.content)) for msg in cleaned_messages if hasattr(msg, "content"))
         if total_chars > MAX_CONTEXT_CHARS:  # Rough estimate: 100k chars ≈ 25k tokens
             logger.warning(f"⚠️ Context too large ({total_chars} chars) - truncating further")
             # Keep only the most recent messages
@@ -1066,7 +1061,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         state["messages"].append(response)
 
         # Check for tool calls
-        if hasattr(response, 'tool_calls') and response.tool_calls:
+        if hasattr(response, "tool_calls") and response.tool_calls:
             tool_count = len(response.tool_calls)
             logger.info(f"🔧 Agent decided to use {tool_count} tools")
 
@@ -1082,7 +1077,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
             logger.info("✅ Agent providing final response")
             state["pending_tool_calls"] = False
 
-            if hasattr(response, 'content'):
+            if hasattr(response, "content"):
                 response_content = response.content
             else:
                 response_content = str(response)
@@ -1097,7 +1092,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         return state
 
     except Exception as e:
-        logger.error(f"Error in agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in agent: {e!s}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -1107,8 +1102,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
 # ============================================================================
 
 def _detect_tool_success(result: object) -> bool:
-    """
-    Detect if a tool execution was successful.
+    """Detect if a tool execution was successful.
     Simple and maintainable - all tools return {"success": true/false, ...} or {"error": "..."}
 
     Args:
@@ -1116,6 +1110,7 @@ def _detect_tool_success(result: object) -> bool:
 
     Returns:
         True if successful, False otherwise
+
     """
     # Handle tuple format (success_flag, data)
     if isinstance(result, tuple) and len(result) == TUPLE_RESULT_LEN:
@@ -1126,7 +1121,7 @@ def _detect_tool_success(result: object) -> bool:
         import json
         result_str = str(result)
 
-        if result_str.strip().startswith('{'):
+        if result_str.strip().startswith("{"):
             data = json.loads(result_str)
 
             if isinstance(data, dict):
@@ -1167,7 +1162,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
         # Get last AI message with tool calls
         last_ai_message = None
         for msg in reversed(state["messages"]):
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
                 last_ai_message = msg
                 break
 
@@ -1219,7 +1214,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     logger.info(f"▶️ Executing: {tool_name}")
                     logger.debug(f"  Args: {tool_args}")
 
-                    result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
+                    result = tool._run(**tool_args) if hasattr(tool, "_run") else tool.run(**tool_args)
 
                     # Log result preview
                     result_preview = str(result)[:RESULT_PREVIEW_LENGTH] + "..." if len(str(result)) > RESULT_PREVIEW_LENGTH else str(result)
@@ -1229,7 +1224,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     result = json.dumps({
                         "status": "error",
                         "message": f"Tool '{tool_name}' not found in registry",
-                        "available_tools": list(tools_by_name.keys())
+                        "available_tools": list(tools_by_name.keys()),
                     })
 
                 # Properly detect tool success/failure
@@ -1246,7 +1241,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     "tool_id": tool_id,
                     "args": tool_args,
                     "execution_timestamp": datetime.now().isoformat(),
-                    "iteration": iteration
+                    "iteration": iteration,
                 }
                 tool_results.append(tool_result)
 
@@ -1268,7 +1263,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     logger.error(f"Error details: {str(result)[:500]}")
 
             except Exception as e:
-                error_result = f"Error executing {tool_name}: {str(e)}"
+                error_result = f"Error executing {tool_name}: {e!s}"
                 logger.error(f"❌ {tool_name} failed: {e}")
 
                 tool_result = {
@@ -1279,7 +1274,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     "args": tool_args,
                     "execution_timestamp": datetime.now().isoformat(),
                     "error_details": str(e),
-                    "iteration": iteration
+                    "iteration": iteration,
                 }
                 tool_results.append(tool_result)
 
@@ -1318,7 +1313,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
         return state
 
     except Exception as e:
-        logger.error(f"Error in tool execution: {str(e)}", exc_info=True)
+        logger.error(f"Error in tool execution: {e!s}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -1330,7 +1325,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
 # 7. Fixed Final Response Node - Correct Streaming Format
 async def final_response_node(
     state: ChatState,
-    writer: StreamWriter
+    writer: StreamWriter,
 ) -> ChatState:
     """Generate final response with correct streaming format"""
     try:
@@ -1351,7 +1346,7 @@ async def final_response_node(
                 "confidence": "Low",
                 "reason": "Error occurred",
                 "answerMatchType": "Error",
-                "chunkIndexes": []
+                "chunkIndexes": [],
             }
 
             # Stream the error message
@@ -1388,7 +1383,7 @@ async def final_response_node(
                     final_content["answer"],
                     state["final_results"],
                     [],
-                    from_agent=True
+                    from_agent=True,
                 )
 
                 if isinstance(cited_answer, str):
@@ -1414,7 +1409,7 @@ async def final_response_node(
                 "reason": final_content.get("reason", "Response generated"),
                 "answerMatchType": final_content.get("answerMatchType", "Derived From Tool Execution"),
                 "chunkIndexes": final_content.get("chunkIndexes", []),
-                "workflowSteps": final_content.get("workflowSteps", [])
+                "workflowSteps": final_content.get("workflowSteps", []),
             }
 
             writer({"event": "complete", "data": completion_data})
@@ -1442,7 +1437,7 @@ async def final_response_node(
                 # For AIMessage, preserve tool_calls ONLY if they're present and valid
                 # (cleaned_messages should have already removed invalid tool_calls)
                 msg_dict = {"role": "assistant", "content": msg.content}
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
                     msg_dict["tool_calls"] = msg.tool_calls
                 validated_messages.append(msg_dict)
             elif isinstance(msg, ToolMessage):
@@ -1450,7 +1445,7 @@ async def final_response_node(
                 validated_messages.append({
                     "role": "tool",
                     "content": msg.content,
-                    "tool_call_id": msg.tool_call_id
+                    "tool_call_id": msg.tool_call_id,
                 })
 
         # Add tool summary if available
@@ -1542,13 +1537,13 @@ async def final_response_node(
             synthesis_instruction += "- Help the user understand what happened and what to do next\n"
             synthesis_instruction += "\n**CRITICAL - JSON FORMAT REQUIRED**:\n"
             synthesis_instruction += "You MUST respond with ONLY a valid JSON object in this exact format:\n"
-            synthesis_instruction += '{\n'
+            synthesis_instruction += "{\n"
             synthesis_instruction += '  "answer": "Your detailed markdown response here",\n'
             synthesis_instruction += '  "citations": [],\n'
             synthesis_instruction += '  "confidence": "High",\n'
             synthesis_instruction += '  "reason": "Brief explanation",\n'
             synthesis_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
-            synthesis_instruction += '}\n'
+            synthesis_instruction += "}\n"
             synthesis_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
 
             full_context += synthesis_instruction
@@ -1562,19 +1557,19 @@ async def final_response_node(
             else:
                 validated_messages.append({
                     "role": "user",
-                    "content": f"Based on the tool execution results:{full_context}\n\nPlease provide a comprehensive final response following the REQUIRED RESPONSE FORMAT above."
+                    "content": f"Based on the tool execution results:{full_context}\n\nPlease provide a comprehensive final response following the REQUIRED RESPONSE FORMAT above.",
                 })
         elif tool_context:
             # Normal case - just add tool context
             json_format_instruction = "\n\n**CRITICAL - JSON FORMAT REQUIRED**:\n"
             json_format_instruction += "You MUST respond with ONLY a valid JSON object in this exact format:\n"
-            json_format_instruction += '{\n'
+            json_format_instruction += "{\n"
             json_format_instruction += '  "answer": "Your detailed response here",\n'
             json_format_instruction += '  "citations": [],\n'
             json_format_instruction += '  "confidence": "High",\n'
             json_format_instruction += '  "reason": "Brief explanation",\n'
             json_format_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
-            json_format_instruction += '}\n'
+            json_format_instruction += "}\n"
             json_format_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
 
             if validated_messages and validated_messages[-1]["role"] == "user":
@@ -1582,7 +1577,7 @@ async def final_response_node(
             else:
                 validated_messages.append({
                     "role": "user",
-                    "content": f"{tool_context}{json_format_instruction}\n\nPlease provide your response."
+                    "content": f"{tool_context}{json_format_instruction}\n\nPlease provide your response.",
                 })
 
         # Get final results for citations
@@ -1612,7 +1607,7 @@ async def final_response_node(
             # Fallback to direct LLM call
             try:
                 response = await llm.ainvoke(validated_messages)
-                fallback_content = response.content if hasattr(response, 'content') else str(response)
+                fallback_content = response.content if hasattr(response, "content") else str(response)
 
                 # Process citations
                 if final_results:
@@ -1636,7 +1631,7 @@ async def final_response_node(
                         "content": result.get("content", ""),
                         "metadata": result.get("metadata", {}),
                         "citationType": result.get("citationType", "vectordb|document"),
-                        "chunkIndex": i + 1
+                        "chunkIndex": i + 1,
                     }
                     for i, result in enumerate(final_results)
                 ]
@@ -1647,7 +1642,7 @@ async def final_response_node(
                     "confidence": "Medium",
                     "reason": "Fallback response generation",
                     "answerMatchType": "Derived From Tool Execution" if state.get("all_tool_results") else "Direct Response",
-                    "chunkIndexes": []
+                    "chunkIndexes": [],
                 }
 
                 writer({"event": "complete", "data": completion_data})
@@ -1662,7 +1657,7 @@ async def final_response_node(
                     "confidence": "Low",
                     "reason": "Error fallback",
                     "answerMatchType": "Error",
-                    "chunkIndexes": []
+                    "chunkIndexes": [],
                 }
                 writer({"event": "answer_chunk", "data": {"chunk": error_content}})
                 writer({"event": "complete", "data": error_response})
@@ -1688,7 +1683,7 @@ async def final_response_node(
         return state
 
     except Exception as e:
-        logger.error(f"Error in agent final response: {str(e)}", exc_info=True)
+        logger.error(f"Error in agent final response: {e!s}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         writer({"event": "error", "data": {"error": str(e)}})
         return state
@@ -1699,7 +1694,7 @@ def _normalize_response_format(response) -> dict:
     """Normalize response to expected format - handle both string and dict responses"""
     if isinstance(response, str):
         # Try to parse if it looks like JSON
-        if response.strip().startswith('{'):
+        if response.strip().startswith("{"):
             try:
                 import json
                 parsed = json.loads(response)
@@ -1711,7 +1706,7 @@ def _normalize_response_format(response) -> dict:
                         "reason": parsed.get("reason", "Direct response"),
                         "answerMatchType": parsed.get("answerMatchType", "Derived From Tool Execution"),
                         "chunkIndexes": parsed.get("chunkIndexes", []),
-                        "workflowSteps": parsed.get("workflowSteps", [])
+                        "workflowSteps": parsed.get("workflowSteps", []),
                     }
             except Exception:
                 pass
@@ -1724,10 +1719,10 @@ def _normalize_response_format(response) -> dict:
             "reason": "Direct response",
             "answerMatchType": "Direct Response",
             "chunkIndexes": [],
-            "workflowSteps": []
+            "workflowSteps": [],
         }
 
-    elif isinstance(response, dict):
+    if isinstance(response, dict):
         # Already in dict format, ensure required keys exist
         return {
             "answer": response.get("answer", str(response.get("content", response))),
@@ -1736,19 +1731,18 @@ def _normalize_response_format(response) -> dict:
             "reason": response.get("reason", "Processed response"),
             "answerMatchType": response.get("answerMatchType", "Derived From Tool Execution"),
             "chunkIndexes": response.get("chunkIndexes", []),
-            "workflowSteps": response.get("workflowSteps", [])
+            "workflowSteps": response.get("workflowSteps", []),
         }
-    else:
-        # Fallback for other types
-        return {
-            "answer": str(response),
-            "citations": [],
-            "confidence": "Low",
-            "reason": "Converted response",
-            "answerMatchType": "Direct Response",
-            "chunkIndexes": [],
-            "workflowSteps": []
-        }
+    # Fallback for other types
+    return {
+        "answer": str(response),
+        "citations": [],
+        "confidence": "Low",
+        "reason": "Converted response",
+        "answerMatchType": "Direct Response",
+        "chunkIndexes": [],
+        "workflowSteps": [],
+    }
 
 
 def _is_beautiful_markdown(text: str) -> bool:
@@ -1757,10 +1751,10 @@ def _is_beautiful_markdown(text: str) -> bool:
         return False
 
     # Check for markdown elements
-    has_headers = any(line.startswith('#') for line in text.split('\n'))
-    has_lists = any(line.strip().startswith(('-', '*', '1.', '2.', '3.')) for line in text.split('\n'))
-    has_bold = '**' in text
-    has_structure = '\n\n' in text  # Paragraph breaks
+    has_headers = any(line.startswith("#") for line in text.split("\n"))
+    has_lists = any(line.strip().startswith(("-", "*", "1.", "2.", "3.")) for line in text.split("\n"))
+    has_bold = "**" in text
+    has_structure = "\n\n" in text  # Paragraph breaks
 
     return has_headers or (has_lists and has_bold) or (has_structure and len(text) > MARKDOWN_MIN_LENGTH)
 
@@ -1771,7 +1765,7 @@ def _beautify_markdown(text: str) -> str:
         return text
 
     # If it's JSON, parse and format
-    if text.strip().startswith('{'):
+    if text.strip().startswith("{"):
         try:
             data = json.loads(text)
             return _format_dict_as_markdown(data)
@@ -1779,26 +1773,26 @@ def _beautify_markdown(text: str) -> str:
             pass
 
     # Basic beautification
-    lines = text.split('\n')
+    lines = text.split("\n")
     formatted_lines = []
 
     for line in lines:
         line = line.strip()
         if not line:
-            formatted_lines.append('')
+            formatted_lines.append("")
             continue
 
         # Add basic formatting
-        if line.endswith(':') and len(line) < HEADER_LENGTH_THRESHOLD:
+        if line.endswith(":") and len(line) < HEADER_LENGTH_THRESHOLD:
             # Likely a header
             formatted_lines.append(f"## {line[:-1]}")
-        elif line.startswith('-') or line.startswith('*'):
+        elif line.startswith("-") or line.startswith("*"):
             # Already a list
             formatted_lines.append(line)
         else:
             formatted_lines.append(line)
 
-    return '\n'.join(formatted_lines)
+    return "\n".join(formatted_lines)
 
 
 def _format_dict_as_markdown(data: dict) -> str:
@@ -1806,11 +1800,11 @@ def _format_dict_as_markdown(data: dict) -> str:
     lines = ["# Response\n"]
 
     for key, value in data.items():
-        if key in ['status', 'error', 'message']:
+        if key in ["status", "error", "message"]:
             continue
 
         # Format key as header
-        formatted_key = key.replace('_', ' ').title()
+        formatted_key = key.replace("_", " ").title()
         lines.append(f"## {formatted_key}\n")
 
         if isinstance(value, dict):
@@ -1827,10 +1821,10 @@ def _format_dict_as_markdown(data: dict) -> str:
 
         lines.append("")
 
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
-def _build_workflow_summary(tool_results) -> List[str]:
+def _build_workflow_summary(tool_results) -> list[str]:
     """Build a summary of the workflow steps"""
     steps = []
     for idx, result in enumerate(tool_results, 1):
@@ -1880,13 +1874,13 @@ async def _stream_conversational_response(content, writer, logger) -> None:
         "answer": answer_text,
         "citations": [],
         "confidence": "High",
-        "reason": "Markdown response (no internal knowledge cited)"
+        "reason": "Markdown response (no internal knowledge cited)",
     }
     writer({"event": "complete", "data": complete_data})
     logger.debug(f"✅ Streamed markdown response: {len(answer_text)} chars")
 
 
-def _prepare_final_messages(state, has_internal_knowledge) -> List[Dict[str, str]]:
+def _prepare_final_messages(state, has_internal_knowledge) -> list[dict[str, str]]:
     """Prepare messages for final response generation"""
     validated_messages = []
 
@@ -1918,7 +1912,7 @@ def _prepare_final_messages(state, has_internal_knowledge) -> List[Dict[str, str
         else:
             validated_messages.append({
                 "role": "user",
-                "content": summary_message
+                "content": summary_message,
             })
     else:
         # No tools used, just add format reminder
@@ -1934,7 +1928,7 @@ def _prepare_final_messages(state, has_internal_knowledge) -> List[Dict[str, str
     return validated_messages
 
 
-async def _generate_streaming_response(llm, messages, final_results, writer, logger, state) -> Optional[Dict[str, Any]]:
+async def _generate_streaming_response(llm, messages, final_results, writer, logger, state) -> dict[str, Any] | None:
     """Generate response with streaming and proper format"""
     try:
         writer({"event": "status", "data": {"status": "generating", "message": "✍️ Creating response..."}})
@@ -1969,7 +1963,7 @@ async def _generate_streaming_response(llm, messages, final_results, writer, log
 
         # Fallback
         response = await llm.ainvoke(messages)
-        content = response.content if hasattr(response, 'content') else str(response)
+        content = response.content if hasattr(response, "content") else str(response)
 
         # Process based on mode
         if has_internal_knowledge and final_results:
@@ -1998,7 +1992,7 @@ async def _generate_streaming_response(llm, messages, final_results, writer, log
                     "content": result.get("content", ""),
                     "metadata": result.get("metadata", {}),
                     "citationType": result.get("citationType", "vectordb|document"),
-                    "chunkIndex": i + 1
+                    "chunkIndex": i + 1,
                 }
                 for i, result in enumerate(final_results)
             ]
@@ -2007,14 +2001,14 @@ async def _generate_streaming_response(llm, messages, final_results, writer, log
                 "answer": content,
                 "citations": citations,
                 "confidence": "Medium",
-                "reason": "Fallback response with internal knowledge"
+                "reason": "Fallback response with internal knowledge",
             }
         else:
             completion_data = {
                 "answer": content,
                 "citations": [],
                 "confidence": "Medium",
-                "reason": "Fallback markdown response"
+                "reason": "Fallback markdown response",
             }
 
         # Add workflow if available
@@ -2025,7 +2019,7 @@ async def _generate_streaming_response(llm, messages, final_results, writer, log
 
         return completion_data
 
-def _clean_response(response) -> Dict[str, Any]:
+def _clean_response(response) -> dict[str, Any]:
     """Clean response format"""
     if isinstance(response, str):
         try:
@@ -2045,9 +2039,8 @@ def _clean_response(response) -> Dict[str, Any]:
         return _normalize_response_format(response)
 
 
-def _validate_and_fix_message_sequence(messages) -> List[Any]:
-    """
-    Validate and fix message sequence to ensure proper tool_call threading.
+def _validate_and_fix_message_sequence(messages) -> list[Any]:
+    """Validate and fix message sequence to ensure proper tool_call threading.
 
     OpenAI API Requirements:
     1. ToolMessages MUST have a preceding AIMessage with tool_calls
@@ -2068,13 +2061,13 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
         elif isinstance(msg, AIMessage):
             validated.append(msg)
             # Track tool calls
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
-                    tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                    tool_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                     if tool_id:
                         pending_tool_calls[tool_id] = msg  # Store the AIMessage for reference
 
-        elif hasattr(msg, 'tool_call_id'):
+        elif hasattr(msg, "tool_call_id"):
             # Only keep ToolMessage if it matches a pending tool call
             if msg.tool_call_id in pending_tool_calls:
                 validated.append(msg)
@@ -2085,11 +2078,11 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
     if pending_tool_calls:
         final_validated = []
         for msg in validated:
-            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
                 # Filter out tool_calls that don't have responses
                 resolved_tool_calls = []
                 for tc in msg.tool_calls:
-                    tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                    tool_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                     if tool_id and tool_id not in pending_tool_calls:
                         resolved_tool_calls.append(tc)
 
@@ -2111,7 +2104,7 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
     return validated
 
 
-def _clean_message_history(messages) -> List[Any]:
+def _clean_message_history(messages) -> list[Any]:
     """Clean message history with context length management"""
     validated_messages = _validate_and_fix_message_sequence(messages)
     cleaned = []
@@ -2131,7 +2124,7 @@ def _clean_message_history(messages) -> List[Any]:
     for i, msg in enumerate(recent_messages):
         if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
-        elif hasattr(msg, 'tool_call_id'):
+        elif hasattr(msg, "tool_call_id"):
             #  Don't summarize recent tool results - agent needs to see them
             # Only summarize if we have too many messages
             if len(recent_messages) > MAX_MESSAGES_HISTORY:
@@ -2145,13 +2138,13 @@ def _clean_message_history(messages) -> List[Any]:
     return cleaned
 
 
-def _summarize_tool_result(tool_result_msg) -> Optional[object]:
+def _summarize_tool_result(tool_result_msg) -> object | None:
     """Summarize tool results to reduce context length"""
     try:
         from langchain_core.messages import ToolMessage
 
         # Extract tool result content
-        if hasattr(tool_result_msg, 'content'):
+        if hasattr(tool_result_msg, "content"):
             content = tool_result_msg.content
         else:
             content = str(tool_result_msg)
@@ -2167,7 +2160,7 @@ def _summarize_tool_result(tool_result_msg) -> Optional[object]:
                     if isinstance(data, dict):
                         # Create summary with key fields
                         summary_fields = {}
-                        for key in ['id', 'subject', 'snippet', 'from', 'to', 'date', 'status', 'result']:
+                        for key in ["id", "subject", "snippet", "from", "to", "date", "status", "result"]:
                             if key in data:
                                 summary_fields[key] = data[key]
 
@@ -2187,7 +2180,7 @@ def _summarize_tool_result(tool_result_msg) -> Optional[object]:
         # Create summarized tool message
         return ToolMessage(
             content=content,
-            tool_call_id=tool_result_msg.tool_call_id
+            tool_call_id=tool_result_msg.tool_call_id,
         )
 
     except Exception:
@@ -2197,7 +2190,7 @@ def _summarize_tool_result(tool_result_msg) -> Optional[object]:
             content = str(tool_result_msg.content)[:1000] + "... [TRUNCATED]"
             return ToolMessage(
                 content=content,
-                tool_call_id=tool_result_msg.tool_call_id
+                tool_call_id=tool_result_msg.tool_call_id,
             )
         except Exception:
             return None

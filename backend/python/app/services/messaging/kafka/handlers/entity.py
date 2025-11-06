@@ -28,25 +28,24 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"Processing entity event: {event_type}")
             if event_type == "orgCreated":
                 return await self.__handle_org_created(payload)
-            elif event_type == "orgUpdated":
+            if event_type == "orgUpdated":
                 return await self.__handle_org_updated(payload)
-            elif event_type == "orgDeleted":
+            if event_type == "orgDeleted":
                 return await self.__handle_org_deleted(payload)
-            elif event_type == "userAdded":
+            if event_type == "userAdded":
                 return await self.__handle_user_added(payload)
-            elif event_type == "userUpdated":
+            if event_type == "userUpdated":
                 return await self.__handle_user_updated(payload)
-            elif event_type == "userDeleted":
+            if event_type == "userDeleted":
                 return await self.__handle_user_deleted(payload)
-            elif event_type == "appEnabled":
+            if event_type == "appEnabled":
                 return await self.__handle_app_enabled(payload)
-            elif event_type == "appDisabled":
+            if event_type == "appDisabled":
                 return await self.__handle_app_disabled(payload)
-            else:
-                self.logger.error(f"Unknown entity event type: {event_type}")
-                return False
+            self.logger.error(f"Unknown entity event type: {event_type}")
+            return False
         except Exception as e:
-            self.logger.error(f"Error processing entity event: {str(e)}")
+            self.logger.error(f"Error processing entity event: {e!s}")
             return False
 
     async def __handle_sync_event(self,event_type: str, value: dict) -> bool:
@@ -54,28 +53,27 @@ class EntityEventService(BaseEventService):
         try:
             # Prepare the message
             message = {
-                'eventType': event_type,
-                'payload': value,
-                'timestamp': get_epoch_timestamp_in_ms()
+                "eventType": event_type,
+                "payload": value,
+                "timestamp": get_epoch_timestamp_in_ms(),
             }
 
             # Send the message to sync-events topic using aiokafka
             await self.app_container.messaging_producer.send_message(
-                topic='sync-events',
-                message=message
+                topic="sync-events",
+                message=message,
             )
 
             self.logger.info(f"Successfully sent sync event: {event_type}")
             return True
 
         except Exception as e:
-            self.logger.error(f"Error sending sync event: {str(e)}")
+            self.logger.error(f"Error sending sync event: {e!s}")
             return False
 
     # ORG EVENTS
     async def __handle_org_created(self, payload: dict) -> bool:
         """Handle organization creation event"""
-
         accountType = (
             AccountType.ENTERPRISE.value
             if payload["accountType"] in [AccountType.BUSINESS.value, AccountType.ENTERPRISE.value]
@@ -93,7 +91,7 @@ class EntityEventService(BaseEventService):
 
             # Batch upsert org
             await self.arango_service.batch_upsert_nodes(
-                [org_data], CollectionNames.ORGS.value
+                [org_data], CollectionNames.ORGS.value,
             )
 
             # Write a query to get departments with orgId == None
@@ -121,17 +119,17 @@ class EntityEventService(BaseEventService):
                     CollectionNames.ORG_DEPARTMENT_RELATION.value,
                 )
                 self.logger.info(
-                    f"✅ Successfully created organization: {payload['orgId']} and relationships with departments"
+                    f"✅ Successfully created organization: {payload['orgId']} and relationships with departments",
                 )
             else:
                 self.logger.info(
-                    f"✅ Successfully created organization: {payload['orgId']}"
+                    f"✅ Successfully created organization: {payload['orgId']}",
                 )
 
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error creating organization: {str(e)}")
+            self.logger.error(f"❌ Error creating organization: {e!s}")
             return False
 
     async def __handle_org_updated(self, payload: dict) -> bool:
@@ -146,15 +144,15 @@ class EntityEventService(BaseEventService):
 
             # Batch upsert org
             await self.arango_service.batch_upsert_nodes(
-                [org_data], CollectionNames.ORGS.value
+                [org_data], CollectionNames.ORGS.value,
             )
             self.logger.info(
-                f"✅ Successfully updated organization: {payload['orgId']}"
+                f"✅ Successfully updated organization: {payload['orgId']}",
             )
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error updating organization: {str(e)}")
+            self.logger.error(f"❌ Error updating organization: {e!s}")
             return False
 
     async def __handle_org_deleted(self, payload: dict) -> bool:
@@ -169,15 +167,15 @@ class EntityEventService(BaseEventService):
 
             # Batch upsert org with isActive = False
             await self.arango_service.batch_upsert_nodes(
-                [org_data], CollectionNames.ORGS.value
+                [org_data], CollectionNames.ORGS.value,
             )
             self.logger.info(
-                f"✅ Successfully soft-deleted organization: {payload['orgId']}"
+                f"✅ Successfully soft-deleted organization: {payload['orgId']}",
             )
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error deleting organization: {str(e)}")
+            self.logger.error(f"❌ Error deleting organization: {e!s}")
             return False
 
     # USER EVENTS
@@ -187,7 +185,7 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📥 Processing user added event: {payload}")
             # Check if user already exists by email
             existing_user = await self.arango_service.get_entity_id_by_email(
-                payload["email"]
+                payload["email"],
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
@@ -222,7 +220,7 @@ class EntityEventService(BaseEventService):
             # Get org details to check account type
             org_id = payload["orgId"]
             org = await self.arango_service.get_document(
-                org_id, CollectionNames.ORGS.value
+                org_id, CollectionNames.ORGS.value,
             )
             if not org:
                 self.logger.error(f"Organization not found: {org_id}")
@@ -230,7 +228,7 @@ class EntityEventService(BaseEventService):
 
             # Batch upsert user
             await self.arango_service.batch_upsert_nodes(
-                [user_data], CollectionNames.USERS.value
+                [user_data], CollectionNames.USERS.value,
             )
 
             # Create edge between org and user if it doesn't exist
@@ -263,17 +261,17 @@ class EntityEventService(BaseEventService):
                         event_type=f'{app["name"].lower()}.user',
                         value={
                             "email": payload["email"],
-                            "connector":app["name"]
+                            "connector":app["name"],
                         },
                     )
 
             self.logger.info(
-                f"✅ Successfully created/updated user: {payload['email']}"
+                f"✅ Successfully created/updated user: {payload['email']}",
             )
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error creating/updating user: {str(e)}")
+            self.logger.error(f"❌ Error creating/updating user: {e!s}")
             return False
 
     async def __handle_user_updated(self, payload: dict) -> bool:
@@ -317,18 +315,18 @@ class EntityEventService(BaseEventService):
                     key: payload[key]
                     for key in optional_fields
                     if payload.get(key) is not None
-                }
+                },
             )
 
             # Batch upsert user
             await self.arango_service.batch_upsert_nodes(
-                [user_data], CollectionNames.USERS.value
+                [user_data], CollectionNames.USERS.value,
             )
             self.logger.info(f"✅ Successfully updated user: {payload['email']}")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error updating user: {str(e)}")
+            self.logger.error(f"❌ Error updating user: {e!s}")
             return False
 
     async def __handle_user_deleted(self, payload: dict) -> bool:
@@ -337,7 +335,7 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📥 Processing user deleted event: {payload}")
             # Find existing user by userId
             existing_user = await self.arango_service.get_entity_id_by_email(
-                payload["email"]
+                payload["email"],
             )
             if not existing_user:
                 self.logger.error(f"User not found with mail: {payload['email']}")
@@ -353,13 +351,13 @@ class EntityEventService(BaseEventService):
 
             # Batch upsert user with isActive = False
             await self.arango_service.batch_upsert_nodes(
-                [user_data], CollectionNames.USERS.value
+                [user_data], CollectionNames.USERS.value,
             )
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error deleting user: {str(e)}")
+            self.logger.error(f"❌ Error deleting user: {e!s}")
             return False
 
     async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str]) -> bool:
@@ -384,7 +382,7 @@ class EntityEventService(BaseEventService):
 
             # Get org details to check account type
             org = await self.arango_service.get_document(
-                org_id, CollectionNames.ORGS.value
+                org_id, CollectionNames.ORGS.value,
             )
             if not org:
                 self.logger.error(f"Organization not found: {org_id}")
@@ -401,11 +399,11 @@ class EntityEventService(BaseEventService):
                     # Use the existing app container to initialize services
                     await self.__handle_google_app_account_services(org_id, accountType, enabled_apps)
                     self.logger.info(
-                        f"✅ Successfully initialized services for account type: {org['accountType']}"
+                        f"✅ Successfully initialized services for account type: {org['accountType']}",
                     )
                 else:
                     self.logger.warning(
-                        "App container not provided, skipping service initialization"
+                        "App container not provided, skipping service initialization",
                     )
 
                 user_type = (
@@ -417,7 +415,7 @@ class EntityEventService(BaseEventService):
                 # Handle enterprise/business account type
                 if user_type == AccountType.ENTERPRISE.value:
                     active_users = await self.arango_service.get_users(
-                        org_id, active=True
+                        org_id, active=True,
                     )
 
                     for app_name in enabled_apps:
@@ -430,7 +428,7 @@ class EntityEventService(BaseEventService):
                             event_type=f"{app_name.lower()}.init",
                             value={
                                 "orgId": org_id,
-                                "connector":app_name
+                                "connector":app_name,
                             },
                         )
 
@@ -443,7 +441,7 @@ class EntityEventService(BaseEventService):
                                 event_type=f"{app_name.lower()}.start",
                                 value={
                                     "orgId": org_id,
-                                    "connector":app_name
+                                    "connector":app_name,
                                 },
                             )
                             # TODO: Remove this sleep
@@ -452,7 +450,7 @@ class EntityEventService(BaseEventService):
                 # For individual accounts, create edges between existing active users and apps
                 else:
                     active_users = await self.arango_service.get_users(
-                        org_id, active=True
+                        org_id, active=True,
                     )
 
                     # First initialize each app
@@ -466,7 +464,7 @@ class EntityEventService(BaseEventService):
                             event_type=f"{app_name.lower()}.init",
                             value={
                                 "orgId": org_id,
-                                "connector":app_name
+                                "connector":app_name,
                             },
                         )
                         # TODO: Remove this sleep
@@ -482,11 +480,11 @@ class EntityEventService(BaseEventService):
                                     continue
 
                                 await self.__handle_sync_event(
-                                    event_type=f'{app.lower()}.start',
+                                    event_type=f"{app.lower()}.start",
                                     value={
                                         "orgId": org_id,
                                         "email": user["email"],
-                                        "connector":app
+                                        "connector":app,
                                     },
                                 )
                                 # TODO: Remove this sleep
@@ -496,7 +494,7 @@ class EntityEventService(BaseEventService):
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error enabling apps: {str(e)}")
+            self.logger.error(f"❌ Error enabling apps: {e!s}")
             return False
 
     async def __handle_app_disabled(self, payload: dict) -> bool:
@@ -516,7 +514,7 @@ class EntityEventService(BaseEventService):
             app_updates = []
             for app_name in apps:
                 app_doc = await self.arango_service.get_document(
-                    f"{org_id}_{app_name}", CollectionNames.APPS.value
+                    f"{org_id}_{app_name}", CollectionNames.APPS.value,
                 )
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
@@ -535,14 +533,14 @@ class EntityEventService(BaseEventService):
 
             # Update apps in database
             await self.arango_service.batch_upsert_nodes(
-                app_updates, CollectionNames.APPS.value
+                app_updates, CollectionNames.APPS.value,
             )
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Error disabling apps: {str(e)}")
+            self.logger.error(f"❌ Error disabling apps: {e!s}")
             return False
 
     async def __get_or_create_knowledge_base(
@@ -550,7 +548,7 @@ class EntityEventService(BaseEventService):
         user_key: str,
         userId: str,
         orgId: str,
-        name: str = "Default"
+        name: str = "Default",
     ) -> dict:
         """Get or create a knowledge base for a user, with root folder and permissions."""
         try:
@@ -601,7 +599,7 @@ class EntityEventService(BaseEventService):
                 "mimeType": "application/vnd.folder",
                 "sizeInBytes": 0,
                 "webUrl": f"/kb/{kb_key}/folder/{folder_id}",
-                "path": f"/{name}"
+                "path": f"/{name}",
             }
             permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
@@ -634,9 +632,9 @@ class EntityEventService(BaseEventService):
                 "root_folder_id": folder_id,
                 "created_at": current_timestamp,
                 "updated_at": current_timestamp,
-                "success": True
+                "success": True,
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+            self.logger.error(f"Failed to get or create knowledge base: {e!s}")
             return {}

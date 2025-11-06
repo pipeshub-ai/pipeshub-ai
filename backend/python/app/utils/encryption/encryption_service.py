@@ -61,7 +61,7 @@ class EncryptionService:
             PARTS_LENGTH = 3
             if len(parts) != PARTS_LENGTH:
                 raise InvalidKeyFormatError(
-                    "Invalid encrypted text format; expected format iv:ciphertext:authTag"
+                    "Invalid encrypted text format; expected format iv:ciphertext:authTag",
                 )
             iv_hex, ciphertext_hex, auth_tag_hex = parts
             iv = bytes.fromhex(iv_hex)

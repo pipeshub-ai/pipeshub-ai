@@ -1,5 +1,4 @@
-"""
-Client factories for LinkedIn.
+"""Client factories for LinkedIn.
 """
 
 
@@ -15,8 +14,7 @@ class LinkedInClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> LinkedInClient:
         """Create LinkedIn client instance"""
-
         return await LinkedInClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

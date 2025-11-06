@@ -1,15 +1,16 @@
-from typing import List, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 
 
 class AnswerWithMetadata(BaseModel):
     """Schema for the answer with metadata"""
+
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Derived From Blocks", "Exact Match", "Fuzzy Match", "Inferred", "Other"]
-    blockNumbers: List[int]
+    blockNumbers: list[int]
 
 
 qna_prompt = """

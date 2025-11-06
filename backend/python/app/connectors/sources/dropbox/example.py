@@ -74,8 +74,8 @@ async def test_run() -> None:
     config = {
         "credentials": {
             "access_token": dropbox_team_token,
-            "isTeam": True  # Set to True if using a team token
-        }
+            "isTeam": True,  # Set to True if using a team token
+        },
     }
 
 

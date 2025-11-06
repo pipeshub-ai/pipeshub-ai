@@ -10,8 +10,7 @@ class SchedulerFactory:
 
     @staticmethod
     def create_redis_scheduler(redis_url: str, logger: Logger, config_service: ConfigurationService, delay_hours: int = 1) -> Scheduler:
-        """
-        Create a Redis-based scheduler instance
+        """Create a Redis-based scheduler instance
         Args:
             redis_url: Redis connection URL
             logger: Logger instance
@@ -23,10 +22,8 @@ class SchedulerFactory:
 
     @staticmethod
     def scheduler(scheduler_type: str, url: str, logger: Logger, config_service: ConfigurationService, delay_hours: int = 1) -> Scheduler:
-        """
-        Create a scheduler instance based on the type
+        """Create a scheduler instance based on the type
         """
         if scheduler_type == "redis":
             return SchedulerFactory.create_redis_scheduler(url, logger=logger, config_service=config_service, delay_hours=delay_hours)
-        else:
-            raise ValueError(f"Invalid scheduler type: {scheduler_type}")
+        raise ValueError(f"Invalid scheduler type: {scheduler_type}")

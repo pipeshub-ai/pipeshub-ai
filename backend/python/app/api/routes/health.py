@@ -1,6 +1,6 @@
 import asyncio
 from logging import Logger
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
@@ -45,12 +45,12 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"LLM service health check failed: {str(e)}",
+                "error": f"LLM service health check failed: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
 
-async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> Tuple[Any, Any, Any]:
+async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> tuple[Any, Any, Any]:
     """Initialize the embedding model and return necessary components."""
     app = request.app
     logger = app.container.logger()
@@ -79,14 +79,14 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
             if not dense_embeddings:
                 raise HTTPException(status_code=500, detail="No default embedding model found")
     except Exception as e:
-        logger.error(f"Failed to initialize embedding model: {str(e)}", exc_info=True)
+        logger.error(f"Failed to initialize embedding model: {e!s}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": f"Failed to initialize embedding model: {str(e)}",
+                "error": f"Failed to initialize embedding model: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
-            }
+            },
         )
 
     if dense_embeddings is None:
@@ -98,9 +98,9 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
                 "details": {
                     "embedding_model": "initialization_failed",
                     "vector_store": "unknown",
-                    "llm": "unknown"
-                }
-            }
+                    "llm": "unknown",
+                },
+            },
         )
 
     return dense_embeddings, retrieval_service, logger
@@ -118,7 +118,7 @@ async def verify_embedding_health(dense_embeddings, logger) -> int:
                 "status": "not healthy",
                 "error": "Embedding model returned empty embedding",
                 "timestamp": get_epoch_timestamp_in_ms(),
-            }
+            },
         )
 
     return embedding_size
@@ -130,7 +130,7 @@ async def handle_model_change(
     qdrant_vector_size: int,
     points_count: int,
     embedding_size: int,
-    logger
+    logger,
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
     if current_model_name is not None:
@@ -154,7 +154,7 @@ async def handle_model_change(
                     "status": "not healthy",
                     "error": "Policy Rejection: Embedding model configuration cannot be changed while vector store collection contains data. Please ensure you are using the original embedding configuration.",
                     "timestamp": get_epoch_timestamp_in_ms(),
-                }
+                },
             )
 
         if qdrant_vector_size != 0 and points_count == 0:
@@ -176,25 +176,25 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
             field_name=VIRTUAL_RECORD_ID_FIELD,
             field_schema={
                 "type": "keyword",
-            }
+            },
         )
         await retrieval_service.vector_db_service.create_index(
             collection_name=retrieval_service.collection_name,
             field_name=ORG_ID_FIELD,
             field_schema={
                 "type": "keyword",
-            }
+            },
         )
         logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
     except Exception as e:
-        logger.error(f"Failed to recreate collection: {str(e)}", exc_info=True)
+        logger.error(f"Failed to recreate collection: {e!s}", exc_info=True)
         raise
 
 async def check_collection_info(
     retrieval_service,
     dense_embeddings,
     embedding_size,
-    logger
+    logger,
 ) -> None:
     """Check and validate collection information."""
     try:
@@ -216,34 +216,34 @@ async def check_collection_info(
             qdrant_vector_size,
             points_count,
             embedding_size,
-            logger
+            logger,
         )
 
     except grpc._channel._InactiveRpcError as e:
         if e.code() == grpc.StatusCode.NOT_FOUND:
             logger.info("collection not found - acceptable for health check")
         else:
-            logger.error(f"Unexpected gRPC error while checking vector db collection: {str(e)}", exc_info=True)
+            logger.error(f"Unexpected gRPC error while checking vector db collection: {e!s}", exc_info=True)
             raise HTTPException(
                 status_code=500,
                 detail={
                     "status": "not healthy",
-                    "error": f"Unexpected gRPC error while checking vector db collection: {str(e)}",
+                    "error": f"Unexpected gRPC error while checking vector db collection: {e!s}",
                     "timestamp": get_epoch_timestamp_in_ms(),
-                }
+                },
             )
     except HTTPException:
         # Re-raise HTTPException to be handled by the route handler
         raise
     except Exception as e:
-        logger.error(f"Unexpected error checking vector db collection: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error checking vector db collection: {e!s}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": f"Unexpected error checking vector db collection: {str(e)}",
+                "error": f"Unexpected error checking vector db collection: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
-            }
+            },
         )
 
 @router.post("/embedding-health-check")
@@ -276,12 +276,12 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        logger.error(f"Embedding health check failed: {e!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Embedding model health check failed: {str(e)}",
+                "error": f"Embedding model health check failed: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -291,7 +291,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Perform health check for LLM models"""
     try:
         logger.info(f"Performing LLM health check for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}")
@@ -308,7 +308,7 @@ async def perform_llm_health_check(
                     "message": "No valid model names found in configuration",
                     "details": {
                     "provider": llm_config.get("provider"),
-                    "model": llm_config.get("configuration").get("model")
+                    "model": llm_config.get("configuration").get("model"),
                     },
                 },
             )
@@ -319,7 +319,7 @@ async def perform_llm_health_check(
         llm_model = get_generator_model(
             provider=llm_config.get("provider"),
             config=llm_config,
-            model_name=model_name
+            model_name=model_name,
         )
 
         # Check if multimodal is enabled
@@ -337,22 +337,22 @@ async def perform_llm_health_check(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": test_image_url
-                        }
-                    }
+                            "url": test_image_url,
+                        },
+                    },
                 ]
 
                 test_message = HumanMessage(content=multimodal_content)
                 test_response = await asyncio.wait_for(
                     asyncio.to_thread(llm_model.invoke, [test_message]),
-                    timeout=120.0  # 120 second timeout
+                    timeout=120.0,  # 120 second timeout
                 )
             else:
                 # Test with a simple text prompt
                 test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
                 test_response = await asyncio.wait_for(
                     asyncio.to_thread(llm_model.invoke, test_prompt),
-                    timeout=120.0  # 120 second timeout
+                    timeout=120.0,  # 120 second timeout
                 )
 
             return JSONResponse(
@@ -374,38 +374,38 @@ async def perform_llm_health_check(
                     "details": {
                         "provider": llm_config.get("provider"),
                         "model": model_name,
-                        "timeout_seconds": 120
+                        "timeout_seconds": 120,
                     },
                 },
             )
 
     except Exception as e:
-        logger.error(f"LLM health check failed for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}: {str(e)}", exc_info=True)
+        logger.error(f"LLM health check failed for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}: {e!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"LLM health check failed: {str(e)}",
+                "message": f"LLM health check failed: {e!s}",
                 "details": {
                     "provider": llm_config.get("provider"),
                     "model": llm_config.get("configuration").get("model"),
-                    "error_type": type(e).__name__
-                }
+                    "error_type": type(e).__name__,
+                },
             },
         )
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"LLM health check failed for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}: {str(e)}", exc_info=True)
+        logger.error(f"LLM health check failed for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}: {e!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"LLM health check failed: {str(e)}",
+                "message": f"LLM health check failed: {e!s}",
                 "details": {
                     "provider": llm_config.get("provider"),
                     "model": llm_config.get("configuration").get("model"),
-                    "error_type": type(e).__name__
+                    "error_type": type(e).__name__,
                 },
             },
         )
@@ -414,7 +414,7 @@ async def perform_embedding_health_check(
     request: Request,
     embedding_config: dict,
     logger: Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Perform health check for embedding models"""
     try:
         logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
@@ -431,7 +431,7 @@ async def perform_embedding_health_check(
                     "message": "No valid model names found in configuration",
                     "details": {
                     "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration").get("model")
+                    "model": embedding_config.get("configuration").get("model"),
                     },
                 },
             )
@@ -454,7 +454,7 @@ async def perform_embedding_health_check(
         try:
             test_embeddings = await asyncio.wait_for(
                 asyncio.to_thread(embedding_model.embed_documents, test_texts),
-                timeout=120.0  # 120 second timeout
+                timeout=120.0,  # 120 second timeout
             )
 
             logger.info(f"Test embeddings length: {len(test_embeddings)}")
@@ -467,7 +467,7 @@ async def perform_embedding_health_check(
                         "message": "Embedding model returned empty results",
                         "details": {
                         "provider": embedding_config.get("provider"),
-                        "model": model_name
+                        "model": model_name,
                         },
                     },
                 )
@@ -510,7 +510,7 @@ async def perform_embedding_health_check(
                 else:
                     raise
             except Exception as e:
-                logger.error(f"Collection lookup failed: {str(e)}")
+                logger.error(f"Collection lookup failed: {e!s}")
                 return JSONResponse(
                     status_code=500,
                     content={
@@ -538,22 +538,22 @@ async def perform_embedding_health_check(
                     "details": {
                         "provider": embedding_config.get("provider"),
                     "model": model_name,
-                    "timeout_seconds": 120
+                    "timeout_seconds": 120,
                 },
             },
         )
 
     except Exception as e:
-        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')   }: {str(e)}", exc_info=True)
+        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')   }: {e!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
             "status": "error",
-            "message": f"Embedding health check failed: {str(e)}",
+            "message": f"Embedding health check failed: {e!s}",
             "details": {
                 "provider": embedding_config.get("provider"),
                 "model": embedding_config.get("configuration").get("model"),
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             },
             },
         )
@@ -561,16 +561,16 @@ async def perform_embedding_health_check(
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}: {str(e)}", exc_info=True)
+        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}: {e!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"Embedding health check failed: {str(e)}",
+                "message": f"Embedding health check failed: {e!s}",
                 "details": {
                     "provider": embedding_config.get("provider"),
                     "model": embedding_config.get("configuration").get("model"),
-                    "error_type": type(e).__name__
+                    "error_type": type(e).__name__,
                 },
             },
         )
@@ -579,7 +579,6 @@ async def perform_embedding_health_check(
 @router.post("/health-check/{model_type}")
 async def health_check(request: Request, model_type: str, model_config: dict = Body(...)) -> JSONResponse:
     """Health check endpoint to validate the health of the application."""
-
     try:
         logger = request.app.container.logger()
         logger.info(f"Health check endpoint called for {model_type}")
@@ -589,23 +588,23 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
             return await perform_embedding_health_check(request, model_config, logger)
 
-        elif model_type == "llm":
+        if model_type == "llm":
             logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
             return await perform_llm_health_check(model_config, logger)
 
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}", exc_info=True)
+        logger.error(f"Health check failed: {e!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Health check failed: {str(e)}",
+                "error": f"Health check failed: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
 
     return JSONResponse(
         status_code=200,
-        content={"status": "healthy", "message": "Application is responding"}
+        content={"status": "healthy", "message": "Application is responding"},
     )
 

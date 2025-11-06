@@ -19,14 +19,13 @@ class AiConfigEventService(BaseEventService):
 
             if event_type == "llmConfigured":
                 return await self.__handle_llm_configured(payload)
-            elif event_type == "embeddingModelConfigured":
+            if event_type == "embeddingModelConfigured":
                 return await self.__handle_embedding_configured(payload)
-            else:
-                self.logger.error(f"Unknown AI config event type: {event_type}")
-                return False
+            self.logger.error(f"Unknown AI config event type: {event_type}")
+            return False
 
         except Exception as e:
-            self.logger.error(f"Error processing AI config event: {str(e)}")
+            self.logger.error(f"Error processing AI config event: {e!s}")
             return False
 
     async def __handle_llm_configured(self, payload: dict) -> bool:
@@ -37,6 +36,7 @@ class AiConfigEventService(BaseEventService):
 
         Returns:
             bool: True if successful, False otherwise
+
         """
         try:
             self.logger.info("📥 Processing LLM configured event")
@@ -49,7 +49,7 @@ class AiConfigEventService(BaseEventService):
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update LLM configuration: {str(e)}")
+            self.logger.error(f"❌ Failed to update LLM configuration: {e!s}")
             return False
 
     async def __handle_embedding_configured(self, payload: dict) -> bool:
@@ -60,6 +60,7 @@ class AiConfigEventService(BaseEventService):
 
         Returns:
             bool: True if successful, False otherwise
+
         """
         try:
             self.logger.info("📥 Processing embedding model configured event")
@@ -72,5 +73,5 @@ class AiConfigEventService(BaseEventService):
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update embedding model configuration: {str(e)}")
+            self.logger.error(f"❌ Failed to update embedding model configuration: {e!s}")
             return False

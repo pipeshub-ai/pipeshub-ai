@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any
 
 import fitz
 
@@ -13,19 +13,16 @@ class OCRStrategy(ABC):
         self.logger = logger
 
     @abstractmethod
-    async def process_page(self, page) -> Dict[str, Any]:
+    async def process_page(self, page) -> dict[str, Any]:
         """Process a single page with OCR"""
-        pass
 
     @abstractmethod
     async def load_document(self, content: bytes) -> None:
         """Load document content"""
-        pass
 
     @abstractmethod
-    async def extract_text(self) -> Dict[str, Any]:
+    async def extract_text(self) -> dict[str, Any]:
         """Extract text and layout information"""
-        pass
 
     def needs_ocr(self, page) -> bool:
         """Determine if a page needs OCR processing"""
@@ -75,7 +72,7 @@ class OCRStrategy(ABC):
             self.logger.debug(
                 f"📊 OCR metrics - Text length: {len(text)}, "
                 f"Significant images: {significant_images}, "
-                f"Text density: {text_density:.4f}"
+                f"Text density: {text_density:.4f}",
             )
 
             # Extract and save images
@@ -88,7 +85,7 @@ class OCRStrategy(ABC):
                         pix = fitz.Pixmap(fitz.csRGB, pix)
 
                     self.logger.debug(
-                        f"📸 Image {img_index + 1} pixel format: {pix.n} channels"
+                        f"📸 Image {img_index + 1} pixel format: {pix.n} channels",
                     )
                     # Optionally save the image:
                     # pix.save(f"image_{img_index + 1}_{uuid4()}.png")
@@ -97,7 +94,7 @@ class OCRStrategy(ABC):
                 except Exception as e:
                     self.logger.error(
                         f"""❌ Error processing image {
-                                 img_index + 1}: {str(e)}"""
+                                 img_index + 1}: {e!s}""",
                     )
 
             needs_ocr = (has_minimal_text and has_significant_images) or low_density
@@ -105,7 +102,7 @@ class OCRStrategy(ABC):
             return needs_ocr
 
         except Exception as e:
-            self.logger.error(f"❌ Error checking OCR need: {str(e)}")
+            self.logger.error(f"❌ Error checking OCR need: {e!s}")
             return True
 
 
@@ -113,12 +110,12 @@ class OCRHandler:
     """Factory and facade for OCR processing"""
 
     def __init__(self, logger, strategy_type: str, **kwargs) -> None:
-        """
-        Initialize OCR handler with specified strategy
+        """Initialize OCR handler with specified strategy
 
         Args:
             strategy_type: Type of OCR strategy ("pymupdf" or "azure")
             **kwargs: Strategy-specific configuration parameters
+
         """
         self.logger = logger
         self.logger.info("🛠️ Initializing OCR handler with strategy: %s", strategy_type)
@@ -135,9 +132,9 @@ class OCRHandler:
             )
 
             return PyMuPDFOCRStrategy(
-                logger=self.logger, language=kwargs.get("language", "eng")
+                logger=self.logger, language=kwargs.get("language", "eng"),
             )
-        elif strategy_type == OCRProvider.AZURE_DI.value:
+        if strategy_type == OCRProvider.AZURE_DI.value:
             self.logger.debug("☁️ Creating Azure OCR strategy")
             from app.modules.parsers.pdf.azure_document_intelligence_processor import (
                 AzureOCRStrategy,
@@ -149,19 +146,18 @@ class OCRHandler:
                 key=kwargs["key"],
                 model_id=kwargs.get("model_id", "prebuilt-document"),
             )
-        else:
-            self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
-            raise ValueError(f"Unsupported OCR strategy: {strategy_type}")
+        self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
+        raise ValueError(f"Unsupported OCR strategy: {strategy_type}")
 
-    async def process_document(self, content: bytes) -> Dict[str, Any]:
-        """
-        Process document using the configured OCR strategy
+    async def process_document(self, content: bytes) -> dict[str, Any]:
+        """Process document using the configured OCR strategy
 
         Args:
             content: PDF document content as bytes
 
         Returns:
             Dict containing extracted text and layout information
+
         """
         self.logger.info("🚀 Starting document processing")
         try:
@@ -174,5 +170,5 @@ class OCRHandler:
             self.logger.info("✅ Document processing completed successfully")
             return result
         except Exception as e:
-            self.logger.error(f"❌ Error processing document: {str(e)}")
+            self.logger.error(f"❌ Error processing document: {e!s}")
             raise

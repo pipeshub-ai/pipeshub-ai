@@ -1,5 +1,4 @@
-"""
-Client factories for Azure Blob.
+"""Client factories for Azure Blob.
 """
 
 
@@ -15,8 +14,7 @@ class AzureBlobClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> AzureBlobClient:
         """Create Azure Blob client instance"""
-
         return await AzureBlobClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

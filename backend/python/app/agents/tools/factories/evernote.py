@@ -1,5 +1,4 @@
-"""
-Client factories for Evernote.
+"""Client factories for Evernote.
 """
 
 
@@ -15,8 +14,7 @@ class EvernoteClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> EvernoteClient:
         """Create Evernote client instance"""
-
         return await EvernoteClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

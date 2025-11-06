@@ -1,6 +1,5 @@
 """Google Docs Parser module for parsing Google Docs content"""
 
-from typing import Dict, List, Optional, Tuple
 
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.utils.decorators import exponential_backoff
@@ -13,8 +12,8 @@ class GoogleDocsParser:
     def __init__(
         self,
         logger,
-        admin_service: Optional[GoogleAdminService] = None,
-        user_service: Optional[ParserUserService] = None,
+        admin_service: GoogleAdminService | None = None,
+        user_service: ParserUserService | None = None,
     ) -> None:
         """Initialize with either admin or user service"""
         self.logger = logger
@@ -23,24 +22,24 @@ class GoogleDocsParser:
         self.service = None
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive"
+        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive",
     ) -> None:
         if self.user_service:
             if not await self.user_service.connect_individual_user(org_id, user_id,app_name=app_name):
                 self.logger.error("❌ Failed to connect to Google Docs service")
-                return None
+                return
 
             self.service = self.user_service.docs_service
             self.logger.info("🚀 Connected to Google Docs service: %s", self.service)
         elif self.admin_service:
             user_service = await self.admin_service.create_parser_user_service(
-                user_email
+                user_email,
             )
             self.service = user_service.docs_service
             self.logger.info("🚀 Connected to Google Docs service: %s", self.service)
 
     @exponential_backoff()
-    async def parse_doc_content(self, doc_id: str) -> Optional[Dict]:
+    async def parse_doc_content(self, doc_id: str) -> dict | None:
         """Parse detailed content from a Google Doc including structural elements"""
         try:
             if not self.service:
@@ -89,13 +88,13 @@ class GoogleDocsParser:
                                     {
                                         "text": text_content,
                                         "url": text_run["textStyle"]["link"].get(
-                                            "url", ""
+                                            "url", "",
                                         ),
                                         "start_index": para_element.get(
-                                            "startIndex", 0
+                                            "startIndex", 0,
                                         ),
                                         "end_index": para_element.get("endIndex", 0),
-                                    }
+                                    },
                                 )
 
                     content["elements"].append(para_content)
@@ -110,14 +109,14 @@ class GoogleDocsParser:
                         "columns": len(
                             element["table"]
                             .get("tableRows", [{}])[0]
-                            .get("tableCells", [])
+                            .get("tableCells", []),
                         ),
                         "cells": [],
                     }
 
                     # Process each cell in the table
                     for row_idx, row in enumerate(
-                        element["table"].get("tableRows", [])
+                        element["table"].get("tableRows", []),
                     ):
                         for col_idx, cell in enumerate(row.get("tableCells", [])):
                             cell_content = {
@@ -134,7 +133,7 @@ class GoogleDocsParser:
                                 if "paragraph" in cell_element:
                                     text = ""
                                     for para_element in cell_element["paragraph"].get(
-                                        "elements", []
+                                        "elements", [],
                                     ):
                                         if "textRun" in para_element:
                                             text_run = para_element["textRun"]
@@ -143,7 +142,7 @@ class GoogleDocsParser:
 
                                             # Check for links in the cell
                                             if text_run.get("textStyle", {}).get(
-                                                "link"
+                                                "link",
                                             ):
                                                 cell_content["links"].append(
                                                     {
@@ -152,12 +151,12 @@ class GoogleDocsParser:
                                                             "link"
                                                         ].get("url", ""),
                                                         "start_index": para_element.get(
-                                                            "startIndex", 0
+                                                            "startIndex", 0,
                                                         ),
                                                         "end_index": para_element.get(
-                                                            "endIndex", 0
+                                                            "endIndex", 0,
                                                         ),
-                                                    }
+                                                    },
                                                 )
                                     cell_content["content"].append(text)
 
@@ -221,9 +220,8 @@ class GoogleDocsParser:
                 self.logger.error(f"❌ Error parsing Google Docs content: {error_msg}")
             return None
 
-    def order_document_content(self, content: Dict) -> Tuple[List, List, List]:
-        """
-        Orders document content chronologically by start and end indices.
+    def order_document_content(self, content: dict) -> tuple[list, list, list]:
+        """Orders document content chronologically by start and end indices.
 
         Args:
             content: Dictionary containing parsed document content
@@ -233,6 +231,7 @@ class GoogleDocsParser:
             - List of ordered content elements
             - List of headers
             - List of footers
+
         """
         all_content = []
 
@@ -244,7 +243,7 @@ class GoogleDocsParser:
                     "start_index": para["start_index"],
                     "end_index": para["end_index"],
                     "content": para,
-                }
+                },
             )
 
         # Add tables
@@ -255,7 +254,7 @@ class GoogleDocsParser:
                     "start_index": table["start_index"],
                     "end_index": table["end_index"],
                     "content": table,
-                }
+                },
             )
 
         # Add images
@@ -266,7 +265,7 @@ class GoogleDocsParser:
                     "start_index": image["start_index"],
                     "end_index": image["end_index"],
                     "content": image,
-                }
+                },
             )
 
         # Sort all content by start_index and end_index

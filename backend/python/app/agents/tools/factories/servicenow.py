@@ -1,5 +1,4 @@
-"""
-Client factories for ServiceNow.
+"""Client factories for ServiceNow.
 """
 
 
@@ -15,8 +14,7 @@ class ServiceNowClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> ServiceNowClient:
         """Create ServiceNow client instance"""
-
         return await ServiceNowClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

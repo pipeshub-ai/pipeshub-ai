@@ -17,7 +17,7 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [
             CollectionNames.GROUPS.value,
             CollectionNames.ORGS.value,
-            CollectionNames.RECORD_GROUPS.value
+            CollectionNames.RECORD_GROUPS.value,
         ],
     },
     {

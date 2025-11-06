@@ -18,12 +18,12 @@ from app.connectors.core.registry.connector_builder import (
         .add_documentation_link(DocumentationLink(
             "Google Drive API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/drive/drive',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/drive/drive",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Drive", True)
         .with_oauth_urls(
@@ -37,7 +37,7 @@ from app.connectors.core.registry.connector_builder import (
             "https://www.googleapis.com/auth/presentations.readonly",
             "https://www.googleapis.com/auth/drive.file",
             "https://www.googleapis.com/auth/drive",
-            ]
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
@@ -47,7 +47,7 @@ from app.connectors.core.registry.connector_builder import (
         .add_sync_custom_field(CommonFields.batch_size_field())
         .add_filter_field(CommonFields.file_types_filter(), "static")
         .add_filter_field(CommonFields.folders_filter(),
-                          "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.folder'&fields=files(id,name,parents)")
+                          "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.folder'&fields=files(id,name,parents)"),
     )\
     .build_decorator()
 class GoogleDriveConnector:
@@ -73,23 +73,23 @@ class GoogleDriveConnector:
         .add_documentation_link(DocumentationLink(
             "Gmail API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/gmail/gmail',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/gmail/gmail",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Gmail", True)
         .with_oauth_urls(
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
             [
-                'https://www.googleapis.com/auth/gmail.readonly',
+                "https://www.googleapis.com/auth/gmail.readonly",
                 "https://www.googleapis.com/auth/documents.readonly",
                 "https://www.googleapis.com/auth/spreadsheets.readonly",
                 "https://www.googleapis.com/auth/presentations.readonly",
-            ]
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
@@ -99,8 +99,8 @@ class GoogleDriveConnector:
         .add_filter_field(FilterField(
             name="labels",
             display_name="Gmail Labels",
-            description="Select Gmail labels to sync messages from"
-        ), "https://gmail.googleapis.com/gmail/v1/users/me/labels")
+            description="Select Gmail labels to sync messages from",
+        ), "https://gmail.googleapis.com/gmail/v1/users/me/labels"),
     )\
     .build_decorator()
 class GmailConnector:
@@ -125,12 +125,12 @@ class GmailConnector:
         .add_documentation_link(DocumentationLink(
             "Slack Bot Token Setup",
             "https://api.slack.com/authentication/basics",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/slack/slack',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/slack/slack",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -140,12 +140,12 @@ class GmailConnector:
             description="The Bot User OAuth Access Token from Slack App settings",
             field_type="PASSWORD",
             max_length=8000,
-            is_secret=True
+            is_secret=True,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(CommonFields.channels_filter(),
-                          "https://slack.com/api/conversations.list")
+                          "https://slack.com/api/conversations.list"),
     )\
     .build_decorator()
 class SlackConnector:
@@ -170,12 +170,12 @@ class SlackConnector:
         .add_documentation_link(DocumentationLink(
             "Notion Bot Token Setup",
             "https://api.notion.com/authentication/basics",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/notion/notion',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/notion/notion",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -185,10 +185,10 @@ class SlackConnector:
             description="The Access Token from Notion App settings",
             field_type="PASSWORD",
             max_length=8000,
-            is_secret=True
+            is_secret=True,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class  NotionConnector:
@@ -215,12 +215,12 @@ class  NotionConnector:
         .add_documentation_link(DocumentationLink(
             "Calendar API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/calendar/calendar',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/calendar/calendar",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Calendar", True)
         .with_oauth_urls(
@@ -229,14 +229,14 @@ class  NotionConnector:
             [
                 "https://www.googleapis.com/auth/calendar",  # Full calendar access (read/write)
                 "https://www.googleapis.com/auth/calendar.events",  # Events read/write
-                "https://www.googleapis.com/auth/calendar.readonly"  # Read-only access
-            ]
+                "https://www.googleapis.com/auth/calendar.readonly",  # Read-only access
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["event.created", "event.modified", "event.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class CalendarConnector:
@@ -262,12 +262,12 @@ class CalendarConnector:
         .add_documentation_link(DocumentationLink(
             "Meet API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/meet/meet',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/meet/meet",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Meet", True)
         .with_oauth_urls(
@@ -278,14 +278,14 @@ class CalendarConnector:
                 "https://www.googleapis.com/auth/meetings.space.settings",
                 "https://www.googleapis.com/auth/meetings.space.readonly",
                 "https://www.googleapis.com/auth/calendar",  # Often needed for Meet integration
-                "https://www.googleapis.com/auth/calendar.events"
-            ]
+                "https://www.googleapis.com/auth/calendar.events",
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["space.created", "space.modified", "space.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class MeetConnector:
@@ -311,12 +311,12 @@ class MeetConnector:
         .add_documentation_link(DocumentationLink(
             "Docs API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/docs/docs',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/docs/docs",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Docs", True)
         .with_oauth_urls(
@@ -327,14 +327,14 @@ class MeetConnector:
                 "https://www.googleapis.com/auth/documents.readonly", # Read-only docs
                 "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/drive.file",
-                "https://www.googleapis.com/auth/drive.readonly"      # Drive readonly
-            ]
+                "https://www.googleapis.com/auth/drive.readonly",      # Drive readonly
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["document.created", "document.modified", "document.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class DocsConnector:
@@ -360,12 +360,12 @@ class DocsConnector:
         .add_documentation_link(DocumentationLink(
             "Sheets API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/sheets/sheets',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/sheets/sheets",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Sheets", True)
         .with_oauth_urls(
@@ -374,13 +374,13 @@ class DocsConnector:
             [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/spreadsheets.readonly",
-            ]
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["sheet.created", "sheet.modified", "sheet.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class SheetsConnector:
@@ -405,12 +405,12 @@ class SheetsConnector:
         .add_documentation_link(DocumentationLink(
             "Forms API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/forms/forms',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/forms/forms",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Forms", True)
         .with_oauth_urls(
@@ -422,14 +422,14 @@ class SheetsConnector:
                 "https://www.googleapis.com/auth/forms.responses.readonly", # Responses readonly
                 "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/drive.file",
-                "https://www.googleapis.com/auth/drive.readonly"
-            ]
+                "https://www.googleapis.com/auth/drive.readonly",
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["form.created", "form.modified", "form.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class FormsConnector:
@@ -454,12 +454,12 @@ class FormsConnector:
         .add_documentation_link(DocumentationLink(
             "Slides API Setup",
             "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/slides/slides',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/google-workspace/slides/slides",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Slides", True)
         .with_oauth_urls(
@@ -469,14 +469,14 @@ class FormsConnector:
                 "https://www.googleapis.com/auth/presentations",          # Full presentations access
                 "https://www.googleapis.com/auth/presentations.readonly", # Read-only
                 "https://www.googleapis.com/auth/drive.file",            # For file access
-                "https://www.googleapis.com/auth/drive.readonly"          # Drive readonly
-            ]
+                "https://www.googleapis.com/auth/drive.readonly",          # Drive readonly
+            ],
         )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["slide.created", "slide.modified", "slide.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class SlidesConnector:
@@ -501,12 +501,12 @@ class SlidesConnector:
         .add_documentation_link(DocumentationLink(
             "Airtable API Token Setup",
             "https://api.airtable.com/authentication/basics",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/airtable/airtable',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/airtable/airtable",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -516,10 +516,10 @@ class SlidesConnector:
             description="The API Access Token from Airtable App settings",
             field_type="PASSWORD",
             max_length=8000,
-            is_secret=True
+            is_secret=True,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class AirtableConnector:
@@ -544,12 +544,12 @@ class AirtableConnector:
         .add_documentation_link(DocumentationLink(
             "Azure Blob Storage Connection String Setup",
             "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/azure/azureblob',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/azure/azureblob",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -558,7 +558,7 @@ class AirtableConnector:
             placeholder="mystorageaccount",
             description="The Account Name from Azure Blob Storage App settings",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="accountKey",
@@ -567,7 +567,7 @@ class AirtableConnector:
             description="The Account Key from Azure Blob Storage App settings",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="containerName",
@@ -575,7 +575,7 @@ class AirtableConnector:
             placeholder="my-container",
             description="The Container Name from Azure Blob Storage App settings",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="endpointProtocol",
@@ -583,7 +583,7 @@ class AirtableConnector:
             placeholder="https",
             description="The Endpoint Protocol from Azure Blob Storage App settings",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="endpointSuffix",
@@ -591,10 +591,10 @@ class AirtableConnector:
             placeholder="core.windows.net",
             description="The Endpoint Suffix from Azure Blob Storage App settings",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class AzureBlobConnector:
@@ -619,12 +619,12 @@ class AzureBlobConnector:
         .add_documentation_link(DocumentationLink(
             "BookStack API Token Setup",
             "https://bookstack.org/docs/admin/authentication/",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/bookstack/bookstack',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/bookstack/bookstack",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -633,7 +633,7 @@ class AzureBlobConnector:
             placeholder="Enter your Token ID",
             description="The Token ID from BookStack instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="tokenSecret",
@@ -642,7 +642,7 @@ class AzureBlobConnector:
             description="The Token Secret from BookStack instance",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="baseURL",
@@ -650,10 +650,10 @@ class AzureBlobConnector:
             placeholder="https://bookstack.example.com",
             description="The Base URL from BookStack instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class BookStackConnector:
@@ -678,12 +678,12 @@ class BookStackConnector:
         .add_documentation_link(DocumentationLink(
             "Linear API Token Setup",
             "https://linear.app/developers/docs/authentication",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/linear/linear',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/linear/linear",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -693,10 +693,10 @@ class BookStackConnector:
             description="The API Token from Linear instance (https://linear.app/settings/api)",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class LinearConnector:
@@ -721,12 +721,12 @@ class LinearConnector:
         .add_documentation_link(DocumentationLink(
             "S3 Access Key Setup",
             "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/s3/s3',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/s3/s3",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -736,7 +736,7 @@ class LinearConnector:
             description="The Access Key from S3 instance",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="secretKey",
@@ -745,7 +745,7 @@ class LinearConnector:
             description="The Secret Key from S3 instance",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="region",
@@ -753,7 +753,7 @@ class LinearConnector:
             placeholder="Enter your Region Name",
             description="The Region from S3 instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="bucket",
@@ -761,10 +761,10 @@ class LinearConnector:
             placeholder="Enter your Bucket Name",
             description="The Bucket from S3 instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class S3Connector:
@@ -789,12 +789,12 @@ class S3Connector:
         .add_documentation_link(DocumentationLink(
             "ServiceNow Username Password Setup",
             "https://docs.servicenow.com/bundle/rome-it-service-management/page/product/integration/reference/r_ITSMIntegrationAPI.html",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/servicenow/servicenow',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/servicenow/servicenow",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -803,7 +803,7 @@ class S3Connector:
             placeholder="Enter your Username",
             description="The Username from ServiceNow instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="password",
@@ -812,7 +812,7 @@ class S3Connector:
             description="The Password from ServiceNow instance",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="instanceUrl",
@@ -820,10 +820,10 @@ class S3Connector:
             placeholder="Enter your Instance URL",
             description="The Instance URL from ServiceNow instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class ServiceNowConnector:
@@ -847,12 +847,12 @@ class ServiceNowConnector:
         .add_documentation_link(DocumentationLink(
             "Zendesk API Token Setup",
             "https://developer.zendesk.com/documentation/ticketing/introduction/authentication/",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/zendesk/zendesk',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/zendesk/zendesk",
+            "pipeshub",
         ))
         .with_redirect_uri("", False)
         .add_auth_field(AuthField(
@@ -862,7 +862,7 @@ class ServiceNowConnector:
             description="The API Token from Zendesk instance",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         ))
         .add_auth_field(AuthField(
             name="email",
@@ -870,7 +870,7 @@ class ServiceNowConnector:
             placeholder="Enter your Email",
             description="The Email from Zendesk instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .add_auth_field(AuthField(
             name="subdomain",
@@ -878,10 +878,10 @@ class ServiceNowConnector:
             placeholder="Enter your Subdomain",
             description="The Subdomain from Zendesk instance",
             field_type="TEXT",
-            max_length=2000
+            max_length=2000,
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
+        .with_scheduled_config(True, 60),
     )\
     .build_decorator()
 class ZendeskConnector:

@@ -8,7 +8,7 @@ import json
 import unicodedata
 import uuid
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import aiohttp  # type: ignore
 from arango import ArangoClient  # type: ignore
@@ -94,7 +94,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
-    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
 
 ]
 
@@ -122,7 +122,7 @@ class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
 
     # ========== NAME NORMALIZATION HELPERS ==========
-    def _normalize_name(self, name: Optional[str]) -> Optional[str]:
+    def _normalize_name(self, name: str | None) -> str | None:
         """Normalize a file/folder name to NFC and trim whitespace."""
         if name is None:
             return None
@@ -132,7 +132,7 @@ class BaseArangoService:
             # Fallback: best-effort string conversion
             return str(name).strip()
 
-    def _normalized_name_variants_lower(self, name: str) -> List[str]:
+    def _normalized_name_variants_lower(self, name: str) -> list[str]:
         """Provide lowercase variants for equality comparisons (NFC and NFD)."""
         nfc = self._normalize_name(name) or ""
         try:
@@ -142,7 +142,7 @@ class BaseArangoService:
         return [nfc.lower(), nfd.lower()]
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: Optional[KafkaService] = None,
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: KafkaService | None = None,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
@@ -159,12 +159,12 @@ class BaseArangoService:
                     CollectionNames.PERMISSIONS.value,
                     CollectionNames.USER_DRIVE_RELATION.value,
                     CollectionNames.BELONGS_TO.value,
-                    CollectionNames.ANYONE.value
+                    CollectionNames.ANYONE.value,
                 ],
                 "document_collections": [
                     CollectionNames.RECORDS.value,
                     CollectionNames.FILES.value,
-                ]
+                ],
             },
             Connectors.GOOGLE_MAIL.value: {
                 "allowed_roles": ["OWNER", "WRITER"],
@@ -178,7 +178,7 @@ class BaseArangoService:
                     CollectionNames.RECORDS.value,
                     CollectionNames.MAILS.value,
                     CollectionNames.FILES.value,  # For attachments
-                ]
+                ],
             },
             Connectors.OUTLOOK.value: {
                 "allowed_roles": ["OWNER", "WRITER"],
@@ -192,7 +192,7 @@ class BaseArangoService:
                     CollectionNames.RECORDS.value,
                     CollectionNames.MAILS.value,
                     CollectionNames.FILES.value,
-                ]
+                ],
             },
             Connectors.KNOWLEDGE_BASE.value: {
                 "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
@@ -206,8 +206,8 @@ class BaseArangoService:
                     CollectionNames.RECORDS.value,
                     CollectionNames.FILES.value,
                     CollectionNames.RECORD_GROUPS.value,
-                ]
-            }
+                ],
+            },
         }
 
         # Initialize collections dictionary
@@ -231,7 +231,7 @@ class BaseArangoService:
                     else self.db.create_collection(
                         collection_name,
                         edge=is_edge,
-                        schema=schema
+                        schema=schema,
                     )
                 )
 
@@ -245,17 +245,17 @@ class BaseArangoService:
                         if "1207" in error_msg or "duplicate" in error_msg.lower():
                             # Schema already applied - this is expected on restarts
                             self.logger.info(
-                                f"✅ Schema for '{collection_name}' already configured, skipping"
+                                f"✅ Schema for '{collection_name}' already configured, skipping",
                             )
                         else:
                             self.logger.warning(
-                                f"Failed to update schema for {collection_name}: {error_msg}"
+                                f"Failed to update schema for {collection_name}: {error_msg}",
                             )
 
             self.logger.info("✅ Collections initialized successfully")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize collections: {str(e)}")
+            self.logger.error(f"❌ Failed to initialize collections: {e!s}")
             raise
 
     async def _create_graph(self) -> None:
@@ -278,13 +278,13 @@ class BaseArangoService:
                     else:
                         self.logger.warning(f"⚠️ Skipping edge definition for non-existent collection: {edge_def['edge_collection']}")
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {str(e)}")
+                    self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {e!s}")
                     # Continue with other edge definitions
 
             self.logger.info(f"✅ Knowledge base graph created successfully with {created_count} edge definitions")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create knowledge base graph: {str(e)}")
+            self.logger.error(f"❌ Failed to create knowledge base graph: {e!s}")
             raise
 
     async def connect(self) -> bool:
@@ -292,7 +292,7 @@ class BaseArangoService:
         try:
             self.logger.info("🚀 Connecting to ArangoDB...")
             arangodb_config = await self.config_service.get_config(
-                config_node_constants.ARANGODB.value
+                config_node_constants.ARANGODB.value,
             )
             arango_url = arangodb_config["url"]
             arango_user = arangodb_config["username"]
@@ -307,7 +307,7 @@ class BaseArangoService:
             # Connect to system db to ensure our db exists
             self.logger.debug("Connecting to system db")
             sys_db = self.client.db(
-                "_system", username=arango_user, password=arango_password, verify=True
+                "_system", username=arango_user, password=arango_password, verify=True,
             )
             self.logger.debug("System DB: %s", sys_db)
 
@@ -316,7 +316,7 @@ class BaseArangoService:
             if not sys_db.has_database(arango_db):
                 try:
                     self.logger.info(
-                        "🚀 Database %s does not exist. Creating...", arango_db
+                        "🚀 Database %s does not exist. Creating...", arango_db,
                     )
                     sys_db.create_database(arango_db)
                     self.logger.info("✅ Database created successfully")
@@ -325,13 +325,13 @@ class BaseArangoService:
                     if "duplicate database name" not in str(e):
                         raise
                     self.logger.warning(
-                        "Database already exists, continuing with connection"
+                        "Database already exists, continuing with connection",
                     )
 
             # Connect to our database
             self.logger.debug("Connecting to our database")
             self.db = self.client.db(
-                arango_db, username=arango_user, password=arango_password, verify=True
+                arango_db, username=arango_user, password=arango_password, verify=True,
             )
             self.logger.debug("Our DB: %s", self.db)
 
@@ -395,7 +395,7 @@ class BaseArangoService:
         if new_departments:
             self.logger.info(f"🚀 Inserting {len(new_departments)} departments")
             self._collections[CollectionNames.DEPARTMENTS.value].insert_many(
-                new_departments
+                new_departments,
             )
             self.logger.info("✅ Departments initialized successfully")
 
@@ -423,7 +423,7 @@ class BaseArangoService:
             cursor = self.db.aql.execute(query)
             return list(cursor)
         except Exception as e:
-            self.logger.error(f"Failed to get org apps: {str(e)}")
+            self.logger.error(f"Failed to get org apps: {e!s}")
             raise
 
     async def get_user_apps(self, user_id: str) -> list:
@@ -438,7 +438,7 @@ class BaseArangoService:
             cursor = self.db.aql.execute(query)
             return list(cursor)
         except Exception as e:
-            self.logger.error(f"Failed to get user apps: {str(e)}")
+            self.logger.error(f"Failed to get user apps: {e!s}")
             raise
 
     async def get_all_orgs(self, active: bool = True) -> list:
@@ -455,10 +455,10 @@ class BaseArangoService:
             cursor = self.db.aql.execute(query, bind_vars=bind_vars)
             return list(cursor)
         except Exception as e:
-            self.logger.error(f"Failed to get organizations: {str(e)}")
+            self.logger.error(f"Failed to get organizations: {e!s}")
             raise
 
-    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
+    async def get_document(self, document_key: str, collection: str) -> dict | None:
         """Get a document by its key"""
         try:
             query = """
@@ -480,14 +480,14 @@ class BaseArangoService:
         self,
         org_id: str,
         connector: str,
-    ) -> Dict:
-        """
-        Get connector statistics for a specific connector or knowledge base
+    ) -> dict:
+        """Get connector statistics for a specific connector or knowledge base
 
         Args:
             org_id: Organization ID
             connector: Specific connector name (e.g., "GOOGLE_DRIVE", "SLACK").
                         If None, returns Knowledge Base stats
+
         """
         try:
             self.logger.info(f"Getting connector stats for organization: {org_id}, connector: {connector or 'KNOWLEDGE_BASE'}")
@@ -633,46 +633,44 @@ class BaseArangoService:
                 self.logger.info(f"Retrieved stats for {connector_display} in organization: {org_id}")
                 return {
                     "success": True,
-                    "data": result
+                    "data": result,
                 }
-            else:
-                self.logger.warning(f"No data found for connector: {connector or 'KNOWLEDGE_BASE'} in organization: {org_id}")
-                return {
-                    "success": False,
-                    "message": "No data found for the specified connector",
-                    "data": {
-                        "org_id": org_id,
-                        "connector": connector or "KNOWLEDGE_BASE",
-                        "origin": "UPLOAD" if is_knowledge_base else "CONNECTOR",
-                        "stats": {
-                            "total": 0,
-                            "indexing_status": {
-                                "NOT_STARTED": 0,
-                                "IN_PROGRESS": 0,
-                                "COMPLETED": 0,
-                                "FAILED": 0,
-                                "FILE_TYPE_NOT_SUPPORTED": 0,
-                                "AUTO_INDEX_OFF": 0
-                            }
+            self.logger.warning(f"No data found for connector: {connector or 'KNOWLEDGE_BASE'} in organization: {org_id}")
+            return {
+                "success": False,
+                "message": "No data found for the specified connector",
+                "data": {
+                    "org_id": org_id,
+                    "connector": connector or "KNOWLEDGE_BASE",
+                    "origin": "UPLOAD" if is_knowledge_base else "CONNECTOR",
+                    "stats": {
+                        "total": 0,
+                        "indexing_status": {
+                            "NOT_STARTED": 0,
+                            "IN_PROGRESS": 0,
+                            "COMPLETED": 0,
+                            "FAILED": 0,
+                            "FILE_TYPE_NOT_SUPPORTED": 0,
+                            "AUTO_INDEX_OFF": 0,
                         },
-                        "by_record_type": []
-                    }
-                }
+                    },
+                    "by_record_type": [],
+                },
+            }
 
         except Exception as e:
-            self.logger.error(f"Error getting connector stats: {str(e)}")
+            self.logger.error(f"Error getting connector stats: {e!s}")
             return {
                 "success": False,
                 "message": str(e),
-                "data": None
+                "data": None,
             }
 
     # TODO: Update group permission fetch
     async def check_record_access_with_details(
-        self, user_id: str, org_id: str, record_id: str
-    ) -> Optional[Dict]:
-        """
-        Check record access and return record details if accessible
+        self, user_id: str, org_id: str, record_id: str,
+    ) -> dict | None:
+        """Check record access and return record details if accessible
         Args:
             user_id (str): The userId field value in users collection
             org_id (str): The organization ID
@@ -871,11 +869,11 @@ class BaseArangoService:
             additional_data = None
             if record["recordType"] == RecordTypes.FILE.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.FILES.value
+                    record_id, CollectionNames.FILES.value,
                 )
             elif record["recordType"] == RecordTypes.MAIL.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.MAILS.value
+                    record_id, CollectionNames.MAILS.value,
                 )
                 message_id = record["externalRecordId"]
                 # Format the webUrl with the user's email
@@ -957,7 +955,7 @@ class BaseArangoService:
             }}
             """
             metadata_cursor = self.db.aql.execute(
-                metadata_query, bind_vars={"recordId": record_id}
+                metadata_query, bind_vars={"recordId": record_id},
             )
             metadata_result = next(metadata_cursor, None)
 
@@ -976,7 +974,7 @@ class BaseArangoService:
                         folder = access["folder"]
                         folder_info = {
                             "id": folder["_key"],
-                            "name": folder["name"]
+                            "name": folder["name"],
                         }
                     break
 
@@ -1014,7 +1012,7 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(
-                f"Failed to check record access and get details: {str(e)}"
+                f"Failed to check record access and get details: {e!s}",
             )
             raise
 
@@ -1024,28 +1022,27 @@ class BaseArangoService:
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        permissions: Optional[List[str]],
-        date_from: Optional[int],
-        date_to: Optional[int],
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
         sort_by: str,
         sort_order: str,
         source: str,
-    ) -> Tuple[List[Dict], int, Dict]:
-        """
-        List all records the user can access directly via belongs_to edges.
+    ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access directly via belongs_to edges.
         Returns (records, total_count, available_filters)
         """
         try:
             self.logger.info(f"🔍 Listing all records for user {user_id}, source: {source}")
 
             # Determine what data sources to include
-            include_kb_records = source in ['all', 'local']
-            include_connector_records = source in ['all', 'connector']
+            include_kb_records = source in ["all", "local"]
+            include_connector_records = source in ["all", "connector"]
 
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
@@ -1084,7 +1081,7 @@ class BaseArangoService:
             # ===== MAIN QUERY (with pagination and filters and file/mail records) =====
             record_filter = build_record_filters(True)
             permission_filter = build_permission_filter(True)
-            folder_filter = '''
+            folder_filter = """
                 LET targetDoc = FIRST(
                     FOR v IN 1..1 OUTBOUND record._id isOfType
                         LIMIT 1
@@ -1100,7 +1097,7 @@ class BaseArangoService:
                 )
 
                 FILTER isValidRecord
-            '''
+            """
 
             main_query = f"""
             LET user_from = @user_from
@@ -1880,18 +1877,17 @@ class BaseArangoService:
             return records, count, available_filters
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list all records: {str(e)}")
+            self.logger.error(f"❌ Failed to list all records: {e!s}")
             return [], 0, {
                 "recordTypes": [],
                 "origins": [],
                 "connectors": [],
                 "indexingStatus": [],
-                "permissions": []
+                "permissions": [],
             }
 
-    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> Dict:
-        """
-        Reindex a single record with permission checks and event publishing
+    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> dict:
+        """Reindex a single record with permission checks and event publishing
         """
         try:
             self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id}")
@@ -1902,14 +1898,14 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Record not found: {record_id}"
+                    "reason": f"Record not found: {record_id}",
                 }
 
             if record.get("isDeleted"):
                 return {
                     "success": False,
                     "code": 400,
-                    "reason": "Cannot reindex deleted record"
+                    "reason": "Cannot reindex deleted record",
                 }
 
             connector_name = record.get("connectorName", "")
@@ -1923,10 +1919,10 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found: {user_id}"
+                    "reason": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check permissions based on origin type
             if origin == OriginTypes.UPLOAD.value:
@@ -1936,7 +1932,7 @@ class BaseArangoService:
                     return {
                         "success": False,
                         "code": 404,
-                        "reason": f"Knowledge base context not found for record {record_id}"
+                        "reason": f"Knowledge base context not found for record {record_id}",
                     }
 
                 user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key)
@@ -1944,7 +1940,7 @@ class BaseArangoService:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
+                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER, READER",
                     }
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
@@ -1965,7 +1961,7 @@ class BaseArangoService:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
+                        "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER, READER",
                     }
 
                 connector_type = connector_name
@@ -1973,7 +1969,7 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 400,
-                    "reason": f"Unsupported record origin: {origin}"
+                    "reason": f"Unsupported record origin: {origin}",
                 }
 
             # Get file record for event payload
@@ -1993,36 +1989,37 @@ class BaseArangoService:
                     "recordName": record.get("recordName"),
                     "connector": connector_type,
                     "eventPublished": True,
-                    "userRole": user_role
+                    "userRole": user_role,
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+                self.logger.error(f"❌ Failed to publish reindex event: {event_error!s}")
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": f"Failed to publish reindex event: {str(event_error)}"
+                    "reason": f"Failed to publish reindex event: {event_error!s}",
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to reindex record {record_id}: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Internal error: {str(e)}"
+                "reason": f"Internal error: {e!s}",
             }
 
-    async def reindex_failed_connector_records(self, user_id: str, org_id: str, connector: str, origin: str) -> Dict:
-        """
-        Reindex all failed records for a specific connector with permission check
+    async def reindex_failed_connector_records(self, user_id: str, org_id: str, connector: str, origin: str) -> dict:
+        """Reindex all failed records for a specific connector with permission check
         Just validates permissions and publishes a single reindexFailed event
         Args:
             user_id: External user ID doing the reindex
             org_id: Organization ID
             connector: Connector name (GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE)
             origin: Origin type (CONNECTOR, UPLOAD)
+
         Returns:
             Dict: Result with success status and event publication info
+
         """
         try:
             self.logger.info(f"🔄 Starting failed records reindex for {connector} by user {user_id}")
@@ -2033,27 +2030,27 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found: {user_id}"
+                    "reason": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check if user has permission to reindex connector records
             permission_check = await self._check_connector_reindex_permissions(
-                user_key, org_id, connector, origin
+                user_key, org_id, connector, origin,
             )
 
             if not permission_check["allowed"]:
                 return {
                     "success": False,
                     "code": 403,
-                    "reason": permission_check["reason"]
+                    "reason": permission_check["reason"],
                 }
 
             # Create and publish single reindexFailed event
             try:
                 payload = await self._create_reindex_failed_event_payload(
-                    org_id, connector, origin
+                    org_id, connector, origin,
                 )
                 await self._publish_sync_event("reindexFailed", payload)
 
@@ -2065,34 +2062,33 @@ class BaseArangoService:
                     "origin": origin,
                     "user_permission_level": permission_check["permission_level"],
                     "event_published": True,
-                    "message": f"Successfully initiated reindex of failed {connector} records"
+                    "message": f"Successfully initiated reindex of failed {connector} records",
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish reindexFailed event: {str(event_error)}")
+                self.logger.error(f"❌ Failed to publish reindexFailed event: {event_error!s}")
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": f"Failed to publish reindexFailed event: {str(event_error)}"
+                    "reason": f"Failed to publish reindexFailed event: {event_error!s}",
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex failed connector records: {str(e)}")
+            self.logger.error(f"❌ Failed to reindex failed connector records: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Internal error: {str(e)}"
+                "reason": f"Internal error: {e!s}",
             }
 
-    # Todo: This implementation should work irrespective of the connector type. It should not depend on the connector type.
+    # TODO: This implementation should work irrespective of the connector type. It should not depend on the connector type.
     # We need to remove Record node, all edges coming to this record or going from this record
     # also, delete node of isOfType Record
     # if this record has children, we need to delete them as well
     # a flag should be passed whether children should be deleted or not
     # it should also return the records that were deleted
-    async def delete_record(self, record_id: str, user_id: str) -> Dict:
-        """
-        Main entry point for record deletion - routes to connector-specific methods
+    async def delete_record(self, record_id: str, user_id: str) -> dict:
+        """Main entry point for record deletion - routes to connector-specific methods
         """
         try:
             self.logger.info(f"🚀 Starting record deletion for {record_id} by user {user_id}")
@@ -2103,7 +2099,7 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Record not found: {record_id}"
+                    "reason": f"Record not found: {record_id}",
                 }
 
             connector_name = record.get("connectorName", "")
@@ -2112,30 +2108,28 @@ class BaseArangoService:
             # Route to connector-specific deletion method
             if origin == OriginTypes.UPLOAD.value or connector_name == Connectors.KNOWLEDGE_BASE.value:
                 return await self.delete_knowledge_base_record(record_id, user_id, record)
-            elif connector_name == Connectors.GOOGLE_DRIVE.value:
+            if connector_name == Connectors.GOOGLE_DRIVE.value:
                 return await self.delete_google_drive_record(record_id, user_id, record)
-            elif connector_name == Connectors.GOOGLE_MAIL.value:
+            if connector_name == Connectors.GOOGLE_MAIL.value:
                 return await self.delete_gmail_record(record_id, user_id, record)
-            elif connector_name == Connectors.OUTLOOK.value:
+            if connector_name == Connectors.OUTLOOK.value:
                 return await self.delete_outlook_record(record_id, user_id, record)
-            else:
-                return {
-                    "success": False,
-                    "code": 400,
-                    "reason": f"Unsupported connector: {connector_name}"
-                }
+            return {
+                "success": False,
+                "code": 400,
+                "reason": f"Unsupported connector: {connector_name}",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {record_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to delete record {record_id}: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Internal error: {str(e)}"
+                "reason": f"Internal error: {e!s}",
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
-        """
-        Delete a record by external ID
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: TransactionDatabase | None = None) -> None:
+        """Delete a record by external ID
         """
         try:
             self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
@@ -2158,12 +2152,11 @@ class BaseArangoService:
                 raise Exception(f"Deletion failed: {error_reason}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {e!s}")
             raise
 
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
-        """
-        Remove a user's access to a record (for inbox-based deletions)
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: TransactionDatabase | None = None) -> None:
+        """Remove a user's access to a record (for inbox-based deletions)
         This removes the user's permissions and belongsTo edges without deleting the record itself
         """
         try:
@@ -2185,10 +2178,10 @@ class BaseArangoService:
                 raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {e!s}")
             raise
 
-    async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
+    async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> dict:
         """Remove a specific user's access to a record"""
         try:
             self.logger.info(f"🚀 Removing user {user_id} access to record {record_id}")
@@ -2204,7 +2197,7 @@ class BaseArangoService:
 
             cursor = self.db.aql.execute(user_removal_query, bind_vars={
                 "record_from": f"records/{record_id}",
-                "user_to": f"users/{user_id}"
+                "user_to": f"users/{user_id}",
             })
 
             removed_permissions = list(cursor)
@@ -2212,20 +2205,18 @@ class BaseArangoService:
             if removed_permissions:
                 self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record_id}")
                 return {"success": True, "removed_permissions": len(removed_permissions)}
-            else:
-                self.logger.warning(f"⚠️ No permissions found for user {user_id} on record {record_id}")
-                return {"success": True, "removed_permissions": 0}
+            self.logger.warning(f"⚠️ No permissions found for user {user_id} on record {record_id}")
+            return {"success": True, "removed_permissions": 0}
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove user access: {str(e)}")
+            self.logger.error(f"❌ Failed to remove user access: {e!s}")
             return {
                 "success": False,
-                "reason": f"Access removal failed: {str(e)}"
+                "reason": f"Access removal failed: {e!s}",
             }
 
-    async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
-        """
-        Delete a Knowledge Base record - handles uploads and KB-specific logic
+    async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: dict) -> dict:
+        """Delete a Knowledge Base record - handles uploads and KB-specific logic
         """
         try:
             self.logger.info(f"🗂️ Deleting Knowledge Base record {record_id}")
@@ -2236,10 +2227,10 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found: {user_id}"
+                    "reason": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Find KB context for this record
             kb_context = await self._get_kb_context_for_record(record_id)
@@ -2247,7 +2238,7 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Knowledge base context not found for record {record_id}"
+                    "reason": f"Knowledge base context not found for record {record_id}",
                 }
 
             # Check KB permissions
@@ -2256,23 +2247,22 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 403,
-                    "reason": f"Insufficient permissions. User role: {user_role}"
+                    "reason": f"Insufficient permissions. User role: {user_role}",
                 }
 
             # Execute KB-specific deletion
             return await self._execute_kb_record_deletion(record_id, record, kb_context)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete KB record: {str(e)}")
+            self.logger.error(f"❌ Failed to delete KB record: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"KB record deletion failed: {str(e)}"
+                "reason": f"KB record deletion failed: {e!s}",
             }
 
-    async def _get_kb_context_for_record(self, record_id: str) -> Optional[Dict]:
-        """
-        Get KB context for a record
+    async def _get_kb_context_for_record(self, record_id: str) -> dict | None:
+        """Get KB context for a record
         """
         try:
             self.logger.info(f"🔍 Finding KB context for record {record_id}")
@@ -2303,20 +2293,19 @@ class BaseArangoService:
             if result:
                 self.logger.info(f"✅ Found KB context: {result['kb_name']}")
                 return result
-            else:
-                self.logger.warning(f"⚠️ No KB context found for record {record_id}")
-                return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get KB context for record {record_id}: {str(e)}")
+            self.logger.warning(f"⚠️ No KB context found for record {record_id}")
             return None
 
-    async def _execute_kb_record_deletion(self, record_id: str, record: Dict, kb_context: Dict) -> Dict:
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get KB context for record {record_id}: {e!s}")
+            return None
+
+    async def _execute_kb_record_deletion(self, record_id: str, record: dict, kb_context: dict) -> dict:
         """Execute KB record deletion with transaction"""
         try:
             transaction = self.db.begin_transaction(
                 write=self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["document_collections"] +
-                      self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"]
+                      self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"],
             )
 
             try:
@@ -2340,13 +2329,13 @@ class BaseArangoService:
                 try:
                     await self._publish_kb_deletion_event(record, file_record)
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish KB deletion event: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish KB deletion event: {event_error!s}")
 
                 return {
                     "success": True,
                     "record_id": record_id,
                     "connector": Connectors.KNOWLEDGE_BASE.value,
-                    "kb_context": kb_context
+                    "kb_context": kb_context,
                 }
 
             except Exception as e:
@@ -2354,10 +2343,10 @@ class BaseArangoService:
                 raise e
 
         except Exception as e:
-            self.logger.error(f"❌ KB record deletion transaction failed: {str(e)}")
+            self.logger.error(f"❌ KB record deletion transaction failed: {e!s}")
             return {
                 "success": False,
-                "reason": f"Transaction failed: {str(e)}"
+                "reason": f"Transaction failed: {e!s}",
             }
 
     async def _delete_kb_specific_edges(self, transaction, record_id: str) -> None:
@@ -2378,9 +2367,8 @@ class BaseArangoService:
                 "@edge_collection": edge_collection,
             })
 
-    async def delete_google_drive_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
-        """
-        Delete a Google Drive record - handles Drive-specific permissions and logic
+    async def delete_google_drive_record(self, record_id: str, user_id: str, record: dict) -> dict:
+        """Delete a Google Drive record - handles Drive-specific permissions and logic
         """
         try:
             self.logger.info(f"🔌 Deleting Google Drive record {record_id}")
@@ -2391,10 +2379,10 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found: {user_id}"
+                    "reason": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check Drive-specific permissions
             user_role = await self._check_drive_permissions(record_id, user_key)
@@ -2402,26 +2390,26 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 403,
-                    "reason": f"Insufficient Drive permissions. Role: {user_role}"
+                    "reason": f"Insufficient Drive permissions. Role: {user_role}",
                 }
 
             # Execute Drive-specific deletion
             return await self._execute_drive_record_deletion(record_id, record, user_role)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Drive record: {str(e)}")
+            self.logger.error(f"❌ Failed to delete Drive record: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Drive record deletion failed: {str(e)}"
+                "reason": f"Drive record deletion failed: {e!s}",
             }
 
-    async def _execute_drive_record_deletion(self, record_id: str, record: Dict, user_role: str) -> Dict:
+    async def _execute_drive_record_deletion(self, record_id: str, record: dict, user_role: str) -> dict:
         """Execute Drive record deletion with transaction"""
         try:
             transaction = self.db.begin_transaction(
                 write=self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["document_collections"] +
-                      self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["edge_collections"]
+                      self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["edge_collections"],
             )
 
             try:
@@ -2448,13 +2436,13 @@ class BaseArangoService:
                 try:
                     await self._publish_drive_deletion_event(record, file_record)
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish Drive deletion event: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish Drive deletion event: {event_error!s}")
 
                 return {
                     "success": True,
                     "record_id": record_id,
                     "connector": Connectors.GOOGLE_DRIVE.value,
-                    "user_role": user_role
+                    "user_role": user_role,
                 }
 
             except Exception as e:
@@ -2462,10 +2450,10 @@ class BaseArangoService:
                 raise e
 
         except Exception as e:
-            self.logger.error(f"❌ Drive record deletion transaction failed: {str(e)}")
+            self.logger.error(f"❌ Drive record deletion transaction failed: {e!s}")
             return {
                 "success": False,
-                "reason": f"Transaction failed: {str(e)}"
+                "reason": f"Transaction failed: {e!s}",
             }
 
     async def _delete_drive_specific_edges(self, transaction, record_id: str) -> None:
@@ -2477,32 +2465,32 @@ class BaseArangoService:
             CollectionNames.USER_DRIVE_RELATION.value: {
                 "filter": "edge._to == CONCAT('drives/', @record_id)",
                 "bind_vars": {"record_id": record_id},
-                "description": "Drive user relations"
+                "description": "Drive user relations",
             },
             CollectionNames.IS_OF_TYPE.value: {
                 "filter": "edge._from == @record_from",
                 "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "IS_OF_TYPE edges"
+                "description": "IS_OF_TYPE edges",
             },
             CollectionNames.PERMISSIONS.value: {
                 "filter": "edge._from == @record_from",
                 "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "Permission edges"
+                "description": "Permission edges",
             },
             CollectionNames.BELONGS_TO.value: {
                 "filter": "edge._from == @record_from",
                 "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "Belongs to edges"
+                "description": "Belongs to edges",
             },
             # Default strategy for bidirectional edges
             "default": {
                 "filter": "edge._from == @record_from OR edge._to == @record_to",
                 "bind_vars": {
                     "record_from": f"records/{record_id}",
-                    "record_to": f"records/{record_id}"
+                    "record_to": f"records/{record_id}",
                 },
-                "description": "Bidirectional edges"
-            }
+                "description": "Bidirectional edges",
+            },
         }
 
         # Single query template for all edge collections
@@ -2526,7 +2514,7 @@ class BaseArangoService:
                 # Prepare bind variables
                 bind_vars = {
                     "@edge_collection": edge_collection,
-                    **strategy["bind_vars"]
+                    **strategy["bind_vars"],
                 }
 
                 self.logger.debug(f"🔍 Deleting {strategy['description']} from {edge_collection}")
@@ -2543,7 +2531,7 @@ class BaseArangoService:
                     self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
+                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {e!s}")
                 self.logger.error(f"❌ Strategy: {strategy}")
                 self.logger.error(f"❌ Bind vars: {bind_vars}")
                 raise
@@ -2564,9 +2552,8 @@ class BaseArangoService:
             "@anyone": CollectionNames.ANYONE.value,
         })
 
-    async def delete_gmail_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
-        """
-        Delete a Gmail record - handles Gmail-specific permissions and logic
+    async def delete_gmail_record(self, record_id: str, user_id: str, record: dict) -> dict:
+        """Delete a Gmail record - handles Gmail-specific permissions and logic
         """
         try:
             self.logger.info(f"📧 Deleting Gmail record {record_id}")
@@ -2577,10 +2564,10 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found: {user_id}"
+                    "reason": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check Gmail-specific permissions
             user_role = await self._check_gmail_permissions(record_id, user_key)
@@ -2588,26 +2575,26 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 403,
-                    "reason": f"Insufficient Gmail permissions. Role: {user_role}"
+                    "reason": f"Insufficient Gmail permissions. Role: {user_role}",
                 }
 
             # Execute Gmail-specific deletion
             return await self._execute_gmail_record_deletion(record_id, record, user_role)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Gmail record: {str(e)}")
+            self.logger.error(f"❌ Failed to delete Gmail record: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Gmail record deletion failed: {str(e)}"
+                "reason": f"Gmail record deletion failed: {e!s}",
             }
 
-    async def _execute_gmail_record_deletion(self, record_id: str, record: Dict, user_role: str) -> Dict:
+    async def _execute_gmail_record_deletion(self, record_id: str, record: dict, user_role: str) -> dict:
         """Execute Gmail record deletion with transaction"""
         try:
             transaction = self.db.begin_transaction(
                 write=self.connector_delete_permissions[Connectors.GOOGLE_MAIL.value]["document_collections"] +
-                      self.connector_delete_permissions[Connectors.GOOGLE_MAIL.value]["edge_collections"]
+                      self.connector_delete_permissions[Connectors.GOOGLE_MAIL.value]["edge_collections"],
             )
 
             try:
@@ -2636,13 +2623,13 @@ class BaseArangoService:
                 try:
                     await self._publish_gmail_deletion_event(record, mail_record, file_record)
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish Gmail deletion event: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish Gmail deletion event: {event_error!s}")
 
                 return {
                     "success": True,
                     "record_id": record_id,
                     "connector": Connectors.GOOGLE_MAIL.value,
-                    "user_role": user_role
+                    "user_role": user_role,
                 }
 
             except Exception as e:
@@ -2650,10 +2637,10 @@ class BaseArangoService:
                 raise e
 
         except Exception as e:
-            self.logger.error(f"❌ Gmail record deletion transaction failed: {str(e)}")
+            self.logger.error(f"❌ Gmail record deletion transaction failed: {e!s}")
             return {
                 "success": False,
-                "reason": f"Transaction failed: {str(e)}"
+                "reason": f"Transaction failed: {e!s}",
             }
 
     async def _delete_gmail_specific_edges(self, transaction, record_id: str) -> None:
@@ -2665,36 +2652,36 @@ class BaseArangoService:
             CollectionNames.IS_OF_TYPE.value: {
                 "filter": "edge._from == @record_from",
                 "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "IS_OF_TYPE edges"
+                "description": "IS_OF_TYPE edges",
             },
             CollectionNames.RECORD_RELATIONS.value: {
                 "filter": "(edge._from == @record_from OR edge._to == @record_to) AND edge.relationType IN @relation_types",
                 "bind_vars": {
                     "record_from": f"records/{record_id}",
                     "record_to": f"records/{record_id}",
-                    "relation_types": ["SIBLING", "ATTACHMENT"]  # Gmail-specific relation types
+                    "relation_types": ["SIBLING", "ATTACHMENT"],  # Gmail-specific relation types
                 },
-                "description": "Gmail record relations (SIBLING/ATTACHMENT)"
+                "description": "Gmail record relations (SIBLING/ATTACHMENT)",
             },
             CollectionNames.PERMISSIONS.value: {
                 "filter": "edge._from == @record_from",
                 "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "Permission edges"
+                "description": "Permission edges",
             },
             CollectionNames.BELONGS_TO.value: {
                 "filter": "edge._from == @record_from",
                 "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "Belongs to edges"
+                "description": "Belongs to edges",
             },
             # Default strategy for any other collections
             "default": {
                 "filter": "edge._from == @record_from OR edge._to == @record_to",
                 "bind_vars": {
                     "record_from": f"records/{record_id}",
-                    "record_to": f"records/{record_id}"
+                    "record_to": f"records/{record_id}",
                 },
-                "description": "Bidirectional edges"
-            }
+                "description": "Bidirectional edges",
+            },
         }
 
         # Single query template for all edge collections
@@ -2718,7 +2705,7 @@ class BaseArangoService:
                 # Prepare bind variables
                 bind_vars = {
                     "@edge_collection": edge_collection,
-                    **strategy["bind_vars"]
+                    **strategy["bind_vars"],
                 }
 
                 self.logger.debug(f"🔍 Deleting {strategy['description']} from {edge_collection}")
@@ -2735,16 +2722,15 @@ class BaseArangoService:
                     self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
+                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {e!s}")
                 self.logger.error(f"❌ Strategy: {strategy}")
                 self.logger.error(f"❌ Bind vars: {bind_vars}")
                 raise
 
         self.logger.info(f"✅ Gmail edge deletion completed: {total_deleted} total edges deleted for record {record_id}")
 
-    async def delete_outlook_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
-        """
-        Delete an Outlook record - handles email and its attachments.
+    async def delete_outlook_record(self, record_id: str, user_id: str, record: dict) -> dict:
+        """Delete an Outlook record - handles email and its attachments.
         """
         try:
             self.logger.info(f"📧 Deleting Outlook record {record_id}")
@@ -2755,10 +2741,10 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found: {user_id}"
+                    "reason": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check if user has OWNER permission
             user_role = await self._check_record_permission(record_id, user_key)
@@ -2766,21 +2752,21 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "code": 403,
-                    "reason": f"Only mailbox owner can delete emails. Role: {user_role}"
+                    "reason": f"Only mailbox owner can delete emails. Role: {user_role}",
                 }
 
             # Execute deletion
             return await self._execute_outlook_record_deletion(record_id, record)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete Outlook record: {str(e)}")
+            self.logger.error(f"❌ Failed to delete Outlook record: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Outlook record deletion failed: {str(e)}"
+                "reason": f"Outlook record deletion failed: {e!s}",
             }
 
-    async def _execute_outlook_record_deletion(self, record_id: str, record: Dict) -> Dict:
+    async def _execute_outlook_record_deletion(self, record_id: str, record: dict) -> dict:
         """Execute Outlook record deletion - deletes email and all attachments"""
         try:
             # Define collections
@@ -2797,7 +2783,7 @@ class BaseArangoService:
             ]
 
             transaction = self.db.begin_transaction(
-                write=outlook_doc_collections + outlook_edge_collections
+                write=outlook_doc_collections + outlook_edge_collections,
             )
 
             try:
@@ -2810,7 +2796,7 @@ class BaseArangoService:
                 """
 
                 cursor = transaction.aql.execute(attachments_query, bind_vars={
-                    "record_from": f"records/{record_id}"
+                    "record_from": f"records/{record_id}",
                 })
                 attachment_ids = list(cursor)
 
@@ -2838,7 +2824,7 @@ class BaseArangoService:
                 return {
                     "success": True,
                     "record_id": record_id,
-                    "attachments_deleted": len(attachment_ids)
+                    "attachments_deleted": len(attachment_ids),
                 }
 
             except Exception as e:
@@ -2846,10 +2832,10 @@ class BaseArangoService:
                 raise e
 
         except Exception as e:
-            self.logger.error(f"❌ Outlook deletion transaction failed: {str(e)}")
+            self.logger.error(f"❌ Outlook deletion transaction failed: {e!s}")
             return {
                 "success": False,
-                "reason": f"Transaction failed: {str(e)}"
+                "reason": f"Transaction failed: {e!s}",
             }
 
     async def _delete_outlook_edges(self, transaction, record_id: str) -> None:
@@ -2903,7 +2889,7 @@ class BaseArangoService:
 
         self.logger.info(f"Total edges deleted for record {record_id}: {total_deleted}")
 
-    async def _check_record_permission(self, record_id: str, user_key: str) -> Optional[str]:
+    async def _check_record_permission(self, record_id: str, user_key: str) -> str | None:
         """Check user's permission role on a record"""
         try:
             query = f"""
@@ -2917,7 +2903,7 @@ class BaseArangoService:
 
             cursor = self.db.aql.execute(query, bind_vars={
                 "record_from": f"records/{record_id}",
-                "user_to": f"users/{user_key}"
+                "user_to": f"users/{user_key}",
             })
 
             return next(cursor, None)
@@ -2962,9 +2948,8 @@ class BaseArangoService:
             "@records_collection": CollectionNames.RECORDS.value,
         })
 
-    async def _check_connector_reindex_permissions(self, user_key: str, org_id: str, connector: str, origin: str) -> Dict:
-        """
-        Simple permission check for connector reindex operations
+    async def _check_connector_reindex_permissions(self, user_key: str, org_id: str, connector: str, origin: str) -> dict:
+        """Simple permission check for connector reindex operations
         Permission rules:
         1. Organization OWNER - Can reindex any connector
         2. Knowledge Base OWNER - Can reindex KB records only
@@ -3079,16 +3064,15 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Error checking connector reindex permissions: {str(e)}")
+            self.logger.error(f"❌ Error checking connector reindex permissions: {e!s}")
             return {
                 "allowed": False,
-                "reason": f"Permission check failed: {str(e)}",
-                "permission_level": "ERROR"
+                "reason": f"Permission check failed: {e!s}",
+                "permission_level": "ERROR",
             }
 
-    async def _check_record_permissions(self, record_id: str, user_key: str, check_drive_inheritance: bool = True) -> Dict:
-        """
-        Generic permission checker for any record type.
+    async def _check_record_permissions(self, record_id: str, user_key: str, check_drive_inheritance: bool = True) -> dict:
+        """Generic permission checker for any record type.
         Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
 
         Args:
@@ -3098,6 +3082,7 @@ class BaseArangoService:
 
         Returns:
             Dict with 'permission' (role) and 'source' (where permission came from)
+
         """
         try:
             self.logger.info(f"🔍 Checking permissions for record {record_id} and user {user_key}")
@@ -3320,21 +3305,19 @@ class BaseArangoService:
                 source = result["source"]
                 self.logger.info(f"✅ Drive permission found: {permission} (via {source})")
                 return permission
-            else:
-                self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
-                return None
+            self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
+            return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to check permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to check permissions: {e!s}")
             return {
                 "permission": None,
                 "source": "ERROR",
-                "error": str(e)
+                "error": str(e),
             }
 
-    async def _check_drive_permissions(self, record_id: str, user_key: str) -> Optional[str]:
-        """
-        Check Google Drive specific permissions
+    async def _check_drive_permissions(self, record_id: str, user_key: str) -> str | None:
+        """Check Google Drive specific permissions
         Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, Drive-level access
         """
         try:
@@ -3460,17 +3443,15 @@ class BaseArangoService:
                 source = result["source"]
                 self.logger.info(f"✅ Drive permission found: {permission} (via {source})")
                 return permission
-            else:
-                self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
-                return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to check Drive permissions: {str(e)}")
+            self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
             return None
 
-    async def _check_gmail_permissions(self, record_id: str, user_key: str) -> Optional[str]:
-        """
-        Check Gmail specific permissions
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check Drive permissions: {e!s}")
+            return None
+
+    async def _check_gmail_permissions(self, record_id: str, user_key: str) -> str | None:
+        """Check Gmail specific permissions
         Gmail permission model: User must be sender, recipient (to/cc/bcc), or have explicit permissions
         """
         try:
@@ -3603,19 +3584,18 @@ class BaseArangoService:
                     self.logger.info(f"✅ Gmail permission found: {permission} (via {source})")
 
                 return permission
-            else:
-                self.logger.warning(f"⚠️ No Gmail permissions found for user {user_key} on record {record_id}")
-                return None
+            self.logger.warning(f"⚠️ No Gmail permissions found for user {user_key} on record {record_id}")
+            return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to check Gmail permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to check Gmail permissions: {e!s}")
             return None
 
     async def _create_deleted_record_event_payload(
         self,
-        record: Dict,
-        file_record: Optional[Dict] = None
-    ) -> Dict:
+        record: dict,
+        file_record: dict | None = None,
+    ) -> dict:
         """Create deleted record event payload matching Node.js format"""
         try:
             # Get extension and mimeType from file record
@@ -3635,20 +3615,20 @@ class BaseArangoService:
                 "virtualRecordId": record.get("virtualRecordId"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            self.logger.error(f"❌ Failed to create deleted record event payload: {e!s}")
             return {}
 
     async def _download_from_signed_url(
-        self, signed_url: str, request: Request
+        self, signed_url: str, request: Request,
     ) -> bytes:
-        """
-        Download file from signed URL with exponential backoff retry
+        """Download file from signed URL with exponential backoff retry
 
         Args:
             signed_url: The signed URL to download from
             record_id: Record ID for logging
         Returns:
             bytes: The downloaded file content
+
         """
         chunk_size = 1024 * 1024 * 3  # 3MB chunks
         max_retries = 3
@@ -3669,14 +3649,14 @@ class BaseArangoService:
                         async with session.get(signed_url, headers=request.headers) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
-                                    f"Failed to download file: {response.status}"
+                                    f"Failed to download file: {response.status}",
                                 )
                             self.logger.info(f"Response {response}")
 
                             content_length = response.headers.get("Content-Length")
                             if content_length:
                                 self.logger.info(
-                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
+                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB",
                                 )
 
                             last_logged_size = 0
@@ -3686,36 +3666,36 @@ class BaseArangoService:
                             self.logger.info("Starting chunked download...")
                             try:
                                 async for chunk in response.content.iter_chunked(
-                                    chunk_size
+                                    chunk_size,
                                 ):
                                     file_buffer.write(chunk)
                                     total_size += len(chunk)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
-                                            f"Total size so far: {total_size / (1024*1024):.2f} MB"
+                                            f"Total size so far: {total_size / (1024*1024):.2f} MB",
                                         )
                                         last_logged_size = total_size
-                            except IOError as io_err:
+                            except OSError as io_err:
                                 raise aiohttp.ClientError(
-                                    f"IO error during chunk download: {str(io_err)}"
+                                    f"IO error during chunk download: {io_err!s}",
                                 )
 
                             file_content = file_buffer.getvalue()
                             self.logger.info(
-                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
+                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB",
                             )
                             return file_content
 
                     except aiohttp.ServerDisconnectedError as sde:
-                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                        raise aiohttp.ClientError(f"Server disconnected: {sde!s}")
                     except aiohttp.ClientConnectorError as cce:
-                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+                        raise aiohttp.ClientError(f"Connection error: {cce!s}")
 
-            except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
+            except (OSError, aiohttp.ClientError, asyncio.TimeoutError) as e:
                 error_type = type(e).__name__
                 self.logger.warning(
-                    f"Download attempt {attempt + 1} failed with {error_type}: {str(e)}. "
-                    f"Retrying in {delay} seconds..."
+                    f"Download attempt {attempt + 1} failed with {error_type}: {e!s}. "
+                    f"Retrying in {delay} seconds...",
                 )
 
                 await asyncio.sleep(delay)
@@ -3724,7 +3704,7 @@ class BaseArangoService:
                 if not file_buffer.closed:
                     file_buffer.close()
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional[Request] = None) -> Dict:
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Request | None = None) -> dict:
         """Create reindex event payload"""
         try:
             # Get extension and mimeType from file record
@@ -3735,7 +3715,7 @@ class BaseArangoService:
                 mime_type = file_record.get("mimeType", "")
 
             endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
             signed_url_route = ""
             file_content = ""
@@ -3753,12 +3733,12 @@ class BaseArangoService:
                     # Convert bytes to string for JSON serialization
                     try:
                         # For mail content, decode as UTF-8 text
-                        file_content = file_content_bytes.decode('utf-8', errors='replace')
+                        file_content = file_content_bytes.decode("utf-8", errors="replace")
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        self.logger.warning(f"Failed to decode file content as UTF-8: {decode_error!s}")
                         # Fallback: encode as base64 string for binary content
                         import base64
-                        file_content = base64.b64encode(file_content_bytes).decode('utf-8')
+                        file_content = base64.b64encode(file_content_bytes).decode("utf-8")
 
 
 
@@ -3775,14 +3755,14 @@ class BaseArangoService:
                 "body": file_content,
                 "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms()))),
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+            self.logger.error(f"❌ Failed to create reindex event payload: {e!s}")
             raise
 
-    async def _create_reindex_failed_event_payload(self, orgId:str, connector: str, origin: str) -> Dict:
+    async def _create_reindex_failed_event_payload(self, orgId:str, connector: str, origin: str) -> dict:
         """Create reindex connector records event payload"""
         try:
 
@@ -3792,14 +3772,14 @@ class BaseArangoService:
                 "connector": connector,
                 "createdAtTimestamp": str(get_epoch_timestamp_in_ms()),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(get_epoch_timestamp_in_ms())
+                "sourceCreatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+            self.logger.error(f"❌ Failed to create reindex event payload: {e!s}")
             raise
 
-    async def _publish_sync_event(self, event_type: str, payload: Dict) -> None:
+    async def _publish_sync_event(self, event_type: str, payload: dict) -> None:
         """Publish record event to Kafka"""
         try:
             timestamp = get_epoch_timestamp_in_ms()
@@ -3807,7 +3787,7 @@ class BaseArangoService:
             event = {
                 "eventType": event_type,
                 "timestamp": timestamp,
-                "payload": payload
+                "payload": payload,
             }
 
             if self.kafka_service:
@@ -3817,9 +3797,9 @@ class BaseArangoService:
                 self.logger.debug("Skipping Kafka publish for sync-events: kafka_service is not configured")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
+            self.logger.error(f"❌ Failed to publish {event_type} event: {e!s}")
 
-    async def _publish_kb_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
+    async def _publish_kb_deletion_event(self, record: dict, file_record: dict | None) -> None:
         """Publish KB-specific deletion event"""
         try:
             payload = await self._create_deleted_record_event_payload(record, file_record)
@@ -3830,9 +3810,9 @@ class BaseArangoService:
 
                 await self._publish_record_event("deleteRecord", payload)
         except Exception as e:
-            self.logger.error(f"❌ Failed to publish KB deletion event: {str(e)}")
+            self.logger.error(f"❌ Failed to publish KB deletion event: {e!s}")
 
-    async def _publish_drive_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
+    async def _publish_drive_deletion_event(self, record: dict, file_record: dict | None) -> None:
         """Publish Drive-specific deletion event"""
         try:
             payload = await self._create_deleted_record_event_payload(record, file_record)
@@ -3849,9 +3829,9 @@ class BaseArangoService:
 
                 await self._publish_record_event("deleteRecord", payload)
         except Exception as e:
-            self.logger.error(f"❌ Failed to publish Drive deletion event: {str(e)}")
+            self.logger.error(f"❌ Failed to publish Drive deletion event: {e!s}")
 
-    async def _publish_gmail_deletion_event(self, record: Dict, mail_record: Optional[Dict], file_record: Optional[Dict]) -> None:
+    async def _publish_gmail_deletion_event(self, record: dict, mail_record: dict | None, file_record: dict | None) -> None:
         """Publish Gmail-specific deletion event"""
         try:
             # Use mail_record or file_record for attachment info
@@ -3877,13 +3857,13 @@ class BaseArangoService:
 
                 await self._publish_record_event("deleteRecord", payload)
         except Exception as e:
-            self.logger.error(f"❌ Failed to publish Gmail deletion event: {str(e)}")
+            self.logger.error(f"❌ Failed to publish Gmail deletion event: {e!s}")
 
     async def batch_upsert_nodes(
         self,
-        nodes: List[Dict],
+        nodes: list[dict],
         collection: str,
-        transaction: Optional[TransactionDatabase] = None,
+        transaction: TransactionDatabase | None = None,
     ) -> bool | None:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
@@ -3920,9 +3900,9 @@ class BaseArangoService:
 
     async def batch_create_edges(
         self,
-        edges: List[Dict],
+        edges: list[dict],
         collection: str,
-        transaction: Optional[TransactionDatabase] = None,
+        transaction: TransactionDatabase | None = None,
     ) -> bool | None:
         """Batch create PARENT_CHILD relationships"""
         try:
@@ -3961,10 +3941,9 @@ class BaseArangoService:
         thread_id: str,
         org_id: str,
         user_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[Record]:
-        """
-        Get mail record by conversation_index and thread_id for a specific user
+        transaction: TransactionDatabase | None = None,
+    ) -> Record | None:
+        """Get mail record by conversation_index and thread_id for a specific user
 
         Args:
             connector_name: Connector name
@@ -3976,6 +3955,7 @@ class BaseArangoService:
 
         Returns:
             Optional[Record]: Mail record if found, None otherwise
+
         """
         try:
 
@@ -4014,8 +3994,7 @@ class BaseArangoService:
 
             if result:
                 return Record.from_arango_base_record(result)
-            else:
-                return None
+            return None
 
         except Exception as e:
             self.logger.error(
@@ -4030,10 +4009,9 @@ class BaseArangoService:
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
-        """
-        Get the owner's source_user_id (Graph User ID) from permission edges.
+        transaction: TransactionDatabase | None = None,
+    ) -> str | None:
+        """Get the owner's source_user_id (Graph User ID) from permission edges.
 
         Args:
             record_id: The record ID
@@ -4041,6 +4019,7 @@ class BaseArangoService:
 
         Returns:
             Optional[str]: source_user_id (Graph User ID) of the owner, None if not found
+
         """
         try:
             query = f"""
@@ -4065,10 +4044,9 @@ class BaseArangoService:
 
 
     async def get_record_by_path(
-        self, connector_name: Connectors, path: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Dict:
-        """
-        Get a record from the FILES collection using its path.
+        self, connector_name: Connectors, path: str, transaction: TransactionDatabase | None = None,
+    ) -> dict:
+        """Get a record from the FILES collection using its path.
 
         Args:
             connector_name (Connectors): The name of the connector.
@@ -4077,10 +4055,11 @@ class BaseArangoService:
 
         Returns:
             Optional[Record]: The Record object if found, otherwise None.
+
         """
         try:
             self.logger.info(
-                "🚀 Retrieving record by path for connector %s and path %s", connector_name.value, path
+                "🚀 Retrieving record by path for connector %s and path %s", connector_name.value, path,
             )
 
             query = f"""
@@ -4091,36 +4070,34 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"path": path}
+                query, bind_vars={"path": path},
             )
             result = next(cursor, None)
 
             if result:
 
                 self.logger.info(
-                    "✅ Successfully retrieved file record for path: %s", path
+                    "✅ Successfully retrieved file record for path: %s", path,
                 )
                 # record = await self.get_record_by_id(result["_key"])
 
                 # return record.id
                 return result
-            else:
-                self.logger.warning(
-                    "⚠️ No record found for path: %s", path
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No record found for path: %s", path,
+            )
+            return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve record for path %s: %s", path, str(e)
+                "❌ Failed to retrieve record for path %s: %s", path, str(e),
             )
             return None
 
     async def get_record_by_external_id(
-        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Record]:
-        """
-        Get internal file key using the external file ID
+        self, connector_name: Connectors, external_id: str, transaction: TransactionDatabase | None = None,
+    ) -> Record | None:
+        """Get internal file key using the external file ID
 
         Args:
             external_file_id (str): External file ID to look up
@@ -4128,10 +4105,11 @@ class BaseArangoService:
 
         Returns:
             Optional[str]: Internal file key if found, None otherwise
+
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s %s", connector_name, external_id
+                "🚀 Retrieving internal key for external file ID %s %s", connector_name, external_id,
             )
 
             query = f"""
@@ -4142,32 +4120,30 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value},
             )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_name, external_id,
                 )
                 return Record.from_arango_base_record(result)
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s %s", connector_name, external_id
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No internal key found for external file ID %s %s", connector_name, external_id,
+            )
+            return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e),
             )
             return None
 
     async def get_record_by_id(
-        self, id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Record]:
-        """
-        Get internal file key using the id
+        self, id: str, transaction: TransactionDatabase | None = None,
+    ) -> Record | None:
+        """Get internal file key using the id
 
         Args:
             id (str): The internal record ID (_key) to look up
@@ -4175,10 +4151,11 @@ class BaseArangoService:
 
         Returns:
             Optional[str]: Internal file key if found, None otherwise
+
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for id %s", id
+                "🚀 Retrieving internal key for id %s", id,
             )
 
             query = f"""
@@ -4189,34 +4166,32 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"id": id}
+                query, bind_vars={"id": id},
             )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for id %s", id
+                    "✅ Successfully retrieved internal key for id %s", id,
                 )
                 return Record.from_arango_base_record(result)
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for id %s", id
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for id %s: %s", id, str(e)
+            self.logger.warning(
+                "⚠️ No internal key found for id %s", id,
             )
             return None
 
-    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
-        """
-        Get internal record group key using the external record group ID
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for id %s: %s", id, str(e),
+            )
+            return None
+
+    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str, transaction: TransactionDatabase | None = None) -> RecordGroup | None:
+        """Get internal record group key using the external record group ID
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external record group ID %s %s", connector_name, external_id
+                "🚀 Retrieving internal key for external record group ID %s %s", connector_name, external_id,
             )
             query = f"""
             FOR record_group IN {CollectionNames.RECORD_GROUPS.value}
@@ -4228,17 +4203,16 @@ class BaseArangoService:
             result = next(cursor, None)
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_name, external_id,
                 )
                 return RecordGroup.from_arango_base_record_group(result)
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external record group ID %s %s", connector_name, external_id
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No internal key found for external record group ID %s %s", connector_name, external_id,
+            )
+            return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e),
             )
             return None
 
@@ -4246,14 +4220,13 @@ class BaseArangoService:
         self,
         connector_name: Connectors,
         external_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[AppUserGroup]:
-        """
-        Get a user group from the GROUPS collection using its external (source) ID.
+        transaction: TransactionDatabase | None = None,
+    ) -> AppUserGroup | None:
+        """Get a user group from the GROUPS collection using its external (source) ID.
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user group for external ID %s %s", connector_name, external_id
+                "🚀 Retrieving user group for external ID %s %s", connector_name, external_id,
             )
 
             # Query the GROUPS collection using the schema fields
@@ -4268,7 +4241,7 @@ class BaseArangoService:
 
 
             cursor = db.aql.execute(query,
-                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                bind_vars={"external_id": external_id, "connector_name": connector_name.value},
             )
 
             result = next(cursor, None)
@@ -4276,17 +4249,16 @@ class BaseArangoService:
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved user group for external ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved user group for external ID %s %s", connector_name, external_id,
                 )
                 return AppUserGroup.from_arango_base_user_group(result)
-            else:
-                self.logger.warning(
-                    "⚠️ No user group found for external ID %s %s", connector_name, external_id
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No user group found for external ID %s %s", connector_name, external_id,
+            )
+            return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e),
             )
             return None
 
@@ -4294,11 +4266,10 @@ class BaseArangoService:
         self,
         app_name: str,
         app_group: str,
-        auth_type: Optional[str] = None,
-        app_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get an existing app by name or create it if it doesn't exist.
+        auth_type: str | None = None,
+        app_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Get an existing app by name or create it if it doesn't exist.
 
         Args:
             app_name: Name of the application
@@ -4308,6 +4279,7 @@ class BaseArangoService:
 
         Returns:
             App document if successful
+
         """
         try:
             # First try to get existing app
@@ -4332,16 +4304,16 @@ class BaseArangoService:
 
             # Create app document
             doc = {
-                '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
-                'name': app_name,
-                'type': app_type or app_name.upper().replace(' ', '_'),
-                'appGroup': app_group,
-                'appGroupId': app_group_id,
-                'authType': auth_type or 'oauth',
-                'isActive': False,
-                'isConfigured': False,
-                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
-                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
+                "_key": f"{org_id}_{app_name.replace(' ', '_').upper()}",
+                "name": app_name,
+                "type": app_type or app_name.upper().replace(" ", "_"),
+                "appGroup": app_group,
+                "appGroupId": app_group_id,
+                "authType": auth_type or "oauth",
+                "isActive": False,
+                "isConfigured": False,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
             # Insert app document
@@ -4370,13 +4342,12 @@ class BaseArangoService:
             self.logger.error(f"Error in get_or_create_app_by_name for {app_name}: {e}")
             return None
 
-    async def get_user_by_email(self, email: str, transaction: Optional[TransactionDatabase] = None) -> Optional[User]:
-        """
-        Get internal user key using the email
+    async def get_user_by_email(self, email: str, transaction: TransactionDatabase | None = None) -> User | None:
+        """Get internal user key using the email
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for email %s", email
+                "🚀 Retrieving internal key for email %s", email,
             )
             query = f"""
             FOR user IN {CollectionNames.USERS.value}
@@ -4388,17 +4359,16 @@ class BaseArangoService:
             result = next(cursor, None)
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for email %s", email
+                    "✅ Successfully retrieved internal key for email %s", email,
                 )
                 return User.from_arango_user(result)
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for email %s", email
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No internal key found for email %s", email,
+            )
+            return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for email %s: %s", email, str(e)
+                "❌ Failed to retrieve internal key for email %s: %s", email, str(e),
             )
             return None
 
@@ -4406,14 +4376,13 @@ class BaseArangoService:
         self,
         email: str,
         app_name: Connectors,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[AppUser]:
-        """
-        Get app user by email and app name, including sourceUserId from edge
+        transaction: TransactionDatabase | None = None,
+    ) -> AppUser | None:
+        """Get app user by email and app name, including sourceUserId from edge
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user for email %s and app %s", email, app_name
+                "🚀 Retrieving user for email %s and app %s", email, app_name,
             )
 
             query = """
@@ -4451,16 +4420,15 @@ class BaseArangoService:
                 "app_name": app_name.value,
                 "@apps": CollectionNames.APPS.value,
                 "@users": CollectionNames.USERS.value,
-                "@user_app_relation": CollectionNames.USER_APP_RELATION.value
+                "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
             })
 
             result = next(cursor, None)
             if result:
                 self.logger.info("✅ Successfully retrieved user for email %s and app %s", email, app_name)
                 return AppUser.from_arango_user(result)
-            else:
-                self.logger.warning("⚠️ No user found for email %s and app %s", email, app_name)
-                return None
+            self.logger.warning("⚠️ No user found for email %s and app %s", email, app_name)
+            return None
         except Exception as e:
             self.logger.error("❌ Failed to retrieve user for email %s and app %s: %s", email, app_name, str(e))
             return None
@@ -4469,10 +4437,9 @@ class BaseArangoService:
         self,
         source_user_id: str,
         connector_name: Connectors,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[User]:
-        """
-        Get a user by their source system ID (sourceUserId field).
+        transaction: TransactionDatabase | None = None,
+    ) -> User | None:
+        """Get a user by their source system ID (sourceUserId field).
 
         Args:
             source_user_id: The user ID from the source system
@@ -4482,11 +4449,12 @@ class BaseArangoService:
 
         Returns:
             User object if found, None otherwise
+
         """
         try:
             self.logger.info(
                 "🚀 Retrieving user by source_id %s for connector %s",
-                source_user_id, connector_name.value
+                source_user_id, connector_name.value,
             )
 
             user_query = """
@@ -4511,21 +4479,19 @@ class BaseArangoService:
             if user_doc:
                 self.logger.info("✅ Successfully retrieved user by source_id %s", source_user_id)
                 return User.from_arango_user(user_doc)
-            else:
-                self.logger.warning("⚠️ No user found for source_id %s", source_user_id)
-                return None
+            self.logger.warning("⚠️ No user found for source_id %s", source_user_id)
+            return None
 
         except Exception as e:
             self.logger.error(
                 "❌ Failed to get user by source_id %s: %s",
                 source_user_id, str(e),
-                exc_info=True
+                exc_info=True,
             )
             return None
 
-    async def get_users(self, org_id, active=True) -> List[Dict]:
-        """
-        Fetch all active users from the database who belong to the organization.
+    async def get_users(self, org_id, active=True) -> list[dict]:
+        """Fetch all active users from the database who belong to the organization.
 
         Args:
             org_id (str): Organization ID
@@ -4533,6 +4499,7 @@ class BaseArangoService:
 
         Returns:
             List[Dict]: List of user documents with their details
+
         """
         try:
             self.logger.info("🚀 Fetching all users from database")
@@ -4557,9 +4524,8 @@ class BaseArangoService:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
 
-    async def get_app_users(self, org_id, app_name: Connectors) -> List[Dict]:
-        """
-        Fetch all users from the database who belong to the organization
+    async def get_app_users(self, org_id, app_name: Connectors) -> list[dict]:
+        """Fetch all users from the database who belong to the organization
         and are connected to the specified app via userAppRelation edge.
 
         Args:
@@ -4568,6 +4534,7 @@ class BaseArangoService:
 
         Returns:
             List[Dict]: List of user documents with their details and sourceUserId
+
         """
         try:
             self.logger.info(f"🚀 Fetching users connected to {app_name.value} app")
@@ -4606,7 +4573,7 @@ class BaseArangoService:
                 "app_name": app_name.value,
                 "@apps": CollectionNames.APPS.value,
                 "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
-                "@belongs_to": CollectionNames.BELONGS_TO.value
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
             })
 
             user_data_list  = list(cursor)
@@ -4615,17 +4582,16 @@ class BaseArangoService:
             return users
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {e!s}")
             return []
 
     async def get_user_groups(
         self,
         app_name: Connectors,
         org_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> List[AppUserGroup]:
-        """
-        Get all user groups for a specific connector and organization.
+        transaction: TransactionDatabase | None = None,
+    ) -> list[AppUserGroup]:
+        """Get all user groups for a specific connector and organization.
 
         Args:
             app_name: Connector name
@@ -4634,10 +4600,11 @@ class BaseArangoService:
 
         Returns:
             List[AppUserGroup]: List of user group entities
+
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user groups for connector %s and org %s", app_name.value, org_id
+                "🚀 Retrieving user groups for connector %s and org %s", app_name.value, org_id,
             )
 
             query = f"""
@@ -4653,26 +4620,25 @@ class BaseArangoService:
                 query,
                 bind_vars={
                     "connector_name": app_name.value,
-                    "org_id": org_id
-                }
+                    "org_id": org_id,
+                },
             )
 
             groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in cursor]
 
             self.logger.info(
-                "✅ Successfully retrieved %d user groups for connector %s", len(groups), app_name.value
+                "✅ Successfully retrieved %d user groups for connector %s", len(groups), app_name.value,
             )
             return groups
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve user groups for connector %s: %s", app_name.value, str(e)
+                "❌ Failed to retrieve user groups for connector %s: %s", app_name.value, str(e),
             )
             return []
 
-    async def upsert_sync_point(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Upsert a sync point node based on sync_point_key
+    async def upsert_sync_point(self, sync_point_key: str, sync_point_data: dict, collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Upsert a sync point node based on sync_point_key
         """
         try:
             self.logger.info("🚀 Upserting sync point node: %s", sync_point_key)
@@ -4680,7 +4646,7 @@ class BaseArangoService:
             # Prepare the document data with the sync_point_key included
             document_data = {
                 **sync_point_data,
-                "syncPointKey": sync_point_key  # Ensure the key is in the document
+                "syncPointKey": sync_point_key,  # Ensure the key is in the document
             }
 
             query = """
@@ -4695,7 +4661,7 @@ class BaseArangoService:
             cursor = db.aql.execute(query, bind_vars={
                 "sync_point_key": sync_point_key,
                 "document_data": document_data,
-                "@collection": collection
+                "@collection": collection,
             })
             result = next(cursor, None)
 
@@ -4703,17 +4669,15 @@ class BaseArangoService:
                 action = result.get("action", "unknown")
                 self.logger.info("✅ Successfully %s sync point node: %s", action, sync_point_key)
                 return True
-            else:
-                self.logger.warning("⚠️ Failed to upsert sync point node: %s", sync_point_key)
-                return False
+            self.logger.warning("⚠️ Failed to upsert sync point node: %s", sync_point_key)
+            return False
 
         except Exception as e:
             self.logger.error("❌ Failed to upsert sync point node: %s: %s", sync_point_key, str(e))
             return False
 
-    async def get_sync_point(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
-        """
-        Get a node by key
+    async def get_sync_point(self, key: str, collection: str, transaction: TransactionDatabase | None = None) -> dict | None:
+        """Get a node by key
         """
         try:
             self.logger.info("🚀 Retrieving node by key: %s", key)
@@ -4728,16 +4692,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully retrieved node by key: %s", key)
                 return result
-            else:
-                self.logger.warning("⚠️ No node found by key: %s", key)
-                return None
+            self.logger.warning("⚠️ No node found by key: %s", key)
+            return None
         except Exception as e:
             self.logger.error("❌ Failed to retrieve node by key: %s: %s", key, str(e))
             return None
 
-    async def remove_sync_point(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Remove a node by key
+    async def remove_sync_point(self, key: str, collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Remove a node by key
         """
         try:
             self.logger.info("🚀 Removing node by key: %s", key)
@@ -4753,16 +4715,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully removed node by key: %s", key)
                 return True
-            else:
-                self.logger.warning("⚠️ No node found by key: %s", key)
-                return False
+            self.logger.warning("⚠️ No node found by key: %s", key)
+            return False
         except Exception as e:
             self.logger.error("❌ Failed to remove node by key: %s: %s", key, str(e))
             return False
 
-    async def get_all_documents(self, collection: str, transaction: Optional[TransactionDatabase] = None) -> List[Dict]:
-        """
-        Get all documents from a collection
+    async def get_all_documents(self, collection: str, transaction: TransactionDatabase | None = None) -> list[dict]:
+        """Get all documents from a collection
         """
         try:
             self.logger.info("🚀 Getting all documents from collection: %s", collection)
@@ -4778,9 +4738,8 @@ class BaseArangoService:
             self.logger.error("❌ Failed to get all documents from collection: %s: %s", collection, str(e))
             return []
 
-    async def get_app_by_name(self, name: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
-        """
-        Get an app by its name (case-insensitive, ignoring spaces)
+    async def get_app_by_name(self, name: str, transaction: TransactionDatabase | None = None) -> dict | None:
+        """Get an app by its name (case-insensitive, ignoring spaces)
         """
         try:
             self.logger.info("🚀 Getting app by name: %s", name)
@@ -4795,16 +4754,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully retrieved app by name: %s", name)
                 return result
-            else:
-                self.logger.warning("⚠️ No app found by name: %s", name)
-                return None
+            self.logger.warning("⚠️ No app found by name: %s", name)
+            return None
         except Exception as e:
             self.logger.error("❌ Failed to get app by name: %s: %s", name, str(e))
             return None
 
-    async def delete_nodes(self, keys: List[str], collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Delete a list of nodes by key
+    async def delete_nodes(self, keys: list[str], collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Delete a list of nodes by key
         """
         try:
             self.logger.info("🚀 Deleting nodes by keys: %s", keys)
@@ -4823,22 +4780,20 @@ class BaseArangoService:
             if deleted_nodes:
                 self.logger.info("✅ Successfully deleted %d nodes by keys: %s", len(deleted_nodes), keys)
                 return True
-            else:
-                self.logger.warning("⚠️ No nodes found by keys: %s", keys)
-                return False
+            self.logger.warning("⚠️ No nodes found by keys: %s", keys)
+            return False
         except Exception as e:
             self.logger.error("❌ Failed to delete nodes by keys: %s: %s", keys, str(e))
             return False
 
     async def delete_nodes_and_edges(
         self,
-        keys: List[str],
+        keys: list[str],
         collection: str,
         graph_name: str,
-        transaction: Optional[TransactionDatabase] = None
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
-        """
-        Deletes a list of nodes by key and all their connected edges within a named graph.
+        """Deletes a list of nodes by key and all their connected edges within a named graph.
 
         This method is efficient for bulk deletions by first discovering all edge
         collections in the graph and then running one bulk-delete query per collection.
@@ -4859,7 +4814,7 @@ class BaseArangoService:
             # --- Step 1: Get all edge collections from the named graph definition ---
             graph = db.graph(graph_name)
             edge_definitions = graph.edge_definitions()
-            edge_collections = [e['edge_collection'] for e in edge_definitions]
+            edge_collections = [e["edge_collection"] for e in edge_definitions]
 
             if not edge_collections:
                 self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
@@ -4882,8 +4837,8 @@ class BaseArangoService:
                     edge_delete_query,
                     bind_vars={
                         "node_ids": node_ids,
-                        "@edge_collection": edge_collection
-                    }
+                        "@edge_collection": edge_collection,
+                    },
                 )
             self.logger.info(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
 
@@ -4906,18 +4861,16 @@ class BaseArangoService:
             if deleted_nodes:
                 self.logger.info(f"✅ Successfully deleted nodes and their associated edges: {keys}")
                 return True
-            else:
-                self.logger.warning(f"⚠️ No nodes found in '{collection}' with keys: {keys}")
-                return False
+            self.logger.warning(f"⚠️ No nodes found in '{collection}' with keys: {keys}")
+            return False
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete nodes and edges for keys {keys}: {e}", exc_info=True)
             return False
 
 
-    async def delete_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Delete an edge by from_key and to_key
+    async def delete_edge(self, from_key: str, to_key: str, collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Delete an edge by from_key and to_key
         """
         try:
             self.logger.info("🚀 Deleting edge by from_key: %s and to_key: %s", from_key, to_key)
@@ -4933,16 +4886,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully deleted edge by from_key: %s and to_key: %s", from_key, to_key)
                 return True
-            else:
-                self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
-                return False
+            self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
+            return False
         except Exception as e:
             self.logger.error("❌ Failed to delete edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return False
 
-    async def delete_edges_from(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
-        """
-        Delete all edges originating from a specific source node
+    async def delete_edges_from(self, from_key: str, collection: str, transaction: TransactionDatabase | None = None) -> int:
+        """Delete all edges originating from a specific source node
 
         Args:
             from_key: The source node key (e.g., "groups/12345")
@@ -4951,6 +4902,7 @@ class BaseArangoService:
 
         Returns:
             int: Number of edges deleted
+
         """
         try:
             self.logger.info("🚀 Deleting all edges from source: %s in collection: %s", from_key, collection)
@@ -4975,9 +4927,8 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
             return 0
 
-    async def delete_edges_to(self, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
-        """
-        Delete all edges pointing to a specific target node
+    async def delete_edges_to(self, to_key: str, collection: str, transaction: TransactionDatabase | None = None) -> int:
+        """Delete all edges pointing to a specific target node
 
         Args:
             to_key: The target node key (e.g., "groups/12345")
@@ -4986,6 +4937,7 @@ class BaseArangoService:
 
         Returns:
             int: Number of edges deleted
+
         """
         try:
             self.logger.info("🚀 Deleting all edges to target: %s in collection: %s", to_key, collection)
@@ -5010,9 +4962,8 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges to target: %s in collection: %s: %s", to_key, collection, str(e))
             return 0
 
-    async def delete_edges_to_groups(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
-        """
-        Delete all edges from the given node if those edges are pointing to nodes in the groups collection
+    async def delete_edges_to_groups(self, from_key: str, collection: str, transaction: TransactionDatabase | None = None) -> int:
+        """Delete all edges from the given node if those edges are pointing to nodes in the groups collection
 
         Args:
             from_key: The source node key (e.g., "users/12345")
@@ -5021,6 +4972,7 @@ class BaseArangoService:
 
         Returns:
             int: Number of edges deleted
+
         """
         try:
             self.logger.info("🚀 Deleting edges from %s to groups collection in %s", from_key, collection)
@@ -5036,7 +4988,7 @@ class BaseArangoService:
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={
                 "from_key": from_key,
-                "@collection": collection
+                "@collection": collection,
             })
 
             deleted_edges = list(cursor)
@@ -5053,9 +5005,8 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges from %s to groups in %s: %s", from_key, collection, str(e))
             return 0
 
-    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
-        """
-        Delete all edges connected to a node (both incoming and outgoing)
+    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: TransactionDatabase | None = None) -> int:
+        """Delete all edges connected to a node (both incoming and outgoing)
 
         Args:
             node_key: The node key (e.g., "groups/12345")
@@ -5064,6 +5015,7 @@ class BaseArangoService:
 
         Returns:
             int: Total number of edges deleted
+
         """
         try:
             self.logger.info("🚀 Deleting all edges for node: %s in collection: %s", node_key, collection)
@@ -5090,9 +5042,8 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges for node: %s in collection: %s: %s", node_key, collection, str(e))
             return 0
 
-    async def get_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
-        """
-        Get an edge by from_key and to_key
+    async def get_edge(self, from_key: str, to_key: str, collection: str, transaction: TransactionDatabase | None = None) -> dict | None:
+        """Get an edge by from_key and to_key
         """
         try:
             self.logger.info("🚀 Getting permission by from_key: %s and to_key: %s", from_key, to_key)
@@ -5107,16 +5058,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully got edge by from_key: %s and to_key: %s", from_key, to_key)
                 return result
-            else:
-                self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
-                return None
+            self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
+            return None
         except Exception as e:
             self.logger.error("❌ Failed to get edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return None
 
-    async def update_node(self, key: str, node_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Update a node by key
+    async def update_node(self, key: str, node_updates: dict, collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Update a node by key
         """
         try:
             self.logger.info("🚀 Updating node by key: %s", key)
@@ -5133,16 +5082,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully updated node by key: %s", key)
                 return True
-            else:
-                self.logger.warning("⚠️ No node found by key: %s", key)
-                return False
+            self.logger.warning("⚠️ No node found by key: %s", key)
+            return False
         except Exception as e:
             self.logger.error("❌ Failed to update node by key: %s: %s", key, str(e))
             return False
 
-    async def update_edge(self, from_key: str, to_key: str, edge_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Update an edge by from_key and to_key
+    async def update_edge(self, from_key: str, to_key: str, edge_updates: dict, collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Update an edge by from_key and to_key
         """
         try:
             self.logger.info("🚀 Updating edge by from_key: %s and to_key: %s", from_key, to_key)
@@ -5159,16 +5106,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully updated edge by from_key: %s and to_key: %s", from_key, to_key)
                 return True
-            else:
-                self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
-                return False
+            self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
+            return False
         except Exception as e:
             self.logger.error("❌ Failed to update edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return False
 
-    async def update_edge_by_key(self, key: str, edge_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
-        """
-        Update an edge by key
+    async def update_edge_by_key(self, key: str, edge_updates: dict, collection: str, transaction: TransactionDatabase | None = None) -> bool:
+        """Update an edge by key
         """
         try:
             self.logger.info("🚀 Updating edge by key: %s", key)
@@ -5185,9 +5130,8 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Successfully updated edge by key: %s", key)
                 return True
-            else:
-                self.logger.warning("⚠️ No edge found by key: %s", key)
-                return False
+            self.logger.warning("⚠️ No edge found by key: %s", key)
+            return False
         except Exception as e:
             self.logger.error("❌ Failed to update edge by key: %s: %s", key, str(e))
             return False
@@ -5198,8 +5142,8 @@ class BaseArangoService:
         resource_id: str,
         user_email: str,
         token: str,
-        expiration: Optional[str] = None,
-    ) -> Optional[Dict]:
+        expiration: str | None = None,
+    ) -> dict | None:
         """Store page token with user channel information"""
         try:
             self.logger.info(
@@ -5248,7 +5192,7 @@ class BaseArangoService:
                         "token_doc": token_doc,
                         "@pageTokens": CollectionNames.PAGE_TOKENS.value,
                     },
-                )
+                ),
             )
 
             self.logger.info("✅ Page token stored successfully")
@@ -5257,8 +5201,8 @@ class BaseArangoService:
             self.logger.error("❌ Error storing page token: %s", str(e))
 
     async def get_page_token_db(
-        self, channel_id: str = None, resource_id: str = None, user_email: str = None
-    ) -> Optional[Dict]:
+        self, channel_id: str = None, resource_id: str = None, user_email: str = None,
+    ) -> dict | None:
         """Get page token for specific channel"""
         try:
             self.logger.info(
@@ -5313,7 +5257,7 @@ class BaseArangoService:
             self.logger.error("❌ Error getting page token: %s", str(e))
             return None
 
-    async def get_all_channel_tokens(self) -> List[Dict]:
+    async def get_all_channel_tokens(self) -> list[dict]:
         """Get all active channel tokens"""
         try:
             self.logger.info("🚀 Getting all channel tokens")
@@ -5337,16 +5281,16 @@ class BaseArangoService:
             return []
 
     async def store_channel_history_id(
-        self, history_id: str, expiration: str, user_email: str
+        self, history_id: str, expiration: str, user_email: str,
     ) -> None:
-        """
-        Store the latest historyId for a user's channel watch
+        """Store the latest historyId for a user's channel watch
 
         Args:
             user_email (str): Email of the user
             history_id (str): Latest historyId from channel watch
             channel_id (str, optional): Channel ID associated with the watch
             resource_id (str, optional): Resource ID associated with the watch
+
         """
         try:
             self.logger.info(f"🚀 Storing historyId for user {user_email}")
@@ -5375,7 +5319,7 @@ class BaseArangoService:
                         "historyId": history_id,
                         "expiration": expiration,
                     },
-                )
+                ),
             )
 
             if result:
@@ -5384,17 +5328,17 @@ class BaseArangoService:
             self.logger.warning(f"⚠️ Failed to store historyId for {user_email}")
 
         except Exception as e:
-            self.logger.error(f"❌ Error storing historyId: {str(e)}")
+            self.logger.error(f"❌ Error storing historyId: {e!s}")
 
-    async def get_channel_history_id(self, user_email: str) -> Optional[str]:
-        """
-        Retrieve the latest historyId for a user
+    async def get_channel_history_id(self, user_email: str) -> str | None:
+        """Retrieve the latest historyId for a user
 
         Args:
             user_email (str): Email of the user
 
         Returns:
             Optional[str]: Latest historyId if found, None otherwise
+
         """
         try:
             self.logger.info(f"🚀 Retrieving historyId for user {user_email}")
@@ -5406,7 +5350,7 @@ class BaseArangoService:
             """
 
             result = list(
-                self.db.aql.execute(query, bind_vars={"userEmail": user_email})
+                self.db.aql.execute(query, bind_vars={"userEmail": user_email}),
             )
 
             if result:
@@ -5417,7 +5361,7 @@ class BaseArangoService:
             return None
 
         except Exception as e:
-            self.logger.error(f"❌ Error retrieving historyId: {str(e)}")
+            self.logger.error(f"❌ Error retrieving historyId: {e!s}")
             return None
 
     async def cleanup_expired_tokens(self, expiry_hours: int = 24) -> int:
@@ -5433,7 +5377,7 @@ class BaseArangoService:
             """
 
             removed = list(
-                self.db.aql.execute(query, bind_vars={"expiry_time": expiry_time})
+                self.db.aql.execute(query, bind_vars={"expiry_time": expiry_time}),
             )
 
             self.logger.info("🧹 Cleaned up %d expired tokens", len(removed))
@@ -5443,7 +5387,7 @@ class BaseArangoService:
             self.logger.error("❌ Error cleaning up tokens: %s", str(e))
             return 0
 
-    async def get_file_parents(self, file_key: str, transaction) -> List[Dict]:
+    async def get_file_parents(self, file_key: str, transaction) -> list[dict]:
         try:
             if not file_key:
                 raise ValueError("File ID is required")
@@ -5513,25 +5457,25 @@ class BaseArangoService:
             )
 
         except ValueError as ve:
-            self.logger.error(f"❌ Validation error: {str(ve)}")
+            self.logger.error(f"❌ Validation error: {ve!s}")
             return []
         except Exception as e:
             self.logger.error(
-                "❌ Error getting parents for record %s: %s", file_key, str(e)
+                "❌ Error getting parents for record %s: %s", file_key, str(e),
             )
             return []
 
     async def get_entity_id_by_email(
-        self, email: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
-        """
-        Get user or group ID by email address
+        self, email: str, transaction: TransactionDatabase | None = None,
+    ) -> str | None:
+        """Get user or group ID by email address
 
         Args:
             email (str): Email address to look up
 
         Returns:
             Optional[str]: Entity ID (_key) if found, None otherwise
+
         """
         try:
             self.logger.info("🚀 Getting Entity Key by mail")
@@ -5576,17 +5520,16 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to get entity ID for email %s: %s", email, str(e)
+                "❌ Failed to get entity ID for email %s: %s", email, str(e),
             )
             return None
 
     async def bulk_get_entity_ids_by_email(
         self,
-        emails: List[str],
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict[str, Tuple[str, str, str]]:
-        """
-        Bulk get entity IDs for multiple emails across users, groups, and people collections
+        emails: list[str],
+        transaction: TransactionDatabase | None = None,
+    ) -> dict[str, tuple[str, str, str]]:
+        """Bulk get entity IDs for multiple emails across users, groups, and people collections
 
         Args:
             emails (List[str]): List of email addresses to look up
@@ -5594,12 +5537,13 @@ class BaseArangoService:
         Returns:
             Dict[email, (entity_id, collection_name, permission_type)]
 
-            Example:
+        Example:
             {
                 "user@example.com": ("123abc", "users", "USER"),
                 "group@example.com": ("456def", "groups", "GROUP"),
                 "external@example.com": ("789ghi", "people", "USER")
             }
+
         """
         if not emails:
             return {}
@@ -5627,7 +5571,7 @@ class BaseArangoService:
                     result_map[user["email"]] = (
                         user["id"],
                         CollectionNames.USERS.value,
-                        "USER"
+                        "USER",
                     )
                 self.logger.info("✅ Found %d users", len(users))
             except Exception as e:
@@ -5649,7 +5593,7 @@ class BaseArangoService:
                         result_map[group["email"]] = (
                             group["id"],
                             CollectionNames.GROUPS.value,
-                            "GROUP"
+                            "GROUP",
                         )
                     self.logger.info("✅ Found %d groups", len(groups))
                 except Exception as e:
@@ -5671,7 +5615,7 @@ class BaseArangoService:
                         result_map[person["email"]] = (
                             person["id"],
                             CollectionNames.PEOPLE.value,
-                            "USER"
+                            "USER",
                         )
                     self.logger.info("✅ Found %d people", len(people))
                 except Exception as e:
@@ -5680,7 +5624,7 @@ class BaseArangoService:
             self.logger.info(
                 "✅ Bulk lookup complete: found %d/%d entities",
                 len(result_map),
-                len(unique_emails)
+                len(unique_emails),
             )
 
             return result_map
@@ -5708,7 +5652,7 @@ class BaseArangoService:
         self.logger.info("Does Organization exist?: %s", response)
         return response
 
-    async def get_group_members(self, group_id: str) -> List[Dict]:
+    async def get_group_members(self, group_id: str) -> list[dict]:
         """Get all users in a group"""
         try:
             self.logger.info("🚀 Getting group members for %s", group_id)
@@ -5719,7 +5663,7 @@ class BaseArangoService:
             """
 
             cursor = self.db.aql.execute(
-                query, bind_vars={"group_id": f"groups/{group_id}"}
+                query, bind_vars={"group_id": f"groups/{group_id}"},
             )
             self.logger.info("✅ Group members retrieved successfully")
             return list(cursor)
@@ -5729,8 +5673,8 @@ class BaseArangoService:
             return []
 
     async def get_file_permissions(
-        self, file_key: str, transaction: Optional[TransactionDatabase] = None
-    ) -> List[Dict]:
+        self, file_key: str, transaction: TransactionDatabase | None = None,
+    ) -> list[dict]:
         """Get current permissions for a file"""
         try:
             self.logger.info("🚀 Getting file permissions for %s", file_key)
@@ -5759,13 +5703,13 @@ class BaseArangoService:
         self,
         file_key: str,
         entity_key: str,
-        permission_data: Dict,
-        transaction: Optional[TransactionDatabase] = None,
+        permission_data: dict,
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
         """Store or update permission relationship with change detection"""
         try:
             self.logger.info(
-                "🚀 Storing permission for file %s and entity %s", file_key, entity_key
+                "🚀 Storing permission for file %s and entity %s", file_key, entity_key,
             )
 
             if not entity_key:
@@ -5827,14 +5771,14 @@ class BaseArangoService:
                     self.logger.info("✅ Updated permission edge: %s", edge_key)
                 else:
                     self.logger.info(
-                        "✅ No update needed for permission edge: %s", edge_key
+                        "✅ No update needed for permission edge: %s", edge_key,
                     )
 
                 return True
 
             except Exception as e:
                 self.logger.error(
-                    "❌ Failed to access permissions collection: %s", str(e)
+                    "❌ Failed to access permissions collection: %s", str(e),
                 )
                 if transaction:
                     raise
@@ -5847,12 +5791,12 @@ class BaseArangoService:
             return False
 
     async def store_membership(
-        self, group_id: str, user_id: str, role: str = "member"
+        self, group_id: str, user_id: str, role: str = "member",
     ) -> bool:
         """Store group membership"""
         try:
             self.logger.info(
-                "🚀 Storing membership for group %s and user %s", group_id, user_id
+                "🚀 Storing membership for group %s and user %s", group_id, user_id,
             )
             edge = {
                 "_from": f"groups/{group_id}",
@@ -5861,7 +5805,7 @@ class BaseArangoService:
                 "role": role,
             }
             self._collections[CollectionNames.BELONGS_TO.value].insert(
-                edge, overwrite=True
+                edge, overwrite=True,
             )
             self.logger.info("✅ Membership stored successfully")
             return True
@@ -5873,11 +5817,10 @@ class BaseArangoService:
         self,
         org_id: str,
         file_key: str,
-        permissions_data: List[Dict],
-        transaction: Optional[TransactionDatabase] = None,
+        permissions_data: list[dict],
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
-        """
-        Process file permissions by comparing new permissions with existing ones.
+        """Process file permissions by comparing new permissions with existing ones.
         Assumes all entities and files already exist in the database.
         """
         try:
@@ -5898,7 +5841,7 @@ class BaseArangoService:
             self.logger.info("🗑️ Removed 'anyone' permission for file %s", file_key)
 
             existing_permissions = await self.get_file_permissions(
-                file_key, transaction=transaction
+                file_key, transaction=transaction,
             )
             self.logger.info("🚀 Existing permissions: %s", existing_permissions)
 
@@ -5915,7 +5858,7 @@ class BaseArangoService:
             # Remove permissions that no longer exist
             if permissions_to_remove:
                 self.logger.info(
-                    "🗑️ Removing %d obsolete permissions", len(permissions_to_remove)
+                    "🗑️ Removing %d obsolete permissions", len(permissions_to_remove),
                 )
                 # Check if 'anyone' type permissions exist in new permissions
 
@@ -5973,28 +5916,25 @@ class BaseArangoService:
                             # Create new permission
                             if perm_type == "user" or perm_type == "group":
                                 entity_key = await self.get_entity_id_by_email(
-                                    new_perm.get("emailAddress")
+                                    new_perm.get("emailAddress"),
                                 )
                                 if not entity_key:
                                     self.logger.warning(
-                                        f"⚠️ Skipping permission for non-existent user or group: {entity_key}"
+                                        f"⚠️ Skipping permission for non-existent user or group: {entity_key}",
                                     )
-                                    pass
                             elif perm_type == "domain":
                                 entity_key = org_id
                                 if not entity_key:
                                     self.logger.warning(
-                                        f"⚠️ Skipping permission for non-existent domain: {entity_key}"
+                                        f"⚠️ Skipping permission for non-existent domain: {entity_key}",
                                     )
-                                    pass
                             else:
                                 entity_key = None
                                 # Skip if entity doesn't exist
                                 if not entity_key:
                                     self.logger.warning(
-                                        f"⚠️ Skipping permission for non-existent entity: {entity_key}"
+                                        f"⚠️ Skipping permission for non-existent entity: {entity_key}",
                                     )
-                                    pass
                             if entity_key != "anyone" and entity_key:
                                 self.logger.info(
                                     "🚀 Storing permission for file %s and entity %s: %s",
@@ -6003,7 +5943,7 @@ class BaseArangoService:
                                     new_perm,
                                 )
                                 await self.store_permission(
-                                    file_key, entity_key, new_perm, transaction
+                                    file_key, entity_key, new_perm, transaction,
                                 )
 
                 if perm_type == "anyone":
@@ -6020,11 +5960,11 @@ class BaseArangoService:
                         }
                         # Store/update permission
                         await self.batch_upsert_nodes(
-                            [permission_data], collection=CollectionNames.ANYONE.value
+                            [permission_data], collection=CollectionNames.ANYONE.value,
                         )
 
             self.logger.info(
-                "✅ Successfully processed all permissions for file %s", file_key
+                "✅ Successfully processed all permissions for file %s", file_key,
             )
             return True
 
@@ -6049,7 +5989,7 @@ class BaseArangoService:
         return role_levels.get(role.lower(), 0)
 
     async def _cleanup_old_permissions(
-        self, file_id: str, current_entities: Set[Tuple[str, str]]
+        self, file_id: str, current_entities: set[tuple[str, str]],
     ) -> None:
         """Mark old access edges as inactive"""
         try:
@@ -6077,7 +6017,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to cleanup old access edges: %s", str(e))
             return
 
-    def _permission_needs_update(self, existing: Dict, new: Dict) -> bool:
+    def _permission_needs_update(self, existing: dict, new: dict) -> bool:
         """Check if permission data needs to be updated"""
         self.logger.info("🚀 Checking if permission data needs to be updated")
         relevant_fields = ["role", "permissionDetails", "active"]
@@ -6086,7 +6026,7 @@ class BaseArangoService:
             if field in new:
                 if field == "permissionDetails":
                     if json.dumps(new[field], sort_keys=True) != json.dumps(
-                        existing.get(field, {}), sort_keys=True
+                        existing.get(field, {}), sort_keys=True,
                     ):
                         self.logger.info("✅ Permission data needs to be updated. Field %s", field)
                         return True
@@ -6098,12 +6038,12 @@ class BaseArangoService:
         return False
 
     async def get_file_access_history(
-        self, file_id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> List[Dict]:
+        self, file_id: str, transaction: TransactionDatabase | None = None,
+    ) -> list[dict]:
         """Get historical access information for a file"""
         try:
             self.logger.info(
-                "🚀 Getting historical access information for file %s", file_id
+                "🚀 Getting historical access information for file %s", file_id,
             )
             query = """
             FOR perm IN permissions
@@ -6128,7 +6068,7 @@ class BaseArangoService:
         self,
         node_key: str,
         hard_delete: bool = False,
-        transaction: Optional[TransactionDatabase] = None,
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
         """Delete a node and its edges from all edge collections (Records, Files)."""
         try:
@@ -6143,7 +6083,7 @@ class BaseArangoService:
             record = await self.get_document(node_key, CollectionNames.RECORDS.value)
             if not record:
                 self.logger.warning(
-                    "⚠️ Record %s not found in Records collection", node_key
+                    "⚠️ Record %s not found in Records collection", node_key,
                 )
                 return False
 
@@ -6173,11 +6113,11 @@ class BaseArangoService:
                     }
                     db.aql.execute(edge_removal_query, bind_vars=bind_vars)
                     self.logger.info(
-                        f"✅ Edges from {edge_collection} deleted for node {node_key}"
+                        f"✅ Edges from {edge_collection} deleted for node {node_key}",
                     )
                 except Exception as e:
                     self.logger.warning(
-                        f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {str(e)}"
+                        f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {e!s}",
                     )
 
             # Step 2: Delete node from `records` and `files` collections
@@ -6233,7 +6173,7 @@ class BaseArangoService:
                 raise
             return False
 
-    async def get_orgs(self) -> List[Dict]:
+    async def get_orgs(self) -> list[dict]:
         """Get all organizations"""
         try:
             query = "FOR org IN organizations RETURN org"
@@ -6244,11 +6184,11 @@ class BaseArangoService:
             return []
 
 
-    async def save_to_people_collection(self, entity_id: str, email: str) -> Optional[Dict]:
+    async def save_to_people_collection(self, entity_id: str, email: str) -> dict | None:
         """Save an entity to the people collection if it doesn't already exist"""
         try:
             self.logger.info(
-                "🚀 Checking if entity %s exists in people collection", entity_id
+                "🚀 Checking if entity %s exists in people collection", entity_id,
             )
             # has() checks document _key, not field values
             # Need to query by entity_id field instead
@@ -6256,27 +6196,27 @@ class BaseArangoService:
             exists = list(self.db.aql.execute(query, bind_vars={"email": email}))
             if not exists:
                 self.logger.info(
-                    "➕ Entity does not exist, saving to people collection"
+                    "➕ Entity does not exist, saving to people collection",
                 )
                 self.db.collection(CollectionNames.PEOPLE.value).insert(
-                    {"_key": entity_id, "email": email}
+                    {"_key": entity_id, "email": email},
                 )
                 self.logger.info("✅ Entity %s saved to people collection", entity_id)
                 return {"_key": entity_id, "email": email}
-            else:
-                self.logger.info(
-                    "⏩ Entity %s already exists in people collection", entity_id
-                )
-                return exists[0]
+            self.logger.info(
+                "⏩ Entity %s already exists in people collection", entity_id,
+            )
+            return exists[0]
         except Exception as e:
             self.logger.error("❌ Error saving entity to people collection: %s", str(e))
             return None
 
-    async def get_all_pageTokens(self) -> List[Dict]:
+    async def get_all_pageTokens(self) -> list[dict]:
         """Get all page tokens from the pageTokens collection.
 
         Returns:
             list: List of page token documents, or empty list if none found or error occurs
+
         """
         try:
             if not self.db.has_collection(CollectionNames.PAGE_TOKENS.value):
@@ -6298,10 +6238,9 @@ class BaseArangoService:
             return []
 
     async def get_key_by_external_file_id(
-        self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
-        """
-        Get internal file key using the external file ID
+        self, external_file_id: str, transaction: TransactionDatabase | None = None,
+    ) -> str | None:
+        """Get internal file key using the external file ID
 
         Args:
             external_file_id (str): External file ID to look up
@@ -6309,10 +6248,11 @@ class BaseArangoService:
 
         Returns:
             Optional[str]: Internal file key if found, None otherwise
+
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s", external_file_id
+                "🚀 Retrieving internal key for external file ID %s", external_file_id,
             )
 
             query = f"""
@@ -6323,7 +6263,7 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_file_id": external_file_id}
+                query, bind_vars={"external_file_id": external_file_id},
             )
             result = next(cursor, None)
 
@@ -6333,11 +6273,10 @@ class BaseArangoService:
                     external_file_id,
                 )
                 return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s", external_file_id
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No internal key found for external file ID %s", external_file_id,
+            )
+            return None
 
         except Exception as e:
             self.logger.error(
@@ -6350,10 +6289,9 @@ class BaseArangoService:
     async def get_key_by_attachment_id(
         self,
         external_attachment_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal attachment key using the external attachment ID
+        transaction: TransactionDatabase | None = None,
+    ) -> str | None:
+        """Get internal attachment key using the external attachment ID
 
         Args:
             external_attachment_id (str): External attachment ID to look up
@@ -6361,6 +6299,7 @@ class BaseArangoService:
 
         Returns:
             Optional[str]: Internal attachment key if found, None otherwise
+
         """
         try:
             self.logger.info(
@@ -6375,7 +6314,7 @@ class BaseArangoService:
             """
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_attachment_id": external_attachment_id}
+                query, bind_vars={"external_attachment_id": external_attachment_id},
             )
             result = next(cursor, None)
 
@@ -6385,12 +6324,11 @@ class BaseArangoService:
                     external_attachment_id,
                 )
                 return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No internal key found for external attachment ID %s",
+                external_attachment_id,
+            )
+            return None
 
         except Exception as e:
             self.logger.error(
@@ -6408,6 +6346,7 @@ class BaseArangoService:
 
         Returns:
             str: Account type ('individual' or 'business')
+
         """
         try:
             query = """
@@ -6419,7 +6358,7 @@ class BaseArangoService:
             result = next(cursor, None)
             return result
         except Exception as e:
-            self.logger.error(f"Error getting account type: {str(e)}")
+            self.logger.error(f"Error getting account type: {e!s}")
             return None
 
     async def update_user_sync_state(
@@ -6427,9 +6366,8 @@ class BaseArangoService:
         user_email: str,
         state: str,
         service_type: str = Connectors.GOOGLE_DRIVE.value,
-    ) -> Optional[Dict]:
-        """
-        Update user's sync state in USER_APP_RELATION collection for specific service
+    ) -> dict | None:
+        """Update user's sync state in USER_APP_RELATION collection for specific service
 
         Args:
             user_email (str): Email of the user
@@ -6438,6 +6376,7 @@ class BaseArangoService:
 
         Returns:
             Optional[Dict]: Updated relation document if successful, None otherwise
+
         """
         try:
             self.logger.info(
@@ -6498,15 +6437,14 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to update user %s sync state: %s", service_type, str(e)
+                "❌ Failed to update user %s sync state: %s", service_type, str(e),
             )
             return None
 
     async def get_user_sync_state(
-        self, user_email: str, service_type: str = Connectors.GOOGLE_DRIVE.value
-    ) -> Optional[Dict]:
-        """
-        Get user's sync state from USER_APP_RELATION collection for specific service
+        self, user_email: str, service_type: str = Connectors.GOOGLE_DRIVE.value,
+    ) -> dict | None:
+        """Get user's sync state from USER_APP_RELATION collection for specific service
 
         Args:
             user_email (str): Email of the user
@@ -6514,10 +6452,11 @@ class BaseArangoService:
 
         Returns:
             Optional[Dict]: Relation document containing sync state if found, None otherwise
+
         """
         try:
             self.logger.info(
-                "🔍 Getting %s sync state for user %s", service_type, user_email
+                "🔍 Getting %s sync state for user %s", service_type, user_email,
             )
 
             user_key = await self.get_entity_id_by_email(user_email)
@@ -6568,15 +6507,14 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to get user %s sync state: %s", service_type, str(e)
+                "❌ Failed to get user %s sync state: %s", service_type, str(e),
             )
             return None
 
     async def update_drive_sync_state(
-        self, drive_id: str, state: str
-    ) -> Optional[Dict]:
-        """
-        Update drive's sync state in drives collection
+        self, drive_id: str, state: str,
+    ) -> dict | None:
+        """Update drive's sync state in drives collection
 
         Args:
             drive_id (str): ID of the drive
@@ -6585,10 +6523,11 @@ class BaseArangoService:
 
         Returns:
             Optional[Dict]: Updated drive document if successful, None otherwise
+
         """
         try:
             self.logger.info(
-                "🚀 Updating sync state for drive %s to %s", drive_id, state
+                "🚀 Updating sync state for drive %s to %s", drive_id, state,
             )
 
             update_data = {
@@ -6604,7 +6543,7 @@ class BaseArangoService:
             """
 
             cursor = self.db.aql.execute(
-                query, bind_vars={"drive_id": drive_id, "update": update_data}
+                query, bind_vars={"drive_id": drive_id, "update": update_data},
             )
 
             result = next(cursor, None)
@@ -6623,7 +6562,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to update drive sync state: %s", str(e))
             return None
 
-    async def get_drive_sync_state(self, drive_id: str) -> Optional[str]:
+    async def get_drive_sync_state(self, drive_id: str) -> str | None:
         """Get sync state for a specific drive
 
         Args:
@@ -6632,6 +6571,7 @@ class BaseArangoService:
         Returns:
             Optional[str]: Current sync state of the drive ('NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'COMPLETED', 'FAILED')
                           or None if drive not found
+
         """
         try:
             self.logger.info("🔍 Getting sync state for drive %s", drive_id)
@@ -6646,12 +6586,12 @@ class BaseArangoService:
 
             if result:
                 self.logger.debug(
-                    "✅ Found sync state for drive %s: %s", drive_id, result[0]
+                    "✅ Found sync state for drive %s: %s", drive_id, result[0],
                 )
                 return result[0]
 
             self.logger.debug(
-                "No sync state found for drive %s, assuming NOT_STARTED", drive_id
+                "No sync state found for drive %s, assuming NOT_STARTED", drive_id,
             )
             return "NOT_STARTED"
 
@@ -6660,7 +6600,7 @@ class BaseArangoService:
             return None
 
     async def check_edge_exists(
-        self, from_id: str, to_id: str, collection: str
+        self, from_id: str, to_id: str, collection: str,
     ) -> bool:
         """Check if an edge exists between two nodes in a specified collection."""
         try:
@@ -6695,9 +6635,8 @@ class BaseArangoService:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
 
-    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Dict:
-        """
-        Creates  NewRecordEvent to Kafka,
+    async def _create_new_record_event_payload(self, record_doc: dict, file_doc: dict, storage_url: str) -> dict:
+        """Creates  NewRecordEvent to Kafka,
         """
         try:
             record_id = record_doc["_key"]
@@ -6728,13 +6667,12 @@ class BaseArangoService:
         except Exception:
             self.logger.error(
                 f"❌ Failed to publish NewRecordEvent for record_id: {record_doc.get('_key', 'N/A')}",
-                exc_info=True
+                exc_info=True,
             )
             return {}
 
-    async def _publish_upload_events(self, kb_id: str, result: Dict) -> None:
-        """
-        Enhanced event publishing with better error handling
+    async def _publish_upload_events(self, kb_id: str, result: dict) -> None:
+        """Enhanced event publishing with better error handling
         """
         try:
             self.logger.info(f"This is the result passed to publish record events {result}")
@@ -6750,12 +6688,12 @@ class BaseArangoService:
             # Get storage endpoint
             try:
                 endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
                 self.logger.info(f"This the the endpoint {endpoints}")
                 storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
             except Exception as config_error:
-                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
+                self.logger.error(f"❌ Failed to get storage config: {config_error!s}")
                 storage_url = "http://localhost:3000"  # Fallback
 
             # Create events with enhanced error handling
@@ -6770,7 +6708,7 @@ class BaseArangoService:
                     if record_doc and file_doc:
                         # Create payload with error handling
                         create_payload = await self._create_new_record_event_payload(
-                            record_doc, file_doc, storage_url
+                            record_doc, file_doc, storage_url,
                         )
 
                         if create_payload:  # Only publish if payload creation succeeded
@@ -6784,24 +6722,24 @@ class BaseArangoService:
                         failed_events += 1
 
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish event for record: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish event for record: {event_error!s}")
                     failed_events += 1
 
             self.logger.info(f"📊 Event publishing summary: {successful_events} successful, {failed_events} failed")
 
         except Exception as e:
-            self.logger.error(f"❌ Critical error in event publishing for KB {kb_id}: {str(e)}", exc_info=True)
+            self.logger.error(f"❌ Critical error in event publishing for KB {kb_id}: {e!s}", exc_info=True)
 
 
     async def _create_update_record_event_payload(
         self,
-        record: Dict,
-        file_record: Optional[Dict] = None
-    ) -> Dict:
+        record: dict,
+        file_record: dict | None = None,
+    ) -> dict:
         """Create update record event payload matching Node.js format"""
         try:
             endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
 
@@ -6827,14 +6765,14 @@ class BaseArangoService:
                 "summaryDocumentId": record.get("summaryDocumentId"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
+            self.logger.error(f"❌ Failed to create update record event payload: {e!s}")
             return {}
 
     async def _create_deleted_record_event_payload(
         self,
-        record: Dict,
-        file_record: Optional[Dict] = None
-    ) -> Dict:
+        record: dict,
+        file_record: dict | None = None,
+    ) -> dict:
         """Create deleted record event payload matching Node.js format"""
         try:
             # Get extension and mimeType from file record
@@ -6854,10 +6792,10 @@ class BaseArangoService:
                 "virtualRecordId": record.get("virtualRecordId"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            self.logger.error(f"❌ Failed to create deleted record event payload: {e!s}")
             return {}
 
-    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
+    async def _publish_record_event(self, event_type: str, payload: dict) -> None:
         """Publish record event to Kafka"""
         try:
             timestamp = get_epoch_timestamp_in_ms()
@@ -6865,7 +6803,7 @@ class BaseArangoService:
             event = {
                 "eventType": event_type,
                 "timestamp": timestamp,
-                "payload": payload
+                "payload": payload,
             }
 
             if self.kafka_service:
@@ -6875,15 +6813,14 @@ class BaseArangoService:
                 self.logger.debug("Skipping Kafka publish for record-events: kafka_service is not configured")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
+            self.logger.error(f"❌ Failed to publish {event_type} event: {e!s}")
 
-    def _validation_error(self, code: int, reason: str) -> Dict:
+    def _validation_error(self, code: int, reason: str) -> dict:
         """Helper to create validation error response"""
         return {"valid": False, "success": False, "code": code, "reason": reason}
 
-    def _analyze_upload_structure(self, files: List[Dict], validation_result: Dict) -> Dict:
-        """
-        Updated structure analysis - creates folder hierarchy map based on file paths
+    def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
+        """Updated structure analysis - creates folder hierarchy map based on file paths
         but uses names for validation
         """
         folder_hierarchy = {}  # path -> {name: str, parent_path: str, level: int}
@@ -6907,7 +6844,7 @@ class BaseArangoService:
                         folder_hierarchy[current_path] = {
                             "name": folder_name,
                             "parent_path": parent_path,
-                            "level": i + 1
+                            "level": i + 1,
                         }
 
                 # File goes to the deepest folder
@@ -6941,21 +6878,20 @@ class BaseArangoService:
             "summary": {
                 "total_folders": len(folder_hierarchy),
                 "root_files": len([d for d in file_destinations.values() if d["type"] == "root"]),
-                "folder_files": len([d for d in file_destinations.values() if d["type"] == "folder"])
-            }
+                "folder_files": len([d for d in file_destinations.values() if d["type"] == "folder"]),
+            },
         }
 
     async def _ensure_folders_exist(
         self,
         kb_id: str,
         org_id: str,
-        folder_analysis: Dict,
-        validation_result: Dict,
+        folder_analysis: dict,
+        validation_result: dict,
         transaction,
-        timestamp: int
-    ) -> Dict[str, str]:
-        """
-        Updated folder creation - uses name-based validation instead of path
+        timestamp: int,
+    ) -> dict[str, str]:
+        """Updated folder creation - uses name-based validation instead of path
         """
         folder_map = {}  # hierarchy_path -> folder_id
         upload_parent_folder_id = None
@@ -6984,7 +6920,7 @@ class BaseArangoService:
             existing_folder = await self.find_folder_by_name_in_parent(
                 kb_id=kb_id,
                 folder_name=folder_name,
-                parent_folder_id=parent_folder_id
+                parent_folder_id=parent_folder_id,
             )
 
             if existing_folder:
@@ -6996,9 +6932,9 @@ class BaseArangoService:
                     kb_id=kb_id,
                     org_id=org_id,
                     folder_name=folder_name,
-                    parent_folder_id=parent_folder_id
+                    parent_folder_id=parent_folder_id,
                 )
-                folder_id = folder['id']
+                folder_id = folder["id"]
                 if folder_id:
                     folder_map[hierarchy_path] = folder_id
                     self.logger.info(f"✅ Created folder: {folder_name} -> {folder_id} in parent {parent_folder_id or 'KB root'}")
@@ -7012,10 +6948,10 @@ class BaseArangoService:
         kb_id: str,
         org_id: str,
         folder_path: str,
-        folder_map: Dict[str, str],
-        validation_result: Dict,
+        folder_map: dict[str, str],
+        validation_result: dict,
         transaction,
-        timestamp: int
+        timestamp: int,
     ) -> str:
         """Unified folder creation logic"""
         folder_id = str(uuid.uuid4())
@@ -7044,7 +6980,7 @@ class BaseArangoService:
             "extension": None,
             "mimeType": "application/vnd.folder",
             "sizeInBytes": 0,
-            "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
+            "webUrl": f"/kb/{kb_id}/folder/{folder_id}",
         }
 
         # Create folder
@@ -7092,9 +7028,8 @@ class BaseArangoService:
 
         return folder_id
 
-    def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
-        """
-        Update file destinations with resolved folder IDs using hierarchy paths
+    def _populate_file_destinations(self, folder_analysis: dict, folder_map: dict[str, str]) -> None:
+        """Update file destinations with resolved folder IDs using hierarchy paths
         """
         for index, destination in folder_analysis["file_destinations"].items():
             if destination["type"] == "folder":
@@ -7110,11 +7045,11 @@ class BaseArangoService:
     async def _create_records(
         self,
         kb_id: str,
-        files: List[Dict],
-        folder_analysis: Dict,
+        files: list[dict],
+        folder_analysis: dict,
         transaction,
-        timestamp: int
-    ) -> Dict:
+        timestamp: int,
+    ) -> dict:
         total_created = 0
         failed_files = []
 
@@ -7159,7 +7094,7 @@ class BaseArangoService:
                         kb_id=kb_id,
                         files=kb_root_files,
                         transaction=transaction,
-                        timestamp=timestamp
+                        timestamp=timestamp,
                     )
                     created_files_data.extend(successful_files)
                     total_created += len(successful_files)
@@ -7172,14 +7107,14 @@ class BaseArangoService:
                         folder_id=folder_id,
                         files=folder_file_list,
                         transaction=transaction,
-                        timestamp=timestamp
+                        timestamp=timestamp,
                     )
                     created_files_data.extend(successful_files)
                     total_created += len(successful_files)
                     self.logger.info(f"✅ Created {len(successful_files)} files in parent folder")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to create root files: {str(e)}")
+                self.logger.error(f"❌ Failed to create root files: {e!s}")
                 failed_files.extend([f[0]["filePath"] for f in root_files])
 
         # Create subfolder files
@@ -7190,50 +7125,49 @@ class BaseArangoService:
                     folder_id=folder_id,
                     files=folder_file_list,
                     transaction=transaction,
-                    timestamp=timestamp
+                    timestamp=timestamp,
                 )
                 created_files_data.extend(successful_files)
                 total_created += len(successful_files)
                 self.logger.info(f"✅ Created {len(successful_files)} files in subfolder {folder_id}")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to create files in subfolder {folder_id}: {str(e)}")
+                self.logger.error(f"❌ Failed to create files in subfolder {folder_id}: {e!s}")
                 failed_files.extend([f["filePath"] for f in folder_file_list])
 
         return {"total_created": total_created, "failed_files": failed_files,"created_files_data": created_files_data}
 
     # ========== SHARED RECORD CREATION HELPERS ==========
 
-    async def _create_files_in_kb_root(self, kb_id: str, files: List[Dict], transaction, timestamp: int) -> int:
+    async def _create_files_in_kb_root(self, kb_id: str, files: list[dict], transaction, timestamp: int) -> int:
         """Create files directly in KB root"""
         return await self._create_files_batch(
             kb_id=kb_id,
             files=files,
             parent_folder_id=None,  # No parent = KB root
             transaction=transaction,
-            timestamp=timestamp
+            timestamp=timestamp,
         )
 
-    async def _create_files_in_folder(self, kb_id: str, folder_id: str, files: List[Dict], transaction, timestamp: int) -> int:
+    async def _create_files_in_folder(self, kb_id: str, folder_id: str, files: list[dict], transaction, timestamp: int) -> int:
         """Create files in a specific folder"""
         return await self._create_files_batch(
             kb_id=kb_id,
             files=files,
             parent_folder_id=folder_id,
             transaction=transaction,
-            timestamp=timestamp
+            timestamp=timestamp,
         )
 
     async def _create_files_batch(
         self,
         kb_id: str,
-        files: List[Dict],
-        parent_folder_id: Optional[str],
+        files: list[dict],
+        parent_folder_id: str | None,
         transaction,
-        timestamp: int
-    ) -> List[Dict]:
-        """
-        Updated batch file creation with proper conflict handling
+        timestamp: int,
+    ) -> list[dict]:
+        """Updated batch file creation with proper conflict handling
         Skips files with name conflicts instead of creating duplicates
         """
         if not files:
@@ -7252,7 +7186,7 @@ class BaseArangoService:
                 kb_id=kb_id,
                 parent_folder_id=parent_folder_id,
                 item_name=file_name,
-                transaction=transaction
+                transaction=transaction,
             )
 
             if conflict_result["has_conflict"]:
@@ -7262,7 +7196,7 @@ class BaseArangoService:
                 skipped_files.append({
                     "file_name": file_name,
                     "reason": f"Name conflict with existing items: {conflict_names}",
-                    "conflicts": conflicts
+                    "conflicts": conflicts,
                 })
             else:
                 # persist normalized name back into payload for consistency
@@ -7342,7 +7276,7 @@ class BaseArangoService:
             await self.batch_create_edges(belongs_to_kb_edges, CollectionNames.BELONGS_TO.value, transaction)
 
         # Step 6: Store skipped files for reporting (optional)
-        if hasattr(self, '_current_upload_skipped_files'):
+        if hasattr(self, "_current_upload_skipped_files"):
             self._current_upload_skipped_files.extend(skipped_files)
 
         self.logger.info(f"✅ Successfully created {len(valid_files)} files, skipped {len(skipped_files)} due to conflicts")
@@ -7351,7 +7285,7 @@ class BaseArangoService:
 
     # ========== HELPER METHODS ==========
 
-    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> Dict:
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
         """Shared validation logic for folder creation"""
         try:
             # Get user
@@ -7359,7 +7293,7 @@ class BaseArangoService:
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check permissions
             user_role = await self.get_user_kb_permission(kb_id, user_key)
@@ -7368,20 +7302,20 @@ class BaseArangoService:
                     "valid": False,
                     "success": False,
                     "code": 403,
-                    "reason": f"Insufficient permissions. Role: {user_role}"
+                    "reason": f"Insufficient permissions. Role: {user_role}",
                 }
 
             return {
                 "valid": True,
                 "user": user,
                 "user_key": user_key,
-                "user_role": user_role
+                "user_role": user_role,
             }
 
         except Exception as e:
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
-    def _generate_upload_message(self, result: Dict, upload_type: str) -> str:
+    def _generate_upload_message(self, result: dict, upload_type: str) -> str:
         """Generate success message"""
         total_created = result["total_created"]
         folders_created = result["folders_created"]
@@ -7403,10 +7337,10 @@ class BaseArangoService:
         kb_id: str,
         user_id: str,
         org_id: str,
-        files: List[Dict],
-        folder_analysis: Dict,
-        validation_result: Dict
-    ) -> Dict:
+        files: list[dict],
+        folder_analysis: dict,
+        validation_result: dict,
+    ) -> dict:
         """Unified transaction execution for all upload scenarios"""
         try:
             # Start transaction
@@ -7417,7 +7351,7 @@ class BaseArangoService:
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.BELONGS_TO.value,
-                ]
+                ],
             )
 
             try:
@@ -7430,7 +7364,7 @@ class BaseArangoService:
                     folder_analysis=folder_analysis,
                     validation_result=validation_result,
                     transaction=transaction,
-                    timestamp=timestamp
+                    timestamp=timestamp,
                 )
 
                 # Step 2: Update file destinations with folder IDs
@@ -7442,7 +7376,7 @@ class BaseArangoService:
                     files=files,
                     folder_analysis=folder_analysis,
                     transaction=transaction,
-                    timestamp=timestamp
+                    timestamp=timestamp,
                 )
 
                 if creation_result["total_created"] > 0 or len(folder_map) > 0:
@@ -7453,11 +7387,11 @@ class BaseArangoService:
                     try:
                         await self._publish_upload_events(kb_id, {
                             "created_files_data": creation_result["created_files_data"],
-                            "total_created": creation_result["total_created"]
+                            "total_created": creation_result["total_created"],
                         })
                         self.logger.info(f"✅ Published events for {creation_result['total_created']} records")
                     except Exception as event_error:
-                        self.logger.error(f"❌ Event publishing failed (records still created): {str(event_error)}")
+                        self.logger.error(f"❌ Event publishing failed (records still created): {event_error!s}")
                         # Don't fail the main operation - records were successfully created
 
                     return {
@@ -7469,20 +7403,19 @@ class BaseArangoService:
                             for folder_id in folder_map.values()
                         ],
                         "failed_files": creation_result["failed_files"],
-                        "created_files_data": creation_result["created_files_data"]
+                        "created_files_data": creation_result["created_files_data"],
                     }
-                else:
-                    # Nothing was created - abort transaction
-                    await asyncio.to_thread(lambda: transaction.abort_transaction())
-                    self.logger.info("🔄 Transaction aborted - no items to create")
-                    return {
-                        "success": True,
-                        "total_created": 0,
-                        "folders_created": 0,
-                        "created_folders": [],
-                        "failed_files": creation_result["failed_files"],
-                        "created_files_data": []
-                    }
+                # Nothing was created - abort transaction
+                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                self.logger.info("🔄 Transaction aborted - no items to create")
+                return {
+                    "success": True,
+                    "total_created": 0,
+                    "folders_created": 0,
+                    "created_folders": [],
+                    "failed_files": creation_result["failed_files"],
+                    "created_files_data": [],
+                }
 
             except Exception as e:
                 if transaction:
@@ -7490,14 +7423,14 @@ class BaseArangoService:
                         await asyncio.to_thread(lambda: transaction.abort_transaction())
                         self.logger.info("🔄 Transaction aborted due to error")
                     except Exception as abort_error:
-                        self.logger.error(f"❌ Failed to abort transaction: {str(abort_error)}")
+                        self.logger.error(f"❌ Failed to abort transaction: {abort_error!s}")
 
-                self.logger.error(f"❌ Upload transaction failed: {str(e)}")
-                return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+                self.logger.error(f"❌ Upload transaction failed: {e!s}")
+                return {"success": False, "reason": f"Transaction failed: {e!s}", "code": 500}
 
 
         except Exception as e:
-            return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+            return {"success": False, "reason": f"Transaction failed: {e!s}", "code": 500}
 
 
 
@@ -7506,8 +7439,8 @@ class BaseArangoService:
         kb_id: str,
         user_id: str,
         org_id: str,
-        parent_folder_id: Optional[str] = None
-    ) -> Dict:
+        parent_folder_id: str | None = None,
+    ) -> dict:
         """Unified validation for all upload scenarios"""
         try:
             # Get user
@@ -7515,7 +7448,7 @@ class BaseArangoService:
             if not user:
                 return self._validation_error(404, f"User not found: {user_id}")
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check KB permissions
             user_role = await self.get_user_kb_permission(kb_id, user_key)
@@ -7546,51 +7479,51 @@ class BaseArangoService:
                 "user_role": user_role,
                 "parent_folder": parent_folder,
                 "parent_path": parent_path,
-                "upload_target": "folder" if parent_folder_id else "kb_root"
+                "upload_target": "folder" if parent_folder_id else "kb_root",
             }
 
         except Exception as e:
-            return self._validation_error(500, f"Validation failed: {str(e)}")
+            return self._validation_error(500, f"Validation failed: {e!s}")
 
     async def create_knowledge_base(
         self,
-        kb_data:Dict,
-        permission_edge:Dict,
-        transaction:Optional[TransactionDatabase]=None
-    )-> Dict:
+        kb_data:dict,
+        permission_edge:dict,
+        transaction:TransactionDatabase | None=None,
+    )-> dict:
         """Create knowledge base with permissions"""
         try:
-            kb_name = kb_data.get('groupName', 'Unknown')
+            kb_name = kb_data.get("groupName", "Unknown")
             self.logger.info(f"🚀 Creating knowledge base: '{kb_name}' in ArangoDB")
 
             # KB record group creation
             await self.batch_upsert_nodes(
-                [kb_data], CollectionNames.RECORD_GROUPS.value,transaction=transaction
+                [kb_data], CollectionNames.RECORD_GROUPS.value,transaction=transaction,
             )
 
             # user KB permission edge
             await self.batch_create_edges(
                 [permission_edge],
-                CollectionNames.PERMISSIONS_TO_KB.value,transaction=transaction
+                CollectionNames.PERMISSIONS_TO_KB.value,transaction=transaction,
             )
 
             self.logger.info(f"✅ Knowledge base created successfully: {kb_data['_key']}")
             return {
                 "id": kb_data["_key"],
                 "name": kb_data["groupName"],
-                "success": True
+                "success": True,
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create knowledge base: {str(e)}")
+            self.logger.error(f"❌ Failed to create knowledge base: {e!s}")
             raise
 
     async def get_user_kb_permission(
         self,
         kb_id: str,
         user_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[str]:
+        transaction: TransactionDatabase | None = None,
+    ) -> str | None:
         """Validate user knowledge permission"""
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
@@ -7618,11 +7551,10 @@ class BaseArangoService:
                 role = permission.get("role")
                 self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
                 return role
-            else:
-                self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
+            self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
 
-                # Debug: Let's see what permissions exist for this KB
-                debug_query = """
+            # Debug: Let's see what permissions exist for this KB
+            debug_query = """
                 FOR perm IN @@permissions_collection
                     FILTER perm._to == CONCAT('recordGroups/', @kb_id)
                     RETURN {
@@ -7631,28 +7563,28 @@ class BaseArangoService:
                         type: perm.type
                     }
                 """
-                debug_cursor = db.aql.execute(
-                    debug_query,
-                    bind_vars={
-                        "kb_id": kb_id,
-                        "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                    },
-                )
-                existing_perms = list(debug_cursor)
-                self.logger.info(f"🔍 Debug - All permissions for KB {kb_id}: {existing_perms}")
+            debug_cursor = db.aql.execute(
+                debug_query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+                },
+            )
+            existing_perms = list(debug_cursor)
+            self.logger.info(f"🔍 Debug - All permissions for KB {kb_id}: {existing_perms}")
 
-                return None
+            return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {e!s}")
             raise
 
     async def get_knowledge_base(
         self,
         kb_id: str,
         user_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[Dict]:
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
         """Get knowledge base with user permissions"""
         try:
             db = transaction if transaction else self.db
@@ -7710,18 +7642,17 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Knowledge base retrieved successfully")
                 return result
-            else:
-                self.logger.warning("⚠️ Knowledge base not found")
-                return None
+            self.logger.warning("⚠️ Knowledge base not found")
+            return None
         except Exception as e:
-            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
+            self.logger.error(f"❌ Failed to get knowledge base: {e!s}")
             raise
 
     async def get_knowledge_base_by_id(
         self,
         kb_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
         """Get knowledge base by ID"""
         try:
             db = transaction if transaction else self.db
@@ -7744,7 +7675,7 @@ class BaseArangoService:
             return next(cursor, None)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get knowledge base by ID: {str(e)}")
+            self.logger.error(f"❌ Failed to get knowledge base by ID: {e!s}")
             return None
 
     async def list_user_knowledge_bases(
@@ -7753,12 +7684,12 @@ class BaseArangoService:
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str] = None,
-        permissions: Optional[List[str]] = None,
+        search: str | None = None,
+        permissions: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Tuple[List[Dict], int, Dict]:
+        transaction: TransactionDatabase | None = None,
+    ) -> tuple[list[dict], int, dict]:
         """List knowledge bases with pagination, search, and filtering"""
         try:
             db = transaction if transaction else self.db
@@ -7784,7 +7715,7 @@ class BaseArangoService:
                 "name": "kb.groupName",
                 "createdAtTimestamp": "kb.createdAtTimestamp",
                 "updatedAtTimestamp": "kb.updatedAtTimestamp",
-                "userRole": "perm.role"
+                "userRole": "perm.role",
             }
             sort_field = sort_field_map.get(sort_by, "kb.groupName")
             sort_direction = sort_order.upper()
@@ -7917,25 +7848,25 @@ class BaseArangoService:
             available_filters = {
                 "permissions": available_permissions,
                 "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
-                "sortOrders": ["asc", "desc"]
+                "sortOrders": ["asc", "desc"],
             }
 
             self.logger.info(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total")
             return kbs, total_count, available_filters
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list knowledge bases with pagination: {str(e)}")
+            self.logger.error(f"❌ Failed to list knowledge bases with pagination: {e!s}")
             return [], 0, {
                 "permissions": [],
                 "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
-                "sortOrders": ["asc", "desc"]
+                "sortOrders": ["asc", "desc"],
             }
 
     async def update_knowledge_base(
         self,
         kb_id: str,
-        updates: Dict,
-        transaction: Optional[TransactionDatabase] = None,
+        updates: dict,
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
         """Update knowledge base"""
         try:
@@ -7961,15 +7892,14 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Knowledge base updated successfully")
                 return True
-            else:
-                self.logger.warning("⚠️ Knowledge base not found")
-                return False
+            self.logger.warning("⚠️ Knowledge base not found")
+            return False
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
+            self.logger.error(f"❌ Failed to update knowledge base: {e!s}")
             raise
 
-    async def get_folder_record_by_id(self, folder_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+    async def get_folder_record_by_id(self, folder_id: str, transaction: TransactionDatabase | None = None) -> dict | None:
         try:
             db = transaction if transaction else self.db
             query = """
@@ -7983,18 +7913,17 @@ class BaseArangoService:
             })
             return next(cursor, None)
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch folder record {folder_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch folder record {folder_id}: {e!s}")
             return None
 
     async def find_folder_by_name_in_parent(
         self,
         kb_id: str,
         folder_name: str,
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
-        """
-        Find a folder by name within a specific parent (KB root or folder)
+        parent_folder_id: str | None = None,
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
+        """Find a folder by name within a specific parent (KB root or folder)
         """
         try:
             db = transaction if transaction else self.db
@@ -8055,17 +7984,16 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            self.logger.error(f"❌ Failed to find folder by name: {e!s}")
             return None
 
     async def navigate_to_folder_by_path(
         self,
         kb_id: str,
         folder_path: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
-        """
-        Navigate to a folder using folder names in the path
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
+        """Navigate to a folder using folder names in the path
         Example: "/folder1/subfolder2" -> Find folder1 in KB root, then subfolder2 in folder1
         """
         try:
@@ -8084,7 +8012,7 @@ class BaseArangoService:
                     kb_id=kb_id,
                     folder_name=folder_name,
                     parent_folder_id=current_parent_id,
-                    transaction=transaction
+                    transaction=transaction,
                 )
 
                 if not folder:
@@ -8097,7 +8025,7 @@ class BaseArangoService:
             return await self.get_folder_record_by_id(current_parent_id, transaction)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to navigate to folder by path: {str(e)}")
+            self.logger.error(f"❌ Failed to navigate to folder by path: {e!s}")
             return None
 
     async def create_folder(
@@ -8105,11 +8033,10 @@ class BaseArangoService:
         kb_id: str,
         folder_name: str,
         org_id: str,
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
-        """
-        Create folder using name-based validation
+        parent_folder_id: str | None = None,
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
+        """Create folder using name-based validation
         """
         try:
             folder_id = str(uuid.uuid4())
@@ -8124,7 +8051,7 @@ class BaseArangoService:
                         CollectionNames.FILES.value,
                         CollectionNames.BELONGS_TO.value,
                         CollectionNames.RECORD_RELATIONS.value,
-                    ]
+                    ],
                 )
 
             location = "KB root" if parent_folder_id is None else f"folder {parent_folder_id}"
@@ -8148,7 +8075,7 @@ class BaseArangoService:
                     kb_id=kb_id,
                     folder_name=folder_name,
                     parent_folder_id=parent_folder_id,
-                    transaction=transaction
+                    transaction=transaction,
                 )
 
                 if existing_folder:
@@ -8159,7 +8086,7 @@ class BaseArangoService:
                         "webUrl": existing_folder.get("webUrl", ""),
                         "parent_folder_id": parent_folder_id,
                         "exists": True,
-                        "success": True
+                        "success": True,
                     }
 
                 # Step 3: Create folder document (without path)
@@ -8172,7 +8099,7 @@ class BaseArangoService:
                     "extension": None,
                     "mimeType": "application/vnd.folder",
                     "sizeInBytes": 0,
-                    "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
+                    "webUrl": f"/kb/{kb_id}/folder/{folder_id}",
                 }
 
                 # Step 4: Create folder in database
@@ -8227,7 +8154,7 @@ class BaseArangoService:
                     "name": folder_name,
                     "webUrl": folder_data["webUrl"],
                     "exists": False,
-                    "success": True
+                    "success": True,
                 }
 
             except Exception as inner_error:
@@ -8236,20 +8163,20 @@ class BaseArangoService:
                         await asyncio.to_thread(lambda: transaction.abort_transaction())
                         self.logger.info("🔄 Transaction aborted after error")
                     except Exception as abort_error:
-                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                 raise inner_error
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create folder '{folder_name}': {str(e)}")
+            self.logger.error(f"❌ Failed to create folder '{folder_name}': {e!s}")
             raise
 
     async def update_folder(
         self,
         folder_id:str,
-        updates:Dict,
-        transaction: Optional[TransactionDatabase]= None
+        updates:dict,
+        transaction: TransactionDatabase | None= None,
     )-> bool:
-        """ Update folder """
+        """Update folder"""
         try:
             self.logger.info(f"🚀 Updating folder {folder_id}")
 
@@ -8273,22 +8200,20 @@ class BaseArangoService:
             if result:
                 self.logger.info("✅ Folder updated successfully")
                 return True
-            else:
-                self.logger.warning("⚠️ Folder not found")
-                return False
+            self.logger.warning("⚠️ Folder not found")
+            return False
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update Folder : {str(e)}")
+            self.logger.error(f"❌ Failed to update Folder : {e!s}")
             raise
 
     async def validate_folder_in_kb(
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[TransactionDatabase] = None
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
-        """
-        Validate that a folder exists, is valid, and belongs to a specific knowledge base.
+        """Validate that a folder exists, is valid, and belongs to a specific knowledge base.
         """
         try:
             db = transaction if transaction else self.db
@@ -8323,10 +8248,10 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            self.logger.error(f"❌ Failed to validate folder in KB: {e!s}")
             return False
 
-    async def validate_record_in_folder(self, folder_id: str, record_id: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+    async def validate_record_in_folder(self, folder_id: str, record_id: str, transaction: TransactionDatabase | None = None) -> bool:
         """Check if a record is a child of a folder via PARENT_CHILD edge"""
         try:
             db = transaction if transaction else self.db
@@ -8345,10 +8270,10 @@ class BaseArangoService:
             result = next(cursor, None)
             return result is not None
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate record {record_id} in folder {folder_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to validate record {record_id} in folder {folder_id}: {e!s}")
             return False
 
-    async def validate_record_in_kb(self, kb_id: str, record_id: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+    async def validate_record_in_kb(self, kb_id: str, record_id: str, transaction: TransactionDatabase | None = None) -> bool:
         """Check if a record belongs to a KB via BELONGS_TO_KB edge"""
         try:
             db = transaction if transaction else self.db
@@ -8366,31 +8291,32 @@ class BaseArangoService:
             result = next(cursor, None)
             return result is not None
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate record {record_id} in KB {kb_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to validate record {record_id} in KB {kb_id}: {e!s}")
             return False
 
     async def update_record(
         self,
         record_id: str,
         user_id: str,
-        updates: Dict,
-        file_metadata: Optional[Dict] = None,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
-        """
-        Update a record by ID with automatic KB and permission detection
+        updates: dict,
+        file_metadata: dict | None = None,
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
+        """Update a record by ID with automatic KB and permission detection
         This method automatically:
         1. Validates user exists
         2. Gets the record and finds its KB via belongs_to_kb edge
         3. Checks user permissions on that KB
         4. Determines if record is in a folder or KB root
         5. Updates the record directly (no redundant validation)
+
         Args:
             record_id: The record to update
             user_id: External user ID doing the update
             updates: Dictionary of fields to update
             file_metadata: Optional file metadata for file uploads
             transaction: Optional existing transaction
+
         """
         try:
             self.logger.info(f"🚀 Updating record {record_id} by user {user_id}")
@@ -8406,15 +8332,15 @@ class BaseArangoService:
                         write=[
                             CollectionNames.RECORDS.value,
                             CollectionNames.FILES.value,
-                        ]
+                        ],
                     )
                     self.logger.info("🔄 Transaction created for record update")
                 except Exception as tx_error:
-                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    self.logger.error(f"❌ Failed to create transaction: {tx_error!s}")
                     return {
                         "success": False,
                         "code": 500,
-                        "reason": f"Transaction creation failed: {str(tx_error)}"
+                        "reason": f"Transaction creation failed: {tx_error!s}",
                     }
 
             try:
@@ -8427,10 +8353,10 @@ class BaseArangoService:
                     return {
                         "success": False,
                         "code": 404,
-                        "reason": f"User not found: {user_id}"
+                        "reason": f"User not found: {user_id}",
                     }
 
-                user_key = user.get('_key')
+                user_key = user.get("_key")
                 self.logger.info(f"✅ Found user: {user_key}")
 
                 # Step 2: Get record, KB context, permissions, and file record in one query
@@ -8523,7 +8449,7 @@ class BaseArangoService:
                     return {
                         "success": False,
                         "code": error_code,
-                        "reason": error_reason
+                        "reason": error_reason,
                     }
 
                 # Step 4: Extract validated context
@@ -8545,7 +8471,7 @@ class BaseArangoService:
                 processed_updates = {
                     **updates,
                     "version": version,
-                    "updatedAtTimestamp": timestamp
+                    "updatedAtTimestamp": timestamp,
                 }
 
                 # Handle file upload case
@@ -8585,7 +8511,7 @@ class BaseArangoService:
                     return {
                         "success": False,
                         "code": 500,
-                        "reason": f"Failed to update record {record_id}"
+                        "reason": f"Failed to update record {record_id}",
                     }
 
                 # Step 7: Update file record if file metadata provided
@@ -8622,7 +8548,7 @@ class BaseArangoService:
                                 self.logger.info(f"✅ File metadata updated for record {record_id}")
 
                         except Exception as file_error:
-                            self.logger.error(f"❌ Failed to update file metadata: {str(file_error)}")
+                            self.logger.error(f"❌ Failed to update file metadata: {file_error!s}")
                             # Continue without failing the entire operation
 
                 # Step 8: Commit transaction
@@ -8632,27 +8558,27 @@ class BaseArangoService:
                         await asyncio.to_thread(lambda: transaction.commit_transaction())
                         self.logger.info("✅ Transaction committed successfully!")
                     except Exception as commit_error:
-                        self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                        self.logger.error(f"❌ Transaction commit failed: {commit_error!s}")
                         try:
                             await asyncio.to_thread(lambda: transaction.abort_transaction())
                             self.logger.info("🔄 Transaction aborted after commit failure")
                         except Exception as abort_error:
-                            self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                            self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                         return {
                             "success": False,
                             "code": 500,
-                            "reason": f"Transaction commit failed: {str(commit_error)}"
+                            "reason": f"Transaction commit failed: {commit_error!s}",
                         }
 
                 # Step 9: Publish update event (after successful commit)
                 try:
                     update_payload = await self._create_update_record_event_payload(
-                        updated_record, updated_file
+                        updated_record, updated_file,
                     )
                     if update_payload:
                         await self._publish_record_event("updateRecord", update_payload)
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish update event: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish update event: {event_error!s}")
                     # Don't fail the main operation for event publishing errors
 
                 self.logger.info(f"✅ Record {record_id} updated successfully with auto-detected context")
@@ -8671,36 +8597,35 @@ class BaseArangoService:
                 }
 
             except Exception as db_error:
-                self.logger.error(f"❌ Database error during record update: {str(db_error)}")
+                self.logger.error(f"❌ Database error during record update: {db_error!s}")
                 if should_commit and transaction:
                     try:
                         await asyncio.to_thread(lambda: transaction.abort_transaction())
                         self.logger.info("🔄 Transaction aborted due to error")
                     except Exception as abort_error:
-                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": f"Database error: {str(db_error)}"
+                    "reason": f"Database error: {db_error!s}",
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update record {record_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to update record {record_id}: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": f"Service error: {str(e)}"
+                "reason": f"Service error: {e!s}",
             }
 
     async def delete_records(
         self,
-        record_ids: List[str],
+        record_ids: list[str],
         kb_id: str,
-        folder_id: Optional[str] = None,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict:
-        """
-        Delete multiple records and publish delete events for each
+        folder_id: str | None = None,
+        transaction: TransactionDatabase | None = None,
+    ) -> dict:
+        """Delete multiple records and publish delete events for each
         Returns details about successfully deleted records for event publishing
         """
         try:
@@ -8711,7 +8636,7 @@ class BaseArangoService:
                     "failed_records": [],
                     "total_requested": 0,
                     "successfully_deleted": 0,
-                    "failed_count": 0
+                    "failed_count": 0,
                 }
 
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from {'folder ' + folder_id if folder_id else 'KB root'}")
@@ -8728,14 +8653,14 @@ class BaseArangoService:
                             CollectionNames.RECORD_RELATIONS.value,
                             CollectionNames.IS_OF_TYPE.value,
                             CollectionNames.BELONGS_TO.value,
-                        ]
+                        ],
                     )
                     self.logger.info("🔄 Transaction created for bulk record deletion")
                 except Exception as tx_error:
-                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    self.logger.error(f"❌ Failed to create transaction: {tx_error!s}")
                     return {
                         "success": False,
-                        "reason": f"Transaction creation failed: {str(tx_error)}"
+                        "reason": f"Transaction creation failed: {tx_error!s}",
                     }
 
             try:
@@ -8821,7 +8746,7 @@ class BaseArangoService:
                     errors = [err for err in invalid_record["validation_errors"] if err]
                     failed_records.append({
                         "record_id": invalid_record["record_id"],
-                        "reason": ", ".join(errors) if errors else "Record validation failed"
+                        "reason": ", ".join(errors) if errors else "Record validation failed",
                     })
 
                 # If no valid records found, return early
@@ -8831,11 +8756,11 @@ class BaseArangoService:
                             await asyncio.to_thread(lambda: transaction.commit_transaction())
                             self.logger.info("✅ Transaction committed (no records to delete)")
                         except Exception as commit_error:
-                            self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                            self.logger.error(f"❌ Transaction commit failed: {commit_error!s}")
                             try:
                                 await asyncio.to_thread(lambda: transaction.abort_transaction())
                             except Exception as abort_error:
-                                self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                                self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
 
                     self.logger.info("✅ No valid records found to delete")
                     return {
@@ -8849,7 +8774,7 @@ class BaseArangoService:
                         "location": "folder" if folder_id else "kb_root",
                         "folder_id": folder_id,
                         "kb_id": kb_id,
-                        "message": "Records already deleted or not found"
+                        "message": "Records already deleted or not found",
                     }
 
                 # Store records for event publishing before deletion
@@ -8857,7 +8782,7 @@ class BaseArangoService:
                 for valid_record in valid_records:
                     records_for_events.append({
                         "record": valid_record["record"],
-                        "file_record": valid_record["file_record"]
+                        "file_record": valid_record["file_record"],
                     })
 
                 # Step 2: Delete edges, file records, and records
@@ -8934,15 +8859,15 @@ class BaseArangoService:
                         await asyncio.to_thread(lambda: transaction.commit_transaction())
                         self.logger.info("✅ Transaction committed successfully!")
                     except Exception as commit_error:
-                        self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                        self.logger.error(f"❌ Transaction commit failed: {commit_error!s}")
                         try:
                             await asyncio.to_thread(lambda: transaction.abort_transaction())
                             self.logger.info("🔄 Transaction aborted after commit failure")
                         except Exception as abort_error:
-                            self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                            self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                         return {
                             "success": False,
-                            "reason": f"Transaction commit failed: {str(commit_error)}"
+                            "reason": f"Transaction commit failed: {commit_error!s}",
                         }
 
                 # Step 4: Publish delete events for successfully deleted records
@@ -8952,11 +8877,11 @@ class BaseArangoService:
                         if any(d["record_id"] == record_data["record"]["_key"] for d in deleted_records):
                             # Only publish events for actually deleted records
                             delete_payload = await self._create_deleted_record_event_payload(
-                                record_data["record"], record_data["file_record"]
+                                record_data["record"], record_data["file_record"],
                             )
                             if delete_payload:
                                 delete_event_tasks.append(
-                                    self._publish_record_event("deleteRecord", delete_payload)
+                                    self._publish_record_event("deleteRecord", delete_payload),
                                 )
 
                     if delete_event_tasks:
@@ -8964,7 +8889,7 @@ class BaseArangoService:
                         self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records")
 
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish delete events: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish delete events: {event_error!s}")
                     # Don't fail the main operation for event publishing errors
 
                 success_count = len(deleted_records)
@@ -8982,31 +8907,31 @@ class BaseArangoService:
                     "files_deleted": len(file_record_ids),
                     "location": "folder" if folder_id else "kb_root",
                     "folder_id": folder_id,
-                    "kb_id": kb_id
+                    "kb_id": kb_id,
                 }
 
             except Exception as db_error:
-                self.logger.error(f"❌ Database error during bulk deletion: {str(db_error)}")
+                self.logger.error(f"❌ Database error during bulk deletion: {db_error!s}")
                 if should_commit and transaction:
                     try:
                         await asyncio.to_thread(lambda: transaction.abort_transaction())
                         self.logger.info("🔄 Transaction aborted due to error")
                     except Exception as abort_error:
-                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                 raise db_error
 
         except Exception as e:
-            self.logger.error(f"❌ Failed bulk record deletion: {str(e)}")
+            self.logger.error(f"❌ Failed bulk record deletion: {e!s}")
             return {
                 "success": False,
-                "reason": f"Service error: {str(e)}"
+                "reason": f"Service error: {e!s}",
             }
 
     async def validate_users_exist(
         self,
-        user_ids: List[str],
-        transaction: Optional[TransactionDatabase] = None
-    ) -> List[str]:
+        user_ids: list[str],
+        transaction: TransactionDatabase | None = None,
+    ) -> list[str]:
         """Validate which users exist in the database"""
         try:
             db = transaction if transaction else self.db
@@ -9030,15 +8955,15 @@ class BaseArangoService:
             return list(cursor)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate users exist: {str(e)}")
+            self.logger.error(f"❌ Failed to validate users exist: {e!s}")
             return []
 
     async def get_existing_kb_permissions(
         self,
         kb_id: str,
-        user_ids: List[str],
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict[str, str]:
+        user_ids: list[str],
+        transaction: TransactionDatabase | None = None,
+    ) -> dict[str, str]:
         """Get existing permissions for specified users on a KB"""
         try:
             db = transaction if transaction else self.db
@@ -9067,17 +8992,17 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get existing KB permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to get existing KB permissions: {e!s}")
             return {}
 
     async def create_kb_permissions(
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        role: str
-    ) -> Dict:
+        user_ids: list[str],
+        team_ids: list[str],
+        role: str,
+    ) -> dict:
         """Create kb permissions for users and teams - Optimized version"""
         try:
             timestamp = get_epoch_timestamp_in_ms()
@@ -9229,7 +9154,7 @@ class BaseArangoService:
                 if insert_docs:
                     operations.append((
                         "FOR doc IN @docs INSERT doc INTO @@permissions_collection",
-                        {"docs": insert_docs, "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value}
+                        {"docs": insert_docs, "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value},
                     ))
 
             # Execute all operations in sequence (could be made parallel if needed)
@@ -9249,30 +9174,30 @@ class BaseArangoService:
                 "details": {
                     "granted": {
                         "users": [{"user_key": u["user_id"], "userId": u["userId"], "name": u["name"]} for u in users_to_insert],
-                        "teams": [{"team_key": t["team_id"], "name": t["name"]} for t in teams_to_insert]
+                        "teams": [{"team_key": t["team_id"], "name": t["name"]} for t in teams_to_insert],
                     },
                     "skipped": {
                         "users": [{"user_key": u["user_id"], "userId": u["userId"], "name": u["name"], "role": u["current_role"]} for u in users_skipped],
-                        "teams": [{"team_key": t["team_id"], "name": t["name"], "role": t["current_role"]} for t in teams_skipped]
-                    }
-                }
+                        "teams": [{"team_key": t["team_id"], "name": t["name"], "role": t["current_role"]} for t in teams_skipped],
+                    },
+                },
             }
 
             self.logger.info(f"Optimized batch operation: {granted_count} granted, {len(users_skipped + teams_skipped)} skipped")
             return final_result
 
         except Exception as e:
-            self.logger.error(f"Failed optimized batch operation: {str(e)}")
-            return {"success": False, "reason": f"Database error: {str(e)}", "code": 500}
+            self.logger.error(f"Failed optimized batch operation: {e!s}")
+            return {"success": False, "reason": f"Database error: {e!s}", "code": 500}
 
     async def update_kb_permission(
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        new_role: str
-    ) -> Optional[Dict]:
+        user_ids: list[str],
+        team_ids: list[str],
+        new_role: str,
+    ) -> dict | None:
         """Optimistically update permissions for users and teams on a knowledge base"""
         try:
             self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
@@ -9287,7 +9212,7 @@ class BaseArangoService:
                 return {
                     "success": False,
                     "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
+                    "code": "400",
                 }
 
             # Single atomic operation: check requester permission + get current permissions + update
@@ -9390,12 +9315,12 @@ class BaseArangoService:
                 if perm["type"] == "USER":
                     updates_by_type["users"][perm["id"]] = {
                         "old_role": perm["old_role"],
-                        "new_role": perm["new_role"]
+                        "new_role": perm["new_role"],
                     }
                 elif perm["type"] == "TEAM":
                     updates_by_type["teams"][perm["id"]] = {
                         "old_role": perm["old_role"],
-                        "new_role": perm["new_role"]
+                        "new_role": perm["new_role"],
                     }
 
             self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
@@ -9408,23 +9333,23 @@ class BaseArangoService:
                 "updated_users": updated_users,
                 "updated_teams": updated_teams,
                 "updates_detail": updates_by_type,
-                "requester_role": result["requester_role"]
+                "requester_role": result["requester_role"],
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            self.logger.error(f"❌ Failed to update KB permission optimistically: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": "500",
             }
 
     async def remove_kb_permission(
         self,
         kb_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        transaction: Optional[TransactionDatabase] = None
+        user_ids: list[str],
+        team_ids: list[str],
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
         """Remove permissions for multiple users and teams from a KB (internal method)"""
         try:
@@ -9469,19 +9394,18 @@ class BaseArangoService:
                 removed_teams = sum(1 for perm in results if perm["type"] == "TEAM")
                 self.logger.info(f"✅ Removed {len(results)} permissions from KB {kb_id} ({removed_users} users, {removed_teams} teams)")
                 return True
-            else:
-                self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
-                return False
+            self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
+            return False
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove KB permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to remove KB permissions: {e!s}")
             return False
 
 
     async def count_kb_owners(
         self,
         kb_id: str,
-        transaction: Optional[TransactionDatabase] = None
+        transaction: TransactionDatabase | None = None,
     ) -> int:
         """Count the number of owners for a knowledge base"""
         try:
@@ -9505,16 +9429,16 @@ class BaseArangoService:
             return count
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
+            self.logger.error(f"❌ Failed to count KB owners: {e!s}")
             return 0
 
     async def get_kb_permissions(
         self,
         kb_id: str,
-        user_ids: Optional[List[str]] = None,
-        team_ids: Optional[List[str]] = None,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict[str, Dict[str, str]]:
+        user_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
+        transaction: TransactionDatabase | None = None,
+    ) -> dict[str, dict[str, str]]:
         """Get current roles for multiple users and teams on a knowledge base in a single query"""
         try:
             db = transaction if transaction else self.db
@@ -9564,14 +9488,14 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get KB permissions batch: {str(e)}")
+            self.logger.error(f"❌ Failed to get KB permissions batch: {e!s}")
             raise
 
     async def list_kb_permissions(
         self,
         kb_id: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> List[Dict]:
+        transaction: TransactionDatabase | None = None,
+    ) -> list[dict]:
         """List all permissions for a KB with user details"""
         try:
             db = transaction if transaction else self.db
@@ -9601,7 +9525,7 @@ class BaseArangoService:
             return list(cursor)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to list KB permissions: {e!s}")
             return []
 
     async def list_all_records(
@@ -9610,28 +9534,27 @@ class BaseArangoService:
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        permissions: Optional[List[str]],
-        date_from: Optional[int],
-        date_to: Optional[int],
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
         sort_by: str,
         sort_order: str,
         source: str,
-    ) -> Tuple[List[Dict], int, Dict]:
-        """
-        List all records the user can access directly via belongs_to_kb edges.
+    ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access directly via belongs_to_kb edges.
         Returns (records, total_count, available_filters)
         """
         try:
             self.logger.info(f"🔍 Listing all records for user {user_id}, source: {source}")
 
             # Determine what data sources to include
-            include_kb_records = source in ['all', 'local']
-            include_connector_records = source in ['all', 'connector']
+            include_kb_records = source in ["all", "local"]
+            include_connector_records = source in ["all", "connector"]
 
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
@@ -9943,13 +9866,13 @@ class BaseArangoService:
             return records, count, available_filters
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list all records: {str(e)}")
+            self.logger.error(f"❌ Failed to list all records: {e!s}")
             return [], 0, {
                 "recordTypes": [],
                 "origins": [],
                 "connectors": [],
                 "indexingStatus": [],
-                "permissions": []
+                "permissions": [],
             }
 
     async def list_kb_records(
@@ -9959,19 +9882,18 @@ class BaseArangoService:
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        date_from: Optional[int],
-        date_to: Optional[int],
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
         sort_by: str,
         sort_order: str,
-        folder_id: Optional[str] = None,  # Add folder filter parameter
-    ) -> Tuple[List[Dict], int, Dict]:
-        """
-        List all records in a specific KB through folder structure for better folder-based filtering.
+        folder_id: str | None = None,  # Add folder filter parameter
+    ) -> tuple[list[dict], int, dict]:
+        """List all records in a specific KB through folder structure for better folder-based filtering.
         """
         try:
             self.logger.info(f"🔍 Listing records for KB {kb_id} (folder-based)")
@@ -10002,7 +9924,7 @@ class BaseArangoService:
                     "origins": [],
                     "connectors": [],
                     "indexingStatus": [],
-                    "permissions": []
+                    "permissions": [],
                 }
 
             # Build filter conditions
@@ -10256,14 +10178,14 @@ class BaseArangoService:
             return records, count, available_filters
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
+            self.logger.error(f"❌ Failed to list KB records: {e!s}")
             return [], 0, {
                 "recordTypes": [],
                 "origins": [],
                 "connectors": [],
                 "indexingStatus": [],
                 "permissions": [],
-                "folders": []
+                "folders": [],
             }
 
     async def get_kb_children(
@@ -10272,17 +10194,16 @@ class BaseArangoService:
         skip: int,
         limit: int,
         level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict:
-        """
-        Get KB root contents with folders_first pagination and level order traversal
+        transaction: TransactionDatabase | None = None,
+    ) -> dict:
+        """Get KB root contents with folders_first pagination and level order traversal
         Folders First Logic:
         - Show ALL folders first (within page limits)
         - Then show records in remaining space
@@ -10293,7 +10214,7 @@ class BaseArangoService:
             db = transaction if transaction else self.db
 
             # Build filter conditions
-            def build_filters() -> Tuple[str, str, Dict]:
+            def build_filters() -> tuple[str, str, dict]:
                 folder_conditions = []
                 record_conditions = []
                 bind_vars = {}
@@ -10331,7 +10252,7 @@ class BaseArangoService:
                 "name": "record.recordName",
                 "created_at": "record.createdAtTimestamp",
                 "updated_at": "record.updatedAtTimestamp",
-                "size": "fileRecord.sizeInBytes"
+                "size": "fileRecord.sizeInBytes",
             }
             record_sort_field = record_sort_map.get(sort_by, "record.recordName")
             sort_direction = sort_order.upper()
@@ -10493,7 +10414,7 @@ class BaseArangoService:
                 "level": level,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                **filter_vars
+                **filter_vars,
             }
 
             cursor = db.aql.execute(main_query, bind_vars=bind_vars)
@@ -10506,7 +10427,7 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get KB children with folders_first pagination: {str(e)}")
+            self.logger.error(f"❌ Failed to get KB children with folders_first pagination: {e!s}")
             return {"success": False, "reason": str(e)}
 
     async def get_folder_children(
@@ -10516,23 +10437,22 @@ class BaseArangoService:
         skip: int,
         limit: int,
         level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict:
-        """
-        Get folder contents with folders_first pagination and level order traversal
+        transaction: TransactionDatabase | None = None,
+    ) -> dict:
+        """Get folder contents with folders_first pagination and level order traversal
         """
         try:
             db = transaction if transaction else self.db
 
             # Build filter conditions (same as KB version)
-            def build_filters() -> Tuple[str, str, Dict]:
+            def build_filters() -> tuple[str, str, dict]:
                 folder_conditions = []
                 record_conditions = []
                 bind_vars = {}
@@ -10570,7 +10490,7 @@ class BaseArangoService:
                 "name": "record.recordName",
                 "created_at": "record.createdAtTimestamp",
                 "updated_at": "record.updatedAtTimestamp",
-                "size": "fileRecord.sizeInBytes"
+                "size": "fileRecord.sizeInBytes",
             }
             record_sort_field = record_sort_map.get(sort_by, "record.recordName")
             sort_direction = sort_order.upper()
@@ -10731,7 +10651,7 @@ class BaseArangoService:
                 "level": level,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                **filter_vars
+                **filter_vars,
             }
 
             cursor = db.aql.execute(main_query, bind_vars=bind_vars)
@@ -10744,16 +10664,15 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get folder children with folders_first pagination: {str(e)}")
+            self.logger.error(f"❌ Failed to get folder children with folders_first pagination: {e!s}")
             return {"success": False, "reason": str(e)}
 
     async def delete_knowledge_base(
         self,
         kb_id: str,
-        transaction: Optional[TransactionDatabase] = None,
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
-        """
-        Delete a knowledge base with ALL nested content
+        """Delete a knowledge base with ALL nested content
         - All folders (recursive, any depth)
         - All records in all folders
         - All file records
@@ -10775,11 +10694,11 @@ class BaseArangoService:
                             CollectionNames.BELONGS_TO.value,
                             CollectionNames.IS_OF_TYPE.value,
                             CollectionNames.PERMISSIONS_TO_KB.value,
-                        ]
+                        ],
                     )
                     self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
                 except Exception as tx_error:
-                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    self.logger.error(f"❌ Failed to create transaction: {tx_error!s}")
                     return False
 
             try:
@@ -10882,8 +10801,8 @@ class BaseArangoService:
                         "FOR k IN @keys REMOVE k IN @@files_collection OPTIONS { ignoreErrors: true }",
                         bind_vars={
                             "keys": inventory["file_records"],
-                            "@files_collection": CollectionNames.FILES.value
-                        }
+                            "@files_collection": CollectionNames.FILES.value,
+                        },
                     )
                     self.logger.info(f"✅ Deleted {len(inventory['file_records'])} file records")
 
@@ -10894,8 +10813,8 @@ class BaseArangoService:
                         "FOR k IN @keys REMOVE k IN @@records_collection OPTIONS { ignoreErrors: true }",
                         bind_vars={
                             "keys": all_record_keys,
-                            "@records_collection": CollectionNames.RECORDS.value
-                        }
+                            "@records_collection": CollectionNames.RECORDS.value,
+                        },
                     )
                     self.logger.info(f"✅ Deleted {len(all_record_keys)} records")
 
@@ -10906,8 +10825,8 @@ class BaseArangoService:
                         "FOR k IN @keys REMOVE k IN @@files_collection OPTIONS { ignoreErrors: true }",
                         bind_vars={
                             "keys": inventory["folders"],
-                            "@files_collection": CollectionNames.FILES.value
-                        }
+                            "@files_collection": CollectionNames.FILES.value,
+                        },
                     )
                     self.logger.info(f"✅ Deleted {len(inventory['folders'])} folders")
 
@@ -10917,8 +10836,8 @@ class BaseArangoService:
                     "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true }",
                     bind_vars={
                         "kb_id": kb_id,
-                        "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value
-                    }
+                        "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                    },
                 )
 
                 # Step 7: Commit transaction
@@ -10932,11 +10851,11 @@ class BaseArangoService:
                     delete_event_tasks = []
                     for record_data in records_with_details:
                         delete_payload = await self._create_deleted_record_event_payload(
-                            record_data["record"], record_data["file_record"]
+                            record_data["record"], record_data["file_record"],
                         )
                         if delete_payload:
                             delete_event_tasks.append(
-                                self._publish_record_event("deleteRecord", delete_payload)
+                                self._publish_record_event("deleteRecord", delete_payload),
                             )
 
                     if delete_event_tasks:
@@ -10944,31 +10863,30 @@ class BaseArangoService:
                         self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records from KB deletion")
 
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish KB deletion events: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish KB deletion events: {event_error!s}")
                     # Don't fail the main operation for event publishing errors
 
                 self.logger.info(f"🎉 KB {kb_id} and ALL contents deleted successfully.")
                 return True
 
             except Exception as db_error:
-                self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
+                self.logger.error(f"❌ Database error during KB deletion: {db_error!s}")
                 if should_commit and transaction:
                     await asyncio.to_thread(lambda: transaction.abort_transaction())
                     self.logger.info("🔄 Transaction aborted due to error")
                 raise db_error
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete KB {kb_id} completely: {str(e)}")
+            self.logger.error(f"❌ Failed to delete KB {kb_id} completely: {e!s}")
             return False
 
     async def delete_folder(
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[TransactionDatabase] = None,
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
-        """
-        Delete a folder with ALL nested content and publish delete events for all records
+        """Delete a folder with ALL nested content and publish delete events for all records
         Fixed to handle edge deletion properly and avoid "document not found" errors
         """
         try:
@@ -10984,11 +10902,11 @@ class BaseArangoService:
                             CollectionNames.RECORD_RELATIONS.value,
                             CollectionNames.BELONGS_TO.value,
                             CollectionNames.IS_OF_TYPE.value,
-                        ]
+                        ],
                     )
                     self.logger.info(f"🔄 Transaction created for complete folder {folder_id} deletion")
                 except Exception as tx_error:
-                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    self.logger.error(f"❌ Failed to create transaction: {tx_error!s}")
                     return False
 
             try:
@@ -11207,12 +11125,12 @@ class BaseArangoService:
                         await asyncio.to_thread(lambda: transaction.commit_transaction())
                         self.logger.info("✅ Transaction committed successfully!")
                     except Exception as commit_error:
-                        self.logger.error(f"❌ Transaction commit failed: {str(commit_error)}")
+                        self.logger.error(f"❌ Transaction commit failed: {commit_error!s}")
                         try:
                             await asyncio.to_thread(lambda: transaction.abort_transaction())
                             self.logger.info("🔄 Transaction aborted after commit failure")
                         except Exception as abort_error:
-                            self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                            self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                         return False
 
                 # Step 7: Publish delete events for all records (after successful transaction)
@@ -11220,11 +11138,11 @@ class BaseArangoService:
                     delete_event_tasks = []
                     for record_data in records_with_details:
                         delete_payload = await self._create_deleted_record_event_payload(
-                            record_data["record"], record_data["file_record"]
+                            record_data["record"], record_data["file_record"],
                         )
                         if delete_payload:
                             delete_event_tasks.append(
-                                self._publish_record_event("deleteRecord", delete_payload)
+                                self._publish_record_event("deleteRecord", delete_payload),
                             )
 
                     if delete_event_tasks:
@@ -11232,7 +11150,7 @@ class BaseArangoService:
                         self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records from folder deletion")
 
                 except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish folder deletion events: {str(event_error)}")
+                    self.logger.error(f"❌ Failed to publish folder deletion events: {event_error!s}")
                     # Don't fail the main operation for event publishing errors
 
                 self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully:")
@@ -11244,28 +11162,27 @@ class BaseArangoService:
                 return True
 
             except Exception as db_error:
-                self.logger.error(f"❌ Database error during folder deletion: {str(db_error)}")
+                self.logger.error(f"❌ Database error during folder deletion: {db_error!s}")
                 if should_commit and transaction:
                     try:
                         await asyncio.to_thread(lambda: transaction.abort_transaction())
                         self.logger.info("🔄 Transaction aborted due to error")
                     except Exception as abort_error:
-                        self.logger.error(f"❌ Transaction abort failed: {str(abort_error)}")
+                        self.logger.error(f"❌ Transaction abort failed: {abort_error!s}")
                 raise db_error
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete folder {folder_id} completely: {str(e)}")
+            self.logger.error(f"❌ Failed to delete folder {folder_id} completely: {e!s}")
             return False
 
     async def _check_name_conflict_in_parent(
         self,
         kb_id: str,
-        parent_folder_id: Optional[str],
+        parent_folder_id: str | None,
         item_name: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Dict:
-        """
-        Check if an item (folder or file) name already exists in the target parent location
+        transaction: TransactionDatabase | None = None,
+    ) -> dict:
+        """Check if an item (folder or file) name already exists in the target parent location
         Handles different field names: folders have 'name', records have 'recordName'
         """
         try:
@@ -11329,21 +11246,20 @@ class BaseArangoService:
 
             return {
                 "has_conflict": len(conflicts) > 0,
-                "conflicts": conflicts
+                "conflicts": conflicts,
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
+            self.logger.error(f"❌ Failed to check name conflict: {e!s}")
             return {"has_conflict": False, "conflicts": []}
 
     async def get_folder_by_kb_and_path(
         self,
         kb_id: str,
         folder_path: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[Dict]:
-        """
-        Get folder by KB ID + path (much faster than edge traversal)
+        transaction: TransactionDatabase | None = None,
+    ) -> dict | None:
+        """Get folder by KB ID + path (much faster than edge traversal)
         Uses the kbId field stored directly in folder records
         """
         try:
@@ -11374,17 +11290,16 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get folder by KB and path: {str(e)}")
+            self.logger.error(f"❌ Failed to get folder by KB and path: {e!s}")
             return None
 
     async def validate_folder_exists_in_kb(
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[TransactionDatabase] = None
+        transaction: TransactionDatabase | None = None,
     ) -> bool:
-        """
-        Validate folder exists in specific KB
+        """Validate folder exists in specific KB
         Uses direct KB ID check instead of edge traversal
         """
         try:
@@ -11407,7 +11322,7 @@ class BaseArangoService:
             return next(cursor, False)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            self.logger.error(f"❌ Failed to validate folder in KB: {e!s}")
             return False
 
     async def upload_records(
@@ -11415,11 +11330,10 @@ class BaseArangoService:
         kb_id: str,
         user_id: str,
         org_id: str,
-        files: List[Dict],
-        parent_folder_id: Optional[str] = None,  # None = KB root, str = specific folder
-    ) -> Dict:
-        """
-        - KB root upload (parent_folder_id=None)
+        files: list[dict],
+        parent_folder_id: str | None = None,  # None = KB root, str = specific folder
+    ) -> dict:
+        """- KB root upload (parent_folder_id=None)
         - Folder upload (parent_folder_id=folder_id)
         """
         try:
@@ -11432,7 +11346,7 @@ class BaseArangoService:
                 kb_id=kb_id,
                 user_id=user_id,
                 org_id=org_id,
-                parent_folder_id=parent_folder_id
+                parent_folder_id=parent_folder_id,
             )
             if not validation_result["valid"]:
                 return validation_result
@@ -11448,7 +11362,7 @@ class BaseArangoService:
                 org_id=org_id,
                 files=files,
                 folder_analysis=folder_analysis,
-                validation_result=validation_result
+                validation_result=validation_result,
             )
 
             if result["success"]:
@@ -11462,14 +11376,13 @@ class BaseArangoService:
                     "kbId": kb_id,
                     "parentFolderId": parent_folder_id,
                 }
-            else:
-                return result
+            return result
 
         except Exception as e:
-            self.logger.error(f"❌ Unified upload failed: {str(e)}")
-            return {"success": False, "reason": f"Upload failed: {str(e)}", "code": 500}
+            self.logger.error(f"❌ Unified upload failed: {e!s}")
+            return {"success": False, "reason": f"Upload failed: {e!s}", "code": 500}
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
+    async def get_user_by_user_id(self, user_id: str) -> dict | None:
         """Get user by user ID"""
         try:
             query = f"""
@@ -11481,17 +11394,17 @@ class BaseArangoService:
             result = next(cursor, None)
             return result
         except Exception as e:
-            self.logger.error(f"Error getting user by user ID: {str(e)}")
+            self.logger.error(f"Error getting user by user ID: {e!s}")
             return None
 
     async def copy_document_relationships(self, source_key: str, target_key: str) -> None:
-        """
-        Copy all relationships (edges) from source document to target document.
+        """Copy all relationships (edges) from source document to target document.
         This includes departments, categories, subcategories, languages, and topics.
 
         Args:
             source_key (str): Key of the source document
             target_key (str): Key of the target document
+
         """
         try:
             self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
@@ -11501,7 +11414,7 @@ class BaseArangoService:
                 CollectionNames.BELONGS_TO_DEPARTMENT.value,
                 CollectionNames.BELONGS_TO_CATEGORY.value,
                 CollectionNames.BELONGS_TO_LANGUAGE.value,
-                CollectionNames.BELONGS_TO_TOPIC.value
+                CollectionNames.BELONGS_TO_TOPIC.value,
             ]
 
             for collection in edge_collections:
@@ -11519,8 +11432,8 @@ class BaseArangoService:
                 cursor = self.db.aql.execute(
                     query,
                     bind_vars={
-                        "source_doc": f"{CollectionNames.RECORDS.value}/{source_key}"
-                    }
+                        "source_doc": f"{CollectionNames.RECORDS.value}/{source_key}",
+                    },
                 )
 
                 edges = list(cursor)
@@ -11532,21 +11445,21 @@ class BaseArangoService:
                         new_edge = {
                             "_from": f"{CollectionNames.RECORDS.value}/{target_key}",
                             "_to": edge["to"],
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                         new_edges.append(new_edge)
 
                     # Batch create the new edges
                     await self.batch_create_edges(new_edges, collection)
                     self.logger.info(
-                        f"✅ Copied {len(new_edges)} relationships from collection {collection}"
+                        f"✅ Copied {len(new_edges)} relationships from collection {collection}",
                     )
 
             self.logger.info(f"✅ Successfully copied all relationships to {target_key}")
 
         except Exception as e:
             self.logger.error(
-                f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
+                f"❌ Error copying relationships from {source_key} to {target_key}: {e!s}",
             )
             raise
 
@@ -11554,10 +11467,9 @@ class BaseArangoService:
     async def get_key_by_external_message_id(
         self,
         external_message_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal message key using the external message ID
+        transaction: TransactionDatabase | None = None,
+    ) -> str | None:
+        """Get internal message key using the external message ID
 
         Args:
             external_message_id (str): External message ID to look up
@@ -11565,6 +11477,7 @@ class BaseArangoService:
 
         Returns:
             Optional[str]: Internal message key if found, None otherwise
+
         """
         try:
             self.logger.info(
@@ -11579,7 +11492,7 @@ class BaseArangoService:
             """
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_message_id": external_message_id}
+                query, bind_vars={"external_message_id": external_message_id},
             )
             result = next(cursor, None)
 
@@ -11589,12 +11502,11 @@ class BaseArangoService:
                     external_message_id,
                 )
                 return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external message ID %s",
-                    external_message_id,
-                )
-                return None
+            self.logger.warning(
+                "⚠️ No internal key found for external message ID %s",
+                external_message_id,
+            )
+            return None
 
         except Exception as e:
             self.logger.error(
@@ -11604,15 +11516,15 @@ class BaseArangoService:
             )
             return None
 
-    async def get_departments(self, org_id: Optional[str] = None) -> List[str]:
-        """
-        Get all departments that either have no org_id or match the given org_id
+    async def get_departments(self, org_id: str | None = None) -> list[str]:
+        """Get all departments that either have no org_id or match the given org_id
 
         Args:
             org_id (Optional[str]): Organization ID to filter departments
 
         Returns:
             List[str]: List of department names
+
         """
         query = f"""
             FOR department IN {CollectionNames.DEPARTMENTS.value}
@@ -11627,10 +11539,9 @@ class BaseArangoService:
         file_key: str,
         md5_checksum: str,
         size_in_bytes: int,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> List[str]:
-        """
-        Find duplicate files based on MD5 checksum and file size
+        transaction: TransactionDatabase | None = None,
+    ) -> list[str]:
+        """Find duplicate files based on MD5 checksum and file size
 
         Args:
             md5_checksum (str): MD5 checksum of the file
@@ -11639,6 +11550,7 @@ class BaseArangoService:
 
         Returns:
             List[str]: List of file keys that match both criteria
+
         """
         try:
             self.logger.info(
@@ -11666,8 +11578,8 @@ class BaseArangoService:
                 bind_vars={
                     "md5_checksum": md5_checksum,
                     "size_in_bytes": size_in_bytes,
-                    "file_key": file_key
-                }
+                    "file_key": file_key,
+                },
             )
 
             duplicate_records = list(cursor)
@@ -11675,7 +11587,7 @@ class BaseArangoService:
             if duplicate_records:
                 self.logger.info(
                     "✅ Found %d duplicate record(s) matching criteria",
-                    len(duplicate_records)
+                    len(duplicate_records),
                 )
                 self.logger.info(f"Duplicate records: {[record['_key'] for record in duplicate_records]}")
             else:
@@ -11686,7 +11598,7 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(
                 "Failed to find duplicate files: %s",
-                str(e)
+                str(e),
             )
             if transaction:
                 raise
@@ -11695,10 +11607,9 @@ class BaseArangoService:
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,
-        accessible_record_ids: Optional[List[str]] = None
-    ) -> List[str]:
-        """
-        Get all record keys that have the given virtualRecordId.
+        accessible_record_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Get all record keys that have the given virtualRecordId.
         Optionally filter by a list of record IDs.
 
         Args:
@@ -11707,10 +11618,11 @@ class BaseArangoService:
 
         Returns:
             List[str]: List of record keys that match the criteria
+
         """
         try:
             self.logger.info(
-                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id,
             )
 
             # Base query
@@ -11739,7 +11651,7 @@ class BaseArangoService:
             self.logger.info(
                 "✅ Found %d records with virtualRecordId %s",
                 len(results),
-                virtual_record_id
+                virtual_record_id,
             )
             return results
 
@@ -11747,13 +11659,12 @@ class BaseArangoService:
             self.logger.error(
                 "❌ Error finding records with virtualRecordId %s: %s",
                 virtual_record_id,
-                str(e)
+                str(e),
             )
             return []
 
-    async def get_documents_by_status(self, collection: str, status: str) -> List[Dict]:
-        """
-        Get all documents with a specific indexing status
+    async def get_documents_by_status(self, collection: str, status: str) -> list[dict]:
+        """Get all documents with a specific indexing status
 
         Args:
             collection (str): Collection name
@@ -11761,6 +11672,7 @@ class BaseArangoService:
 
         Returns:
             List[Dict]: List of matching documents
+
         """
         query = """
         FOR doc IN @@collection
@@ -11770,17 +11682,16 @@ class BaseArangoService:
 
         bind_vars = {
             "@collection": collection,
-            "status": status
+            "status": status,
         }
 
         cursor = self.db.aql.execute(query, bind_vars=bind_vars)
         return list(cursor)
 
     async def get_accessible_records(
-        self, user_id: str, org_id: str, filters: dict = None
+        self, user_id: str, org_id: str, filters: dict = None,
     ) -> list:
-        """
-        Get all records accessible to a user based on their permissions and apply filters
+        """Get all records accessible to a user based on their permissions and apply filters
 
         Args:
             user_id (str): The userId field value in users collection
@@ -11797,9 +11708,10 @@ class BaseArangoService:
                     'kb': [kb_ids],
                     'apps': [app_names]
                 }
+
         """
         self.logger.info(
-            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
+            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}",
         )
 
         try:
@@ -11969,7 +11881,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
                 if filters.get("categories"):
@@ -11981,7 +11893,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
                 if filters.get("subcategories1"):
@@ -11993,7 +11905,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
                 if filters.get("subcategories2"):
@@ -12005,7 +11917,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
                 if filters.get("subcategories3"):
@@ -12017,7 +11929,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
                 if filters.get("languages"):
@@ -12029,7 +11941,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
                 if filters.get("topics"):
@@ -12041,7 +11953,7 @@ class BaseArangoService:
                         LIMIT 1
                         RETURN 1
                     ) > 0
-                    """
+                    """,
                     )
 
             # Apply additional filters if any
@@ -12100,7 +12012,7 @@ class BaseArangoService:
                 bind_vars=bind_vars,
                 profile=2,
                 fail_on_warning=False,
-                stream=True
+                stream=True,
             )
             result = list(cursor)
 
@@ -12125,17 +12037,16 @@ class BaseArangoService:
             return result if result else []
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
+            self.logger.error(f"❌ Failed to get accessible records: {e!s}")
             raise
 
     async def validate_user_kb_access(
         self,
         user_id: str,
         org_id: str,
-        kb_ids: List[str]
-    ) -> Dict[str, List[str]]:
-        """
-        OPTIMIZED: Validate which KB IDs the user has access to using fast lookups
+        kb_ids: list[str],
+    ) -> dict[str, list[str]]:
+        """OPTIMIZED: Validate which KB IDs the user has access to using fast lookups
         Args:
             user_id: External user ID
             org_id: Organization ID
@@ -12143,6 +12054,7 @@ class BaseArangoService:
 
         Returns:
             Dict with 'accessible' and 'inaccessible' KB IDs
+
         """
         try:
             self.logger.info(f"🚀 Fast KB access validation for user {user_id} on {len(kb_ids)} KBs")
@@ -12156,10 +12068,10 @@ class BaseArangoService:
                 return {
                     "accessible": [],
                     "inaccessible": kb_ids,
-                    "error": f"User not found: {user_id}"
+                    "error": f"User not found: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             validation_query = """
             // Convert requested KB list to a set for fast lookup
@@ -12225,7 +12137,7 @@ class BaseArangoService:
                 max_runtime=30.0,      # 30 second timeout
                 fail_on_warning=False, # Don't fail on warnings
                 profile=False,         # Disable profiling for speed
-                stream=True            # Stream results for memory efficiency
+                stream=True,            # Stream results for memory efficiency
             )
 
             result = next(cursor, {})
@@ -12242,19 +12154,19 @@ class BaseArangoService:
             return {
                 "accessible": accessible,
                 "inaccessible": inaccessible,
-                "total_user_kbs": result.get("total_user_kbs", 0)
+                "total_user_kbs": result.get("total_user_kbs", 0),
             }
 
         except Exception as e:
-            self.logger.error(f"❌ KB access validation error: {str(e)}")
+            self.logger.error(f"❌ KB access validation error: {e!s}")
             return {
                 "accessible": [],
                 "inaccessible": kb_ids,
-                "error": str(e)
+                "error": str(e),
             }
 
 
-    async def get_all_agent_templates(self, user_id: str) -> List[Dict]:
+    async def get_all_agent_templates(self, user_id: str) -> list[dict]:
         """Get all agent templates accessible to a user via individual or team access"""
         try:
             query = f"""
@@ -12338,7 +12250,7 @@ class BaseArangoService:
             return []
 
 
-    async def get_template(self, template_id: str, user_id: str) -> Optional[Dict]:
+    async def get_template(self, template_id: str, user_id: str) -> dict | None:
         """Get a template by ID with user permissions"""
         try:
             query = f"""
@@ -12428,7 +12340,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to get template access: %s", str(e))
             return None
 
-    async def share_agent_template(self, template_id: str, user_id: str, user_ids: Optional[List[str]] = None, team_ids: Optional[List[str]] = None) -> Optional[bool]:
+    async def share_agent_template(self, template_id: str, user_id: str, user_ids: list[str] | None = None, team_ids: list[str] | None = None) -> bool | None:
         """Share an agent template with users"""
         try:
             self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
@@ -12494,7 +12406,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to share agent template: %s", str(e))
             return False
 
-    async def clone_agent_template(self, template_id: str) -> Optional[str]:
+    async def clone_agent_template(self, template_id: str) -> str | None:
         """Clone an agent template"""
         try:
             template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
@@ -12522,7 +12434,7 @@ class BaseArangoService:
             return False
 
 
-    async def delete_agent_template(self, template_id: str, user_id: str) -> Optional[bool]:
+    async def delete_agent_template(self, template_id: str, user_id: str) -> bool | None:
         """Delete an agent template"""
         try:
             template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
@@ -12565,7 +12477,7 @@ class BaseArangoService:
             update_data = {
                 "isDeleted": True,
                 "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "deletedByUserId": user_id
+                "deletedByUserId": user_id,
             }
 
             # Soft delete the template using AQL UPDATE
@@ -12596,7 +12508,7 @@ class BaseArangoService:
             return False
 
 
-    async def update_agent_template(self, template_id: str, template_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str) -> bool | None:
         """Update an agent template"""
         try:
             # Check if user is the owner of the template
@@ -12633,7 +12545,7 @@ class BaseArangoService:
             # Prepare update data
             update_data = {
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedByUserId": user_id
+                "updatedByUserId": user_id,
             }
 
             # Add only the fields that are provided
@@ -12670,7 +12582,7 @@ class BaseArangoService:
             return False
 
 
-    async def get_agent(self, agent_id: str, user_id: str) -> Optional[Dict]:
+    async def get_agent(self, agent_id: str, user_id: str) -> dict | None:
         """Get an agent by ID with user permissions - flattened response"""
         try:
             query = f"""
@@ -12747,11 +12659,11 @@ class BaseArangoService:
             return result[0]
 
         except Exception as e:
-            self.logger.error(f"Failed to get agent: {str(e)}")
+            self.logger.error(f"Failed to get agent: {e!s}")
             return None
 
 
-    async def get_all_agents(self, user_id: str) -> List[Dict]:
+    async def get_all_agents(self, user_id: str) -> list[dict]:
         """Get all agents accessible to a user via individual or team access - flattened response"""
         try:
             query = f"""
@@ -12820,10 +12732,10 @@ class BaseArangoService:
             return list(cursor)
 
         except Exception as e:
-            self.logger.error(f"Failed to get all agents: {str(e)}")
+            self.logger.error(f"Failed to get all agents: {e!s}")
             return []
 
-    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+    async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str) -> bool | None:
         """Update an agent"""
         try:
             # Check if user has permission to update the agent using the new method
@@ -12840,7 +12752,7 @@ class BaseArangoService:
             # Prepare update data
             update_data = {
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedByUserId": user_id
+                "updatedByUserId": user_id,
             }
 
             # Add only the fields that are provided in agent_updates
@@ -12873,10 +12785,10 @@ class BaseArangoService:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to update agent: {str(e)}")
+            self.logger.error(f"Failed to update agent: {e!s}")
             return False
 
-    async def delete_agent(self, agent_id: str, user_id: str) -> Optional[bool]:
+    async def delete_agent(self, agent_id: str, user_id: str) -> bool | None:
         """Delete an agent"""
         try:
             # Check if agent exists
@@ -12900,7 +12812,7 @@ class BaseArangoService:
             update_data = {
                 "isDeleted": True,
                 "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "deletedByUserId": user_id
+                "deletedByUserId": user_id,
             }
 
             # Soft delete the agent using AQL UPDATE - Fixed to use f-string
@@ -12927,10 +12839,10 @@ class BaseArangoService:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to delete agent: {str(e)}")
+            self.logger.error(f"Failed to delete agent: {e!s}")
             return False
 
-    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[bool]:
+    async def share_agent(self, agent_id: str, user_id: str, user_ids: list[str] | None, team_ids: list[str] | None) -> bool | None:
         """Share an agent to users and teams"""
         try:
             # Check if agent exists and user has permission to share it
@@ -12993,7 +12905,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
             return False
 
-    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[Dict]:
+    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: list[str] | None, team_ids: list[str] | None) -> dict | None:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
             # Check if user has permission to unshare the agent
@@ -13033,14 +12945,14 @@ class BaseArangoService:
             return {
                 "success": True,
                 "agent_id": agent_id,
-                "deleted_permissions": len(deleted_permissions)
+                "deleted_permissions": len(deleted_permissions),
             }
 
         except Exception as e:
             self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
-            return {"success": False, "reason": f"Internal error: {str(e)}"}
+            return {"success": False, "reason": f"Internal error: {e!s}"}
 
-    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str) -> Optional[Dict]:
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
             # Check if the requesting user is the OWNER of the agent
@@ -13109,14 +13021,14 @@ class BaseArangoService:
                 "new_role": role,
                 "updated_permissions": len(updated_permissions),
                 "updated_users": updated_users,
-                "updated_teams": updated_teams
+                "updated_teams": updated_teams,
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to update agent permission: {str(e)}")
-            return {"success": False, "reason": f"Internal error: {str(e)}"}
+            self.logger.error(f"Failed to update agent permission: {e!s}")
+            return {"success": False, "reason": f"Internal error: {e!s}"}
 
-    async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
+    async def get_agent_permissions(self, agent_id: str, user_id: str) -> list[dict] | None:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
             # Check if user has access to the agent
@@ -13157,7 +13069,7 @@ class BaseArangoService:
             return result
 
         except Exception as e:
-            self.logger.error(f"Failed to get agent permissions: {str(e)}")
+            self.logger.error(f"Failed to get agent permissions: {e!s}")
             return None
 
 
@@ -13165,10 +13077,9 @@ class BaseArangoService:
         self,
         node_key: str,
         collection: str =  CollectionNames.PERMISSION.value,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> List[User]:
-        """
-        Get all users that have permission edges to a specific node/record
+        transaction: TransactionDatabase | None = None,
+    ) -> list[User]:
+        """Get all users that have permission edges to a specific node/record
 
         Args:
             node_key: The record/node key (e.g., "records/12345")
@@ -13177,6 +13088,7 @@ class BaseArangoService:
 
         Returns:
             List[str]: List of user keys that have permissions to the node
+
         """
         try:
             self.logger.info("🚀 Getting users with permissions to node: %s from collection: %s", node_key, collection)
@@ -13210,10 +13122,9 @@ class BaseArangoService:
         self,
         node_key: str,
         collection: str = CollectionNames.PERMISSION.value,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[User]:
-        """
-        Get the first user that has a permission edge to a specific node/record
+        transaction: TransactionDatabase | None = None,
+    ) -> User | None:
+        """Get the first user that has a permission edge to a specific node/record
 
         Args:
             node_key: The record/node key (e.g., "records/12345")
@@ -13222,6 +13133,7 @@ class BaseArangoService:
 
         Returns:
             Optional[User]: User with permission to the node, or None if not found
+
         """
         try:
             self.logger.info("🚀 Getting first user with permission to node: %s from collection: %s", node_key, collection)
@@ -13244,9 +13156,8 @@ class BaseArangoService:
                 user = User.from_arango_user(result)
                 self.logger.info("✅ Found user with permission to node: %s -> %s", node_key, user.email)
                 return user
-            else:
-                self.logger.warning("⚠️ No user found with permission to node: %s in collection: %s", node_key, collection)
-                return None
+            self.logger.warning("⚠️ No user found with permission to node: %s in collection: %s", node_key, collection)
+            return None
 
         except Exception as e:
             self.logger.error("❌ Failed to get user with permission to node: %s in collection: %s: %s",
@@ -13257,10 +13168,9 @@ class BaseArangoService:
         self,
         node_id: str,
         graph_name: str = "knowledgeGraph",
-        transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[User]:
-        """
-        Get the first user that has a permission edge to a specific node using a graph traversal.
+        transaction: TransactionDatabase | None = None,
+    ) -> User | None:
+        """Get the first user that has a permission edge to a specific node using a graph traversal.
 
         Args:
             node_id: The full record/node ID (e.g., "records/12345").
@@ -13269,6 +13179,7 @@ class BaseArangoService:
 
         Returns:
             Optional[User]: A User object with permission to the node, or None if not found.
+
         """
         try:
             self.logger.info("🚀 Getting first user with permission to node: %s in graph: %s", node_id, graph_name)
@@ -13288,8 +13199,8 @@ class BaseArangoService:
                 query,
                 bind_vars={
                     "node_id": node_id,
-                    "users_collection": CollectionNames.USERS.value
-                }
+                    "users_collection": CollectionNames.USERS.value,
+                },
             )
             result = next(cursor, None)
 
@@ -13297,9 +13208,8 @@ class BaseArangoService:
                 user = User.from_arango_user(result)
                 self.logger.info("✅ Found user with permission to node: %s -> %s", node_id, user.email)
                 return user
-            else:
-                self.logger.warning("⚠️ No user found with permission to node: %s in graph: %s", node_id, graph_name)
-                return None
+            self.logger.warning("⚠️ No user found with permission to node: %s in graph: %s", node_id, graph_name)
+            return None
 
         except Exception as e:
             self.logger.error("❌ Failed to get user with permission to node: %s in graph: %s: %s",
@@ -13307,10 +13217,9 @@ class BaseArangoService:
             return None
 
     async def get_file_record_by_id(
-        self, id: str, transaction: Optional[TransactionDatabase] = None
-    ) -> Optional[FileRecord]:
-        """
-        Get file record using the id
+        self, id: str, transaction: TransactionDatabase | None = None,
+    ) -> FileRecord | None:
+        """Get file record using the id
 
         Args:
             id (str): The internal record ID (_key) to look up
@@ -13318,6 +13227,7 @@ class BaseArangoService:
 
         Returns:
             Optional[FileRecord]: FileRecord object if found, None otherwise
+
         """
         try:
             self.logger.info("🚀 Retrieving file record for id %s", id)
@@ -13340,14 +13250,13 @@ class BaseArangoService:
                 self.logger.info("✅ Successfully retrieved file record for id %s", id)
                 return FileRecord.from_arango_base_file_record(
                     arango_base_file_record=result["file"],
-                    arango_base_record=result["record"]
+                    arango_base_record=result["record"],
                 )
-            else:
-                self.logger.warning("⚠️ No file record found for id %s", id)
-                return None
+            self.logger.warning("⚠️ No file record found for id %s", id)
+            return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve file record for id %s: %s", id, str(e)
+                "❌ Failed to retrieve file record for id %s: %s", id, str(e),
             )
             return None

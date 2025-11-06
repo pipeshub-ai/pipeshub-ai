@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import threading
-from typing import List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -18,13 +17,15 @@ class GitLab:
 
     def __init__(self, client: GitLabClient) -> None:
         """Initialize the GitLab tool with a data source wrapper.
+
         Args:
             client: An initialized `GitLabClient` instance
+
         """
         self.client = GitLabDataSource(client)
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
-            target=self._start_background_loop, daemon=True
+            target=self._start_background_loop, daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -51,12 +52,12 @@ class GitLab:
             logger.warning(f"GitLab shutdown encountered an issue: {exc}")
 
     def _handle_response(
-        self, response: GitLabResponse, success_message: str
-    ) -> Tuple[bool, str]:
+        self, response: GitLabResponse, success_message: str,
+    ) -> tuple[bool, str]:
         """Handle GitLabResponse and return standardized tuple."""
         if response.success:
             return True, json.dumps(
-                {"message": success_message, "data": response.data or {}}
+                {"message": success_message, "data": response.data or {}},
             )
         return False, json.dumps({"error": response.error or "Unknown error"})
 
@@ -102,11 +103,11 @@ class GitLab:
     def create_project(
         self,
         name: str,
-        description: Optional[str] = None,
+        description: str | None = None,
         visibility: str = "private",
-        namespace_id: Optional[int] = None,
+        namespace_id: int | None = None,
         initialize_with_readme: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a new project in GitLab."""
         try:
             response = self._run_async(
@@ -116,7 +117,7 @@ class GitLab:
                     visibility=visibility,
                     namespace_id=namespace_id,
                     initialize_with_readme=initialize_with_readme,
-                )
+                ),
             )
             return self._handle_response(response, "Project created successfully")
         except Exception as e:
@@ -136,7 +137,7 @@ class GitLab:
         ],
         returns="JSON with project details",
     )
-    def get_project(self, project_id: str) -> Tuple[bool, str]:
+    def get_project(self, project_id: str) -> tuple[bool, str]:
         """Get details of a specific project from GitLab."""
         try:
             response = self._run_async(self.client.get_project(project_id=project_id))
@@ -179,10 +180,10 @@ class GitLab:
     def update_project(
         self,
         project_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        visibility: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        name: str | None = None,
+        description: str | None = None,
+        visibility: str | None = None,
+    ) -> tuple[bool, str]:
         """Update an existing project in GitLab."""
         try:
             response = self._run_async(
@@ -191,7 +192,7 @@ class GitLab:
                     name=name,
                     description=description,
                     visibility=visibility,
-                )
+                ),
             )
             return self._handle_response(response, "Project updated successfully")
         except Exception as e:
@@ -211,7 +212,7 @@ class GitLab:
         ],
         returns="JSON with success status",
     )
-    def delete_project(self, project_id: str) -> Tuple[bool, str]:
+    def delete_project(self, project_id: str) -> tuple[bool, str]:
         """Delete a project from GitLab."""
         try:
             response = self._run_async(self.client.delete_project(project_id=project_id))
@@ -266,11 +267,11 @@ class GitLab:
         self,
         project_id: str,
         title: str,
-        description: Optional[str] = None,
-        assignee_ids: Optional[List[int]] = None,
-        labels: Optional[List[str]] = None,
-        milestone_id: Optional[int] = None,
-    ) -> Tuple[bool, str]:
+        description: str | None = None,
+        assignee_ids: list[int] | None = None,
+        labels: list[str] | None = None,
+        milestone_id: int | None = None,
+    ) -> tuple[bool, str]:
         """Create a new issue in a GitLab project."""
         try:
             response = self._run_async(
@@ -281,7 +282,7 @@ class GitLab:
                     assignee_ids=assignee_ids,
                     labels=labels,
                     milestone_id=milestone_id,
-                )
+                ),
             )
             return self._handle_response(response, "Issue created successfully")
         except Exception as e:
@@ -306,11 +307,11 @@ class GitLab:
         ],
         returns="JSON with issue details",
     )
-    def get_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
+    def get_issue(self, project_id: str, issue_iid: int) -> tuple[bool, str]:
         """Get details of a specific issue from a GitLab project."""
         try:
             response = self._run_async(
-                self.client.get_issue(project_id=project_id, issue_iid=issue_iid)
+                self.client.get_issue(project_id=project_id, issue_iid=issue_iid),
             )
             return self._handle_response(response, "Issue fetched successfully")
         except Exception as e:
@@ -369,11 +370,11 @@ class GitLab:
         self,
         project_id: str,
         issue_iid: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        state_event: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        title: str | None = None,
+        description: str | None = None,
+        labels: list[str] | None = None,
+        state_event: str | None = None,
+    ) -> tuple[bool, str]:
         """Update an existing issue in a GitLab project."""
         try:
             response = self._run_async(
@@ -384,7 +385,7 @@ class GitLab:
                     description=description,
                     labels=labels,
                     state_event=state_event,
-                )
+                ),
             )
             return self._handle_response(response, "Issue updated successfully")
         except Exception as e:
@@ -409,11 +410,11 @@ class GitLab:
         ],
         returns="JSON with success status",
     )
-    def delete_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
+    def delete_issue(self, project_id: str, issue_iid: int) -> tuple[bool, str]:
         """Delete an issue from a GitLab project."""
         try:
             response = self._run_async(
-                self.client.delete_issue(project_id=project_id, issue_iid=issue_iid)
+                self.client.delete_issue(project_id=project_id, issue_iid=issue_iid),
             )
             return self._handle_response(response, "Issue deleted successfully")
         except Exception as e:
@@ -472,10 +473,10 @@ class GitLab:
         title: str,
         source_branch: str,
         target_branch: str,
-        description: Optional[str] = None,
-        assignee_id: Optional[int] = None,
-        labels: Optional[List[str]] = None,
-    ) -> Tuple[bool, str]:
+        description: str | None = None,
+        assignee_id: int | None = None,
+        labels: list[str] | None = None,
+    ) -> tuple[bool, str]:
         """Create a new merge request in a GitLab project."""
         try:
             response = self._run_async(
@@ -487,7 +488,7 @@ class GitLab:
                     description=description,
                     assignee_id=assignee_id,
                     labels=labels,
-                )
+                ),
             )
             return self._handle_response(response, "Merge request created successfully")
         except Exception as e:
@@ -512,11 +513,11 @@ class GitLab:
         ],
         returns="JSON with merge request details",
     )
-    def get_merge_request(self, project_id: str, merge_request_iid: int) -> Tuple[bool, str]:
+    def get_merge_request(self, project_id: str, merge_request_iid: int) -> tuple[bool, str]:
         """Get details of a specific merge request from a GitLab project."""
         try:
             response = self._run_async(
-                self.client.get_merge_request(project_id=project_id, mr_iid=merge_request_iid)
+                self.client.get_merge_request(project_id=project_id, mr_iid=merge_request_iid),
             )
             return self._handle_response(response, "Merge request fetched successfully")
         except Exception as e:
@@ -557,9 +558,9 @@ class GitLab:
         self,
         project_id: str,
         merge_request_iid: int,
-        merge_when_pipeline_succeeds: Optional[bool] = None,
-        squash: Optional[bool] = None,
-    ) -> Tuple[bool, str]:
+        merge_when_pipeline_succeeds: bool | None = None,
+        squash: bool | None = None,
+    ) -> tuple[bool, str]:
         """Merge a merge request in a GitLab project."""
         try:
             response = self._run_async(
@@ -568,7 +569,7 @@ class GitLab:
                     mr_iid=merge_request_iid,
                     merge_when_pipeline_succeeds=merge_when_pipeline_succeeds,
                     squash=squash,
-                )
+                ),
             )
             return self._handle_response(response, "Merge request merged successfully")
         except Exception as e:
@@ -588,12 +589,12 @@ class GitLab:
         ],
         returns="JSON with search results",
     )
-    def search_projects(self, query: str) -> Tuple[bool, str]:
+    def search_projects(self, query: str) -> tuple[bool, str]:
         """Search for projects in GitLab."""
         try:
             # Note: GitLabDataSource doesn't have a direct search method, so we'll use list_projects with search parameter
             response = self._run_async(
-                self.client.list_projects(search=query)
+                self.client.list_projects(search=query),
             )
             return self._handle_response(response, "Project search completed successfully")
         except Exception as e:

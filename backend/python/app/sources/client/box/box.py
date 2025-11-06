@@ -2,7 +2,7 @@ import base64
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 from app.sources.client.http.http_request import HTTPRequest
 
@@ -21,12 +21,13 @@ from app.sources.client.iclient import IClient
 @dataclass
 class BoxResponse:
     """Standardized Box API response wrapper."""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
@@ -35,6 +36,7 @@ class BoxResponse:
 
 class BoxRESTClientViaToken:
     """Box client via Developer Token or OAuth2 access token."""
+
     def __init__(self, access_token: str) -> None:
         self.access_token = access_token
         self.box_client = None
@@ -52,8 +54,7 @@ class BoxRESTClientViaToken:
 
 
 class BoxRESTClientWithJWT:
-    """
-    Box client via JWT authentication (recommended for enterprise apps).
+    """Box client via JWT authentication (recommended for enterprise apps).
 
     Args:
         client_id: Box app client ID
@@ -62,7 +63,9 @@ class BoxRESTClientWithJWT:
         jwt_key_id: JWT key ID
         rsa_private_key_data: RSA private key data
         rsa_private_key_passphrase: Optional passphrase for private key
+
     """
+
     def __init__(
         self,
         client_id: str,
@@ -70,7 +73,7 @@ class BoxRESTClientWithJWT:
         enterprise_id: str,
         jwt_key_id: str,
         rsa_private_key_data: str,
-        rsa_private_key_passphrase: Optional[str] = None,
+        rsa_private_key_passphrase: str | None = None,
     ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
@@ -100,21 +103,22 @@ class BoxRESTClientWithJWT:
 
 
 class BoxRESTClientWithOAuth2:
-    """
-    Box client via OAuth2 (for user apps).
+    """Box client via OAuth2 (for user apps).
 
     Args:
         client_id: Box app client ID
         client_secret: Box app client secret
         access_token: OAuth2 access token
         refresh_token: Optional refresh token
+
     """
+
     def __init__(
         self,
         client_id: str,
         client_secret: str,
         access_token: str,
-        refresh_token: Optional[str] = None,
+        refresh_token: str | None = None,
     ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
@@ -140,8 +144,7 @@ class BoxRESTClientWithOAuth2:
 
 
 class BoxRESTClientWithOAuthCode:
-    """
-    Box client via OAuth2 authorization code flow.
+    """Box client via OAuth2 authorization code flow.
     This client exchanges an authorization code for an access token and then
     creates a Box SDK client using that token.
 
@@ -150,13 +153,15 @@ class BoxRESTClientWithOAuthCode:
         client_secret: Box app client secret
         code: OAuth2 authorization code
         redirect_uri: Optional redirect URI used in authorization flow
+
     """
+
     def __init__(
         self,
         client_id: str,
         client_secret: str,
         code: str,
-        redirect_uri: Optional[str] = None,
+        redirect_uri: str | None = None,
     ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
@@ -204,7 +209,7 @@ class BoxRESTClientWithOAuthCode:
             url="https://api.box.com/oauth2/token",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Authorization": f"Basic {credentials}"
+                "Authorization": f"Basic {credentials}",
             },
             body=body,
         )
@@ -218,14 +223,15 @@ class BoxRESTClientWithOAuthCode:
 
 @dataclass
 class BoxTokenConfig:
-    """
-    Configuration for Box client via Developer Token or OAuth2 access token.
+    """Configuration for Box client via Developer Token or OAuth2 access token.
 
     Args:
         token: Developer token or OAuth2 access token
         base_url: Present for API parity; not used by Box SDK
         ssl: Unused; kept for interface parity
+
     """
+
     token: str
     base_url: str = "https://api.box.com"   # not used by SDK, for parity only
     ssl: bool = True
@@ -240,8 +246,7 @@ class BoxTokenConfig:
 
 @dataclass
 class BoxJWTConfig:
-    """
-    Configuration for Box client via JWT authentication.
+    """Configuration for Box client via JWT authentication.
 
     Args:
         client_id: Box app client ID
@@ -252,13 +257,15 @@ class BoxJWTConfig:
         rsa_private_key_passphrase: Optional passphrase for private key
         base_url: Present for parity; not used by Box SDK
         ssl: Unused; kept for interface parity
+
     """
+
     client_id: str
     client_secret: str
     enterprise_id: str
     jwt_key_id: str
     rsa_private_key_data: str
-    rsa_private_key_passphrase: Optional[str] = None
+    rsa_private_key_passphrase: str | None = None
     base_url: str = "https://api.box.com"   # not used by SDK
     ssl: bool = True
 
@@ -279,8 +286,7 @@ class BoxJWTConfig:
 
 @dataclass
 class BoxOAuth2Config:
-    """
-    Configuration for Box client via OAuth2.
+    """Configuration for Box client via OAuth2.
 
     Args:
         client_id: Box app client ID
@@ -289,11 +295,13 @@ class BoxOAuth2Config:
         refresh_token: Optional refresh token
         base_url: Present for parity; not used by Box SDK
         ssl: Unused; kept for interface parity
+
     """
+
     client_id: str
     client_secret: str
     access_token: str
-    refresh_token: Optional[str] = None
+    refresh_token: str | None = None
     base_url: str = "https://api.box.com"   # not used by SDK
     ssl: bool = True
 
@@ -312,8 +320,7 @@ class BoxOAuth2Config:
 
 @dataclass
 class BoxOAuthCodeConfig:
-    """
-    Configuration for Box client via OAuth2 authorization code flow.
+    """Configuration for Box client via OAuth2 authorization code flow.
 
     Args:
         client_id: Box app client ID
@@ -322,11 +329,13 @@ class BoxOAuthCodeConfig:
         redirect_uri: Optional redirect URI used in authorization flow
         base_url: Present for parity; not used by Box SDK
         ssl: Unused; kept for interface parity
+
     """
+
     client_id: str
     client_secret: str
     code: str
-    redirect_uri: Optional[str] = None
+    redirect_uri: str | None = None
     base_url: str = "https://api.box.com"   # not used by SDK
     ssl: bool = True
 
@@ -344,26 +353,25 @@ class BoxOAuthCodeConfig:
 
 
 class BoxClient(IClient):
-    """
-    Builder class for Box clients with multiple construction methods.
+    """Builder class for Box clients with multiple construction methods.
 
     Mirrors your SlackClient/DropboxClient shape so it can be swapped in existing wiring.
     """
 
     def __init__(
         self,
-        client: Union[BoxRESTClientViaToken, BoxRESTClientWithJWT, BoxRESTClientWithOAuth2, BoxRESTClientWithOAuthCode],
+        client: BoxRESTClientViaToken | BoxRESTClientWithJWT | BoxRESTClientWithOAuth2 | BoxRESTClientWithOAuthCode,
         ) -> None:
         self.client = client
 
-    def get_client(self) -> Union[BoxRESTClientViaToken, BoxRESTClientWithJWT, BoxRESTClientWithOAuth2, BoxRESTClientWithOAuthCode]:
+    def get_client(self) -> BoxRESTClientViaToken | BoxRESTClientWithJWT | BoxRESTClientWithOAuth2 | BoxRESTClientWithOAuthCode:
         """Return the underlying auth-holder client object (call `.create_client()` to get SDK)."""
         return self.client
 
     @classmethod
     async def build_with_config(
         cls,
-        config: Union[BoxTokenConfig, BoxJWTConfig, BoxOAuth2Config, BoxOAuthCodeConfig],
+        config: BoxTokenConfig | BoxJWTConfig | BoxOAuth2Config | BoxOAuthCodeConfig,
     ) -> "BoxClient":
         """Build BoxClient using one of the config dataclasses."""
         client = await config.create_client()
@@ -376,8 +384,7 @@ class BoxClient(IClient):
         config_service: ConfigurationService,
         arango_service: IGraphService,
     ) -> "BoxClient":
-        """
-        Build BoxClient using your configuration service & org/user context.
+        """Build BoxClient using your configuration service & org/user context.
         """
         try:
             # Get Box configuration from config service
@@ -395,7 +402,7 @@ class BoxClient(IClient):
                 config = BoxTokenConfig(token=access_token)
                 return await cls.build_with_config(config)
 
-            elif auth_type == "JWT":
+            if auth_type == "JWT":
                 client_id = auth_config.get("clientId")
                 client_secret = auth_config.get("clientSecret")
                 enterprise_id = auth_config.get("enterpriseId")
@@ -412,11 +419,11 @@ class BoxClient(IClient):
                     enterprise_id=enterprise_id,
                     jwt_key_id=jwt_key_id,
                     rsa_private_key_data=rsa_private_key_data,
-                    rsa_private_key_passphrase=rsa_private_key_passphrase
+                    rsa_private_key_passphrase=rsa_private_key_passphrase,
                 )
                 return await cls.build_with_config(config)
 
-            elif auth_type == "OAUTH":
+            if auth_type == "OAUTH":
                 credentials_config = auth_config.get("credentials", {})
                 client_id = auth_config.get("clientId")
                 client_secret = auth_config.get("clientSecret")
@@ -430,11 +437,11 @@ class BoxClient(IClient):
                     client_id=client_id,
                     client_secret=client_secret,
                     access_token=access_token,
-                    refresh_token=refresh_token
+                    refresh_token=refresh_token,
                 )
                 return await cls.build_with_config(config)
 
-            elif auth_type == "OAUTH_CODE":
+            if auth_type == "OAUTH_CODE":
                 client_id = auth_config.get("clientId")
                 client_secret = auth_config.get("clientSecret")
                 code = credentials_config.get("code")
@@ -447,23 +454,22 @@ class BoxClient(IClient):
                     client_id=client_id,
                     client_secret=client_secret,
                     code=code,
-                    redirect_uri=redirect_uri
+                    redirect_uri=redirect_uri,
                 )
                 return await cls.build_with_config(config)
 
-            else:
-                raise ValueError(f"Unsupported auth_type: {auth_type}")
+            raise ValueError(f"Unsupported auth_type: {auth_type}")
 
         except Exception as e:
             logger.error(f"Failed to build Box client from services: {e}")
-            raise ValueError(f"Failed to build Box client: {str(e)}")
+            raise ValueError(f"Failed to build Box client: {e!s}")
 
     @staticmethod
-    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> dict[str, Any]:
         """Get connector configuration from config service"""
         try:
             config_path = f"/services/connectors/{connector_name}/config"
             config_data = await config_service.get_config(config_path)
             return config_data
         except Exception as e:
-            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")
+            raise ValueError(f"Failed to get {connector_name} configuration: {e!s}")

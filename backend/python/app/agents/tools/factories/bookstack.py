@@ -1,5 +1,4 @@
-"""
-Client factories for BookStack.
+"""Client factories for BookStack.
 """
 
 
@@ -15,8 +14,7 @@ class BookStackClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> BookStackClient:
         """Create BookStack client instance"""
-
         return await BookStackClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

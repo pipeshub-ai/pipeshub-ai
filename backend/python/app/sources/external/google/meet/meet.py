@@ -1,33 +1,35 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.sources.client.google.google import GoogleClient
 
 
 class GoogleMeetDataSource:
-    """
-    Auto-generated Google Meet API client wrapper.
+    """Auto-generated Google Meet API client wrapper.
     Uses Google SDK client internally for all operations.
     This class wraps all Google Meet API v2 methods and provides
     a consistent interface while using the official Google SDK.
     """
+
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
     ) -> None:
-        """
-        Initialize with Google Meet API client.
+        """Initialize with Google Meet API client.
+
         Args:
             client: Google Meet API client from build('meet', 'v2', credentials=credentials)
+
         """
         self.client = client
 
-    async def spaces_create(self, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def spaces_create(self, body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Google Meet API: Creates a space.
 
         HTTP POST v2/spaces
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # Handle request body if provided
@@ -39,8 +41,8 @@ class GoogleMeetDataSource:
 
     async def spaces_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets details about a meeting space. For an example, see [Get a meeting space](https://developers.google.com/workspace/meet/api/guides/meeting-spaces#get-meeting-space).
 
         HTTP GET v2/{+name}
@@ -50,10 +52,11 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.spaces().get(**kwargs) # type: ignore
         return request.execute()
@@ -61,9 +64,9 @@ class GoogleMeetDataSource:
     async def spaces_patch(
         self,
         name: str,
-        updateMask: Optional[str] = None,
-        body: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        updateMask: str | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Updates details about a meeting space. For an example, see [Update a meeting space](https://developers.google.com/workspace/meet/api/guides/meeting-spaces#update-meeting-space).
 
         HTTP PATCH v2/{+name}
@@ -74,12 +77,13 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
         if updateMask is not None:
-            kwargs['updateMask'] = updateMask
+            kwargs["updateMask"] = updateMask
 
         # Handle request body if provided
         if body is not None:
@@ -90,8 +94,8 @@ class GoogleMeetDataSource:
 
     async def spaces_end_active_conference(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Ends an active conference (if there's one). For an example, see [End active conference](https://developers.google.com/workspace/meet/api/guides/meeting-spaces#end-active-conference).
 
         HTTP POST v2/{+name}:endActiveConference
@@ -101,14 +105,15 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.spaces().endActiveConference(**kwargs, body=body) # type: ignore
         else:
             request = self.client.spaces().endActiveConference(**kwargs) # type: ignore
@@ -116,8 +121,8 @@ class GoogleMeetDataSource:
 
     async def conference_records_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets a conference record by conference ID.
 
         HTTP GET v2/{+name}
@@ -127,20 +132,21 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.conferenceRecords().get(**kwargs) # type: ignore
         return request.execute()
 
     async def conference_records_list(
         self,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        filter: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        filter: str | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Lists the conference records. By default, ordered by start time and in descending order.
 
         HTTP GET v2/conferenceRecords
@@ -152,22 +158,23 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if filter is not None:
-            kwargs['filter'] = filter
+            kwargs["filter"] = filter
 
         request = self.client.conferenceRecords().list(**kwargs) # type: ignore
         return request.execute()
 
     async def conference_records_participants_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets a participant by participant ID.
 
         HTTP GET v2/{+name}
@@ -177,10 +184,11 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.conferenceRecords_participants().get(**kwargs) # type: ignore
         return request.execute()
@@ -188,10 +196,10 @@ class GoogleMeetDataSource:
     async def conference_records_participants_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        filter: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        filter: str | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Lists the participants in a conference record. By default, ordered by join time and in descending order. This API supports `fields` as standard parameters like every other API. However, when the `fields` request parameter is omitted, this API defaults to `'participants/*, next_page_token'`.
 
         HTTP GET v2/{+parent}/participants
@@ -204,24 +212,25 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if filter is not None:
-            kwargs['filter'] = filter
+            kwargs["filter"] = filter
 
         request = self.client.conferenceRecords_participants().list(**kwargs) # type: ignore
         return request.execute()
 
     async def conference_records_participants_participant_sessions_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets a participant session by participant session ID.
 
         HTTP GET v2/{+name}
@@ -231,10 +240,11 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.conferenceRecords_participants_participantSessions().get(**kwargs) # type: ignore
         return request.execute()
@@ -242,10 +252,10 @@ class GoogleMeetDataSource:
     async def conference_records_participants_participant_sessions_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        filter: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        filter: str | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Lists the participant sessions of a participant in a conference record. By default, ordered by join time and in descending order. This API supports `fields` as standard parameters like every other API. However, when the `fields` request parameter is omitted this API defaults to `'participantsessions/*, next_page_token'`.
 
         HTTP GET v2/{+parent}/participantSessions
@@ -258,24 +268,25 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if filter is not None:
-            kwargs['filter'] = filter
+            kwargs["filter"] = filter
 
         request = self.client.conferenceRecords_participants_participantSessions().list(**kwargs) # type: ignore
         return request.execute()
 
     async def conference_records_recordings_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets a recording by recording ID.
 
         HTTP GET v2/{+name}
@@ -285,10 +296,11 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.conferenceRecords_recordings().get(**kwargs) # type: ignore
         return request.execute()
@@ -296,9 +308,9 @@ class GoogleMeetDataSource:
     async def conference_records_recordings_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Lists the recording resources from the conference record. By default, ordered by start time and in ascending order.
 
         HTTP GET v2/{+parent}/recordings
@@ -310,22 +322,23 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
         request = self.client.conferenceRecords_recordings().list(**kwargs) # type: ignore
         return request.execute()
 
     async def conference_records_transcripts_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets a transcript by transcript ID.
 
         HTTP GET v2/{+name}
@@ -335,10 +348,11 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.conferenceRecords_transcripts().get(**kwargs) # type: ignore
         return request.execute()
@@ -346,9 +360,9 @@ class GoogleMeetDataSource:
     async def conference_records_transcripts_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Lists the set of transcripts from the conference record. By default, ordered by start time and in ascending order.
 
         HTTP GET v2/{+parent}/transcripts
@@ -360,22 +374,23 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
         request = self.client.conferenceRecords_transcripts().list(**kwargs) # type: ignore
         return request.execute()
 
     async def conference_records_transcripts_entries_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Meet API: Gets a `TranscriptEntry` resource by entry ID. Note: The transcript entries returned by the Google Meet API might not match the transcription found in the Google Docs transcript file. This can occur when 1) we have interleaved speakers within milliseconds, or 2) the Google Docs transcript file is modified after generation.
 
         HTTP GET v2/{+name}
@@ -385,10 +400,11 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
         request = self.client.conferenceRecords_transcripts_entries().get(**kwargs) # type: ignore
         return request.execute()
@@ -396,9 +412,9 @@ class GoogleMeetDataSource:
     async def conference_records_transcripts_entries_list(
         self,
         parent: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Meet API: Lists the structured transcript entries per transcript. By default, ordered by start time and in ascending order. Note: The transcript entries returned by the Google Meet API might not match the transcription found in the Google Docs transcript file. This can occur when 1) we have interleaved speakers within milliseconds, or 2) the Google Docs transcript file is modified after generation.
 
         HTTP GET v2/{+parent}/entries
@@ -410,14 +426,15 @@ class GoogleMeetDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
         request = self.client.conferenceRecords_transcripts_entries().list(**kwargs) # type: ignore
         return request.execute()

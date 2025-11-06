@@ -1,6 +1,5 @@
 import asyncio
 import os
-from typing import Optional
 
 import uvicorn
 from arango import ArangoClient
@@ -38,7 +37,7 @@ async def test_run() -> None:
     await key_value_store.create_key(f"{OAUTH_CONFIG_PATH}/{data_entities_processor.org_id}", {
         "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
         "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
-        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
+        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI"),
     })
 
     connector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
@@ -50,7 +49,7 @@ async def test_run() -> None:
 router = APIRouter()
 
 @router.get("/oauth/atlassian/start")
-async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
+async def oauth_start(return_to: str | None = None) -> RedirectResponse:
     url = await app.connector.provider.start_authorization(return_to=return_to, use_pkce=True)
     return RedirectResponse(url)
 

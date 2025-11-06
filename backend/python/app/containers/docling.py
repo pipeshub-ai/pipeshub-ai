@@ -28,7 +28,7 @@ class DoclingAppContainer(BaseAppContainer):
             "app.services.docling.docling_service",
             "app.modules.parsers.pdf.docling",
             "app.utils.converters.docling_doc_to_blocks",
-        ]
+        ],
     )
 
 

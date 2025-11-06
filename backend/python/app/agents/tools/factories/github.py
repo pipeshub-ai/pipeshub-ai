@@ -1,5 +1,4 @@
-"""
-Client factories for GitHub.
+"""Client factories for GitHub.
 """
 
 
@@ -15,8 +14,7 @@ class GitHubClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> GitHubClient:
         """Create GitHub client instance"""
-
         return await GitHubClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

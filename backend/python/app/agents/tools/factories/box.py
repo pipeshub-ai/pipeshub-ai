@@ -1,5 +1,4 @@
-"""
-Client factories for Box.
+"""Client factories for Box.
 """
 
 
@@ -15,8 +14,7 @@ class BoxClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> BoxClient:
         """Create Box client instance"""
-
         return await BoxClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

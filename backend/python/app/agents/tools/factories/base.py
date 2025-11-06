@@ -1,11 +1,9 @@
-"""
-Abstract base class for client factories.
+"""Abstract base class for client factories.
 """
 
 import asyncio
 import concurrent.futures
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from app.modules.agents.qna.chat_state import ChatState
 
@@ -20,23 +18,25 @@ class ClientFactory(ABC):
     async def create_client(
         self,
         config_service: object,
-        logger: Optional[object],
-        state: Optional[ChatState] = None
+        logger: object | None,
+        state: ChatState | None = None,
     ) -> object:
         """Create and return a client instance asynchronously.
+
         Args:
             config_service: Configuration service instance
             logger: Logger instance (optional)
+
         Returns:
             Client instance
+
         """
-        pass
 
     def create_client_sync(
         self,
         config_service: object,
-        logger: Optional[object],
-        state: Optional[ChatState] = None
+        logger: object | None,
+        state: ChatState | None = None,
     ) -> object:
         """Synchronous wrapper for client creation.
 
@@ -45,8 +45,10 @@ class ClientFactory(ABC):
         Args:
             config_service: Configuration service instance
             logger: Logger instance (optional)
+
         Returns:
             Client instance
+
         """
         try:
             # Check if we're in an async context
@@ -62,8 +64,8 @@ class ClientFactory(ABC):
     def _run_in_thread_pool(
         self,
         config_service: object,
-        logger: Optional[object],
-        state: Optional[ChatState] = None
+        logger: object | None,
+        state: ChatState | None = None,
     ) -> object:
         """Run async client creation in a thread pool.
 
@@ -73,10 +75,11 @@ class ClientFactory(ABC):
 
         Returns:
             Client instance
+
         """
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(
                 asyncio.run,
-                self.create_client(config_service, logger, state)
+                self.create_client(config_service, logger, state),
             )
             return future.result()

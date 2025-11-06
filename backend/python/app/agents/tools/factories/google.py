@@ -1,5 +1,4 @@
-"""
-Google client factory for creating Google service clients.
+"""Google client factory for creating Google service clients.
 """
 
 from app.agents.tools.factories.base import ClientFactory
@@ -8,28 +7,27 @@ from app.sources.client.google.google import GoogleClient
 
 
 class GoogleClientFactory(ClientFactory):
-    """
-    Factory for creating Google service clients.
+    """Factory for creating Google service clients.
 
     Attributes:
         service_name: Name of Google service (gmail, calendar, drive, etc.)
         version: API version (v1, v3, etc.)
+
     """
 
     def __init__(self, service_name: str, version: str = "v3") -> None:
-        """
-        Initialize Google client factory.
+        """Initialize Google client factory.
 
         Args:
             service_name: Name of Google service
             version: API version
+
         """
         self.service_name = service_name
         self.version = version
 
     async def create_client(self, config_service, logger, state: ChatState | None = None) -> GoogleClient:
-        """
-        Create Google client instance.
+        """Create Google client instance.
 
         Args:
             config_service: Configuration service instance
@@ -37,8 +35,8 @@ class GoogleClientFactory(ClientFactory):
 
         Returns:
             Google client instance
-        """
 
+        """
         # Determine impersonation based on chat state (org account type)
         is_individual = True
         user_email = None
