@@ -5,6 +5,7 @@ from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
     Distance,
     Filter,  # type: ignore
+    FilterSelector,
     KeywordIndexParams,
     KeywordIndexType,
     Modifier,
@@ -17,7 +18,6 @@ from qdrant_client.http.models import (  # type: ignore
     SparseIndexParams,
     SparseVectorParams,
     VectorParams,
-    FilterSelector,
 )
 
 from app.config.configuration_service import ConfigurationService

@@ -1,9 +1,9 @@
+from app.config.constants.arangodb import CollectionNames
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.transformers.arango import Arango
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
-from app.config.constants.arangodb import CollectionNames
-from app.connectors.services.base_arango_service import BaseArangoService
 
 
 class SinkOrchestrator(Transformer):
@@ -16,7 +16,7 @@ class SinkOrchestrator(Transformer):
 
     async def apply(self, ctx: TransformContext) -> None:
         await self.blob_storage.apply(ctx)
-        
+
         record = ctx.record
         record_id = record.id
         record = await self.arango_service.get_document(
@@ -30,7 +30,7 @@ class SinkOrchestrator(Transformer):
             result = await self.vector_store.apply(ctx)
             if result is False:
                 return
-        
+
         extraction_status = record.get("extractionStatus")
         if extraction_status != "COMPLETED":
             await self.arango.apply(ctx)

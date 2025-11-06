@@ -408,22 +408,20 @@ class VectorStore(Transformer):
             raise IndexingError(
                 "Failed to get embedding model: " + str(e), details={"error": str(e)}
             )
-    
+
     async def delete_embeddings(self, virtual_record_id: str) -> None:
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"virtualRecordId": virtual_record_id}
             )
-            if not filter_dict:
-                self.logger.info(f"No embeddings found for record {virtual_record_id}")
-                return
+
             self.vector_db_service.delete_points(self.collection_name, filter_dict)
 
             self.logger.info(f"✅ Successfully deleted embeddings for record {virtual_record_id}")
         except Exception as e:
             self.logger.error(f"Error deleting embeddings: {str(e)}")
             raise EmbeddingError(f"Failed to delete embeddings: {str(e)}")
-    
+
     async def _create_embeddings(
         self, chunks: List[Document],record_id: str, virtual_record_id: str
     ) -> None:
@@ -453,13 +451,13 @@ class VectorStore(Transformer):
                     langchain_document_chunks.append(chunk)
                 else:
                     image_chunks.append(chunk)
-            
+
             await self.delete_embeddings(virtual_record_id)
 
             self.logger.info(
                 f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks"
             )
-            
+
             if len(image_chunks) > 0:
                 image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
                 points = []

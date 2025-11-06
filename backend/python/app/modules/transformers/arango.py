@@ -3,11 +3,11 @@ import uuid
 from app.config.constants.arangodb import (
     CollectionNames,
 )
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 
 
 class Arango(Transformer):
@@ -38,9 +38,13 @@ class Arango(Transformer):
                 record = await tx_store.get_record_by_key(
                     record_id
                 )
+
+                if record is None:
+                    self.logger.error(f"❌ Record {record_id} not found in database")
+                    raise Exception(f"Record {record_id} not found in database")
                 # Use arango-safe serialization to avoid non-JSON types (e.g., Enums)
                 doc = record.to_arango_base_record() if record else {}
-                
+
                 # Create relationships with departments
                 for department in metadata.departments:
                     try:
@@ -302,7 +306,7 @@ class Arango(Transformer):
                 )
 
                 doc.update(
-                    {   
+                    {
                         "indexingStatus": "COMPLETED",
                         "extractionStatus": "COMPLETED",
                         "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
