@@ -4,416 +4,130 @@ This module provides a client for interacting with the Gong API.
 Gong is a revenue intelligence platform that captures and analyzes sales conversations.
 """
 
-import asyncio
+import logging
+from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import urljoin
 
-import aiohttp
-from aiohttp import ClientSession, ClientTimeout
-
+from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
 
-class GongClient(IClient):
-    """Async client for Gong API.
-
-    Gong API Documentation: https://us-66463.app.gong.io/settings/api/documentation
+class GongRESTClientViaApiKey(HTTPClient):
+    """Gong REST client via API key
+    Args:
+        access_key: The access key to use for authentication
+        access_key_secret: The access key secret to use for authentication
     """
 
-    BASE_URL = "https://api.gong.io/v2/"
+    def __init__(self, access_key: str, access_key_secret: str) -> None:
+        # Gong uses Basic Auth with access key and secret
+        import base64
+        credentials = f"{access_key}:{access_key_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        super().__init__(encoded_credentials, "Basic")
+        self.base_url = "https://api.gong.io/v2"
 
-    def __init__(
-        self,
-        access_key: str,
-        access_key_secret: str,
-        timeout: int = 30,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
-    ):
-        """Initialize Gong client.
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
 
-        Args:
-            access_key: Gong API access key
-            access_key_secret: Gong API access key secret
-            timeout: Request timeout in seconds
-            max_retries: Maximum number of retry attempts
-            retry_delay: Delay between retries in seconds
 
-        """
-        self.access_key = access_key
-        self.access_key_secret = access_key_secret
-        self.timeout = ClientTimeout(total=timeout)
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        self._session: ClientSession | None = None
+@dataclass
+class GongApiKeyConfig:
+    """Configuration for Gong REST client via API key
+    Args:
+        access_key: The access key to use for authentication
+        access_key_secret: The access key secret to use for authentication
+        ssl: Whether to use SSL
+    """
 
-    async def __aenter__(self):
-        """Async context manager entry."""
-        await self._ensure_session()
-        return self
+    access_key: str
+    access_key_secret: str
+    ssl: bool = True
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        await self.close()
+    def create_client(self) -> GongRESTClientViaApiKey:
+        return GongRESTClientViaApiKey(self.access_key, self.access_key_secret)
 
-    async def _ensure_session(self) -> ClientSession:
-        """Ensure aiohttp session is created."""
-        if self._session is None or self._session.closed:
-            # Create basic auth header
-            auth = aiohttp.BasicAuth(self.access_key, self.access_key_secret)
+    def to_dict(self) -> dict:
+        """Convert the configuration to a dictionary"""
+        return asdict(self)
 
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "PipesHub-Gong-Client/1.0",
-            }
 
-            self._session = ClientSession(
-                auth=auth,
-                headers=headers,
-                timeout=self.timeout,
-                connector=aiohttp.TCPConnector(limit=100, limit_per_host=30),
-            )
+class GongClient(IClient):
+    """Builder class for Gong clients with different construction methods"""
 
-        return self._session
+    def __init__(self, client: GongRESTClientViaApiKey) -> None:
+        """Initialize with a Gong client object"""
+        self.client = client
 
-    async def close(self):
-        """Close the HTTP session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+    def get_client(self) -> GongRESTClientViaApiKey:
+        """Return the Gong client object"""
+        return self.client
 
-    async def get_client(self) -> ClientSession:
-        """Get the underlying HTTP client session (required by IClient interface)."""
-        return await self._ensure_session()
-
-    async def _make_request(
-        self,
-        method: str,
-        endpoint: str,
-        params: dict[str, Any] | None = None,
-        data: dict[str, Any] | None = None,
-        **kwargs,
-    ) -> dict[str, Any]:
-        """Make HTTP request to Gong API with retry logic.
+    @classmethod
+    def build_with_config(cls, config: GongApiKeyConfig) -> "GongClient":
+        """Build GongClient with configuration
 
         Args:
-            method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint (relative to base URL)
-            params: Query parameters
-            data: Request body data
-            **kwargs: Additional arguments for aiohttp request
-
+            config: GongApiKeyConfig instance
         Returns:
-            Response data as dictionary
-
-        Raises:
-            aiohttp.ClientError: For HTTP errors
-            json.JSONDecodeError: For invalid JSON responses
+            GongClient instance
 
         """
-        session = await self._ensure_session()
-        url = urljoin(self.BASE_URL, endpoint.lstrip("/"))
+        return cls(config.create_client())
 
-        for attempt in range(self.max_retries + 1):
-            try:
-                async with session.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    json=data,
-                    **kwargs,
-                ) as response:
-                    # Handle rate limiting
-                    if response.status == 429:
-                        if attempt < self.max_retries:
-                            retry_after = int(response.headers.get("Retry-After", self.retry_delay))
-                            await asyncio.sleep(retry_after)
-                            continue
-
-                    # Raise for HTTP errors
-                    response.raise_for_status()
-
-                    # Parse JSON response
-                    response_data = await response.json()
-                    return response_data
-
-            except aiohttp.ClientError as e:
-                if attempt < self.max_retries:
-                    await asyncio.sleep(self.retry_delay * (2 ** attempt))  # Exponential backoff
-                    continue
-                raise e
-
-        raise aiohttp.ClientError(f"Max retries ({self.max_retries}) exceeded for {method} {url}")
-
-    async def get(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Make GET request."""
-        return await self._make_request("GET", endpoint, params=params)
-
-    async def post(self, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Make POST request."""
-        return await self._make_request("POST", endpoint, data=data)
-
-    async def put(self, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Make PUT request."""
-        return await self._make_request("PUT", endpoint, data=data)
-
-    async def delete(self, endpoint: str) -> dict[str, Any]:
-        """Make DELETE request."""
-        return await self._make_request("DELETE", endpoint)
-
-    # Gong-specific API methods
-
-    async def test_connection(self) -> bool:
-        """Test API connection and credentials.
-
+    @classmethod
+    async def build_from_services(
+        cls,
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+    ) -> "GongClient":
+        """Build GongClient using configuration service
+        Args:
+            logger: Logger instance
+            config_service: Configuration service instance
         Returns:
-            True if connection is successful, False otherwise
-
+            GongClient instance
         """
         try:
-            await self.get("users")
-            return True
-        except Exception:
-            return False
+            # Get Gong configuration from the configuration service
+            config = await cls._get_connector_config(logger, config_service)
+            if not config:
+                raise ValueError("Failed to get Gong connector configuration")
 
-    async def get_users(
-        self,
-        cursor: str | None = None,
-        limit: int = 100,
-    ) -> dict[str, Any]:
-        """Get list of users.
+            auth_config = config.get("auth", {}) or {}
+            if not auth_config:
+                raise ValueError("Auth configuration not found in Gong connector configuration")
 
-        Args:
-            cursor: Pagination cursor
-            limit: Number of results per page (max 100)
+            credentials_config = config.get("credentials", {}) or {}
+            if not credentials_config:
+                raise ValueError("Credentials configuration not found in Gong connector configuration")
 
-        Returns:
-            Users data with pagination info
+            # Extract configuration values
+            auth_type = auth_config.get("authType", "API_KEY")
 
-        """
-        params = {"limit": min(limit, 100)}
-        if cursor:
-            params["cursor"] = cursor
+            if auth_type == "API_KEY":
+                access_key = auth_config.get("accessKey", "")
+                access_key_secret = auth_config.get("accessKeySecret", "")
+                if not access_key or not access_key_secret:
+                    raise ValueError("Access key and secret required for API key auth type")
+                client = GongRESTClientViaApiKey(access_key, access_key_secret)
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
 
-        return await self.get("users", params=params)
+            return cls(client)
 
-    async def get_calls(
-        self,
-        from_date: str | None = None,
-        to_date: str | None = None,
-        cursor: str | None = None,
-        limit: int = 100,
-        workspace_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Get list of calls.
+        except Exception as e:
+            logger.error(f"Failed to build Gong client from services: {e!s}")
+            raise
 
-        Args:
-            from_date: Start date (ISO format: YYYY-MM-DDTHH:MM:SS.sssZ)
-            to_date: End date (ISO format: YYYY-MM-DDTHH:MM:SS.sssZ)
-            cursor: Pagination cursor
-            limit: Number of results per page (max 100)
-            workspace_id: Specific workspace ID
-
-        Returns:
-            Calls data with pagination info
-
-        """
-        params = {"limit": min(limit, 100)}
-
-        if from_date:
-            params["fromDateTime"] = from_date
-        if to_date:
-            params["toDateTime"] = to_date
-        if cursor:
-            params["cursor"] = cursor
-        if workspace_id:
-            params["workspaceId"] = workspace_id
-
-        return await self.get("calls", params=params)
-
-    async def get_call_details(self, call_id: str) -> dict[str, Any]:
-        """Get detailed information about a specific call.
-
-        Args:
-            call_id: Unique call identifier
-
-        Returns:
-            Detailed call information
-
-        """
-        return await self.get(f"calls/{call_id}")
-
-    async def get_call_transcript(self, call_id: str) -> dict[str, Any]:
-        """Get transcript for a specific call.
-
-        Args:
-            call_id: Unique call identifier
-
-        Returns:
-            Call transcript data
-
-        """
-        return await self.get(f"calls/{call_id}/transcript")
-
-    async def get_workspaces(self) -> dict[str, Any]:
-        """Get list of workspaces.
-
-        Returns:
-            Workspaces data
-
-        """
-        return await self.get("workspaces")
-
-    async def get_deals(
-        self,
-        cursor: str | None = None,
-        limit: int = 100,
-        workspace_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Get list of deals.
-
-        Args:
-            cursor: Pagination cursor
-            limit: Number of results per page (max 100)
-            workspace_id: Specific workspace ID
-
-        Returns:
-            Deals data with pagination info
-
-        """
-        params = {"limit": min(limit, 100)}
-
-        if cursor:
-            params["cursor"] = cursor
-        if workspace_id:
-            params["workspaceId"] = workspace_id
-
-        return await self.get("deals", params=params)
-
-    async def get_meetings(
-        self,
-        from_date: str | None = None,
-        to_date: str | None = None,
-        cursor: str | None = None,
-        limit: int = 100,
-        workspace_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Get list of meetings.
-
-        Args:
-            from_date: Start date (ISO format: YYYY-MM-DDTHH:MM:SS.sssZ)
-            to_date: End date (ISO format: YYYY-MM-DDTHH:MM:SS.sssZ)
-            cursor: Pagination cursor
-            limit: Number of results per page (max 100)
-            workspace_id: Specific workspace ID
-
-        Returns:
-            Meetings data with pagination info
-
-        """
-        params = {"limit": min(limit, 100)}
-
-        if from_date:
-            params["fromDateTime"] = from_date
-        if to_date:
-            params["toDateTime"] = to_date
-        if cursor:
-            params["cursor"] = cursor
-        if workspace_id:
-            params["workspaceId"] = workspace_id
-
-        return await self.get("meetings", params=params)
-
-    async def get_all_users(self) -> list[dict[str, Any]]:
-        """Get all users using pagination.
-
-        Returns:
-            List of all users
-
-        """
-        all_users = []
-        cursor = None
-
-        while True:
-            response = await self.get_users(cursor=cursor, limit=100)
-            users = response.get("users", [])
-            all_users.extend(users)
-
-            # Check if there are more pages
-            records = response.get("records", {})
-            cursor = records.get("cursor")
-            if not cursor:
-                break
-
-        return all_users
-
-    async def get_all_calls(
-        self,
-        from_date: str | None = None,
-        to_date: str | None = None,
-        workspace_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Get all calls using pagination.
-
-        Args:
-            from_date: Start date (ISO format)
-            to_date: End date (ISO format)
-            workspace_id: Specific workspace ID
-
-        Returns:
-            List of all calls
-
-        """
-        all_calls = []
-        cursor = None
-
-        while True:
-            response = await self.get_calls(
-                from_date=from_date,
-                to_date=to_date,
-                cursor=cursor,
-                limit=100,
-                workspace_id=workspace_id,
-            )
-            calls = response.get("calls", [])
-            all_calls.extend(calls)
-
-            # Check if there are more pages
-            records = response.get("records", {})
-            cursor = records.get("cursor")
-            if not cursor:
-                break
-
-        return all_calls
-
-
-# Utility functions for common operations
-
-async def create_gong_client(access_key: str, access_key_secret: str) -> GongClient:
-    """Create and return a configured Gong client.
-
-    Args:
-        access_key: Gong API access key
-        access_key_secret: Gong API access key secret
-
-    Returns:
-        Configured GongClient instance
-
-    """
-    return GongClient(access_key, access_key_secret)
-
-
-async def test_gong_credentials(access_key: str, access_key_secret: str) -> bool:
-    """Test Gong API credentials.
-
-    Args:
-        access_key: Gong API access key
-        access_key_secret: Gong API access key secret
-
-    Returns:
-        True if credentials are valid, False otherwise
-
-    """
-    async with GongClient(access_key, access_key_secret) as client:
-        return await client.test_connection()
+    @staticmethod
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> dict[str, Any]:
+        """Fetch connector config from etcd for Gong."""
+        try:
+            config = await config_service.get_config("/services/connectors/gong/config")
+            return config or {}
+        except Exception as e:
+            logger.error(f"Failed to get Gong connector config: {e}")
+            return {}

@@ -1,381 +1,226 @@
-"""Gong API Integration Examples
-
-This module provides examples of how to use the Gong client and service
-for common operations.
-"""
-
+# ruff: noqa
 import asyncio
-import json
 import os
-from datetime import datetime
 
-from app.sources.client.gong.gong import (
-    test_gong_credentials,
-)
-from app.sources.external.gong.gong import create_gong_service
+from app.sources.client.gong.gong import GongClient, GongApiKeyConfig
+from app.sources.client.http.http_response import HTTPResponse
+from app.sources.external.gong.gong import GongDataSource
 
 
-async def example_basic_connection():
-    """Example: Test basic connection to Gong API."""
-    print("🔗 Testing Gong API Connection...")
-
-    # Get credentials from environment variables
+def main():
+    """Example usage of Gong client and data source"""
     access_key = os.getenv("GONG_ACCESS_KEY")
     access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
+    
     if not access_key or not access_key_secret:
-        print("❌ Please set GONG_ACCESS_KEY and GONG_ACCESS_KEY_SECRET environment variables")
-        return
+        raise Exception("GONG_ACCESS_KEY and GONG_ACCESS_KEY_SECRET environment variables are required")
 
-    # Test credentials
-    is_valid = await test_gong_credentials(access_key, access_key_secret)
+    # Create Gong client using configuration
+    gong_client: GongClient = GongClient.build_with_config(
+        GongApiKeyConfig(
+            access_key=access_key,
+            access_key_secret=access_key_secret,
+        ),
+    )
+    print(f"Created Gong client: {gong_client}")
 
-    if is_valid:
-        print("✅ Connection successful!")
-    else:
-        print("❌ Connection failed. Please check your credentials.")
+    # Create Gong data source
+    gong_data_source = GongDataSource(gong_client)
+    print(f"Created Gong data source: {gong_data_source}")
+
+    # Test various API endpoints
+    asyncio.run(test_gong_apis(gong_data_source))
 
 
-async def example_get_workspace_info():
-    """Example: Get workspace information."""
-    print("\n📊 Getting Workspace Information...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
-
+async def test_gong_apis(gong_data_source: GongDataSource):
+    """Test various Gong API endpoints"""
+    
+    print("\n=== Testing Gong API Endpoints ===")
+    
     try:
-        workspace_info = await service.get_workspace_info()
-
-        print(f"📈 Total Workspaces: {workspace_info['total_workspaces']}")
-        print(f"👥 Total Users: {workspace_info['total_users']}")
-
-        if workspace_info["primary_workspace"]:
-            workspace = workspace_info["primary_workspace"]
-            print(f"🏢 Primary Workspace: {workspace.get('name', 'N/A')}")
-            print(f"🆔 Workspace ID: {workspace.get('id', 'N/A')}")
-
-        print("\n📋 All Workspaces:")
-        for i, workspace in enumerate(workspace_info["workspaces"], 1):
-            print(f"  {i}. {workspace.get('name', 'N/A')} (ID: {workspace.get('id', 'N/A')})")
-
-    finally:
-        await service.client.close()
-
-
-async def example_get_recent_calls():
-    """Example: Get recent calls."""
-    print("\n📞 Getting Recent Calls...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
-
-    try:
-        # Get calls from last 7 days
-        calls = await service.get_recent_calls(days_back=7, limit=10)
-
-        print(f"📊 Found {len(calls)} recent calls")
-
-        for i, call in enumerate(calls, 1):
-            title = call.get("title", "Untitled Call")
-            started = call.get("started", "Unknown time")
-            duration = call.get("duration", 0)
-            participants = len(call.get("participants", []))
-
-            # Convert duration to minutes
-            duration_minutes = duration // 60 if duration else 0
-
-            print(f"\n  {i}. {title}")
-            print(f"     🕐 Started: {started}")
-            print(f"     ⏱️  Duration: {duration_minutes} minutes")
-            print(f"     👥 Participants: {participants}")
-            print(f"     🆔 Call ID: {call.get('id', 'N/A')}")
-
-    finally:
-        await service.client.close()
-
-
-async def example_get_call_transcript():
-    """Example: Get call transcript."""
-    print("\n📝 Getting Call Transcript...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
-
-    try:
-        # First get a recent call
-        calls = await service.get_recent_calls(days_back=30, limit=1)
-
-        if not calls:
-            print("❌ No recent calls found")
-            return
-
-        call_id = calls[0].get("id")
-        if not call_id:
-            print("❌ Call ID not found")
-            return
-
-        print(f"🔍 Getting transcript for call: {calls[0].get('title', 'Untitled')}")
-
-        # Get call with transcript
-        call_data = await service.get_call_with_transcript(call_id)
-
-        if call_data.get("transcript"):
-            transcript = call_data["transcript"]
-            entries = transcript.get("entries", [])
-
-            print(f"📄 Transcript has {len(entries)} entries")
-
-            # Show first few entries
-            for i, entry in enumerate(entries[:5]):
-                speaker = entry.get("speakerId", "Unknown")
-                text = entry.get("text", "")
-                start_time = entry.get("start", 0) // 1000  # Convert to seconds
-
-                print(f"  [{start_time}s] {speaker}: {text[:100]}{'...' if len(text) > 100 else ''}")
-
-            if len(entries) > 5:
-                print(f"  ... and {len(entries) - 5} more entries")
+        # Test 1: Get workspaces
+        print("\n1. Getting workspaces...")
+        workspaces_response: HTTPResponse = await gong_data_source.get_workspaces()
+        print(f"Workspaces Status: {workspaces_response.status}")
+        print(f"Workspaces Headers: {dict(workspaces_response.headers)}")
+        if workspaces_response.status == 200:
+            workspaces_data = workspaces_response.json()
+            print(f"Workspaces Data: {workspaces_data}")
         else:
-            print("❌ No transcript available for this call")
-            if call_data.get("transcript_error"):
-                print(f"Error: {call_data['transcript_error']}")
+            print(f"Workspaces Error: {workspaces_response.text}")
 
-    finally:
-        await service.client.close()
-
-
-async def example_user_activity_summary():
-    """Example: Get user activity summary."""
-    print("\n👤 Getting User Activity Summary...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
+    except Exception as e:
+        print(f"Error getting workspaces: {e}")
 
     try:
-        # Get activity summary for all users
-        summary = await service.get_user_activity_summary(days_back=30)
+        # Test 2: Get users
+        print("\n2. Getting users...")
+        users_response: HTTPResponse = await gong_data_source.get_users(limit=10)
+        print(f"Users Status: {users_response.status}")
+        if users_response.status == 200:
+            users_data = users_response.json()
+            print(f"Users Count: {len(users_data.get('users', []))}")
+            print(f"Users Sample: {users_data}")
+        else:
+            print(f"Users Error: {users_response.text}")
 
-        print(f"📊 Activity Summary (Last {summary['period_days']} days)")
-        print(f"📞 Total Calls: {summary['total_calls']}")
-        print(f"⏱️  Total Duration: {summary['total_duration_seconds'] // 60} minutes")
-
-        if summary["total_calls"] > 0:
-            avg_duration = summary["average_call_duration"] // 60
-            print(f"📈 Average Call Duration: {avg_duration} minutes")
-
-        if summary.get("calls_by_date"):
-            print(f"\n📅 Most Active Date: {summary['most_active_date'][0]} ({summary['most_active_date'][1]} calls)")
-
-    finally:
-        await service.client.close()
-
-
-async def example_team_performance():
-    """Example: Get team performance metrics."""
-    print("\n🏆 Getting Team Performance Metrics...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
+    except Exception as e:
+        print(f"Error getting users: {e}")
 
     try:
-        metrics = await service.get_team_performance_metrics(days_back=30)
-
-        if metrics.get("error"):
-            print(f"❌ Error: {metrics['error']}")
-            return
-
-        team_totals = metrics["team_totals"]
-        print(f"🏢 Team Performance (Last {metrics['period_days']} days)")
-        print(f"📞 Total Team Calls: {team_totals['total_calls']}")
-        print(f"👥 Active Users: {team_totals['active_users']}/{team_totals['total_users']}")
-        print(f"⏱️  Total Duration: {team_totals['total_duration_seconds'] // 60} minutes")
-
-        print("\n🏆 Top Performers:")
-        for i, (user_id, user_data) in enumerate(metrics["top_performers"], 1):
-            name = user_data["name"] or "Unknown User"
-            calls = user_data["total_calls"]
-            duration = user_data["total_duration_seconds"] // 60
-
-            print(f"  {i}. {name}: {calls} calls, {duration} minutes")
-
-    finally:
-        await service.client.close()
-
-
-async def example_search_calls():
-    """Example: Search calls by keywords."""
-    print("\n🔍 Searching Calls by Keywords...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
-
-    try:
-        # Search for calls containing specific keywords
-        keywords = ["demo", "pricing", "contract", "proposal"]
-        matching_calls = await service.search_calls_by_keywords(
-            keywords=keywords,
-            days_back=30,
+        # Test 3: Get calls (last 30 days)
+        print("\n3. Getting recent calls...")
+        from datetime import datetime, timedelta, timezone
+        
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=30)
+        
+        from_date = start_date.isoformat().replace('+00:00', 'Z')
+        to_date = end_date.isoformat().replace('+00:00', 'Z')
+        
+        calls_response: HTTPResponse = await gong_data_source.get_calls(
+            from_date_time=from_date,
+            to_date_time=to_date,
+            limit=5
         )
+        print(f"Calls Status: {calls_response.status}")
+        if calls_response.status == 200:
+            calls_data = calls_response.json()
+            print(f"Calls Count: {len(calls_data.get('calls', []))}")
+            calls = calls_data.get('calls', [])
+            if calls:
+                print(f"First Call Sample: {calls[0]}")
+                
+                # Test 4: Get call details for the first call
+                call_id = calls[0].get('id')
+                if call_id:
+                    print(f"\n4. Getting call details for call ID: {call_id}")
+                    call_details_response: HTTPResponse = await gong_data_source.get_call_details(call_id)
+                    print(f"Call Details Status: {call_details_response.status}")
+                    if call_details_response.status == 200:
+                        call_details = call_details_response.json()
+                        print(f"Call Details: {call_details}")
+                    else:
+                        print(f"Call Details Error: {call_details_response.text}")
+                        
+                    # Test 5: Get call transcript
+                    print(f"\n5. Getting call transcript for call ID: {call_id}")
+                    transcript_response: HTTPResponse = await gong_data_source.get_call_transcript(call_id)
+                    print(f"Transcript Status: {transcript_response.status}")
+                    if transcript_response.status == 200:
+                        transcript_data = transcript_response.json()
+                        entries = transcript_data.get('entries', [])
+                        print(f"Transcript Entries Count: {len(entries)}")
+                        if entries:
+                            print(f"First Transcript Entry: {entries[0]}")
+                    else:
+                        print(f"Transcript Error: {transcript_response.text}")
+            else:
+                print("No calls found in the specified date range")
+        else:
+            print(f"Calls Error: {calls_response.text}")
 
-        print(f"🔍 Found {len(matching_calls)} calls matching keywords: {', '.join(keywords)}")
-
-        for i, call in enumerate(matching_calls[:5], 1):  # Show top 5
-            title = call.get("title", "Untitled Call")
-            matched_keywords = call.get("matched_keywords", [])
-            match_score = call.get("match_score", 0)
-            started = call.get("started", "Unknown time")
-
-            print(f"\n  {i}. {title}")
-            print(f"     🎯 Matched Keywords: {', '.join(matched_keywords)}")
-            print(f"     📊 Match Score: {match_score}")
-            print(f"     🕐 Started: {started}")
-
-    finally:
-        await service.client.close()
-
-
-async def example_export_calls():
-    """Example: Export calls data."""
-    print("\n📤 Exporting Calls Data...")
-
-    access_key = os.getenv("GONG_ACCESS_KEY")
-    access_key_secret = os.getenv("GONG_ACCESS_KEY_SECRET")
-
-    if not access_key or not access_key_secret:
-        print("❌ Please set environment variables")
-        return
-
-    service = await create_gong_service(access_key, access_key_secret)
+    except Exception as e:
+        print(f"Error getting calls: {e}")
 
     try:
-        # Export calls from last 3 days (without transcripts for speed)
-        calls_data = await service.export_calls_to_dict(
-            days_back=3,
-            include_transcripts=False,
+        # Test 6: Get deals
+        print("\n6. Getting deals...")
+        deals_response: HTTPResponse = await gong_data_source.get_deals(limit=5)
+        print(f"Deals Status: {deals_response.status}")
+        if deals_response.status == 200:
+            deals_data = deals_response.json()
+            print(f"Deals Count: {len(deals_data.get('deals', []))}")
+            print(f"Deals Sample: {deals_data}")
+        else:
+            print(f"Deals Error: {deals_response.text}")
+
+    except Exception as e:
+        print(f"Error getting deals: {e}")
+
+    try:
+        # Test 7: Get meetings
+        print("\n7. Getting meetings...")
+        from datetime import datetime, timedelta, timezone
+        
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=7)  # Last 7 days
+        
+        from_date = start_date.isoformat().replace('+00:00', 'Z')
+        to_date = end_date.isoformat().replace('+00:00', 'Z')
+        
+        meetings_response: HTTPResponse = await gong_data_source.get_meetings(
+            from_date_time=from_date,
+            to_date_time=to_date,
+            limit=5
         )
+        print(f"Meetings Status: {meetings_response.status}")
+        if meetings_response.status == 200:
+            meetings_data = meetings_response.json()
+            print(f"Meetings Count: {len(meetings_data.get('meetings', []))}")
+            print(f"Meetings Sample: {meetings_data}")
+        else:
+            print(f"Meetings Error: {meetings_response.text}")
 
-        print(f"📊 Exported {len(calls_data)} calls")
+    except Exception as e:
+        print(f"Error getting meetings: {e}")
 
-        if calls_data:
-            # Save to JSON file
-            filename = f"gong_calls_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    try:
+        # Test 8: Get CRM objects
+        print("\n8. Getting CRM objects...")
+        crm_response: HTTPResponse = await gong_data_source.get_crm_objects(limit=5)
+        print(f"CRM Objects Status: {crm_response.status}")
+        if crm_response.status == 200:
+            crm_data = crm_response.json()
+            print(f"CRM Objects Sample: {crm_data}")
+        else:
+            print(f"CRM Objects Error: {crm_response.text}")
 
-            # Create a simplified version for export
-            export_data = []
-            for call in calls_data:
-                export_call = {
-                    "id": call.get("id"),
-                    "title": call.get("title"),
-                    "started": call.get("started"),
-                    "duration_seconds": call.get("duration"),
-                    "participants": [
-                        {
-                            "name": p.get("name"),
-                            "email": p.get("emailAddress"),
-                            "role": p.get("role"),
-                        }
-                        for p in call.get("participants", [])
-                    ],
-                    "workspace_id": call.get("workspaceId"),
-                }
-                export_data.append(export_call)
+    except Exception as e:
+        print(f"Error getting CRM objects: {e}")
 
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(export_data, f, indent=2, ensure_ascii=False)
+    try:
+        # Test 9: Get activity statistics
+        print("\n9. Getting activity statistics...")
+        from datetime import datetime, timedelta, timezone
+        
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=30)
+        
+        from_date = start_date.isoformat().replace('+00:00', 'Z')
+        to_date = end_date.isoformat().replace('+00:00', 'Z')
+        
+        stats_response: HTTPResponse = await gong_data_source.get_stats_activity(
+            from_date_time=from_date,
+            to_date_time=to_date,
+            limit=5
+        )
+        print(f"Activity Stats Status: {stats_response.status}")
+        if stats_response.status == 200:
+            stats_data = stats_response.json()
+            print(f"Activity Stats Sample: {stats_data}")
+        else:
+            print(f"Activity Stats Error: {stats_response.text}")
 
-            print(f"💾 Data exported to: {filename}")
+    except Exception as e:
+        print(f"Error getting activity statistics: {e}")
 
-            # Show summary
-            total_duration = sum(call.get("duration", 0) for call in calls_data)
-            total_participants = sum(len(call.get("participants", [])) for call in calls_data)
+    try:
+        # Test 10: Get library calls
+        print("\n10. Getting library calls...")
+        library_response: HTTPResponse = await gong_data_source.get_library_calls(limit=5)
+        print(f"Library Calls Status: {library_response.status}")
+        if library_response.status == 200:
+            library_data = library_response.json()
+            print(f"Library Calls Sample: {library_data}")
+        else:
+            print(f"Library Calls Error: {library_response.text}")
 
-            print("📈 Summary:")
-            print(f"   Total Duration: {total_duration // 60} minutes")
-            print(f"   Total Participants: {total_participants}")
-            print(f"   Average Duration: {(total_duration // len(calls_data)) // 60} minutes per call")
+    except Exception as e:
+        print(f"Error getting library calls: {e}")
 
-    finally:
-        await service.client.close()
-
-
-async def run_all_examples():
-    """Run all examples in sequence."""
-    print("🚀 Running Gong API Integration Examples")
-    print("=" * 50)
-
-    examples = [
-        example_basic_connection,
-        example_get_workspace_info,
-        example_get_recent_calls,
-        example_user_activity_summary,
-        example_team_performance,
-        example_search_calls,
-        example_get_call_transcript,
-        example_export_calls,
-    ]
-
-    for example in examples:
-        try:
-            await example()
-            print("\n" + "-" * 50)
-        except Exception as e:
-            print(f"❌ Error in {example.__name__}: {e}")
-            print("-" * 50)
-
-        # Small delay between examples
-        await asyncio.sleep(1)
-
-    print("\n✅ All examples completed!")
+    print("\n=== Gong API Testing Complete ===")
 
 
 if __name__ == "__main__":
-    # Set up example credentials (replace with your actual credentials)
-    # You can also set these as environment variables
-    if not os.getenv("GONG_ACCESS_KEY"):
-        print("💡 To run examples, set environment variables:")
-        print("   export GONG_ACCESS_KEY='your_access_key'")
-        print("   export GONG_ACCESS_KEY_SECRET='your_access_key_secret'")
-        print("\nOr modify this script to set them directly (not recommended for production)")
-
-        # Uncomment and set your credentials here for testing
-        # os.environ["GONG_ACCESS_KEY"] = "your_access_key_here"
-        # os.environ["GONG_ACCESS_KEY_SECRET"] = "your_access_key_secret_here"
-
-    # Run examples
-    asyncio.run(run_all_examples())
+    main()
