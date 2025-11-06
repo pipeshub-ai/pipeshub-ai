@@ -18,7 +18,7 @@ def load_module_from_path(module_name, file_path):
     return module
 
 def test_gong_client_structure():
-    """Test GongClient structure and methods"""
+    """Test GongClient structure and methodss"""
     print("🧪 Testing GongClient structure...")
     
     try:
