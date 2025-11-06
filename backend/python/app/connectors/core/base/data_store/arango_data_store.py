@@ -42,7 +42,10 @@ class ArangoTransactionStore(TransactionStore):
         self.arango_service = arango_service
         self.txn = txn
         self.logger = arango_service.logger
-
+    
+    async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool | None:
+        return await self.arango_service.batch_upsert_nodes(nodes, collection, transaction=self.txn)
+        
     async def get_record_by_path(self, connector_name: Connectors, path: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_path(connector_name, path, transaction=self.txn)
 

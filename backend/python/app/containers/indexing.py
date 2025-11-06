@@ -84,6 +84,7 @@ class IndexingAppContainer(BaseAppContainer):
         arango=arango,
         blob_storage=blob_storage,
         vector_store=vector_store,
+        arango_service=arango_service,
     )
 
     # Parsers

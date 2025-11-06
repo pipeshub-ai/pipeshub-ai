@@ -17,6 +17,7 @@ from qdrant_client.http.models import (  # type: ignore
     SparseIndexParams,
     SparseVectorParams,
     VectorParams,
+    FilterSelector,
 )
 
 from app.config.configuration_service import ConfigurationService
@@ -386,3 +387,19 @@ class QdrantService(IVectorDBService):
 
         elapsed_time = time.perf_counter() - start_time
         logger.info(f"⏱️ Completed upsert of {len(points)} points in {elapsed_time:.2f}s (avg: {elapsed_time/len(points)*1000:.2f}ms per point)")
+
+    def delete_points(
+        self,
+        collection_name: str,
+        filter: Filter,
+    ) -> None:
+        """Delete points"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=FilterSelector(
+                filter=filter
+            ),
+        )
+        logger.info(f"✅ Deleted points from collection '{collection_name}'")
