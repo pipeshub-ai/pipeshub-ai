@@ -331,6 +331,14 @@ class OneDriveConnector(BaseConnector):
                             type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
                             entity_type=EntityType.USER
                         ))
+                    if hasattr(perm.granted_to_v2, 'group') and perm.granted_to_v2.group:
+                        group = perm.granted_to_v2.group
+                        permissions.append(Permission(
+                            external_id=group.id,
+                            email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
+                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                            entity_type=EntityType.GROUP
+                        ))
                     
 
                 # Handle group permissions
