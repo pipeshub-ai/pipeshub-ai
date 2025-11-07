@@ -105,9 +105,9 @@ class ContainerUtils:
         arango = Arango(arango_service, logger)
         return arango
 
-    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store) -> SinkOrchestrator:
+    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store, arango_service) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store)
+        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store, arango_service=arango_service)
         return orchestrator
 
     async def create_document_extractor(self, logger, arango_service, config_service) -> DocumentExtraction:

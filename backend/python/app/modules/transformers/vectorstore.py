@@ -86,8 +86,6 @@ class VectorStore(Transformer):
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
 
-
-
         try:
             # Initialize sparse embeddings
             try:
@@ -411,8 +409,21 @@ class VectorStore(Transformer):
                 "Failed to get embedding model: " + str(e), details={"error": str(e)}
             )
 
+    async def delete_embeddings(self, virtual_record_id: str) -> None:
+        try:
+            filter_dict = await self.vector_db_service.filter_collection(
+                must={"virtualRecordId": virtual_record_id}
+            )
+
+            self.vector_db_service.delete_points(self.collection_name, filter_dict)
+
+            self.logger.info(f"✅ Successfully deleted embeddings for record {virtual_record_id}")
+        except Exception as e:
+            self.logger.error(f"Error deleting embeddings: {str(e)}")
+            raise EmbeddingError(f"Failed to delete embeddings: {str(e)}")
+
     async def _create_embeddings(
-        self, chunks: List[Document],record_id: str
+        self, chunks: List[Document],record_id: str, virtual_record_id: str
     ) -> None:
         """
         Create both sparse and dense embeddings for document chunks and store them in vector store.
@@ -440,6 +451,8 @@ class VectorStore(Transformer):
                     langchain_document_chunks.append(chunk)
                 else:
                     image_chunks.append(chunk)
+
+            await self.delete_embeddings(virtual_record_id)
 
             self.logger.info(
                 f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks"
@@ -1103,7 +1116,7 @@ class VectorStore(Transformer):
 
             # Create and store embeddings
             try:
-                await self._create_embeddings(documents_to_embed, record_id)
+                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id)
             except Exception as e:
                 raise EmbeddingError(
                     "Failed to create or store embeddings: " + str(e),
