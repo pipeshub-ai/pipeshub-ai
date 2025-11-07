@@ -104,7 +104,7 @@ class SiteMetadata:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-@ConnectorBuilder("SHAREPOINT ONLINE")\
+@ConnectorBuilder("SharePoint Online")\
     .in_group("Microsoft 365")\
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync documents and lists from SharePoint Online")\
