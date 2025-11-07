@@ -71,7 +71,7 @@ axiosInstance.interceptors.response.use(
       retry: false,
     };
 
-    console.log('error', error);
+    // Remove noisy debug logs in production
 
     // Axios error with response from server
     if (axios.isAxiosError(error)) {

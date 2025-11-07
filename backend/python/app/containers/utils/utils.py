@@ -248,7 +248,11 @@ class ContainerUtils:
         if config_service is not None:
             print("Creating EtcdProvider")
             provider = EtcdProvider(config_service)
-            return FeatureFlagService.init_with_etcd_provider(provider)
+            try:
+                await provider.refresh()
+            except Exception as e:
+                self.logger.debug(f"Feature flag provider refresh failed: {e}")
+            return await FeatureFlagService.init_with_etcd_provider(provider, self.logger)
         else:
             print("Creating EnvFileProvider")
             return FeatureFlagService.get_service()

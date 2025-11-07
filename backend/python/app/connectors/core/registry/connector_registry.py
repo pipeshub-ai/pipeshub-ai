@@ -88,22 +88,6 @@ class ConnectorRegistry:
 
         # Store discovered connectors metadata
         self._connectors: Dict[str, Dict[str, Any]] = {}
-        # Beta-only connectors (hidden when beta flag is disabled)
-        # These should correspond to the human-readable metadata 'name' values
-        self._beta_only_app_names = set([
-            "Slack",
-            "Calendar",
-            "Meet",
-            "Forms",
-            "Slides",
-            "Docs",
-            "Zendesk",
-            "Linear",
-            "S3",
-            "Notion",
-            "Airtable",
-            "Azure Blob",
-        ])
 
     async def _get_arango_service(self) -> ArangoService:
         """Get the arango service, initializing it if needed"""
@@ -168,6 +152,46 @@ class ConnectorRegistry:
 
         except Exception as e:
             self.logger.error(f"Error discovering connectors: {e}")
+
+    def _normalize_app_name(self, name: str) -> str:
+        """
+        Normalize app name for matching (case-insensitive, ignore spaces).
+        Matches the logic used in get_app_by_name query.
+        """
+        return name.replace(' ', '').lower()
+
+    async def _get_all_db_statuses(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch fetch all app statuses from database in a single query.
+        Returns a dictionary mapping normalized app names to their status.
+
+        Returns:
+            Dictionary mapping normalized app name to status dict
+        """
+        try:
+            arango_service = await self._get_arango_service()
+            # Fetch all apps in one query
+            db_docs = await arango_service.get_all_documents(self.collection_name)
+
+            # Create lookup map by normalized name
+            status_map = {}
+            for doc in db_docs:
+                app_name = doc.get('name')
+                if app_name:
+                    normalized_name = self._normalize_app_name(app_name)
+                    status_map[normalized_name] = {
+                        'isActive': doc.get('isActive', False),
+                        'isConfigured': doc.get('isConfigured', False),
+                        'isAuthenticated': doc.get('isAuthenticated', False),
+                        'appGroupId': doc.get('appGroupId'),
+                        'createdAtTimestamp': doc.get('createdAtTimestamp'),
+                        'updatedAtTimestamp': doc.get('updatedAtTimestamp'),
+                    }
+
+            return status_map
+        except Exception as e:
+            self.logger.debug(f"Could not batch fetch DB statuses: {e}")
+            return {}
 
     async def _get_db_status(self, app_name: str) -> Dict[str, Any]:
         """
@@ -365,6 +389,9 @@ class ConnectorRegistry:
         Returns:
             List of connector metadata with current DB status
         """
+        # Batch fetch all app statuses in one query
+        db_statuses = await self._get_all_db_statuses()
+
         connectors = []
         for app_name, metadata in self._connectors.items():
             # Use registry metadata as the primary source
@@ -386,20 +413,18 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': None
             }
 
-            # Only override with DB status if the app exists in database
-            try:
-                db_status = await self._get_db_status(app_name)
-                if db_status.get('createdAtTimestamp'):  # If app exists in DB
-                    connector_info.update({
-                        'isActive': db_status.get('isActive', False),
-                        'isConfigured': db_status.get('isConfigured', False),
-                        'isAuthenticated': db_status.get('isAuthenticated', False),
-                        'createdAtTimestamp': db_status.get('createdAtTimestamp'),
-                        'updatedAtTimestamp': db_status.get('updatedAtTimestamp')
-                    })
-                    # Do not override metadata from DB; registry is source of truth
-            except Exception as e:
-                self.logger.debug(f"Could not get DB status for {app_name}: {e}")
+            # Look up DB status from batch-fetched map
+            normalized_name = self._normalize_app_name(app_name)
+            db_status = db_statuses.get(normalized_name)
+            if db_status and db_status.get('createdAtTimestamp'):  # If app exists in DB
+                connector_info.update({
+                    'isActive': db_status.get('isActive', False),
+                    'isConfigured': db_status.get('isConfigured', False),
+                    'isAuthenticated': db_status.get('isAuthenticated', False),
+                    'createdAtTimestamp': db_status.get('createdAtTimestamp'),
+                    'updatedAtTimestamp': db_status.get('updatedAtTimestamp')
+                })
+                # Do not override metadata from DB; registry is source of truth
 
             connectors.append(connector_info)
 
@@ -408,16 +433,22 @@ class ConnectorRegistry:
             feature_flag_service = await self.container.feature_flag_service()
             # Ensure we have the latest values
             try:
-                feature_flag_service.refresh()
-            except Exception:
-                pass
+                await feature_flag_service.refresh()
+            except Exception as e:
+                self.logger.debug(f"Feature flag refresh failed: {e}")
             from app.services.featureflag.config.config import CONFIG
             beta_enabled = feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS)
             if not beta_enabled:
+                # Lazy import to avoid circular dependency
+                from app.connectors.core.factory.connector_factory import (
+                    ConnectorFactory,
+                )
+                beta_connectors = ConnectorFactory.list_beta_connectors()
                 connectors = [
                     c for c in connectors
-                    if c.get('name') not in self._beta_only_app_names
+                    if c.get('name').replace(' ', '').lower() not in beta_connectors.keys()
                 ]
+            self.logger.debug(f"Connectors names: {[c.get('name').replace(' ', '').lower() for c in connectors]}")
         except Exception as e:
             # On any failure, return unfiltered list (fail-open)
             self.logger.debug(f"Feature flag filtering skipped due to error: {e}")

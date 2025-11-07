@@ -22,6 +22,7 @@ Usage:
 """
 
 import os
+from logging import Logger
 from threading import Lock
 from typing import Optional
 
@@ -91,9 +92,10 @@ class FeatureFlagService:
             cls._instance = None
 
     @classmethod
-    def init_with_etcd_provider(
+    async def init_with_etcd_provider(
         cls,
         provider: EtcdProvider,
+        logger: Logger,
     ) -> 'FeatureFlagService':
         """
         Initialize the singleton to use EtcdProvider as the provider.
@@ -102,8 +104,9 @@ class FeatureFlagService:
         """
         with cls._lock:
             try:
-                provider.refresh()
-            except Exception:
+                await provider.refresh()
+            except Exception as e:
+                logger.debug(f"Feature flag provider refresh failed: {e}")
                 pass
             cls._instance = cls(provider)
             return cls._instance
@@ -122,9 +125,9 @@ class FeatureFlagService:
         value = self._provider.get_flag_value(flag_name)
         return value if value is not None else default
 
-    def refresh(self) -> None:
+    async def refresh(self) -> None:
         """Refresh feature flags from the provider"""
-        self._provider.refresh()
+        await self._provider.refresh()
 
     def set_provider(self, provider: IConfigProvider) -> None:
         """

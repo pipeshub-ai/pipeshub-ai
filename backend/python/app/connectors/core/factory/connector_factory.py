@@ -20,9 +20,6 @@ from app.connectors.core.registry.connector import (
     SlidesConnector,
     ZendeskConnector,
 )
-from app.connectors.core.registry.connector import (
-    ServiceNowConnector as ServiceNowConnectorAgent,
-)
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -38,8 +35,6 @@ from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
 from app.connectors.sources.web.connector import WebConnector
-from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.featureflag import FeatureFlagService
 
 
 class ConnectorFactory:
@@ -58,6 +53,23 @@ class ConnectorFactory:
         "bookstack": BookStackConnector,
     }
 
+    # Beta connector definitions - single source of truth
+    # Maps registry key to connector class
+    _beta_connector_definitions: Dict[str, Type[BaseConnector]] = {
+        'slack': SlackConnector,
+        'calendar': CalendarConnector,
+        'meet': MeetConnector,
+        'forms': FormsConnector,
+        'slides': SlidesConnector,
+        'docs': DocsConnector,
+        'zendesk': ZendeskConnector,
+        'linear': LinearConnector,
+        's3': S3Connector,
+        'notion': NotionConnector,
+        'airtable': AirtableConnector,
+        'azureblob': AzureBlobConnector,
+    }
+
 
     @classmethod
     def register_connector(cls, name: str, connector_class: Type[BaseConnector]) -> None:
@@ -65,30 +77,23 @@ class ConnectorFactory:
         cls._connector_registry[name.lower()] = connector_class
 
     @classmethod
-    def initialize_connectors(cls, feature_flag_service: FeatureFlagService) -> None:
+    def initialize_beta_connector_registry(cls) -> None:
         """Initialize connectors based on feature flags"""
-        # Only one flag for beta connectors
-        if feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS):
-            beta_connectors = {
-                'slack': SlackConnector,
-                'calendar': CalendarConnector,
-                'meet': MeetConnector,
-                'forms': FormsConnector,
-                'slides': SlidesConnector,
-                'docs': DocsConnector,
-                'servicenow': ServiceNowConnectorAgent,
-                'zendesk': ZendeskConnector,
-                'linear': LinearConnector,
-                's3': S3Connector,
-                'notion': NotionConnector,
-                'airtable': AirtableConnector,
-                'bookstack': BookStackConnector,
-                'azureblob': AzureBlobConnector,
-            }
+        for name, connector in cls._beta_connector_definitions.items():
+            cls.register_connector(name.lower(), connector)
 
-            for name, connector in beta_connectors.items():
-                cls.register_connector(name, connector)
-        # No need to check per app; only production connectors are pre-registered
+    @classmethod
+    def list_beta_connectors(cls) -> Dict[str, Type[BaseConnector]]:
+        """
+        Get the dictionary of beta connectors.
+
+        This dynamically extracts app names from connector metadata,
+        making it the single source of truth for beta connector identification.
+
+        Returns:
+            Dictionary of beta connectors
+        """
+        return cls._beta_connector_definitions.copy()
 
     @classmethod
     def get_connector_class(cls, name: str) -> Optional[Type[BaseConnector]]:

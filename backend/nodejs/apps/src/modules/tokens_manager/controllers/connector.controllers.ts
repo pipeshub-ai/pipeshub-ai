@@ -93,6 +93,15 @@ const handleConnectorResponse = (
   failureMessage: string
 ) => {
   if (connectorResponse && connectorResponse.statusCode !== 200) {
+    if (connectorResponse.statusCode === 403) {
+      throw new ForbiddenError(connectorResponse.data.detail);
+    }
+    if (connectorResponse.statusCode === 404) {
+      throw new NotFoundError(notFoundMessage);
+    }
+    if (connectorResponse.statusCode === 500) {
+      throw new InternalServerError(failureMessage);
+    }
     throw new BadRequestError(failureMessage);
   }
   const connectorsData = connectorResponse.data;
@@ -137,6 +146,43 @@ export const getConnectors =
         data: error.response?.data,
       });
       const handleError = handleBackendError(error, 'get all connectors');
+      next(handleError);
+    }
+  };
+
+export const getConnectorByName =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorName } = req.params;
+      if (!connectorName) {
+        throw new BadRequestError('Connector name is required');
+      }
+      logger.info(`Getting connector by name: ${connectorName}`);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector not found',
+        'Failed to get connector'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector by name', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'get connector by name');
       next(handleError);
     }
   };
@@ -334,6 +380,43 @@ export const getConnectorSchema =
         data: error.response?.data,
       });
       const handleError = handleBackendError(error, 'get connector schema');
+      next(handleError);
+    }
+  };
+
+export const getConnectorConfigAndSchema =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorName } = req.params;
+      if (!connectorName) {
+        throw new BadRequestError('Connector name is required');
+      }
+      logger.info(`Getting connector config and schema for ${connectorName}`);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/config-schema/${connectorName}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>
+      );
+      
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector config and schema not found',
+        'Failed to get connector config and schema'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector config and schema', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'get connector config and schema');
       next(handleError);
     }
   };

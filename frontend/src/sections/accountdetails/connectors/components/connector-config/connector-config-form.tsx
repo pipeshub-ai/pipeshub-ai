@@ -17,7 +17,6 @@ import {
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
-import settingsIcon from '@iconify-icons/mdi/settings';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
@@ -40,7 +39,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
 }) => {
   const theme = useTheme();
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
-
+  const isDark = theme.palette.mode === 'dark';
   const {
     // State
     connectorConfig,
@@ -51,7 +50,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     formErrors,
     saveError,
     conditionalDisplay,
-    
+
     // Business OAuth state
     adminEmail,
     adminEmailError,
@@ -186,17 +185,23 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             sx={{
               p: 1,
               borderRadius: 1.5,
-              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              bgcolor: isDark ? alpha(theme.palette.common.white, 0.9) : alpha(theme.palette.grey[100], 0.8),
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <Iconify
-              icon={settingsIcon}
-              width={20}
-              height={20}
-              color={theme.palette.primary.main}
+
+            <img
+              src={connector.iconPath}
+              alt={connector.name}
+              width={32}
+              height={32}
+              style={{ objectFit: 'contain' }}
+              onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
+                const target = e.target as HTMLImageElement;
+                target.src = '/assets/icons/connectors/default.svg';
+              }}
             />
           </Box>
           <Box>

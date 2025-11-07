@@ -183,8 +183,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
     try:
         registry = ConnectorRegistry(app_container)
 
-        feature_flag_service = await app_container.feature_flag_service()
-        ConnectorFactory.initialize_connectors(feature_flag_service)
+        ConnectorFactory.initialize_beta_connector_registry()
         # Register connectors using generic factory
         available_connectors = ConnectorFactory.list_connectors()
         for name, connector_class in available_connectors.items():

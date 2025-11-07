@@ -97,8 +97,10 @@ export default function UploadManager({
         if (mounted && Number.isFinite(value) && value > 0) {
           setMaxFileSize(value);
         }
-      } catch (_e) {
-        // ignore and keep default
+      } catch (e) {
+        // Keep default, but log for visibility
+        // eslint-disable-next-line no-console
+        console.warn('[UploadManager] Failed to fetch platform settings; using defaults', e);
       }
     })();
     return () => {
@@ -211,10 +213,34 @@ export default function UploadManager({
     }
   };
 
-  // Batch upload configuration
-  const MAX_FILES_PER_REQUEST = 1000; // backend route limit
-  const BATCH_SIZE = 50; // safe per-request files count
-  const CONCURRENCY = 3; // parallel requests
+  // Batch upload configuration (discover from backend limits endpoint)
+  const [maxFilesPerRequest, setMaxFilesPerRequest] = useState<number>(1000);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const resp = await axios.get<{ maxFilesPerRequest: number; maxFileSizeBytes?: number }>(
+          '/api/v1/knowledgebase/limits'
+        );
+        const n = Number(resp.data?.maxFilesPerRequest);
+        if (mounted && Number.isFinite(n) && n > 0) {
+          setMaxFilesPerRequest(n);
+        }
+        // Optionally update maxFileSize from server if provided
+        const s = Number(resp.data?.maxFileSizeBytes);
+        if (mounted && Number.isFinite(s) && s > 0) {
+          setMaxFileSize(s);
+        }
+      } catch (_e) {
+        // fallback to defaults silently
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  const BATCH_SIZE = 10; // safe per-request files count
+  const CONCURRENCY = 5; // parallel requests
 
   const chunkArray = <T,>(arr: T[], size: number): T[][] => {
     if (size <= 0) return [arr];
@@ -260,7 +286,7 @@ export default function UploadManager({
     try {
       // Prepare batches
       const valid = fileStats.validFiles;
-      const perRequest = Math.min(BATCH_SIZE, MAX_FILES_PER_REQUEST);
+      const perRequest = Math.min(BATCH_SIZE, maxFilesPerRequest);
       const batches = chunkArray(valid, perRequest);
       const totalFiles = valid.length;
       const totalBatches = batches.length;

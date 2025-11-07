@@ -39,6 +39,7 @@ export default function PlatformSettings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fileSizeInput, setFileSizeInput] = useState<string>('');
+  const [fileSizeError, setFileSizeError] = useState<string | null>(null);
   const isDark = theme.palette.mode === 'dark';
   const [availableFlags, setAvailableFlags] = useState<
     Array<{ key: string; label: string; description?: string; defaultEnabled?: boolean }>
@@ -90,18 +91,24 @@ export default function PlatformSettings() {
   const handleFileSizeChange = (value: string) => {
     setFileSizeInput(value);
     const mb = Number(value);
-    if (mb > 0 && !Number.isNaN(mb)) {
-      setSettings((prev) => ({ ...prev, fileUploadMaxSizeBytes: mb * 1024 * 1024 }));
+    if (!Number.isFinite(mb) || mb < 1) {
+      setFileSizeError('Enter a positive number');
+      return;
     }
+    setFileSizeError(null);
+    setSettings((prev) => ({ ...prev, fileUploadMaxSizeBytes: mb * 1024 * 1024 }));
   };
 
   const handleFileSizeBlur = () => {
     const mb = Number(fileSizeInput);
-    if (Number.isNaN(mb) || mb < 1) {
+    if (!Number.isFinite(mb) || mb < 1) {
+      // revert to current effective value
       setFileSizeInput(String(maxMb));
-    } else {
-      setSettings((prev) => ({ ...prev, fileUploadMaxSizeBytes: mb * 1024 * 1024 }));
+      setFileSizeError(null);
+      return;
     }
+    setFileSizeError(null);
+    setSettings((prev) => ({ ...prev, fileUploadMaxSizeBytes: mb * 1024 * 1024 }));
   };
 
   const handleSave = async () => {
@@ -141,7 +148,7 @@ export default function PlatformSettings() {
     return currentKeys.some((k) => !!settings.featureFlags[k] !== !!originalSettings.featureFlags[k]);
   }, [settings, originalSettings]);
 
-  // Validation is handled by backend; allow any value and show backend error if invalid
+  // Basic client-side validation for file size; backend still enforces constraints
 
   return (
     <Container maxWidth="lg" sx={{ py: 3 }}>
@@ -328,6 +335,8 @@ export default function PlatformSettings() {
                 onChange={(e) => handleFileSizeChange(e.target.value)}
                 onBlur={handleFileSizeBlur}
                 placeholder="Enter size in MB"
+                error={!!fileSizeError}
+                helperText={fileSizeError || ''}
                 InputProps={{
                   endAdornment: (
                     <InputAdornment position="end">

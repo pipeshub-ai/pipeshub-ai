@@ -114,6 +114,10 @@ const ConnectorStatistics = ({
   // Create a ref for the interval ID
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Track fetch state to prevent duplicate calls
+  const fetchInProgressRef = useRef(false);
+  const lastFetchedKeyRef = useRef<string | null>(null);
+
   // Normalize connector names with stable identity across renders
   const normalizedUpperNames = useMemo(() => {
     const list = Array.isArray(connectorNames)
@@ -137,6 +141,20 @@ const ConnectorStatistics = ({
   const fetchConnectorStats = useCallback(
     async (isManualRefresh = false): Promise<void> => {
       if (!isMounted.current) return;
+
+      // Prevent duplicate calls (unless manual refresh)
+      if (!isManualRefresh) {
+        if (fetchInProgressRef.current && lastFetchedKeyRef.current === namesKey) {
+          return;
+        }
+        // Skip if already fetched for this key
+        if (lastFetchedKeyRef.current === namesKey && !fetchInProgressRef.current) {
+          return;
+        }
+      }
+
+      fetchInProgressRef.current = true;
+      lastFetchedKeyRef.current = namesKey;
 
       try {
         setLoading(true);
@@ -237,6 +255,7 @@ const ConnectorStatistics = ({
             }, 500);
           }
         }
+        fetchInProgressRef.current = false;
       }
     },
     [namesKey, showUploadTab]
@@ -251,6 +270,12 @@ const ConnectorStatistics = ({
   useEffect(() => {
     // Make sure isMounted is true at the start
     isMounted.current = true;
+
+    // Reset fetch flag when key changes
+    if (lastFetchedKeyRef.current !== namesKey) {
+      fetchInProgressRef.current = false;
+      lastFetchedKeyRef.current = null;
+    }
 
     // Perform initial fetch
     fetchConnectorStats();
@@ -267,8 +292,9 @@ const ConnectorStatistics = ({
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      fetchInProgressRef.current = false;
     };
-  }, [fetchConnectorStats, refreshInterval]);
+  }, [fetchConnectorStats, refreshInterval, namesKey]);
 
   // Dark mode aware styles
   const isDark = theme.palette.mode === 'dark';

@@ -42,7 +42,7 @@ import {
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
-import { getActiveConnectors, getConnectorConfig, getConnectorFilterOptions, getConnectors, getConnectorSchema, getInactiveConnectors, getOAuthAuthorizationUrl, handleOAuthCallback, saveConnectorFilterOptions, toggleConnector, updateConnectorConfig } from '../controllers/connector.controllers';
+import { getActiveConnectors, getConnectorConfig, getConnectorConfigAndSchema, getConnectorFilterOptions, getConnectorByName, getConnectors, getConnectorSchema, getInactiveConnectors, getOAuthAuthorizationUrl, handleOAuthCallback, saveConnectorFilterOptions, toggleConnector, updateConnectorConfig } from '../controllers/connector.controllers';
 import { z } from 'zod';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 
@@ -151,12 +151,29 @@ export function createConnectorRouter(container: Container) {
     getConnectorSchema(config)
   );
 
+  router.get(
+    '/config-schema/:connectorName',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    userAdminCheck,
+    getConnectorConfigAndSchema(config)
+  );
+
   router.post(
     '/toggle/:connectorName',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     userAdminCheck,
     toggleConnector(config)
+  );
+
+  // Get single connector by name - must come after specific routes but before OAuth routes
+  router.get(
+    '/:connectorName',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    userAdminCheck,
+    getConnectorByName(config)
   );
 
   router.get(
