@@ -783,15 +783,53 @@ class VectorStore(Transformer):
 
             if langchain_document_chunks:
                 try:
-                        start_time = time.perf_counter()
-                        self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
+                    start_time = time.perf_counter()
+                    self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
 
-                        await self.vector_store.aadd_documents(langchain_document_chunks)
+                    # Process documents in parallel batches
+                    batch_size = 50  # Reasonable batch size for document embeddings
+                    
+                    async def process_document_batch(batch_start: int, batch_documents: List[Document]) -> int:
+                        """Process a single batch of documents."""
+                        try:
+                            await self.vector_store.aadd_documents(batch_documents)
+                            self.logger.info(
+                                f"✅ Processed document batch starting at {batch_start}: {len(batch_documents)} documents"
+                            )
+                            return len(batch_documents)
+                        except Exception as batch_error:
+                            self.logger.warning(
+                                f"Failed to process document batch starting at {batch_start}: {str(batch_error)}"
+                            )
+                            raise
 
-                        elapsed_time = time.perf_counter() - start_time
-                        self.logger.info(
-                            f"✅ Successfully added {len(langchain_document_chunks)} langchain documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(langchain_document_chunks)*1000:.2f}ms per document)"
-                        )
+                    # Create batches
+                    batches = []
+                    for batch_start in range(0, len(langchain_document_chunks), batch_size):
+                        batch_end = min(batch_start + batch_size, len(langchain_document_chunks))
+                        batch_documents = langchain_document_chunks[batch_start:batch_end]
+                        batches.append((batch_start, batch_documents))
+
+                    # Process batches with concurrency limit
+                    concurrency_limit = 5  # Process up to 5 batches concurrently
+                    semaphore = asyncio.Semaphore(concurrency_limit)
+
+                    async def limited_process_batch(batch_start: int, batch_documents: List[Document]) -> int:
+                        async with semaphore:
+                            return await process_document_batch(batch_start, batch_documents)
+
+                    tasks = [limited_process_batch(start, docs) for start, docs in batches]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Check for errors and count successful documents
+                    for i, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            self.logger.error(f"Document batch {i} failed: {str(result)}")
+                            raise VectorStoreError(
+                                f"Failed to store document batch {i} in vector store: {str(result)}",
+                                details={"error": str(result), "batch_index": i},
+                            )
+
                 except Exception as e:
                     raise VectorStoreError(
                         "Failed to store langchain documents in vector store: " + str(e),
