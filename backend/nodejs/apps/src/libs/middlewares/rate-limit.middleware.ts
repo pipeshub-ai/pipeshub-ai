@@ -98,10 +98,13 @@ export class RateLimiterMiddleware {
         ? customOptions
         : DEFAULT_RATE_LIMITS[tier];
 
+    // Capture the message to pass to the handler
+    const message = customOptions?.message ?? defaultConfig?.message ?? 'Too many requests. Please try again later.';
+
     const config: Partial<Options> = {
       windowMs: customOptions?.windowMs ?? defaultConfig?.windowMs,
       max: customOptions?.max ?? defaultConfig?.max,
-      message: customOptions?.message ?? defaultConfig?.message,
+      message,
       standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
       legacyHeaders: false, // Disable `X-RateLimit-*` headers
       skipSuccessfulRequests: customOptions?.skipSuccessfulRequests ?? false,
@@ -119,7 +122,7 @@ export class RateLimiterMiddleware {
 
       // Custom handler for when limit is exceeded
       handler: (req: Request, res: Response): void => {
-        this.handleRateLimitExceeded(req, res, tier);
+        this.handleRateLimitExceeded(req, res, tier, message);
       },
     };
 
@@ -173,6 +176,7 @@ export class RateLimiterMiddleware {
     req: Request,
     res: Response,
     tier: RateLimiterTier,
+    message: string,
   ): void {
     const retryAfter = res.getHeader('Retry-After');
     const rateLimitKey = this.generateRateLimitKey(req);
@@ -187,10 +191,9 @@ export class RateLimiterMiddleware {
       retryAfter,
     });
 
-    // Send structured error response
+    // Send structured error response with the configured message
     const error = new TooManyRequestsError(
-      res.getHeader('X-RateLimit-Message') as string ||
-        'Too many requests. Please try again later.',
+      message || 'Too many requests. Please try again later.',
     );
 
     res.status(429).json({

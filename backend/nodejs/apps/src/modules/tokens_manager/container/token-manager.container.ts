@@ -9,6 +9,7 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { RateLimiterMiddleware } from '../../../libs/middlewares/rate-limit.middleware';
 
 const loggerConfig = {
   service: 'Token Manager',
@@ -106,6 +107,12 @@ export class TokenManagerContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
+      const rateLimiterMiddleware = new RateLimiterMiddleware(
+        container.get('Logger'),
+      );
+      container
+        .bind<RateLimiterMiddleware>('RateLimiterMiddleware')
+        .toConstantValue(rateLimiterMiddleware);
     } catch (error) {
       const logger = container.get<Logger>('Logger');
       logger.error('Failed to initialize services', {
