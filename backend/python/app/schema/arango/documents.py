@@ -64,13 +64,13 @@ user_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
-            "mail": {"type": "string"},
+            "mail": {"type": ["string", "null"]},
             "mailEnabled": {"type": "boolean", "default": False},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
             "updatedAtTimestamp": {"type": "number"},
-            "lastSyncTimestampstamp": {"type": "number"},  # Arango collection entry
+            "lastSyncTimestamp": {"type": "number"},  # Arango collection entry
             "isDeletedAtSource": {"type": "boolean", "default": False},
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},

@@ -315,7 +315,6 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
-            print("\n\n\n !!!!!!!!!!!!!!!! on_new_records")
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -340,7 +339,6 @@ class DataSourceEntitiesProcessor:
     async def on_record_content_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             processed_record = await self._process_record(record, [], tx_store)
-            print("\n\n\n !!!!!!!!!!!!!!!! putting on record update event")
             await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
