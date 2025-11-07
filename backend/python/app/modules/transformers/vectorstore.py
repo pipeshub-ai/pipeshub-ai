@@ -57,6 +57,8 @@ def _get_shared_nlp() -> Language:
 LENGTH_THRESHOLD = 2
 OUTPUT_DIMENSION = 1536
 HTTP_OK = 200
+_DEFAULT_DOCUMENT_BATCH_SIZE = 50
+_DEFAULT_CONCURRENCY_LIMIT = 5
 
 class VectorStore(Transformer):
 
@@ -787,8 +789,8 @@ class VectorStore(Transformer):
                     self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
 
                     # Process documents in parallel batches
-                    batch_size = 50  # Reasonable batch size for document embeddings
-                    
+                    batch_size = _DEFAULT_DOCUMENT_BATCH_SIZE  # Reasonable batch size for document embeddings
+
                     async def process_document_batch(batch_start: int, batch_documents: List[Document]) -> int:
                         """Process a single batch of documents."""
                         try:
@@ -811,7 +813,7 @@ class VectorStore(Transformer):
                         batches.append((batch_start, batch_documents))
 
                     # Process batches with concurrency limit
-                    concurrency_limit = 5  # Process up to 5 batches concurrently
+                    concurrency_limit = _DEFAULT_CONCURRENCY_LIMIT  # Process up to 5 batches concurrently
                     semaphore = asyncio.Semaphore(concurrency_limit)
 
                     async def limited_process_batch(batch_start: int, batch_documents: List[Document]) -> int:
