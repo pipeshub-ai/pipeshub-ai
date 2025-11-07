@@ -107,6 +107,12 @@ const handleBackendError = (error: any, operation: string): Error => {
   return new InternalServerError(`${operation} failed: ${error.message}`);
 };
 
+const normalizeUrl = (url: unknown): string => {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = String(url).trim();
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+};
+
 function getOrgIdFromRequest(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
 ): string | undefined {
@@ -1801,13 +1807,24 @@ export const setFrontendUrl =
         throw new NotFoundError('User not found');
       }
       const { url } = req.body;
+      const normalizedUrl = normalizeUrl(url);
+      if (!normalizedUrl) {
+        throw new BadRequestError('Invalid URL');
+      }
+      try {
+        new URL(normalizedUrl);
+      } catch (e) {
+        throw new BadRequestError(
+          'Invalid URL format. A protocol (e.g., http://) is required.',
+        );
+      }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
       let parsedUrls = JSON.parse(urls);
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.frontend = {
         ...parsedUrls.frontend,
-        publicEndpoint: url,
+        publicEndpoint: normalizedUrl,
       };
       // Save the updated object back to configPaths.endpoint
       await keyValueStoreService.set<string>(
@@ -1865,6 +1882,17 @@ export const setConnectorPublicUrl =
         throw new NotFoundError('User not found');
       }
       const { url } = req.body;
+      const normalizedUrl = normalizeUrl(url);
+      if (!normalizedUrl) {
+        throw new BadRequestError('Invalid URL');
+      }
+      try {
+        new URL(normalizedUrl);
+      } catch (e) {
+        throw new BadRequestError(
+          'Invalid URL format. A protocol (e.g., http://) is required.',
+        );
+      }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
 
@@ -1873,7 +1901,7 @@ export const setConnectorPublicUrl =
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.connectors = {
         ...parsedUrls.connectors,
-        publicEndpoint: url,
+        publicEndpoint: normalizedUrl,
       };
 
       // Save the updated object back to configPaths.endpoint
@@ -2810,7 +2838,7 @@ export const deleteAIModelProvider =
       }
 
       const wasDefault = deletedModel.isDefault || false;
-      
+
       // Remove the model from the configuration
       aiModels[targetModelType].splice(modelIndex, 1);
 
