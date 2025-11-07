@@ -17,7 +17,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.models.blocks import BlockType
+from app.models.blocks import Block, BlockContainerIndex, BlockType, BlocksContainer, CitationMetadata, DataFormat, Point
 from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from app.modules.parsers.pdf.docling import DoclingProcessor
@@ -695,137 +695,189 @@ class Processor:
                 elif provider == OCRProvider.OCRMYPDF.value:
                     self.logger.debug("📚 Setting up PyMuPDF OCR handler")
                     handler = OCRHandler(
-                        self.logger, OCRProvider.OCRMYPDF.value
+                        self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service
                     )
                     break
 
             if not handler:
                 self.logger.debug("📚 Setting up PyMuPDF OCR handler")
-                handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value)
+                handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
                 provider = OCRProvider.OCRMYPDF.value
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
-            ocr_result = await handler.process_document(pdf_binary)
+            try:
+                ocr_result = await handler.process_document(pdf_binary)
+            except Exception as e:
+                if provider == OCRProvider.AZURE_DI.value:
+                    self.logger.info("🔄 Switching to PyMuPDF OCR handler as Azure OCR failed")
+                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
+                    ocr_result = await handler.process_document(pdf_binary)
+                else:
+                    raise
+
             self.logger.debug("✅ OCR processing completed")
 
             # Extract domain metadata from paragraphs
             self.logger.info("🎯 Extracting domain metadata")
             domain_metadata = None
             paragraphs = ocr_result.get("paragraphs", [])
+            blocks_from_ocr = ocr_result.get("blocks", [])
             sentences = ocr_result.get("sentences", [])
-            if paragraphs:
+            blocks = []
+            index = 0
+            table_rows = {}
+            if blocks_from_ocr:
+                for block in blocks_from_ocr:
+                    if isinstance(block, Block):
+                        block.index = index
+                        blocks.append(block)
+                        block_type = block.type
+                        if block_type == BlockType.TABLE_ROW:
+                            if block.parent_index not in table_rows:
+                                table_rows[block.parent_index] = []
+                            table_rows[block.parent_index].append(BlockContainerIndex(block_index=index))
+                        index += 1
+                        
+                    else:
+                        paragraph = block
+                        if paragraph["content"]:
+                            blocks.append(
+                                Block(
+                                    index=index,
+                                    type=BlockType.TEXT,
+                                    format=DataFormat.TXT,
+                                    data=paragraph["content"],
+                                    comments=[],
+                                    citation_metadata=CitationMetadata(
+                                        page_number=paragraph["page_number"],
+                                        bounding_boxes=[Point(x=paragraph["bounding_box"][0]["x"], y=paragraph["bounding_box"][0]["y"]), Point(x=paragraph["bounding_box"][1]["x"], y=paragraph["bounding_box"][1]["y"]), Point(x=paragraph["bounding_box"][2]["x"], y=paragraph["bounding_box"][2]["y"]), Point(x=paragraph["bounding_box"][3]["x"], y=paragraph["bounding_box"][3]["y"])],
+                                    ),
+                                )
+                            )
+                            index += 1
+            
+            block_groups = ocr_result.get("tables", [])
+            for block_group in block_groups:
+                block_group.children = table_rows.get(block_group.index, [])
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                return
+            record = convert_record_dict_to_record(record)
+            record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
+            record.virtual_record_id = virtual_record_id
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+            
+            #     # Join all paragraph content with newlines
+            #     paragraphs_text = "\n ".join(
+            #         p["content"].strip()
+            #         for p in paragraphs
+            #         if p.get("content") and p["content"].strip()
+            #     )
+
+            #     # Extract metadata using domain extractor
+            #     try:
+            #         metadata = await self.domain_extractor.extract_metadata(
+            #             paragraphs_text, orgId
+            #         )
+            #         record = await self.domain_extractor.save_metadata_to_db(
+            #             orgId, recordId, metadata, virtual_record_id
+            #         )
+            #         file = await self.arango_service.get_document(
+            #             recordId, CollectionNames.FILES.value
+            #         )
+            #         domain_metadata = record
+            #         ocr_result["metadata"] = {**record, **file}
+            #     except Exception as e:
+            #         self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+            #         domain_metadata = None
+            #         ocr_result["metadata"] = None
+
+            # # Use the OCR-processed PDF for highlighting if available
+
+            # # Initialize containers
+            # self.logger.debug("🏗️ Initializing result containers")
+            # formatted_content = ""
+            # numbered_paragraphs = []
+
+            # # Process paragraphs for numbering and formatting
+            # self.logger.debug("📝 Processing paragraphs")
+            # paragraphs = ocr_result.get("paragraphs", [])
+            # for paragraph in paragraphs:
+            #     paragraph["blockText"] = paragraph["content"]
+
+            # # Create sentence data for indexing
+            # sentence_data = []
+            # sentences = ocr_result.get("sentences", [])
+            # if sentences:
+            #     self.logger.debug("📑 Creating semantic sentences")
+
+            #     # Define block type mapping
+            #     BLOCK_TYPE_MAP = {
+            #         0: "text",
+            #         1: "image",
+            #         2: "table",
+            #         3: "list",
+            #         4: "header",
+            #     }
+
+            #     # Prepare sentences for indexing with separated metadata
+            #     sentence_data = [
+            #         {
+            #             "text": s["content"].strip(),
+            #             "metadata": {
+            #                 **ocr_result.get("metadata"),
+            #                 "recordId": recordId,
+            #                 "blockText": s["block_text"],
+            #                 "blockType": BLOCK_TYPE_MAP.get(s.get("block_type", 0)),
+            #                 "blockNum": [int(s.get("block_number", 0))],
+            #                 "pageNum": [int(s.get("page_number", 0))],
+            #                 "bounding_box": s["bounding_box"],
+            #                 "virtualRecordId": virtual_record_id,
+            #             },
+            #         }
+            #         for idx, s in enumerate(sentences)
+            #         if s.get("content")
+            #     ]
 
 
-                # Join all paragraph content with newlines
-                paragraphs_text = "\n ".join(
-                    p["content"].strip()
-                    for p in paragraphs
-                    if p.get("content") and p["content"].strip()
-                )
+            # # Index sentences if available
+            # if sentence_data:
+            #     pipeline = self.indexing_pipeline
+            #     # Get chunks (these will be merged based on semantic similarity)
+            #     await pipeline.index_documents(sentence_data)
 
-                # Extract metadata using domain extractor
-                try:
-                    metadata = await self.domain_extractor.extract_metadata(
-                        paragraphs_text, orgId
-                    )
-                    record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata, virtual_record_id
-                    )
-                    file = await self.arango_service.get_document(
-                        recordId, CollectionNames.FILES.value
-                    )
-                    domain_metadata = record
-                    ocr_result["metadata"] = {**record, **file}
-                except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                    raise
-
-            # Use the OCR-processed PDF for highlighting if available
-
-            # Initialize containers
-            self.logger.debug("🏗️ Initializing result containers")
-            formatted_content = ""
-            numbered_paragraphs = []
-
-            # Process paragraphs for numbering and formatting
-            self.logger.debug("📝 Processing paragraphs")
-            paragraphs = ocr_result.get("paragraphs", [])
-            for paragraph in paragraphs:
-                paragraph["blockText"] = paragraph["content"]
-
-            # Create sentence data for indexing
-            sentence_data = []
-            sentences = ocr_result.get("sentences", [])
-            if sentences:
-                self.logger.debug("📑 Creating semantic sentences")
-
-                # Define block type mapping
-                BLOCK_TYPE_MAP = {
-                    0: "text",
-                    1: "image",
-                    2: "table",
-                    3: "list",
-                    4: "header",
-                }
-
-                # Prepare sentences for indexing with separated metadata
-                sentence_data = [
-                    {
-                        "text": s["content"].strip(),
-                        "metadata": {
-                            **(ocr_result.get("metadata") or {}),
-                            "recordId": recordId,
-                            "blockText": s["block_text"],
-                            "blockType": BLOCK_TYPE_MAP.get(s.get("block_type", 0)),
-                            "blockNum": [int(s.get("block_number", 0))],
-                            "pageNum": [int(s.get("page_number", 0))],
-                            "bounding_box": s["bounding_box"],
-                            "virtualRecordId": virtual_record_id,
-                        },
-                    }
-                    for idx, s in enumerate(sentences)
-                    if s.get("content")
-                ]
-
-
-            # Index sentences if available
-            if sentence_data:
-                pipeline = self.indexing_pipeline
-                # Get chunks (these will be merged based on semantic similarity)
-                await pipeline.index_documents(sentence_data)
-
-            # Prepare metadata
-            self.logger.debug("📋 Preparing metadata")
-            metadata = {
-                "recordName": recordName,
-                "orgId": orgId,
-                "version": version,
-                "source": source,
-                "domain_metadata": domain_metadata,
-                "document_info": {
-                    "ocr_provider": provider,
-                    "page_count": len(set(p.get("pageNum", 1) for p in paragraphs)),
-                },
-                "structure_info": {
-                    "paragraph_count": len(paragraphs),
-                    "sentence_count": len(sentences),
-                    "average_confidence": (
-                        sum(p.get("confidence", 1.0) for p in paragraphs)
-                        / len(paragraphs)
-                        if paragraphs
-                        else 0
-                    ),
-                },
-            }
+            # # Prepare metadata
+            # self.logger.debug("📋 Preparing metadata")
+            # metadata = {
+            #     "recordName": recordName,
+            #     "orgId": orgId,
+            #     "version": version,
+            #     "source": source,
+            #     "domain_metadata": domain_metadata,
+            #     "document_info": {
+            #         "ocr_provider": provider,
+            #         "page_count": len(set(p.get("pageNum", 1) for p in paragraphs)),
+            #     },
+            #     "structure_info": {
+            #         "paragraph_count": len(paragraphs),
+            #         "sentence_count": len(sentences),
+            #         "average_confidence": (
+            #             sum(p.get("confidence", 1.0) for p in paragraphs)
+            #             / len(paragraphs)
+            #             if paragraphs
+            #             else 0
+            #         ),
+            #     },
+            # }
 
             self.logger.info("✅ PDF processing completed successfully")
-            return {
-                "ocr_result": ocr_result,
-                "formatted_content": formatted_content,
-                "numbered_paragraphs": numbered_paragraphs,
-                "metadata": metadata,
-            }
+            return
 
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document: {str(e)}")

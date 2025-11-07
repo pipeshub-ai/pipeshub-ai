@@ -22,10 +22,7 @@ class OCRStrategy(ABC):
         """Load document content"""
         pass
 
-    @abstractmethod
-    async def extract_text(self) -> Dict[str, Any]:
-        """Extract text and layout information"""
-        pass
+    
 
     def needs_ocr(self, page) -> bool:
         """Determine if a page needs OCR processing"""
@@ -135,7 +132,7 @@ class OCRHandler:
             )
 
             return PyMuPDFOCRStrategy(
-                logger=self.logger, language=kwargs.get("language", "eng")
+                logger=self.logger, config=kwargs.get("config"), language=kwargs.get("language", "eng")
             )
         elif strategy_type == OCRProvider.AZURE_DI.value:
             self.logger.debug("☁️ Creating Azure OCR strategy")
@@ -148,6 +145,7 @@ class OCRHandler:
                 endpoint=kwargs["endpoint"],
                 key=kwargs["key"],
                 model_id=kwargs.get("model_id", "prebuilt-document"),
+                config=kwargs.get("config"),
             )
         else:
             self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
@@ -167,12 +165,8 @@ class OCRHandler:
         try:
             self.logger.debug("📥 Loading document")
             await self.strategy.load_document(content)
-
-            self.logger.debug("📊 Extracting text and layout")
-            result = await self.strategy.extract_text()
-
-            self.logger.info("✅ Document processing completed successfully")
-            return result
+            return self.strategy.document_analysis_result
         except Exception as e:
             self.logger.error(f"❌ Error processing document: {str(e)}")
             raise
+
