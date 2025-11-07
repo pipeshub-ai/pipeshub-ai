@@ -2105,7 +2105,7 @@ async def check_beta_connector_access(
             beta_connectors = ConnectorFactory.list_beta_connectors()
             normalized_name = app_name.replace(' ', '').lower()
 
-            if normalized_name in beta_connectors.keys():
+            if normalized_name in beta_connectors:
                 raise HTTPException(
                     status_code=403,
                     detail=f"Beta connectors are not enabled. The connector '{app_name}' is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector."

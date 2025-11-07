@@ -446,7 +446,7 @@ class ConnectorRegistry:
                 beta_connectors = ConnectorFactory.list_beta_connectors()
                 connectors = [
                     c for c in connectors
-                    if c.get('name').replace(' ', '').lower() not in beta_connectors.keys()
+                    if c.get('name').replace(' ', '').lower() not in beta_connectors
                 ]
             self.logger.debug(f"Connectors names: {[c.get('name').replace(' ', '').lower() for c in connectors]}")
         except Exception as e:
