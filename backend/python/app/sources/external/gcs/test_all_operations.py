@@ -11,7 +11,7 @@ from typing import Any, Dict
 # Add parent directory to path to find app module
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent))
 
-from app.sources.client.gcs.gcs import GCSADCConfig, GCSClient
+from app.sources.client.gcs.gcs import GCSADCConfig, GCSClient, GCSResponse
 from app.sources.external.gcs.gcs import GCSDataSource
 
 
@@ -38,7 +38,7 @@ async def test_all_operations() -> None:
 
     results: Dict[str, Any] = {"passed": 0, "failed": 0, "errors": []}
 
-    def check_result(test_name: str, response: Any, expected_success: bool = True) -> None:
+    def check_result(test_name: str, response: GCSResponse, expected_success: bool = True) -> None:
         """Check test result and update statistics."""
         # Check if response is a GCSResponse object
         if hasattr(response, "success"):

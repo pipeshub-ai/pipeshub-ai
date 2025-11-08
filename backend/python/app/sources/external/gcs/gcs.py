@@ -1,4 +1,5 @@
 import os
+from http import HTTPStatus
 from typing import Any, Dict, List, Optional
 
 try:
@@ -8,6 +9,9 @@ except ImportError:
     raise ImportError("gcloud-aio-storage and aiohttp are not installed. Please install with `pip install gcloud-aio-storage aiohttp`")
 
 from app.sources.client.gcs.gcs import GCSClient, GCSResponse
+
+# HTTP status constants
+HTTP_OK = HTTPStatus.OK.value
 
 
 class GCSDataSource:
@@ -230,7 +234,7 @@ class GCSDataSource:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}"
                 async with aiohttp.ClientSession() as session:
                     async with session.patch(url, json=metadata) as resp:
-                        if resp.status == 200:
+                        if resp.status == HTTP_OK:
                             result = await resp.json()
                             return GCSResponse(success=True, data={"bucket": result})
                         text = await resp.text()
@@ -257,7 +261,7 @@ class GCSDataSource:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}/o/{object_name}"
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url) as resp:
-                        if resp.status == 200:
+                        if resp.status == HTTP_OK:
                             metadata = await resp.json()
                             return GCSResponse(success=True, data={"metadata": metadata})
                         text = await resp.text()
@@ -288,7 +292,7 @@ class GCSDataSource:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{source_bucket}/o/{source_object}/copyTo/b/{dest_bucket_name}/o/{dest_object_name}"
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url) as resp:
-                        if resp.status == 200:
+                        if resp.status == HTTP_OK:
                             result = await resp.json()
                             return GCSResponse(success=True, data={"result": result})
                         text = await resp.text()
@@ -342,7 +346,7 @@ class GCSDataSource:
 
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, json=request_body) as resp:
-                        if resp.status == 200:
+                        if resp.status == HTTP_OK:
                             result = await resp.json()
                             return GCSResponse(success=True, data={"result": result})
                         text = await resp.text()
@@ -382,7 +386,7 @@ class GCSDataSource:
                     pass
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, headers=headers) as resp:
-                        if resp.status == 200:
+                        if resp.status == HTTP_OK:
                             result = await resp.json()
                             return GCSResponse(success=True, data={"result": result})
                         text = await resp.text()
@@ -408,7 +412,7 @@ class GCSDataSource:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}/o/{object_name}"
                 async with aiohttp.ClientSession() as session:
                     async with session.patch(url, json=metadata) as resp:
-                        if resp.status == 200:
+                        if resp.status == HTTP_OK:
                             result = await resp.json()
                             return GCSResponse(success=True, data={"result": result})
                         text = await resp.text()
