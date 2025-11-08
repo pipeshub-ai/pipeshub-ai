@@ -613,7 +613,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error in unified user group sync: {e}", exc_info=True)
             raise
 
-    async def handle_group_create(self, group: Any) -> None:
+    async def handle_group_create(self, group: Group) -> None:
         """
         Handles the creation or update of a single user group.
         Fetches members and sends to data processor.
