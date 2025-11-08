@@ -138,7 +138,6 @@ class OneDriveConnector(BaseConnector):
         self.drive_delta_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
-        self.group_membership_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
 
         # Batch processing configuration
         self.batch_size = 100
