@@ -9,7 +9,6 @@ def main() -> None:
 
     print(ds.list_employees())
     print(ds.get_employee("123"))
-    print(ds.get_time_off_balance())
 
 
 if __name__ == "__main__":
