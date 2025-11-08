@@ -17,6 +17,3 @@ class BambooHRDataSource:
 
     def get_employee(self, employee_id: str):
         return self.client.get(f"/employees/{employee_id}")
-
-    def get_time_off_balance(self):
-        return self.client.get("/time_off/balance")
