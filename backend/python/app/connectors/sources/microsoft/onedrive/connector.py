@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple, Any
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
+from msgraph.generated.models.group import Group
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
@@ -229,8 +230,8 @@ class OneDriveConnector(BaseConnector):
                     existing_record.updated_at != int(item.last_modified_date_time.timestamp() * 1000)):
                     metadata_changed = True
                     is_updated = True
-                
-                
+
+
                 if existing_file_record:
                     # Check for content changes (different hash)
                     if item.file and hasattr(item.file, 'hashes'):
@@ -288,12 +289,12 @@ class OneDriveConnector(BaseConnector):
             )
 
             new_permissions = await self._convert_to_permissions(permission_result)
-            
+
             if existing_record:
                 # compare permissions with existing permissions (To be implemented)
                 if new_permissions:
                     permissions_changed = True
-            
+
 
 
             return RecordUpdate(
@@ -340,7 +341,7 @@ class OneDriveConnector(BaseConnector):
                             type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
                             entity_type=EntityType.GROUP
                         ))
-                    
+
 
                 # Handle group permissions
                 if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
@@ -383,7 +384,7 @@ class OneDriveConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
                 continue
-        
+
         print("!!!!!!! permissions:", permissions)
 
         return permissions
@@ -514,10 +515,10 @@ class OneDriveConnector(BaseConnector):
     #     except Exception as e:
     #         self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
     #         raise
-    
+
     async def _sync_user_groups(self) -> None:
         """
-        Unified user group synchronization. 
+        Unified user group synchronization.
         Uses Graph Delta API for BOTH initial full sync and subsequent incremental syncs.
         """
         try:
@@ -535,7 +536,7 @@ class OneDriveConnector(BaseConnector):
             if sync_point:
                  url = sync_point.get('nextLink') or sync_point.get('deltaLink') or url
 
-            self.logger.info(f"Starting user group sync...")
+            self.logger.info("Starting user group sync...")
 
             while True:
                 # 2. Fetch page of results
@@ -552,13 +553,13 @@ class OneDriveConnector(BaseConnector):
                          print(f"[DELTA ACTION] 🗑️ REMOVE Group: {group.id}")
                          await self.handle_delete_group(group.id)
                          continue
-                         
+
 
                     # B) Process ADD/UPDATE
                     # Note: For a brand new initial sync, everything will fall into this bucket.
                     print(f"[DELTA ACTION] ✅ ADD/UPDATE Group: {getattr(group, 'display_name', 'N/A')} ({group.id})")
                     await self.handle_group_create(group)
-                    
+
                     # C) Trigger member sync for this group
                     # C) Check for specific MEMBER changes in this delta
                     member_changes = group.additional_data.get('members@delta', [])
@@ -568,10 +569,10 @@ class OneDriveConnector(BaseConnector):
 
                     for member_change in member_changes:
                         user_id = member_change.get('id')
-                        
+
                         # 1. Fetch email (needed for both add and remove in your current processor)
                         email = await self.msgraph_client.get_user_email(user_id)
-                        
+
                         if not email:
                             self.logger.warning(f"Could not find email for user ID {user_id}, skipping member change processing.")
                             continue
@@ -591,14 +592,14 @@ class OneDriveConnector(BaseConnector):
                 if result.get('next_link'):
                     # More data available, update URL for next loop iteration
                     url = result.get('next_link')
-                    
+
                     # OPTIONAL: Save intermediate 'nextLink' here if you want resumability during a very long initial sync.
                     # await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
-                    
+
                 elif result.get('delta_link'):
                     # End of current data stream. Save the delta_link for the NEXT run.
                     await self.user_group_sync_point.update_sync_point(
-                        sync_point_key, 
+                        sync_point_key,
                         {"nextLink": None, "deltaLink": result.get('delta_link')}
                     )
                     self.logger.info("User group sync cycle completed, delta link saved for next run.")
@@ -611,7 +612,7 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error in unified user group sync: {e}", exc_info=True)
             raise
-    
+
     async def handle_group_create(self, group: Any) -> None:
         """
         Handles the creation or update of a single user group.
@@ -646,7 +647,7 @@ class OneDriveConnector(BaseConnector):
 
             # 4. Send to processor (wrapped in list as expected by on_new_user_groups)
             await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
-            
+
             self.logger.info(f"Processed group creation/update for: {group.display_name}")
 
         except Exception as e:
@@ -656,20 +657,20 @@ class OneDriveConnector(BaseConnector):
         """
         Handles the deletion of a single user group.
         Calls the data processor to remove it from the database.
-        
+
         Args:
             group_id: The external ID of the group to be deleted.
         """
         try:
             print("\n\n\n !!!!!!!!!!!!!!!! group deleted: ", group_id)
             self.logger.info(f"Handling group deletion for: {group_id}")
-            
+
             # Call the data entities processor to handle the deletion logic
             await self.data_entities_processor.on_user_group_deleted(
                 external_group_id=group_id,
                 connector_name=self.connector_name
             )
-            
+
             self.logger.info(f"Successfully processed group deletion for: {group_id}")
 
         except Exception as e:
@@ -704,7 +705,7 @@ class OneDriveConnector(BaseConnector):
                 drive_items = result.get('drive_items')
                 if not result or not drive_items:
                     break
-                
+
                 # Process items using generator for non-blocking operation
                 async for file_record, permissions, record_update in self._process_delta_items_generator(drive_items):
                     if record_update.is_deleted:

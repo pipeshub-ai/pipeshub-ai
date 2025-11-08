@@ -262,9 +262,9 @@ class MSGraphClient:
                 request_configuration = RequestConfiguration(
                     query_parameters=query_params
                 )
-                
+
                 user = await self.client.users.by_user_id(user_id).get(request_configuration)
-                
+
                 if user:
                     return user.mail or user.user_principal_name
             return None
@@ -362,10 +362,10 @@ class MSGraphClient:
         """
         Retrieves groups using delta query to track changes.
         Note: This doesn't include members - they need to be fetched separately.
-        
+
         Args:
             url (str): The full Microsoft Graph API URL to query.
-        
+
         Returns:
             dict: Dictionary containing 'delta_link', 'next_link', and 'groups'.
         """
@@ -375,36 +375,36 @@ class MSGraphClient:
                 'next_link': None,
                 'groups': []
             }
-            
+
             async with self.rate_limiter:
                 request_info = RequestInformation(Method.GET, url)
                 error_mapping: Dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
                     "5XX": ODataError,
                 }
-                
+
                 # Send request using request_adapter
                 result = await self.client.request_adapter.send_async(
                     request_info=request_info,
-                    parsable_factory=GroupDeltaGetResponse, 
+                    parsable_factory=GroupDeltaGetResponse,
                     error_map=error_mapping
                 )
-                
+
                 # Extract the groups
                 if hasattr(result, 'value') and result.value:
                     response['groups'] = result.value
-                
+
                 # Extract the next link if available
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:
                     response['next_link'] = result.odata_next_link
-                
+
                 # Extract the delta link if available
                 if hasattr(result, 'odata_delta_link') and result.odata_delta_link:
                     response['delta_link'] = result.odata_delta_link
-            
+
             self.logger.info(f"Retrieved groups delta response with {len(response['groups'])} groups")
             return response
-            
+
         except Exception as ex:
             self.logger.error(f"Error fetching groups delta response for URL {url}: {ex}")
             raise ex

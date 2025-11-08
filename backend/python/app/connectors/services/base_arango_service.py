@@ -1959,8 +1959,6 @@ class BaseArangoService:
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 elif connector_name == Connectors.GOOGLE_MAIL.value:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
-                # elif connector_name in (Connectors.ONEDRIVE.value, Connectors.SHAREPOINT_ONLINE.value):
-                #     user_role = await self._check_drive_permissions(record_id, user_key)
                 else:
                     user_role = await self._check_record_permissions(record_id, user_key)
 
