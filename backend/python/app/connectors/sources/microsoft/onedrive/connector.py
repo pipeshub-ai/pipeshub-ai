@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
@@ -385,8 +385,6 @@ class OneDriveConnector(BaseConnector):
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
                 continue
 
-        print("!!!!!!! permissions:", permissions)
-
         return permissions
 
     def _permissions_equal(self, old_perms: List[Permission], new_perms: List[Permission]) -> bool:
@@ -464,58 +462,6 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error handling record updates: {e}", exc_info=True)
 
-    # async def _sync_user_groups(self) -> None:
-    #     """
-    #     Sync user groups and their members.
-    #     """
-    #     try:
-    #         self.logger.info("Starting user group synchronization")
-
-    #         # Get all groups
-    #         groups = await self.msgraph_client.get_all_user_groups()
-
-    #         group_with_permissions = []
-    #         # Process each group with its members
-    #         for group in groups:
-    #             try:
-    #                 # Get group members
-    #                 members = await self.msgraph_client.get_group_members(group.id)
-    #                 user_group = AppUserGroup(
-    #                     source_user_group_id=group.id,
-    #                     app_name=self.connector_name,
-    #                     name=group.display_name,
-    #                     description=group.description,
-    #                     source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
-    #                 )
-
-    #                 # Create permissions for group members
-    #                 app_users = []
-    #                 for member in members:
-    #                     app_user = AppUser(
-    #                         source_user_id=member.id,
-    #                         email=member.mail or member.user_principal_name,
-    #                         full_name=member.display_name,
-    #                         source_created_at=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
-    #                         app_name=self.connector_name,
-    #                     )
-    #                     app_users.append(app_user)
-    #                 group_with_permissions.append((user_group, app_users))
-
-    #             except Exception as e:
-    #                 self.logger.error(f"❌ Error processing group {group.name}: {e}", exc_info=True)
-    #                 continue
-
-    #         # Process all collected groups
-    #         if group_with_permissions:
-    #             await self.data_entities_processor.on_new_user_groups(
-    #                 group_with_permissions
-    #             )
-    #         self.logger.info(f"Processed {len(groups)} user groups")
-
-    #     except Exception as e:
-    #         self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
-    #         raise
-
     async def _sync_user_groups(self) -> None:
         """
         Unified user group synchronization.
@@ -541,7 +487,6 @@ class OneDriveConnector(BaseConnector):
             while True:
                 # 2. Fetch page of results
                 result = await self.msgraph_client.get_groups_delta_response(url)
-                print("\n\n\n\n !!!!!!! result:", result)
                 groups = result.get('groups', [])
 
                 self.logger.info(f"Fetched page with {len(groups)} groups")
@@ -550,14 +495,14 @@ class OneDriveConnector(BaseConnector):
                 for group in groups:
                     # A) Check for DELETION marker
                     if hasattr(group, 'additional_data') and group.additional_data and '@removed' in group.additional_data:
-                         print(f"[DELTA ACTION] 🗑️ REMOVE Group: {group.id}")
+                         self.logger.info(f"[DELTA ACTION] 🗑️ REMOVE Group: {group.id}")
                          await self.handle_delete_group(group.id)
                          continue
 
 
                     # B) Process ADD/UPDATE
                     # Note: For a brand new initial sync, everything will fall into this bucket.
-                    print(f"[DELTA ACTION] ✅ ADD/UPDATE Group: {getattr(group, 'display_name', 'N/A')} ({group.id})")
+                    self.logger.info(f"[DELTA ACTION] ✅ ADD/UPDATE Group: {getattr(group, 'display_name', 'N/A')} ({group.id})")
                     await self.handle_group_create(group)
 
                     # C) Trigger member sync for this group
@@ -620,7 +565,6 @@ class OneDriveConnector(BaseConnector):
         """
         try:
 
-            print("\n\n\n !!!!!!!!!!!!!!!! group added: ", group)
             # 1. Fetch latest members for this group
             members = await self.msgraph_client.get_group_members(group.id)
 
@@ -662,7 +606,6 @@ class OneDriveConnector(BaseConnector):
             group_id: The external ID of the group to be deleted.
         """
         try:
-            print("\n\n\n !!!!!!!!!!!!!!!! group deleted: ", group_id)
             self.logger.info(f"Handling group deletion for: {group_id}")
 
             # Call the data entities processor to handle the deletion logic
@@ -701,7 +644,6 @@ class OneDriveConnector(BaseConnector):
             while True:
                 # Fetch delta changes
                 result = await self.msgraph_client.get_delta_response(url)
-                print("\n\n\n !!!!!!!!!!!!!!!! result files delta: ", result)
                 drive_items = result.get('drive_items')
                 if not result or not drive_items:
                     break
@@ -783,9 +725,6 @@ class OneDriveConnector(BaseConnector):
                 user for user in users
                 if user.email and user.email.lower() in active_user_emails
             ]
-
-            print("\n\n !!!!!!!!!! users_to_sync", users_to_sync)
-            print("\n\n !!!!!!!!!! users", users)
 
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
 
