@@ -73,9 +73,9 @@ class RecordUpdate:
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/bookstack.svg")\
         .add_documentation_link(DocumentationLink(
-            "BookStack API Access",
-            "https://www.bookstackapp.com/docs/admin/api-access/",
-            "setup"
+            "BookStack API Docs",
+            "https://demo.bookstackapp.com/api/docs",
+            "docs"
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
