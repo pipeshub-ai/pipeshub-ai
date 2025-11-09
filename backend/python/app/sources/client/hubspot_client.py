@@ -9,15 +9,22 @@ from typing import Optional, Dict, Any
 import requests
 
 DEFAULT_BASE = "https://api.hubapi.com"
+CLIENT_VERSION = "0.1"
 
 class HubSpotClientError(Exception):
     pass
 
 class HubSpotClient:
-    def __init__(self, access_token: str, base_url: str = DEFAULT_BASE, session: Optional[requests.Session] = None, timeout: int = 10):
+    def __init__(
+        self,
+        access_token: str,
+        base_url: Optional[str] = None,
+        session: Optional[requests.Session] = None,
+        timeout: int = 10,
+    ):
         """
         access_token: HubSpot private app token or OAuth access token (string).
-        base_url: normally https://api.hubapi.com
+        base_url: if provided, overrides the default HubSpot API base URL.
         session: optional requests.Session for testing
         """
         if not access_token:
@@ -35,7 +42,7 @@ class HubSpotClient:
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "pipeshub-hubspot-client/0.1"
+            "User-Agent": f"pipeshub-hubspot-client/{CLIENT_VERSION}",
         }
         # apply headers without losing existing ones
         self.session.headers.update(headers)
@@ -45,20 +52,33 @@ class HubSpotClient:
             return path
         return f"{self.base_url}{path if path.startswith('/') else '/' + path}"
 
-    def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, json: Optional[Any] = None) -> Dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         url = self._url(path)
         resp = self.session.request(method, url, params=params, json=json, timeout=self.timeout)
+
+        # Non-2xx responses -> try to extract structured error, else return text
         if not resp.ok:
-            # Try to extract error message
             try:
                 err = resp.json()
-            except Exception:
+            except requests.exceptions.JSONDecodeError:
                 err = resp.text
             raise HubSpotClientError(f"HubSpot API error {resp.status_code}: {err}")
+
+        # Handle 204 No Content explicitly
+        if resp.status_code == 204:
+            return {}
+
+        # For successful responses, ensure we can parse JSON; otherwise raise clear error
         try:
             return resp.json()
-        except ValueError:
-            return {"raw_text": resp.text}
+        except requests.exceptions.JSONDecodeError:
+            raise HubSpotClientError(f"Failed to decode JSON response ({resp.status_code}): {resp.text}")
 
     # Example methods
     def get_contacts(self, limit: int = 20, after: Optional[str] = None) -> Dict[str, Any]:
