@@ -377,7 +377,8 @@ def _generate_rest_api_method(method_name: str, method_def: Dict[str, List[str]]
     
     setup_lines = []
     
-    if 'bucket_name' in required_params or 'bucket_name' in optional_params:
+    # Note: create_bucket uses bucket_name directly, no need for 'name' variable
+    if ('bucket_name' in required_params or 'bucket_name' in optional_params) and method_name != 'create_bucket':
         setup_lines.append("name = self._get_bucket_name(bucket_name)")
     
     if method_name == 'create_bucket':
@@ -423,7 +424,7 @@ def _generate_rest_api_method(method_name: str, method_def: Dict[str, List[str]]
                         if resp.status in {success_codes} if isinstance({success_codes}, tuple) else resp.status == {success_codes}:
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {{"status": "success"}}
                             return GCSResponse(success=True, data={{"result": result}})
@@ -504,7 +505,7 @@ class GCSDataSource:
     - Object operations (CRUD, compose, copy, rewrite)
     - Metadata and ACL management
     - Error handling with GCSResponse
-    
+
     Uses:
     - gcloud-aio-storage: Third-party async library for GCS operations
     - google-auth: Official Google authentication library

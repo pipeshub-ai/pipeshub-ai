@@ -23,7 +23,7 @@ class GCSDataSource:
     - Object operations (CRUD, compose, copy, rewrite)
     - Metadata and ACL management
     - Error handling with GCSResponse
-    
+
     Uses:
     - gcloud-aio-storage: Third-party async library for GCS operations
     - google-auth: Official Google authentication library
@@ -166,7 +166,6 @@ class GCSDataSource:
         Returns:
             GCSResponse: Standardized response with success/data/error format        """
         try:
-            name = self._get_bucket_name(bucket_name)
             project = project_id or self._gcs_client.client.get_project_id()
             if not project:
                             return GCSResponse(success=False, error="projectId is required to create a bucket")
@@ -184,7 +183,7 @@ class GCSDataSource:
                         if resp.status in (200, 201) if isinstance((200, 201), tuple) else resp.status == (200, 201):
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {"status": "success"}
                             return GCSResponse(success=True, data={"result": result})
@@ -215,7 +214,7 @@ class GCSDataSource:
                         if resp.status in (200, 204) if isinstance((200, 204), tuple) else resp.status == (200, 204):
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {"status": "success"}
                             return GCSResponse(success=True, data={"result": result})
@@ -317,7 +316,7 @@ class GCSDataSource:
                         if resp.status in HTTP_OK if isinstance(HTTP_OK, tuple) else resp.status == HTTP_OK:
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {"status": "success"}
                             return GCSResponse(success=True, data={"result": result})
@@ -404,7 +403,7 @@ class GCSDataSource:
                         if resp.status in HTTP_OK if isinstance(HTTP_OK, tuple) else resp.status == HTTP_OK:
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {"status": "success"}
                             return GCSResponse(success=True, data={"result": result})
@@ -446,7 +445,7 @@ class GCSDataSource:
                         if resp.status in HTTP_OK if isinstance(HTTP_OK, tuple) else resp.status == HTTP_OK:
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {"status": "success"}
                             return GCSResponse(success=True, data={"result": result})
@@ -480,7 +479,7 @@ class GCSDataSource:
                         if resp.status in HTTP_OK if isinstance(HTTP_OK, tuple) else resp.status == HTTP_OK:
                             try:
                                 result = await resp.json()
-                            except:
+                            except Exception:
                                 # Handle empty/null response
                                 result = {"status": "success"}
                             return GCSResponse(success=True, data={"result": result})
