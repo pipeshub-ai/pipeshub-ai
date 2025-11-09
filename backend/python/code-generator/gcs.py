@@ -299,7 +299,7 @@ def _generate_copy_method(method_def: Dict[str, List[str]]) -> str:
             dest_bucket_name = self._get_bucket_name(dest_bucket) if dest_bucket else self._get_bucket_name()
             dest_object_name = dest_object or source_object
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 # Use REST API copyTo endpoint
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{source_bucket}/o/{source_object}/copyTo/b/{dest_bucket_name}/o/{dest_object_name}"
@@ -416,7 +416,7 @@ def _generate_rest_api_method(method_name: str, method_def: Dict[str, List[str]]
     return f'''        try:
 {setup}
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = {url}
                 async with aiohttp.ClientSession() as session:
@@ -441,10 +441,10 @@ def _generate_compose_method(method_def: Dict[str, List[str]]) -> str:
     return '''        try:
             name = self._get_bucket_name(bucket_name)
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}/o/{destination_object}/compose"
-                
+
                 # Format source objects correctly for GCS API
                 formatted_sources = []
                 for src_obj in source_objects:
@@ -452,11 +452,11 @@ def _generate_compose_method(method_def: Dict[str, List[str]]) -> str:
                         formatted_sources.append({"name": src_obj.get("name", src_obj.get("object", ""))})
                     else:
                         formatted_sources.append({"name": str(src_obj)})
-                
+
                 request_body = {"sourceObjects": formatted_sources}
                 if metadata:
                     request_body["destination"] = {"metadata": metadata}
-                
+
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, json=request_body) as resp:
                         if resp.status == HTTP_OK:

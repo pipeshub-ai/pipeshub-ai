@@ -65,10 +65,10 @@ class GCSDataSource:
         try:
             name = self._get_bucket_name(bucket_name)
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}/o/{destination_object}/compose"
-                
+
                 # Format source objects correctly for GCS API
                 formatted_sources = []
                 for src_obj in source_objects:
@@ -76,11 +76,11 @@ class GCSDataSource:
                         formatted_sources.append({"name": src_obj.get("name", src_obj.get("object", ""))})
                     else:
                         formatted_sources.append({"name": str(src_obj)})
-                
+
                 request_body = {"sourceObjects": formatted_sources}
                 if metadata:
                     request_body["destination"] = {"metadata": metadata}
-                
+
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, json=request_body) as resp:
                         if resp.status == HTTP_OK:
@@ -123,7 +123,7 @@ class GCSDataSource:
             dest_bucket_name = self._get_bucket_name(dest_bucket) if dest_bucket else self._get_bucket_name()
             dest_object_name = dest_object or source_object
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 # Use REST API copyTo endpoint
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{source_bucket}/o/{source_object}/copyTo/b/{dest_bucket_name}/o/{dest_object_name}"
@@ -175,7 +175,7 @@ class GCSDataSource:
             if storage_class:
                             bucket_metadata["storageClass"] = storage_class
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b?project={project}"
                 async with aiohttp.ClientSession() as session:
@@ -206,7 +206,7 @@ class GCSDataSource:
         try:
             name = self._get_bucket_name(bucket_name)
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}"
                 async with aiohttp.ClientSession() as session:
@@ -308,7 +308,7 @@ class GCSDataSource:
         try:
             name = self._get_bucket_name(bucket_name)
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}/o/{object_name}"
                 async with aiohttp.ClientSession() as session:
@@ -395,7 +395,7 @@ class GCSDataSource:
             if not metadata:
                             return GCSResponse(success=False, error="metadata is required for patch_bucket operation")
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}"
                 async with aiohttp.ClientSession() as session:
@@ -437,7 +437,7 @@ class GCSDataSource:
             dest_bucket_name = self._get_bucket_name(dest_bucket) if dest_bucket else self._get_bucket_name()
             dest_object_name = dest_object or source_object
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{source_bucket}/o/{source_object}/copyTo/b/{dest_bucket_name}/o/{dest_object_name}"
                 async with aiohttp.ClientSession() as session:
@@ -471,7 +471,7 @@ class GCSDataSource:
             if not metadata:
                             return GCSResponse(success=False, error="metadata is required for update_object_metadata operation")
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            
+
             if emulator:
                 url = f"{emulator.rstrip('/')}/storage/v1/b/{name}/o/{object_name}"
                 async with aiohttp.ClientSession() as session:
