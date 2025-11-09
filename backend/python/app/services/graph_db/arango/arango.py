@@ -173,7 +173,7 @@ class ArangoService(IGraphService):
             else:
                 self.logger.error(f"Failed to create graph {graph_name}: {error_msg}")
                 return False
-        
+
         return True
 
     async def create_node(self, node_type: str, node_id: str) -> bool:
@@ -236,7 +236,7 @@ class ArangoService(IGraphService):
                     self.logger.debug(f"Collection {collection_name} already exists (created by another service)")
                 else:
                     raise
-            
+
             return True
 
         except Exception as e:

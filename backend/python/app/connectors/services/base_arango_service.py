@@ -281,7 +281,7 @@ class BaseArangoService:
 
         try:
             self.logger.info("🚀 Creating knowledge base graph...")
-            
+
             # Try to create graph, handling race conditions
             try:
                 graph = self.db.create_graph(graph_name)
