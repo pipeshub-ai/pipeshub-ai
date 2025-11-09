@@ -83,11 +83,19 @@ class ArangoService(IGraphService):
             # Check if our database exists, create it if it doesn't
             if not sys_db.has_database(arango_db):
                 self.logger.info(f"Database '{arango_db}' does not exist, creating it...")
-                sys_db.create_database(
-                    name=arango_db,
-                    users=[{"username": arango_user, "password": arango_password, "active": True}]
-                )
-                self.logger.info(f"✅ Database '{arango_db}' created successfully")
+                try:
+                    sys_db.create_database(
+                        name=arango_db,
+                        users=[{"username": arango_user, "password": arango_password, "active": True}]
+                    )
+                    self.logger.info(f"✅ Database '{arango_db}' created successfully")
+                except Exception as e:
+                    error_msg = str(e)
+                    # Handle race condition where another service created the database
+                    if "1207" in error_msg or "duplicate" in error_msg.lower():
+                        self.logger.info(f"Database '{arango_db}' already exists (created by another service)")
+                    else:
+                        raise
             else:
                 self.logger.info(f"Database '{arango_db}' already exists")
 
@@ -153,8 +161,19 @@ class ArangoService(IGraphService):
             self.logger.error("Database not connected")
             return False
 
-        self.db.create_graph(graph_name)
-        self.logger.info(f"✅ Created graph: {graph_name}")
+        try:
+            self.db.create_graph(graph_name)
+            self.logger.info(f"✅ Created graph: {graph_name}")
+        except Exception as e:
+            error_msg = str(e)
+            # Handle race condition where another service created the graph
+            # Error 1207: duplicate name, Error 1925: graph already exists
+            if "1207" in error_msg or "1925" in error_msg or "duplicate" in error_msg.lower() or "already exists" in error_msg.lower():
+                self.logger.info(f"Graph '{graph_name}' already exists (created by another service)")
+            else:
+                self.logger.error(f"Failed to create graph {graph_name}: {error_msg}")
+                return False
+        
         return True
 
     async def create_node(self, node_type: str, node_id: str) -> bool:
@@ -206,9 +225,18 @@ class ArangoService(IGraphService):
                 self.logger.debug(f"Collection {collection_name} already exists")
                 return True
 
-            # Create the collection
-            self.db.create_collection(collection_name)
-            self.logger.info(f"✅ Created collection: {collection_name}")
+            # Create the collection with race condition handling
+            try:
+                self.db.create_collection(collection_name)
+                self.logger.info(f"✅ Created collection: {collection_name}")
+            except Exception as e:
+                error_msg = str(e)
+                # Handle race condition where another service created the collection
+                if "1207" in error_msg or "duplicate name" in error_msg.lower():
+                    self.logger.debug(f"Collection {collection_name} already exists (created by another service)")
+                else:
+                    raise
+            
             return True
 
         except Exception as e:

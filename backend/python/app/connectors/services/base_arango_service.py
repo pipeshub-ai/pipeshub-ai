@@ -225,26 +225,43 @@ class BaseArangoService:
                 self.logger.debug(f"Processing collection: {collection_name}")
                 is_edge = (collection_name, schema) in EDGE_COLLECTIONS
 
-                collection = self._collections[collection_name] = (
-                    self.db.collection(collection_name)
-                    if self.db.has_collection(collection_name)
-                    else self.db.create_collection(
-                        collection_name,
-                        edge=is_edge,
-                        schema=schema
-                    )
-                )
+                # Try to get existing collection first, or create if it doesn't exist
+                # Use try-except to handle race conditions when multiple services start simultaneously
+                try:
+                    if self.db.has_collection(collection_name):
+                        collection = self.db.collection(collection_name)
+                        self.logger.debug(f"✅ Collection '{collection_name}' already exists")
+                    else:
+                        collection = self.db.create_collection(
+                            collection_name,
+                            edge=is_edge,
+                            schema=schema
+                        )
+                        self.logger.info(f"✅ Created collection '{collection_name}'")
+                except Exception as e:
+                    error_msg = str(e)
+                    # Handle duplicate collection error (race condition)
+                    if "1207" in error_msg or "duplicate name" in error_msg.lower():
+                        self.logger.info(
+                            f"✅ Collection '{collection_name}' already exists (created by another service), using existing"
+                        )
+                        collection = self.db.collection(collection_name)
+                    else:
+                        self.logger.error(f"❌ Failed to initialize collection '{collection_name}': {error_msg}")
+                        raise
+
+                self._collections[collection_name] = collection
 
                 # Update schema if collection exists and has a schema
-                if self.db.has_collection(collection_name) and schema:
+                if schema:
                     try:
-                        self.logger.info(f"Updating schema for collection {collection_name}")
+                        self.logger.debug(f"Updating schema for collection {collection_name}")
                         collection.configure(schema=schema)
                     except Exception as e:
                         error_msg = str(e)
                         if "1207" in error_msg or "duplicate" in error_msg.lower():
                             # Schema already applied - this is expected on restarts
-                            self.logger.info(
+                            self.logger.debug(
                                 f"✅ Schema for '{collection_name}' already configured, skipping"
                             )
                         else:
@@ -264,7 +281,19 @@ class BaseArangoService:
 
         try:
             self.logger.info("🚀 Creating knowledge base graph...")
-            graph = self.db.create_graph(graph_name)
+            
+            # Try to create graph, handling race conditions
+            try:
+                graph = self.db.create_graph(graph_name)
+            except Exception as e:
+                error_msg = str(e)
+                # If graph already exists (created by another service), use it
+                # Error 1207: duplicate name, Error 1925: graph already exists
+                if "1207" in error_msg or "1925" in error_msg or "duplicate" in error_msg.lower() or "already exists" in error_msg.lower():
+                    self.logger.info(f"✅ Graph '{graph_name}' already exists (created by another service), using existing")
+                    graph = self.db.graph(graph_name)
+                else:
+                    raise
 
             # Create all edge definitions
             created_count = 0
@@ -278,10 +307,16 @@ class BaseArangoService:
                     else:
                         self.logger.warning(f"⚠️ Skipping edge definition for non-existent collection: {edge_def['edge_collection']}")
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {str(e)}")
-                    # Continue with other edge definitions
+                    error_msg = str(e)
+                    # Ignore if edge definition already exists
+                    if "1207" in error_msg or "duplicate" in error_msg.lower():
+                        self.logger.debug(f"✅ Edge definition for {edge_def['edge_collection']} already exists, skipping")
+                        created_count += 1
+                    else:
+                        self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {error_msg}")
+                        # Continue with other edge definitions
 
-            self.logger.info(f"✅ Knowledge base graph created successfully with {created_count} edge definitions")
+            self.logger.info(f"✅ Knowledge base graph initialized successfully with {created_count} edge definitions")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create knowledge base graph: {str(e)}")
@@ -5219,8 +5254,15 @@ class BaseArangoService:
                 expiration,
             )
 
+            # Safely create collection if it doesn't exist (handle race conditions)
             if not self.db.has_collection(CollectionNames.PAGE_TOKENS.value):
-                self.db.create_collection(CollectionNames.PAGE_TOKENS.value)
+                try:
+                    self.db.create_collection(CollectionNames.PAGE_TOKENS.value)
+                except Exception as e:
+                    error_msg = str(e)
+                    # Ignore if collection already exists (created by another service)
+                    if "1207" not in error_msg and "duplicate name" not in error_msg.lower():
+                        raise
 
             token_doc = {
                 "channelId": channel_id,
