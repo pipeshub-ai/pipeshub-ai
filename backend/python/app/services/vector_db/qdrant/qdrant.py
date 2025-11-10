@@ -1,6 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
@@ -422,7 +422,7 @@ class QdrantService(IVectorDBService):
             completed_batches = 0
 
             # Upload batches in parallel using ThreadPoolExecutor
-            def upload_batch(batch_info):
+            def upload_batch(batch_info: Tuple[int, List[PointStruct]]) -> Tuple[int, int, float]:
                 batch_num, batch = batch_info
                 batch_start = time.perf_counter()
                 self.client.upsert(collection_name, batch)
