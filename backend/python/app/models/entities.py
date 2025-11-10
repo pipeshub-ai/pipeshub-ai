@@ -79,6 +79,7 @@ class Record(BaseModel):
     signed_url: Optional[str] = None
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
+    is_shared: Optional[bool] = False
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
@@ -111,6 +112,7 @@ class Record(BaseModel):
             "isArchived": False,
             "deletedByUserId": None,
             "previewRenderable": self.preview_renderable,
+            "isShared": self.is_shared,
         }
 
     @staticmethod
@@ -147,6 +149,7 @@ class Record(BaseModel):
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
             preview_renderable=arango_base_record.get("previewRenderable", True),
+            is_shared=arango_base_record.get("isShared", False),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -693,6 +696,7 @@ class AppUserGroup(BaseModel):
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
+    description: Optional[str] = Field(default=None, description="Description of the user group")
 
     def to_arango_base_user_group(self) -> Dict[str, Any]:
         """

@@ -315,7 +315,6 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
-            self.logger.info(f"on_new_records for: {records_with_permissions}")
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -347,7 +346,10 @@ class DataSourceEntitiesProcessor:
             )
 
     async def on_record_metadata_update(self, record: Record) -> None:
-        pass
+        async with self.data_store_provider.transaction() as tx_store:
+            existing_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
+                                                                   external_id=record.external_record_id)
+            await self._handle_updated_record(record, existing_record, tx_store)
 
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:

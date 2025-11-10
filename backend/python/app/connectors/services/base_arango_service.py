@@ -1959,8 +1959,6 @@ class BaseArangoService:
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 elif connector_name == Connectors.GOOGLE_MAIL.value:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
-                elif connector_name in (Connectors.ONEDRIVE.value, Connectors.SHAREPOINT_ONLINE.value):
-                    user_role = await self._check_drive_permissions(record_id, user_key)
                 else:
                     user_role = await self._check_record_permissions(record_id, user_key)
 
@@ -3130,12 +3128,12 @@ class BaseArangoService:
 
             // 2. Check group permissions
             LET group_permission_old_permission = FIRST(
-                FOR belongs_edge IN @@permission
+                FOR belongs_edge IN @@belongs_to
                     FILTER belongs_edge._from == user_from
-                    FILTER belongs_edge.entityType == "USER"
+                    FILTER belongs_edge.entityType == "GROUP"
                     LET group = DOCUMENT(belongs_edge._to)
                     FILTER group != null
-                    FOR perm IN @@permission
+                    FOR perm IN @@permissions
                         FILTER perm._from == record_from
                         FILTER perm._to == group._id
                         FILTER perm.type == "GROUP"
@@ -3143,10 +3141,10 @@ class BaseArangoService:
             )
 
             LET group_permission_new_permission = FIRST(
-                FOR belongs_edge IN @@belongs_to
-                    FILTER belongs_edge._from == user_from
-                    FILTER belongs_edge.entityType == "GROUP"
-                    LET group = DOCUMENT(belongs_edge._to)
+                FOR permission IN @@permission
+                    FILTER permission._from == user_from
+                    FILTER permission.type == "USER"
+                    LET group = DOCUMENT(permission._to)
                     FILTER group != null
                     FOR perm IN @@permission
                         FILTER perm._from == group._id
@@ -11953,7 +11951,6 @@ class BaseArangoService:
 
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'GROUP'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
                 RETURN DISTINCT records
             )
@@ -11967,14 +11964,12 @@ class BaseArangoService:
 
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'ORGANIZATION'
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
                 RETURN DISTINCT records
             )
 
             LET orgRecordsPermissionEdge = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'ORGANIZATION'
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
