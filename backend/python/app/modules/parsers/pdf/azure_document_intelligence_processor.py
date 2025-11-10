@@ -4,8 +4,6 @@ import time
 from io import BytesIO
 from typing import Any, Dict, List
 
-from app.models.blocks import Block, BlockGroup, BlockType, CitationMetadata, DataFormat, GroupType, Point, TableMetadata
-from app.utils.indexing_helpers import get_rows_text, get_table_summary_n_headers, process_table_pymupdf
 import fitz  # PyMuPDF for initial document check
 import spacy
 from azure.ai.formrecognizer.aio import (
@@ -15,7 +13,21 @@ from azure.core.credentials import AzureKeyCredential
 from spacy import Language
 from spacy.tokens import Doc
 
+from app.models.blocks import (
+    Block,
+    BlockGroup,
+    BlockType,
+    CitationMetadata,
+    DataFormat,
+    GroupType,
+    Point,
+    TableMetadata,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.utils.indexing_helpers import (
+    get_rows_text,
+    get_table_summary_n_headers,
+)
 
 LENGTH_THRESHOLD = 2
 WORD_THRESHOLD = 15
@@ -81,15 +93,15 @@ class AzureOCRStrategy(OCRStrategy):
             self.logger.warning("⚠️ Defaulting to Azure OCR due to analysis failure")
             needs_ocr = True
             self._needs_ocr = True
-            
+
         try:
             if needs_ocr:
                 await self._process_with_azure(content)
                 self.document_analysis_result = await self._preprocess_document()
             else:
                 raise Exception("Azure OCR is not needed as ocr was not needed")
-            
-            
+
+
         except Exception as e:
             self.logger.error(f"❌ Error during document loading: {e}")
             raise e
@@ -146,7 +158,7 @@ class AzureOCRStrategy(OCRStrategy):
             self.logger.warning("⚠️ Falling back to PyMuPDF extraction")
             raise e
 
- 
+
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
         for token in doc[:-1]:  # Avoid out-of-bounds errors
@@ -770,11 +782,11 @@ class AzureOCRStrategy(OCRStrategy):
                 response = await get_table_summary_n_headers(self.config, table_markdown)
                 table_summary = response.summary
                 column_headers = response.headers
-      
+
                 table_rows_text,table_rows = await get_rows_text(self.config, {"grid": table_data_grid}, table_summary, column_headers)
                 bbox = table_data.get("bounding_boxes", [])
                 if bbox != []:
-                    bbox = [Point(x=bbox[0]["x"], y=bbox[0]["y"]), Point(x=bbox[1]["x"], y=bbox[1]["y"]), Point(x=bbox[2]["x"], y=bbox[2]["y"]), Point(x=bbox[3]["x"], y=bbox[3]["y"])]
+                    bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
 
                 block_group = BlockGroup(
                     index=len(result["tables"]),
@@ -816,15 +828,15 @@ class AzureOCRStrategy(OCRStrategy):
                 table_data["table_index"] = table_idx
                 page_dict["tables"].append(table_data)
                 self.logger.debug(f"   Table {table_idx}: {table_data['row_count']}x{table_data['column_count']}")
-    
-    
+
+
     def cells_to_markdown(row_count: int, col_count: int, cells: list[dict]) -> tuple[str, list[list[str]]]:
         # Initialize empty grid
         grid = [['' for _ in range(col_count)] for _ in range(row_count)]
-        
+
         # Track which cells are occupied by spans
         occupied = [[False for _ in range(col_count)] for _ in range(row_count)]
-        
+
         # Fill the grid with cell content
         for cell in cells:
             row_idx = cell['row_index']
@@ -832,31 +844,31 @@ class AzureOCRStrategy(OCRStrategy):
             content = cell['content'].strip() if cell['content'] else ''
             row_span = cell.get('row_span', 1)
             col_span = cell.get('column_span', 1)
-            
+
             # Place content in the starting cell
             if row_idx < row_count and col_idx < col_count:
                 grid[row_idx][col_idx] = content
-                
+
                 # Mark cells as occupied by this span
                 for r in range(row_idx, min(row_idx + row_span, row_count)):
                     for c in range(col_idx, min(col_idx + col_span, col_count)):
                         occupied[r][c] = True
-        
+
         # Build markdown table
         lines = []
-        
+
         for row_idx, row in enumerate(grid):
             # Create row with pipe separators
             row_content = '| ' + ' | '.join(row) + ' |'
             lines.append(row_content)
-            
+
             # Add header separator after first row
             if row_idx == 0:
                 separator = '| ' + ' | '.join(['---'] * col_count) + ' |'
                 lines.append(separator)
-        
+
         markdown = '\n'.join(lines)
-        
+
         # Return both markdown and grid (list of lists)
         return markdown, grid
 
@@ -1179,4 +1191,4 @@ class AzureOCRStrategy(OCRStrategy):
 
         return paragraph_lines
 
-    
+

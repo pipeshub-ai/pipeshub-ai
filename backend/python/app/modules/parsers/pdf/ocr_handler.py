@@ -22,7 +22,7 @@ class OCRStrategy(ABC):
         """Load document content"""
         pass
 
-    
+
 
     def needs_ocr(self, page) -> bool:
         """Determine if a page needs OCR processing"""

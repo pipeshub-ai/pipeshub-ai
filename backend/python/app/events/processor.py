@@ -17,7 +17,15 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.models.blocks import Block, BlockContainerIndex, BlockType, BlocksContainer, CitationMetadata, DataFormat, Point
+from app.models.blocks import (
+    Block,
+    BlockContainerIndex,
+    BlocksContainer,
+    BlockType,
+    CitationMetadata,
+    DataFormat,
+    Point,
+)
 from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from app.modules.parsers.pdf.docling import DoclingProcessor
@@ -708,7 +716,7 @@ class Processor:
             self.logger.info("🔄 Processing document with OCR handler")
             try:
                 ocr_result = await handler.process_document(pdf_binary)
-            except Exception as e:
+            except Exception:
                 if provider == OCRProvider.AZURE_DI.value:
                     self.logger.info("🔄 Switching to PyMuPDF OCR handler as Azure OCR failed")
                     handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
@@ -738,7 +746,7 @@ class Processor:
                                 table_rows[block.parent_index] = []
                             table_rows[block.parent_index].append(BlockContainerIndex(block_index=index))
                         index += 1
-                        
+
                     else:
                         paragraph = block
                         if paragraph["content"]:
@@ -751,12 +759,12 @@ class Processor:
                                     comments=[],
                                     citation_metadata=CitationMetadata(
                                         page_number=paragraph["page_number"],
-                                        bounding_boxes=[Point(x=paragraph["bounding_box"][0]["x"], y=paragraph["bounding_box"][0]["y"]), Point(x=paragraph["bounding_box"][1]["x"], y=paragraph["bounding_box"][1]["y"]), Point(x=paragraph["bounding_box"][2]["x"], y=paragraph["bounding_box"][2]["y"]), Point(x=paragraph["bounding_box"][3]["x"], y=paragraph["bounding_box"][3]["y"])],
+                                        bounding_boxes=[Point(x=p["x"], y=p["y"]) for p in paragraph["bounding_box"]],
                                     ),
                                 )
                             )
                             index += 1
-            
+
             block_groups = ocr_result.get("tables", [])
             for block_group in block_groups:
                 block_group.children = table_rows.get(block_group.index, [])
@@ -772,7 +780,7 @@ class Processor:
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             #     # Join all paragraph content with newlines
             #     paragraphs_text = "\n ".join(
             #         p["content"].strip()

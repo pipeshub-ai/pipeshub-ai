@@ -1,8 +1,7 @@
 import json
 import uuid
-from typing import List, Optional, Tuple, Union
+from typing import Optional
 
-from app.utils.indexing_helpers import  _call_llm, get_rows_text, get_table_summary_n_headers
 from docling.datamodel.document import DoclingDocument
 
 from app.models.blocks import (
@@ -17,6 +16,10 @@ from app.models.blocks import (
     ImageMetadata,
     Point,
     TableMetadata,
+)
+from app.utils.indexing_helpers import (
+    get_rows_text,
+    get_table_summary_n_headers,
 )
 from app.utils.transformation.bbox import (
     normalize_corner_coordinates,
@@ -257,7 +260,7 @@ class DoclingDocToBlocksConverter():
             response = await get_table_summary_n_headers(self.config, table_markdown)
             table_summary = response.summary
             column_headers = response.headers
-            
+
             table_rows_text,table_rows = await get_rows_text(self.config, table_data, table_summary, column_headers)
 
             # Convert caption and footnote references to text strings

@@ -1,14 +1,24 @@
 import json
-from typing import List, Tuple, Union, Dict
-from app.config.configuration_service import ConfigurationService
-from pydantic import BaseModel, Field
-from app.utils.llm import get_llm
-from app.models.blocks import Block, BlockContainerIndex, BlockGroup, BlockType, CitationMetadata, DataFormat, GroupType, Point, TableMetadata
+from typing import Dict, List, Tuple, Union
+
 from jinja2 import Template
 from langchain.output_parsers import PydanticOutputParser
-from app.modules.parsers.excel.prompt_template import row_text_prompt
-
 from langchain.schema import AIMessage, HumanMessage
+from pydantic import BaseModel, Field
+
+from app.config.configuration_service import ConfigurationService
+from app.models.blocks import (
+    Block,
+    BlockGroup,
+    BlockType,
+    CitationMetadata,
+    DataFormat,
+    GroupType,
+    Point,
+    TableMetadata,
+)
+from app.modules.parsers.excel.prompt_template import row_text_prompt
+from app.utils.llm import get_llm
 
 
 class TableSummary(BaseModel):
@@ -113,7 +123,7 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
 
                 return parsed_reflection
 
-            except Exception as reflection_error:
+            except Exception:
                 raise ValueError(
                     f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
                 )
@@ -190,15 +200,16 @@ def _normalize_bbox(
         {"x": x1 / page_width, "y": y1 / page_height},
         {"x": x0 / page_width, "y": y1 / page_height},
     ]
-    
+
 
 import base64
+
 
 def image_bytes_to_base64(image_bytes, extention):
     mime_type = f"image/{extention}"
     base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
     return f"data:{mime_type};base64,{base64_encoded}"
-    
+
 async def process_table_pymupdf(
     page,
     result: dict,
@@ -210,7 +221,6 @@ async def process_table_pymupdf(
     page_height = page.rect.height
     table_finder = page.find_tables()
     tables = table_finder.tables
-    print(f"Found {len(tables)} tables on page {page_number}")
     for table in tables:
         table_markdown = table.to_markdown()
         response = await get_table_summary_n_headers(config, table_markdown)
@@ -219,7 +229,7 @@ async def process_table_pymupdf(
         table_data = table.extract()
         table_rows_text,table_rows = await get_rows_text(config, {"grid": table_data}, table_summary, column_headers)
         bbox = _normalize_bbox(table.bbox, page_width, page_height)
-        bbox = [Point(x=bbox[0]["x"], y=bbox[0]["y"]), Point(x=bbox[1]["x"], y=bbox[1]["y"]), Point(x=bbox[2]["x"], y=bbox[2]["y"]), Point(x=bbox[3]["x"], y=bbox[3]["y"])]
+        bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
         block_group = BlockGroup(
             index=len(result["tables"]),
             type=GroupType.TABLE,
@@ -258,7 +268,7 @@ async def process_table_pymupdf(
 
         result["tables"].append(block_group)
 
-   
+
 
 
 

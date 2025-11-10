@@ -3,15 +3,19 @@ import os
 import tempfile
 from typing import Any, Dict, List
 
-from app.models.blocks import Block, BlockType, CitationMetadata, DataFormat, Point
-from app.utils.indexing_helpers import _normalize_bbox, image_bytes_to_base64, process_table_pymupdf
 import fitz
 import ocrmypdf
 import spacy
 from spacy.language import Language
 from spacy.tokens import Doc
 
+from app.models.blocks import Block, BlockType, CitationMetadata, DataFormat, Point
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.utils.indexing_helpers import (
+    _normalize_bbox,
+    image_bytes_to_base64,
+    process_table_pymupdf,
+)
 
 LENGTH_THRESHOLD = 2
 
@@ -123,7 +127,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         self.logger.debug("🔄 Pre-processing document to match Azure's structure")
         self.document_analysis_result = await self._preprocess_document()
         self.logger.info(f"✅ Document loaded with {len(self.doc)} pages")
-        
+
 
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
@@ -576,7 +580,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     if image_bytes:
                         image_base64 = image_bytes_to_base64(image_bytes, ext)
                         bbox = _normalize_bbox(block["bbox"], page_width, page_height) if block.get("bbox") else None
-                        bbox = [Point(x=bbox[0]["x"], y=bbox[0]["y"]), Point(x=bbox[1]["x"], y=bbox[1]["y"]), Point(x=bbox[2]["x"], y=bbox[2]["y"]), Point(x=bbox[3]["x"], y=bbox[3]["y"])]
+                        bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
                         block = Block(
                             type=BlockType.IMAGE,
                             format=DataFormat.BASE64,
@@ -588,7 +592,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             ),
                         )
                         result["blocks"].append(block)
-            
+
             await process_table_pymupdf(page, result, self.config,page_idx+1)
 
             self.logger.debug(f"✅ Completed processing page {page_idx + 1}")
@@ -604,7 +608,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         return result
 
-    
+
 
 
 
