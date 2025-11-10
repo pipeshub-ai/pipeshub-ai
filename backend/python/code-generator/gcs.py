@@ -72,6 +72,91 @@ GCS_METHOD_SIGNATURES = {
         'required': ['bucket_name', 'object_name', 'metadata'],
         'optional': []
     },
+    # Additional bucket operations
+    'get_bucket_iam_policy': {
+        'required': [],
+        'optional': ['bucket_name']
+    },
+    'set_bucket_iam_policy': {
+        'required': ['policy'],
+        'optional': ['bucket_name']
+    },
+    'test_bucket_iam_permissions': {
+        'required': ['permissions'],
+        'optional': ['bucket_name']
+    },
+    # Folder operations (prefix-based)
+    'list_folders': {
+        'required': [],
+        'optional': ['bucket_name', 'prefix', 'delimiter', 'page_token', 'page_size']
+    },
+    'create_folder': {
+        'required': ['bucket_name', 'folder_path'],
+        'optional': ['metadata']
+    },
+    'delete_folder': {
+        'required': ['bucket_name', 'folder_path'],
+        'optional': ['recursive']
+    },
+    # BucketAccessControls operations
+    'list_bucket_access_controls': {
+        'required': [],
+        'optional': ['bucket_name']
+    },
+    'get_bucket_access_control': {
+        'required': ['entity'],
+        'optional': ['bucket_name']
+    },
+    'insert_bucket_access_control': {
+        'required': ['entity', 'role'],
+        'optional': ['bucket_name']
+    },
+    'patch_bucket_access_control': {
+        'required': ['entity'],
+        'optional': ['bucket_name', 'role']
+    },
+    'delete_bucket_access_control': {
+        'required': ['entity'],
+        'optional': ['bucket_name']
+    },
+    # Notifications operations
+    'list_notifications': {
+        'required': [],
+        'optional': ['bucket_name']
+    },
+    'get_notification': {
+        'required': ['notification_id'],
+        'optional': ['bucket_name']
+    },
+    'insert_notification': {
+        'required': ['topic'],
+        'optional': ['bucket_name', 'payload_format', 'event_types', 'object_name_prefix']
+    },
+    'delete_notification': {
+        'required': ['notification_id'],
+        'optional': ['bucket_name']
+    },
+    # ObjectAccessControls operations
+    'list_object_access_controls': {
+        'required': ['bucket_name', 'object_name'],
+        'optional': []
+    },
+    'get_object_access_control': {
+        'required': ['bucket_name', 'object_name', 'entity'],
+        'optional': []
+    },
+    'insert_object_access_control': {
+        'required': ['bucket_name', 'object_name', 'entity', 'role'],
+        'optional': []
+    },
+    'patch_object_access_control': {
+        'required': ['bucket_name', 'object_name', 'entity'],
+        'optional': ['role']
+    },
+    'delete_object_access_control': {
+        'required': ['bucket_name', 'object_name', 'entity'],
+        'optional': []
+    },
 }
 
 
@@ -88,7 +173,9 @@ def generate_method_signature(method_name: str, method_def: Dict[str, List[str]]
         # Map parameter names to types
         if param in ['bucket_name', 'object_name', 'source_bucket', 'source_object', 
                      'dest_bucket', 'dest_object', 'destination_object', 'project_id', 
-                     'location', 'storage_class', 'prefix', 'delimiter', 'page_token']:
+                     'location', 'storage_class', 'prefix', 'delimiter', 'page_token',
+                     'entity', 'role', 'notification_id', 'topic', 'payload_format',
+                     'object_name_prefix', 'folder_path']:
             params.append(f"{param}: str")
         elif param == 'data':
             params.append(f"{param}: bytes")
@@ -96,9 +183,15 @@ def generate_method_signature(method_name: str, method_def: Dict[str, List[str]]
             params.append(f"{param}: List[Dict[str, str]]")
         elif param == 'metadata':
             params.append(f"{param}: Dict[str, str]")
+        elif param == 'policy':
+            params.append(f"{param}: Dict[str, Any]")
+        elif param == 'permissions':
+            params.append(f"{param}: List[str]")
+        elif param == 'event_types':
+            params.append(f"{param}: List[str]")
         elif param == 'page_size':
             params.append(f"{param}: int")
-        elif param == 'force':
+        elif param in ['force', 'recursive']:
             params.append(f"{param}: bool")
         else:
             params.append(f"{param}: Any")
@@ -107,7 +200,9 @@ def generate_method_signature(method_name: str, method_def: Dict[str, List[str]]
     for param in optional_params:
         if param in ['bucket_name', 'object_name', 'source_bucket', 'source_object',
                      'dest_bucket', 'dest_object', 'destination_object', 'project_id',
-                     'location', 'storage_class', 'prefix', 'delimiter', 'page_token']:
+                     'location', 'storage_class', 'prefix', 'delimiter', 'page_token',
+                     'entity', 'role', 'notification_id', 'topic', 'payload_format',
+                     'object_name_prefix', 'folder_path']:
             params.append(f"{param}: Optional[str] = None")
         elif param == 'data':
             params.append(f"{param}: Optional[bytes] = None")
@@ -117,9 +212,15 @@ def generate_method_signature(method_name: str, method_def: Dict[str, List[str]]
             params.append(f"{param}: Optional[Dict[str, Any]] = None")
         elif param == 'content_type':
             params.append(f"{param}: Optional[str] = None")
+        elif param == 'policy':
+            params.append(f"{param}: Optional[Dict[str, Any]] = None")
+        elif param == 'permissions':
+            params.append(f"{param}: Optional[List[str]] = None")
+        elif param == 'event_types':
+            params.append(f"{param}: Optional[List[str]] = None")
         elif param == 'page_size':
             params.append(f"{param}: Optional[int] = None")
-        elif param == 'force':
+        elif param in ['force', 'recursive']:
             params.append(f"{param}: bool = False")
         else:
             params.append(f"{param}: Optional[Any] = None")
@@ -148,6 +249,9 @@ def generate_method_docstring(method_name: str, method_def: Dict[str, List[str]]
         'create_bucket': 'Create a new bucket.',
         'patch_bucket': 'Patch bucket metadata (partial update).',
         'delete_bucket': 'Delete a bucket.',
+        'get_bucket_iam_policy': 'Get IAM policy for a bucket.',
+        'set_bucket_iam_policy': 'Set IAM policy for a bucket.',
+        'test_bucket_iam_permissions': 'Test IAM permissions for a bucket.',
         'list_objects': 'List objects in a bucket.',
         'upload_object': 'Upload an object to a bucket.',
         'download_object': 'Download an object from a bucket.',
@@ -157,6 +261,23 @@ def generate_method_docstring(method_name: str, method_def: Dict[str, List[str]]
         'compose_object': 'Compose multiple objects into a single object.',
         'rewrite_object': 'Rewrite an object (copy with potential metadata/storage class changes).',
         'update_object_metadata': 'Update object metadata.',
+        'list_folders': 'List folders (prefixes) in a bucket.',
+        'create_folder': 'Create a folder (placeholder object) in a bucket.',
+        'delete_folder': 'Delete a folder and optionally all objects within it.',
+        'list_bucket_access_controls': 'List bucket access control entries.',
+        'get_bucket_access_control': 'Get a specific bucket access control entry.',
+        'insert_bucket_access_control': 'Insert a new bucket access control entry.',
+        'patch_bucket_access_control': 'Patch a bucket access control entry.',
+        'delete_bucket_access_control': 'Delete a bucket access control entry.',
+        'list_notifications': 'List bucket notifications.',
+        'get_notification': 'Get a specific bucket notification.',
+        'insert_notification': 'Create a new bucket notification.',
+        'delete_notification': 'Delete a bucket notification.',
+        'list_object_access_controls': 'List object access control entries.',
+        'get_object_access_control': 'Get a specific object access control entry.',
+        'insert_object_access_control': 'Insert a new object access control entry.',
+        'patch_object_access_control': 'Patch an object access control entry.',
+        'delete_object_access_control': 'Delete an object access control entry.',
     }
     
     docstring += method_descriptions.get(method_name, f'{method_name} operation.')
@@ -230,6 +351,114 @@ def generate_method_body(method_name: str, method_def: Dict[str, List[str]]) -> 
             'body': 'metadata',
             'success_codes': 'HTTP_OK'
         },
+        # Bucket IAM operations
+        'get_bucket_iam_policy': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/iam"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'set_bucket_iam_policy': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/iam"',
+            'method': 'put',
+            'body': 'policy',
+            'success_codes': 'HTTP_OK'
+        },
+        'test_bucket_iam_permissions': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/iam/testPermissions?permissions={\'&\'.join(permissions)}"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        # Note: Folder operations (list_folders, create_folder, delete_folder) use special handlers
+        # and are NOT in rest_api_methods - they use gcloud-aio-storage
+        # BucketAccessControls operations
+        'list_bucket_access_controls': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/acl"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'get_bucket_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/acl/{entity_encoded}"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'insert_bucket_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/acl"',
+            'method': 'post',
+            'body': 'acl_entry',
+            'success_codes': 'HTTP_OK'
+        },
+        'patch_bucket_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/acl/{entity_encoded}"',
+            'method': 'patch',
+            'body': 'acl_entry',
+            'success_codes': 'HTTP_OK'
+        },
+        'delete_bucket_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/acl/{entity_encoded}"',
+            'method': 'delete',
+            'body': None,
+            'success_codes': '(200, 204)'
+        },
+        # Notifications operations
+        'list_notifications': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/notificationConfigs"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'get_notification': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/notificationConfigs/{notification_id}"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'insert_notification': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/notificationConfigs"',
+            'method': 'post',
+            'body': 'notification_config',
+            'success_codes': 'HTTP_OK'
+        },
+        'delete_notification': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/notificationConfigs/{notification_id}"',
+            'method': 'delete',
+            'body': None,
+            'success_codes': '(200, 204)'
+        },
+        # ObjectAccessControls operations
+        'list_object_access_controls': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/o/{object_name}/acl"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'get_object_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/o/{object_name}/acl/{entity_encoded}"',
+            'method': 'get',
+            'body': None,
+            'success_codes': 'HTTP_OK'
+        },
+        'insert_object_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/o/{object_name}/acl"',
+            'method': 'post',
+            'body': 'acl_entry',
+            'success_codes': 'HTTP_OK'
+        },
+        'patch_object_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/o/{object_name}/acl/{entity_encoded}"',
+            'method': 'patch',
+            'body': 'acl_entry',
+            'success_codes': 'HTTP_OK'
+        },
+        'delete_object_access_control': {
+            'url': 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/o/{object_name}/acl/{entity_encoded}"',
+            'method': 'delete',
+            'body': None,
+            'success_codes': '(200, 204)'
+        },
     }
     
     if method_name in gcloud_methods:
@@ -254,6 +483,15 @@ def generate_method_body(method_name: str, method_def: Dict[str, List[str]]) -> 
         return _generate_compose_method(method_def)
     elif method_name == 'copy_object':
         return _generate_copy_method(method_def)
+    elif method_name == 'list_folders':
+        # list_folders can use list_objects with delimiter
+        return _generate_list_folders_method(method_def)
+    elif method_name == 'create_folder':
+        # create_folder creates a placeholder object
+        return _generate_create_folder_method(method_def)
+    elif method_name == 'delete_folder':
+        # delete_folder handles recursive deletion
+        return _generate_delete_folder_method(method_def)
     else:
         # Generic error handling
         return '''        try:
@@ -399,6 +637,104 @@ def _generate_rest_api_method(method_name: str, method_def: Dict[str, List[str]]
         setup_lines.append("dest_bucket_name = self._get_bucket_name(dest_bucket) if dest_bucket else self._get_bucket_name()")
         setup_lines.append("dest_object_name = dest_object or source_object")
     
+    # Bucket IAM operations
+    if method_name == 'set_bucket_iam_policy':
+        setup_lines.append("if not policy:")
+        setup_lines.append('                return GCSResponse(success=False, error="policy is required")')
+    
+    if method_name == 'test_bucket_iam_permissions':
+        setup_lines.append("if not permissions:")
+        setup_lines.append('                return GCSResponse(success=False, error="permissions list is required")')
+    
+    # Folder operations
+    if method_name == 'list_folders':
+        setup_lines.append("params: Dict[str, Any] = {}")
+        setup_lines.append("params[\"delimiter\"] = delimiter or \"/\"")
+        setup_lines.append("if prefix is not None:")
+        setup_lines.append('                params["prefix"] = prefix')
+        setup_lines.append("if page_token is not None:")
+        setup_lines.append('                params["pageToken"] = page_token')
+        setup_lines.append("if page_size is not None:")
+        setup_lines.append('                params["maxResults"] = page_size')
+        setup_lines.append("url_params = \"&\".join([f\"{k}={v}\" for k, v in params.items()])")
+        setup_lines.append("url_suffix = f\"?{url_params}\" if url_params else \"\"")
+    
+    if method_name == 'create_folder':
+        setup_lines.append("folder_metadata: Dict[str, Any] = {\"name\": folder_path}")
+        setup_lines.append("if not folder_path.endswith(\"/\"):")
+        setup_lines.append('                folder_metadata["name"] = f"{folder_path}/"')
+        setup_lines.append("if metadata:")
+        setup_lines.append('                folder_metadata["metadata"] = metadata')
+    
+    if method_name == 'delete_folder':
+        setup_lines.append("if recursive:")
+        setup_lines.append("                # List all objects with prefix and delete them")
+        setup_lines.append("                client = await self._get_storage_client()")
+        setup_lines.append("                prefix = folder_path if folder_path.endswith(\"/\") else f\"{folder_path}/\"")
+        setup_lines.append("                objects = await client.list_objects(name, params={\"prefix\": prefix})")
+        setup_lines.append("                if isinstance(objects, dict) and \"items\" in objects:")
+        setup_lines.append("                    for obj in objects[\"items\"]:")
+        setup_lines.append("                        obj_name = obj.get(\"name\", \"\")")
+        setup_lines.append("                        await client.delete(name, obj_name)")
+    
+    # BucketAccessControls operations
+    # Entity check for all these methods
+    if method_name in ['insert_bucket_access_control', 'get_bucket_access_control', 
+                   'patch_bucket_access_control', 'delete_bucket_access_control']:
+        setup_lines.append("if not entity:")
+        setup_lines.append('                return GCSResponse(success=False, error="entity is required")')
+
+    # URL encoding *only* for methods that use it in the path
+    if method_name in ['get_bucket_access_control', 'patch_bucket_access_control', 
+                   'delete_bucket_access_control']:
+        setup_lines.append("from urllib.parse import quote")
+        setup_lines.append("entity_encoded = quote(entity, safe='')")
+    
+    if method_name == 'insert_bucket_access_control':
+        setup_lines.append("if not role:")
+        setup_lines.append('                return GCSResponse(success=False, error="role is required")')
+        setup_lines.append("acl_entry: Dict[str, Any] = {\"entity\": entity, \"role\": role}")
+    
+    if method_name == 'patch_bucket_access_control':
+        setup_lines.append("acl_entry: Dict[str, Any] = {}")
+        setup_lines.append("if role:")
+        setup_lines.append('                acl_entry["role"] = role')
+    
+    # Notifications operations
+    if method_name == 'insert_notification':
+        setup_lines.append("if not topic:")
+        setup_lines.append('                return GCSResponse(success=False, error="topic is required")')
+        setup_lines.append("notification_config: Dict[str, Any] = {\"topic\": topic}")
+        setup_lines.append("if payload_format:")
+        setup_lines.append('                notification_config["payloadFormat"] = payload_format')
+        setup_lines.append("if event_types:")
+        setup_lines.append('                notification_config["eventTypes"] = event_types')
+        setup_lines.append("if object_name_prefix:")
+        setup_lines.append('                notification_config["objectNamePrefix"] = object_name_prefix')
+    
+    # ObjectAccessControls operations
+    # Entity check for all these methods
+    if method_name in ['insert_object_access_control', 'get_object_access_control',
+                   'patch_object_access_control', 'delete_object_access_control']:
+        setup_lines.append("if not entity:")
+        setup_lines.append('                return GCSResponse(success=False, error="entity is required")')
+
+    # URL encoding *only* for methods that use it in the path
+    if method_name in ['get_object_access_control', 'patch_object_access_control', 
+                   'delete_object_access_control']:
+        setup_lines.append("from urllib.parse import quote")
+        setup_lines.append("entity_encoded = quote(entity, safe='')")
+    
+    if method_name == 'insert_object_access_control':
+        setup_lines.append("if not role:")
+        setup_lines.append('                return GCSResponse(success=False, error="role is required")')
+        setup_lines.append("acl_entry: Dict[str, Any] = {\"entity\": entity, \"role\": role}")
+    
+    if method_name == 'patch_object_access_control':
+        setup_lines.append("acl_entry: Dict[str, Any] = {}")
+        setup_lines.append("if role:")
+        setup_lines.append('                acl_entry["role"] = role')
+    
     if setup_lines:
         setup = "            " + "\n            ".join(setup_lines)
     else:
@@ -408,6 +744,12 @@ def _generate_rest_api_method(method_name: str, method_def: Dict[str, List[str]]
     url = api_def['url']
     body = api_def.get('body')
     success_codes = api_def.get('success_codes', 'HTTP_OK')
+    
+    # Special URL handling
+    if method_name == 'test_bucket_iam_permissions':
+        url = 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/iam/testPermissions?permissions=" + "&".join(permissions)'
+    elif method_name == 'list_folders':
+        url = 'f"{emulator.rstrip(\'/\')}/storage/v1/b/{name}/o{url_suffix}"'
     
     body_param = f", json={body}" if body else ""
     if method_name == 'rewrite_object':
@@ -477,6 +819,87 @@ def _generate_compose_method(method_def: Dict[str, List[str]]) -> str:
             return GCSResponse(success=False, error=str(e))'''
 
 
+def _generate_list_folders_method(method_def: Dict[str, List[str]]) -> str:
+    """Generate list_folders method body - uses list_objects with delimiter."""
+    return '''        try:
+            client = await self._get_storage_client()
+            name = self._get_bucket_name(bucket_name)
+            params: Dict[str, Any] = {}
+            params["delimiter"] = delimiter or "/"
+            if prefix is not None:
+                params["prefix"] = prefix
+            if page_token is not None:
+                params["pageToken"] = page_token
+            if page_size is not None:
+                params["maxResults"] = page_size
+            result = await client.list_objects(name, params=params or None)
+            # Extract prefixes (folders) from result
+            folders = []
+            if isinstance(result, dict):
+                folders = result.get("prefixes", [])
+            return GCSResponse(success=True, data={"folders": folders, "result": result})
+        except Exception as e:
+            return GCSResponse(success=False, error=str(e))'''
+
+
+def _generate_create_folder_method(method_def: Dict[str, List[str]]) -> str:
+    """Generate create_folder method body - creates placeholder object."""
+    return '''        try:
+            client = await self._get_storage_client()
+            name = self._get_bucket_name(bucket_name)
+            # Ensure folder path ends with /
+            folder_name = folder_path if folder_path.endswith("/") else f"{folder_path}/"
+            # Create placeholder object (empty object with trailing /)
+            folder_metadata = metadata or {}
+            result = await client.upload(name, folder_name, b"", content_type="application/x-directory", metadata=folder_metadata)
+            return GCSResponse(success=True, data={"result": result, "folder_path": folder_name})
+        except Exception as e:
+            return GCSResponse(success=False, error=str(e))'''
+
+
+def _generate_delete_folder_method(method_def: Dict[str, List[str]]) -> str:
+    """Generate delete_folder method body - handles recursive deletion."""
+    return '''        try:
+            client = await self._get_storage_client()
+            name = self._get_bucket_name(bucket_name)
+            # Ensure folder path ends with /
+            prefix = folder_path if folder_path.endswith("/") else f"{folder_path}/"
+            if recursive:
+                # List all objects with prefix and delete them
+                params = {"prefix": prefix}
+                objects = await client.list_objects(name, params=params)
+                deleted_count = 0
+                if isinstance(objects, dict) and "items" in objects:
+                    for obj in objects["items"]:
+                        obj_name = obj.get("name", "")
+                        if obj_name:
+                            try:
+                                await client.delete(name, obj_name)
+                                deleted_count += 1
+                            except Exception:
+                                pass  # Ignore errors for individual objects
+                # Also delete the folder placeholder if it exists
+                try:
+                    await client.delete(name, prefix)
+                    deleted_count += 1
+                except Exception:
+                    pass
+                return GCSResponse(success=True, data={"deleted_count": deleted_count, "folder_path": prefix})
+            else:
+                # Just delete the folder placeholder
+                try:
+                    await client.delete(name, prefix)
+                    return GCSResponse(success=True, data={"folder_path": prefix})
+                except Exception as delete_error:
+                    # Handle 404 gracefully - folder doesn't exist (idempotent delete)
+                    error_str = str(delete_error)
+                    if "404" in error_str or "Not Found" in error_str:
+                        return GCSResponse(success=True, data={"folder_path": prefix, "message": "Folder not found (already deleted)"})
+                    raise
+        except Exception as e:
+            return GCSResponse(success=False, error=str(e))'''
+
+
 def generate_complete_gcs_data_source() -> str:
     """Generate complete GCSDataSource class."""
     
@@ -503,6 +926,9 @@ class GCSDataSource:
     Features:
     - Bucket operations (CRUD, IAM, lifecycle)
     - Object operations (CRUD, compose, copy, rewrite)
+    - Folder operations (list, create, delete)
+    - Bucket and Object Access Controls (ACL management)
+    - Bucket Notifications
     - Metadata and ACL management
     - Error handling with GCSResponse
 
@@ -510,6 +936,9 @@ class GCSDataSource:
     - gcloud-aio-storage: Third-party async library for GCS operations
     - google-auth: Official Google authentication library
     - REST API: For operations not available in gcloud-aio-storage
+
+    Note: Some operations (IAM, ACLs, Notifications) may not be fully supported
+    by storage emulators (fake-gcs-server) but will work with production GCS.
     """
 
     def __init__(self, gcs_client: GCSClient) -> None:
