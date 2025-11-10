@@ -11951,7 +11951,6 @@ class BaseArangoService:
 
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'GROUP'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSIONS.value}
                 RETURN DISTINCT records
             )
@@ -11965,14 +11964,12 @@ class BaseArangoService:
 
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'ORGANIZATION'
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSIONS.value}
                 RETURN DISTINCT records
             )
 
             LET orgRecordsPermissionEdge = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER edge.entityType == 'ORGANIZATION'
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
