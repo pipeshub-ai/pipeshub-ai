@@ -19,7 +19,6 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlockType
 from app.models.entities import Record, RecordStatus, RecordType
-from app.modules.parsers.markdown.markdown_parser import txt_to_markdown
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -1357,15 +1356,13 @@ class Processor:
                     "Unable to decode text file with any supported encoding"
                 )
 
-            markdown_content = txt_to_markdown(text_content)
-
             await self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
                 version=version,
                 source=source,
                 orgId=orgId,
-                md_binary=markdown_content,
+                md_binary=text_content,
                 virtual_record_id=virtual_record_id
             )
             self.logger.info("✅ TXT processing completed successfully")
